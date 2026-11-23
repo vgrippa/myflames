@@ -47,36 +47,39 @@ class _ReadConnection(object):
         if self.failure is not None:
             raise self.failure
 
-    def run(self, sql, **kwargs):
+    def _handle_error(self, exc):
         from .reviewed_writes import client_error
+        message = str(exc)
+        code = dbops.error_code(message)
+        # ProxySQL Admin uses 1045 for unsupported SQL, including the
+        # initial optional version-comment probe. This is a SQL reply.
+        admin_sql_error = code == 1045 and 'proxysql admin error:' in message.lower()
+        sql_reply = (admin_sql_error or re.search(r'\bat line \d+\b', message, re.I) or
+                     getattr(exc, 'guard_markers', ()))
+        # Before any successful statement, a coded failure without SQL
+        # position evidence can be a login refusal outside our inventory.
+        # Later invocations still log in again, so explicit login failures
+        # must also latch after an earlier successful statement.
+        login_refused = not sql_reply and (
+            (code is not None and not self.authenticated) or
+            code in (1040, 1129, 1130, 1251, 1698, 1862, 3118, 3159, 3955, 4151) or
+            (code == 1226 and re.search(r'\bmax_user_connections\b', message, re.I)) or
+            (code in (1044, 1045, 1049) and
+             re.search(r'\bAccess denied for user\b', message, re.I) and
+             not re.search(r'\bto database\b', message, re.I)))
+        # SQL permission/unsupported-feature errors may be optional. A
+        # refused login, client error or timeout must end this member read.
+        if code is None or client_error(code) or login_refused:
+            self.failure = exc
+
+    def run(self, sql, **kwargs):
         self.check()
         try:
             result = self.connection.run(sql, **kwargs)
             self.authenticated = True
             return result
         except ConnectorError as exc:
-            message = str(exc)
-            code = dbops.error_code(message)
-            # ProxySQL Admin uses 1045 for unsupported SQL, including the
-            # initial optional version-comment probe. This is a SQL reply.
-            admin_sql_error = code == 1045 and 'proxysql admin error:' in message.lower()
-            sql_reply = (admin_sql_error or re.search(r'\bat line \d+\b', message, re.I) or
-                         getattr(exc, 'guard_markers', ()))
-            # Before any successful statement, a coded failure without SQL
-            # position evidence can be a login refusal outside our inventory.
-            # Later invocations still log in again, so explicit login failures
-            # must also latch after an earlier successful statement.
-            login_refused = not sql_reply and (
-                (code is not None and not self.authenticated) or
-                code in (1040, 1129, 1130, 1251, 1698, 1862, 3118, 3159, 3955, 4151) or
-                (code == 1226 and re.search(r'\bmax_user_connections\b', message, re.I)) or
-                (code in (1044, 1045, 1049) and
-                 re.search(r'\bAccess denied for user\b', message, re.I) and
-                 not re.search(r'\bto database\b', message, re.I)))
-            # SQL permission/unsupported-feature errors may be optional. A
-            # refused login, client error or timeout must end this member read.
-            if code is None or client_error(code) or login_refused:
-                self.failure = exc
+            self._handle_error(exc)
             raise
 
     def server_version(self):
@@ -215,10 +218,10 @@ def _optional(reader, sql, notes, named=False):
         return None
 
 
-def _identity(conn, member):
+def _identity(conn, member, read_position=True):
     """Identify proxies before asking database-specific identity questions."""
     from . import proxysql
-    conn = conn if isinstance(conn, _ReadConnection) else _ReadConnection(conn)
+    conn = conn if isinstance(conn, (_ReadConnection, dbops.TargetEvidenceConnection)) else _ReadConnection(conn)
     reader = Reader(conn, TAG)
     notes = []
     comment_rows = _optional(reader, 'SELECT @@version_comment', notes)
@@ -248,6 +251,8 @@ def _identity(conn, member):
     version, comment = values.get('version'), values.get('version_comment') or comment
     if not version:
         raise ConnectorError('The member identity could not be read.')
+    if is_readyset_comment(comment):
+        raise ConnectorError('The member identity changed during the read.')
     identity = product_identity(version, comment)
     member.update(engine=identity['engine'], product=identity['product'], version=version,
                   version_comment=comment, server_id=_number(values.get('server_id')),
@@ -255,18 +260,19 @@ def _identity(conn, member):
                   read_only=_read_only(values.get('read_only')),
                   super_read_only=_on(values.get('super_read_only')) if identity['engine'] == 'mysql' else None)
     member['server_uuid'] = _uuid(values.get('server_uuid')) if identity['engine'] == 'mysql' else None
-    # SHOW reads a capped catalog column (MySQL sql/sql_show_status.cc:297;
-    # MariaDB sql/sql_show.cc:10528). Even a valid prefix is not a GTID set.
-    position_name, sql = (('gtid_current_pos', 'SELECT @@GLOBAL.gtid_current_pos')
-                          if identity['engine'] == 'mariadb' else
-                          ('gtid_executed', 'SELECT @@GLOBAL.gtid_executed'))
     values.pop('gtid_executed', None)
     values.pop('gtid_current_pos', None)
-    # XML retains an empty GTID set; the batch reader skips empty rows.
-    position = _optional(reader, sql, notes, named=True)
-    conn.check()
-    values[position_name] = (next(iter(position[0].values()))
-                             if position and len(position) == 1 and len(position[0]) == 1 else None)
+    if read_position:
+        # SHOW reads a capped catalog column (MySQL sql/sql_show_status.cc:297;
+        # MariaDB sql/sql_show.cc:10528). Even a valid prefix is not a GTID set.
+        position_name, sql = (('gtid_current_pos', 'SELECT @@GLOBAL.gtid_current_pos')
+                              if identity['engine'] == 'mariadb' else
+                              ('gtid_executed', 'SELECT @@GLOBAL.gtid_executed'))
+        # XML retains an empty GTID set; the batch reader skips empty rows.
+        position = _optional(reader, sql, notes, named=True)
+        conn.check()
+        values[position_name] = (next(iter(position[0].values()))
+                                 if position and len(position) == 1 and len(position[0]) == 1 else None)
     return values, None
 
 
@@ -1029,18 +1035,20 @@ def read_group(store, group_name, section, active_member_profile_id,
                 transport = _ReadConnection(param_compare.BoundedConnection(
                     member_conn, seconds=min(remaining, request_seconds)))
                 conn = transport
-                variables, exclusion = _identity(conn, entry)
+                preflight, exclusion = _identity(conn, entry, read_position=False)
+                variables = preflight
                 if exclusion is None:
-                    preflight = variables
                     conn = dbops.TargetEvidenceConnection(transport)
-                    variables, exclusion = _identity(conn, entry)
+                    read_position = section in ('members', 'map', 'parameters')
+                    variables, second_exclusion = _identity(conn, entry, read_position=read_position)
                     conn.check()
                     observed = conn.variables or {}
+                    if second_exclusion is not None or is_readyset_comment(observed.get('version_comment') or ''):
+                        raise ConnectorError('The member identity changed during the read.')
                     keys = (('server_id', 'hostname', 'version') if entry['engine'] == 'mariadb'
                             else ('server_uuid',))
-                    if exclusion is not None or any(
-                            str(preflight.get(key)) != str(observed.get(key)) or
-                            str(variables.get(key)) != str(observed.get(key)) for key in keys):
+                    if any(str(preflight.get(key)) != str(observed.get(key)) or
+                           str(variables.get(key)) != str(observed.get(key)) for key in keys):
                         raise ConnectorError('The member identity changed during the read.')
                     notes = _read_routed(conn, entry)
                     if section in ('members', 'map', 'parameters'):

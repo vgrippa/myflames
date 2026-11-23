@@ -5,16 +5,29 @@ projection below deliberately omits its parsed internal and effective models.
 """
 import copy
 import json
+import re
+import time
+import uuid
 
 from . import accounts, dbops, privileges
-from .connector import ConnectorError
+from .connector import ConnectorError, unescape_mysql
 from .param_compare import BoundedConnection, STATUS_TEXT, side_metadata
 from .perf_common import Reader, now
 from .server_info import product_identity
 
 SCHEMA_VERSION = 'account-compare-1.0'
 MAX_ACCOUNTS = 1000
+BATCH_CHUNK_SIZE = 50
+_MAX_EVIDENCE_SQL_CHARS = 24000
 _ATTRIBUTE_FIELDS = ('plugins', 'locked', 'expired', 'limits', 'password_options', 'tls')
+_ERROR_LINE = re.compile(r'^ERROR\s+(\d+)\s*(?:\([^)]*\))?\s*at line\s+(\d+):\s*(.*)$')
+
+
+class _BatchFallback(Exception):
+    """Raised when a framed batch chunk must fall back to per-account reads."""
+    def __init__(self, disable_batch=False):
+        super(_BatchFallback, self).__init__()
+        self.disable_batch = disable_batch
 
 
 def _tokens(parts, identifiers=False):
@@ -89,13 +102,279 @@ def _safe_account(value):
     return out
 
 
+def _unwrap_non_evidence(conn):
+    """Walk non-evidence wrapper connections (.conn) without cycling."""
+    chain, seen, cur = [], set(), conn
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        chain.append(cur)
+        cur = getattr(cur, 'conn', None)
+    return chain
+
+
+def _script_timeout(bounded):
+    default_timeout = getattr(bounded, 'query_timeout', 30) or 30
+    deadlines = [c.deadline for c in _unwrap_non_evidence(bounded) if getattr(c, 'deadline', None) is not None]
+    if not deadlines:
+        return default_timeout
+    remaining = min(deadlines) - time.monotonic()
+    if remaining <= 0:
+        raise ConnectorError('The comparison read time budget expired.')
+    return min(remaining, default_timeout)
+
+
+def _decode_row(line):
+    return [None if cell == 'NULL' else unescape_mysql(cell) for cell in line.split('\t')]
+
+
+def _finalize_account(account, item, tls, engine):
+    if not account.get('exists', True):
+        account['error'] = 'The account disappeared during the read.'
+    key = (item['name'], item['host'])
+    account['tls_checked'] = key in tls or item.get('role') and engine == 'mariadb'
+    if key in tls:
+        account['attributes']['tls'] = tls[key]
+    # mysql.user/global_priv exposes actual expiration, including MariaDB's timestamp.
+    for field in ('locked', 'expired'):
+        if field in item:
+            account['attributes'][field] = item[field]
+    if item.get('plugin') and not account['attributes'].get('plugins'):
+        account['attributes']['plugins'] = [item['plugin']]
+    return _safe_account(account)
+
+
+def _reuse_version_comment(bounded, conn, server):
+    if server and 'version_comment' in server and server['version_comment'] is not None:
+        return server['version_comment']
+    if isinstance(bounded, dbops.TargetEvidenceConnection):
+        comment = bounded.server_version_comment()
+        if comment:
+            return comment
+    else:
+        for node in _unwrap_non_evidence(conn):
+            cached = getattr(node, '_version_comment_cache', None)
+            if cached is not None:
+                return cached
+    return Reader(bounded, accounts.TAG).pairs("SHOW GLOBAL VARIABLES WHERE Variable_name = 'version_comment'").get('version_comment')
+
+
+def _capture_chunk_per_account(bounded, chunk, engine, version, tls, partial):
+    from .connection_groups import ProfileReadError
+    if engine == 'mysql' and partial is None:
+        partial = str(Reader(bounded, accounts.TAG).pairs(
+            "SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'")
+            .get('partial_revokes', '')).upper() in ('ON', '1')
+    out = []
+    for item in chunk:
+        try:
+            account = accounts.read_account(bounded, item['name'], item['host'], item.get('role', False),
+                                            engine, version, include_catalog=False, partial_revokes=partial)
+            out.append(_finalize_account(account, item, tls, engine))
+        except ProfileReadError:
+            raise
+        except (ConnectorError, ValueError) as exc:
+            if isinstance(bounded, dbops.TargetEvidenceConnection):
+                bounded.check()
+            account = dict(item, error='Could not read this account (error %s).' %
+                           (dbops.error_code(str(exc)) or 'unavailable'))
+            out.append(_safe_account(account))
+    return out, partial
+
+
+def _parse_stderr_errors(stderr, spans):
+    errors = {}
+    for line in (stderr or '').replace('\r\n', '\n').split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = _ERROR_LINE.match(stripped)
+        if not match:
+            if stripped.startswith('ERROR '):
+                code = dbops.error_code(stripped)
+                if code is not None and 2000 <= code < 3000:
+                    raise ConnectorError(stripped)
+                raise _BatchFallback(disable_batch=True)
+            continue
+        code, at, message = int(match.group(1)), int(match.group(2)), match.group(3)
+        if 2000 <= code < 3000:
+            raise ConnectorError('ERROR %d: %s' % (code, message))
+        matched_tag = None
+        for first, last, tag in spans:
+            if first <= at <= last:
+                matched_tag = tag
+                break
+        if not (isinstance(matched_tag, tuple) and matched_tag[0] in ('grants', 'create')):
+            raise _BatchFallback(disable_batch=True)
+        errors.setdefault(matched_tag, (code, message))
+    return errors
+
+
+def _build_batch_plan(chunk, engine, version, read_partial):
+    results = [None] * len(chunk)
+    valid = []
+    for idx, item in enumerate(chunk):
+        try:
+            quoted = accounts._name(item['name'], item['host'], engine, item.get('role', False))
+        except ValueError as exc:
+            results[idx] = _safe_account(dict(item, error='Could not read this account (error %s).' %
+                                              (dbops.error_code(str(exc)) or 'unavailable')))
+            continue
+        valid.append((idx, item, quoted))
+    if not valid:
+        return results, valid, [], [], [], []
+
+    nonce = 'myflames_acct_' + uuid.uuid4().hex
+    tag = accounts.TAG
+    lines, spans, markers, slot_keys = [], [], [], []
+    line_no = 1
+
+    def add(stmt, span_tag):
+        nonlocal line_no
+        breaks = stmt.count('\n')
+        lines.append(stmt)
+        spans.append((line_no, line_no + breaks, span_tag))
+        line_no += breaks + 1
+
+    def add_marker(label):
+        marker = '%s:%s' % (nonce, label)
+        add(tag + "SELECT '%s';" % marker, 'marker')
+        markers.append(marker)
+
+    if engine == 'mysql' and privileges.version_tuple(version) >= (8, 0, 17):
+        add(tag + 'SET SESSION print_identified_with_as_hex = ON;', 'set_hex')
+
+    if read_partial:
+        add_marker('PR')
+        add(tag + "SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes';", 'pr_query')
+        slot_keys.append('partial')
+
+    for idx, item, quoted in valid:
+        add_marker('%d:G' % idx)
+        add(tag + 'SHOW GRANTS FOR ' + quoted + ';', ('grants', idx))
+        slot_keys.append(('grants', idx))
+        if not (item.get('role', False) and engine == 'mariadb'):
+            add_marker('%d:C' % idx)
+            add(tag + 'SHOW CREATE USER ' + quoted + ';', ('create', idx))
+            slot_keys.append(('create', idx))
+
+    add_marker('END')
+    return results, valid, lines, spans, markers, slot_keys
+
+
+def _parse_framed_output(stdout, markers, slot_keys):
+    out_lines = stdout.replace('\r\n', '\n').split('\n')
+    if out_lines and out_lines[-1] == '':
+        out_lines.pop()
+    pos = 0
+    while pos < len(out_lines) and out_lines[pos] == '':
+        pos += 1
+    if pos >= len(out_lines) or out_lines[pos] != markers[0]:
+        raise _BatchFallback(disable_batch=True)
+    pos += 1
+    slot_lines = {}
+    for idx, slot_key in enumerate(slot_keys):
+        end_marker = markers[idx + 1]
+        try:
+            end_idx = out_lines.index(end_marker, pos)
+        except ValueError:
+            raise _BatchFallback(disable_batch=True)
+        slot_lines[slot_key] = out_lines[pos:end_idx]
+        pos = end_idx + 1
+    if any(line for line in out_lines[pos:]):
+        raise _BatchFallback(disable_batch=True)
+    return slot_lines
+
+
+def _build_batch_results(results, valid, slot_lines, errors, engine, version, tls, partial, read_partial):
+    if read_partial:
+        pr_pairs = {}
+        for line in slot_lines['partial']:
+            if line:
+                row = _decode_row(line)
+                if row:
+                    pr_pairs[row[0]] = row[1] if len(row) > 1 else ''
+        partial = str(pr_pairs.get('partial_revokes', '')).upper() in ('ON', '1')
+
+    effective_partial = bool(partial) if engine == 'mysql' else False
+    for idx, item, _quoted in valid:
+        role = item.get('role', False)
+        grants_key = ('grants', idx)
+        if grants_key in errors:
+            code = errors[grants_key][0]
+            if code in (1141, 1133, 1396):
+                account = {
+                    'name': item['name'], 'host': '' if role and engine == 'mariadb' else item['host'],
+                    'role': role, 'exists': False, 'grants': [], 'attributes': {}, 'roles': [],
+                    'default_roles': [],
+                }
+                results[idx] = _finalize_account(account, item, tls, engine)
+            else:
+                results[idx] = _safe_account(dict(item, error='Could not read this account (error unavailable).'))
+            continue
+        grant_rows = [_decode_row(line) for line in slot_lines[grants_key] if line]
+        create_rows, create_error = None, False
+        if not (role and engine == 'mariadb'):
+            create_key = ('create', idx)
+            if create_key in errors:
+                create_error = True
+            else:
+                create_rows = [_decode_row(line) for line in slot_lines[create_key] if line]
+                if not accounts._rows_text(create_rows):
+                    create_error = True
+        account, _inherited = accounts._build_account_from_reads(
+            item['name'], item['host'], role, engine, version, grant_rows,
+            create_rows=create_rows, create_error=create_error, partial=effective_partial)
+        create_rows = None  # Never kept: it held the hash.
+        results[idx] = _finalize_account(account, item, tls, engine)
+    return results, partial
+
+
+def _capture_chunk_evidence(bounded, chunk, engine, version, tls, partial):
+    bounded.check()
+    read_partial = engine == 'mysql' and partial is None
+    results, valid, lines, _spans, markers, slot_keys = _build_batch_plan(chunk, engine, version, read_partial)
+    if not valid:
+        return results, partial
+    sql = '\n'.join(lines)
+    if len(sql) > _MAX_EVIDENCE_SQL_CHARS and len(chunk) > 1:
+        mid = len(chunk) // 2
+        left, partial = _capture_chunk_evidence(bounded, chunk[:mid], engine, version, tls, partial)
+        right, partial = _capture_chunk_evidence(bounded, chunk[mid:], engine, version, tls, partial)
+        return left + right, partial
+    try:
+        stdout = bounded.run(sql, extra_flags=['--comments'])
+    except ConnectorError:
+        # Identity failures, consent errors, timeouts and transport errors
+        # poison TargetEvidenceConnection, so check() re-raises them unchanged.
+        # Only a server SQL error after a validated identity prefix leaves the
+        # scope intact and falls back to per-account reads for this chunk.
+        bounded.check()
+        raise _BatchFallback(disable_batch=False)
+    slot_lines = _parse_framed_output(stdout, markers, slot_keys)
+    return _build_batch_results(results, valid, slot_lines, {}, engine, version, tls, partial, read_partial)
+
+
+def _capture_chunk_script(bounded, chunk, engine, version, tls, partial):
+    read_partial = engine == 'mysql' and partial is None
+    results, valid, lines, spans, markers, slot_keys = _build_batch_plan(chunk, engine, version, read_partial)
+    if not valid:
+        return results, partial
+    script = '\n'.join(lines) + '\n'
+    timeout = _script_timeout(bounded)
+    stdout, stderr = bounded.run_script(script, timeout=timeout)
+    errors = _parse_stderr_errors(stderr, spans)
+    slot_lines = _parse_framed_output(stdout, markers, slot_keys)
+    return _build_batch_results(results, valid, slot_lines, errors, engine, version, tls, partial, read_partial)
+
+
 def capture(conn, server=None):
     # Group reads already bound this evidence scope's transport. Preserve its
     # type so read_account reuses it instead of nesting identity packets.
-    bounded = conn if isinstance(conn, dbops.TargetEvidenceConnection) else BoundedConnection(conn)
-    listing = accounts.list_accounts(bounded)
+    is_evidence = isinstance(conn, dbops.TargetEvidenceConnection)
+    bounded = conn if is_evidence else BoundedConnection(conn)
+    listing = accounts.list_accounts(bounded, include_tls=True, include_role_details=False)
     version, engine = listing['version'], listing['engine']
-    comment = Reader(bounded, accounts.TAG).pairs("SHOW GLOBAL VARIABLES WHERE Variable_name = 'version_comment'").get('version_comment')
+    comment = _reuse_version_comment(bounded, conn, server)
     product = product_identity(version, comment)
     identity = {'host': (server or {}).get('host') or getattr(conn, 'host', 'localhost'),
                 'port': (server or {}).get('port') or getattr(conn, 'port', 3306), 'engine': engine,
@@ -106,32 +385,39 @@ def capture(conn, server=None):
     if len(listing['accounts']) > MAX_ACCOUNTS:
         result['complete'] = False
         result['notes'].append('Only the first %d accounts were read.' % MAX_ACCOUNTS)
-    # These are non-secret columns, not SHOW CREATE text or a password hash.
-    tls_rows = Reader(bounded, accounts.TAG).optional(
-        'SELECT User, Host, ssl_type, HEX(ssl_cipher), HEX(x509_issuer), HEX(x509_subject) '
-        'FROM mysql.user ORDER BY User, Host', 'account TLS requirements', result['notes'])
-    tls = {(r[0], r[1]): {'type': r[2], 'cipher_hex': r[3], 'issuer_hex': r[4], 'subject_hex': r[5]}
-           for r in tls_rows or [] if len(r) == 6}
-    for item in listing['accounts'][:MAX_ACCOUNTS]:
-        try:
-            account = accounts.read_account(bounded, item['name'], item['host'], item.get('role', False),
-                                            engine, version, include_catalog=False)
-            if not account.get('exists', True):
-                account['error'] = 'The account disappeared during the read.'
-            key = (item['name'], item['host'])
-            account['tls_checked'] = key in tls or item.get('role') and engine == 'mariadb'
-            if key in tls:
-                account['attributes']['tls'] = tls[key]
-            # mysql.user/global_priv exposes actual expiration, including MariaDB's timestamp.
-            for field in ('locked', 'expired'):
-                if field in item:
-                    account['attributes'][field] = item[field]
-            if item.get('plugin') and not account['attributes'].get('plugins'):
-                account['attributes']['plugins'] = [item['plugin']]
-        except (ConnectorError, ValueError) as exc:
-            account = dict(item, error='Could not read this account (error %s).' %
-                           (dbops.error_code(str(exc)) or 'unavailable'))
-        result['items'].append(_safe_account(account))
+    # Reuse TLS columns already selected by list_accounts on MySQL; fall back
+    # to the separate optional read on MariaDB or when mysql.user was denied.
+    if isinstance(listing.get('tls'), dict):
+        tls = listing['tls']
+    else:
+        # These are non-secret columns, not SHOW CREATE text or a password hash.
+        tls_rows = Reader(bounded, accounts.TAG).optional(
+            'SELECT User, Host, ssl_type, HEX(ssl_cipher), HEX(x509_issuer), HEX(x509_subject) '
+            'FROM mysql.user ORDER BY User, Host', 'account TLS requirements', result['notes'])
+        tls = {(r[0], r[1]): {'type': r[2], 'cipher_hex': r[3], 'issuer_hex': r[4], 'subject_hex': r[5]}
+               for r in tls_rows or [] if len(r) == 6}
+    items = listing['accounts'][:MAX_ACCOUNTS]
+    if not items:
+        return result
+    partial = False if engine != 'mysql' else None
+    use_batch = is_evidence or callable(getattr(bounded, 'run_script', None))
+    for start in range(0, len(items), BATCH_CHUNK_SIZE):
+        chunk = items[start:start + BATCH_CHUNK_SIZE]
+        if use_batch:
+            try:
+                if is_evidence:
+                    batch_items, partial = _capture_chunk_evidence(bounded, chunk, engine, version, tls, partial)
+                else:
+                    batch_items, partial = _capture_chunk_script(bounded, chunk, engine, version, tls, partial)
+                result['items'].extend(batch_items)
+                continue
+            except _BatchFallback as exc:
+                if is_evidence:
+                    bounded.check()
+                if exc.disable_batch:
+                    use_batch = False
+        fallback_items, partial = _capture_chunk_per_account(bounded, chunk, engine, version, tls, partial)
+        result['items'].extend(fallback_items)
     return result
 
 

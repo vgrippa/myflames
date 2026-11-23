@@ -89,6 +89,9 @@ if evidence:
     identity = dict(variables)
     if cfg.get('evidence_variables') and (not cfg.get('switch_on') or cfg['switch_on'] in sql):
         identity.update(cfg.get('evidence_variables', {}))
+    if cfg.get('switch_evidence_body') and cfg.get('evidence_variables') and (
+            not cfg.get('switch_on') or cfg['switch_on'] in sql):
+        variables = dict(variables, **cfg.get('evidence_variables', {}))
     names = ('server_uuid', 'server_id', 'hostname', 'port', 'version', 'version_comment',
              'wsrep_on', 'wsrep_provider', 'wsrep_node_name')
     emit(['Variable_name', 'Value'], [[name, identity[name]] for name in names if name in identity])
@@ -104,109 +107,149 @@ def fail(message):
     sys.stderr.write(message + '\n')
     sys.exit(1)
 
-text = re.sub(r'^/\*myflames:[^*]*\*/\s*', '', sql).rstrip(';')
-lower = text.lower()
-if cfg.get('error_on') and cfg['error_on'].lower() == lower:
-    fail(cfg.get('query_error', 'ERROR 1045 (28000): Refused login secret_payload'))
-if lower == 'select @@version_comment':
-    comment = 'Readyset' if cfg.get('probe_readyset') and not sql.lstrip().startswith('/*') else variables['version_comment']
-    emit(['@@version_comment'], [[comment]])
-elif lower == 'select @@version':
-    emit(['@@version'], [[variables['version']]])
-elif lower.startswith('select @@global.'):
-    name = lower[len('select @@global.'):]
-    if cfg.get('exact_denied'):
-        fail('ERROR 1227 (42000): Access denied for exact variable read')
-    value = cfg.get('exact_variables', {}).get(name, variables.get(name))
-    emit(['@@GLOBAL.' + name], [[value]])
-elif "variable_name = 'admin-version'" in lower:
-    rows = [[variables['version']]] if cfg.get('proxy') == 'proxysql' else []
-    emit(['variable_value'], rows)
-elif lower == 'show readyset version':
-    emit(['name', 'value'], [['release version', 'stable-test']])
-elif lower == 'show readyset status':
-    emit(['name', 'value'], [['Status', 'Online'], ['CDC Server', cfg.get('cdc_server')]])
-elif 'from replication_status limit 0' in lower:
-    emit([], [])
-elif 'from readyset.upstream_servers' in lower or 'from upstream_servers' in lower:
-    rows = cfg.get('upstreams', [])
-    columns = list(rows[0]) if rows else []
-    emit(columns, [[row.get(name) for name in columns] for row in rows])
-elif lower == 'show caches':
-    emit(['query_id', 'query'], [['q_secret', 'SELECT secret_sql FROM secret_table']])
-elif 'from runtime_mysql_servers' in lower or 'from mysql_servers' in lower:
-    rows = cfg.get('servers', [])
-    columns = list(rows[0]) if rows else []
-    emit(columns, [[row.get(name) for name in columns] for row in rows])
-elif 'from runtime_mysql_query_rules' in lower or 'from mysql_query_rules' in lower:
-    emit(['rule_id', 'comment'], [['1', 'secret_rule_sql']])
-elif lower.startswith('show global variables'):
-    names = re.findall(r"'([^']+)'", text)
-    if 'report_host' in names and 'probe_uuid' in cfg:
-        variables = dict(variables, server_uuid=cfg['probe_uuid'])
-    rows = [[name, variables[name]] for name in names if name in variables]
-    emit(['Variable_name', 'Value'], rows)
-elif 'from performance_schema.replication_group_members' in lower:
-    if cfg.get('no_gr_role') and 'member_role' in lower:
-        fail('ERROR 1054 (42S22): Unknown column MEMBER_ROLE')
-    role = cfg.get('role')
-    state = cfg.get('state', 'ONLINE')
-    present = role or cfg.get('has_gr')
-    if lower.startswith('select member_id'):
-        rows = cfg.get('gr_members', [])
-        columns = ['MEMBER_ID', 'MEMBER_HOST', 'MEMBER_PORT', 'MEMBER_STATE']
-        if 'member_role' in lower:
-            columns.append('MEMBER_ROLE')
-        emit(columns, [row[:len(columns)] for row in rows])
-    elif lower.startswith('select member_state'):
-        emit(['MEMBER_STATE'], [[state]] if present else [])
-    else:
-        emit(['MEMBER_ROLE', 'MEMBER_STATE'], [[role, state]] if present else [])
-elif 'from performance_schema.replication_group_member_stats' in lower:
-    emit(['COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE'], [[cfg.get('queue', 0)]])
-elif 'from performance_schema.session_connect_attrs' in lower:
-    if cfg.get('attrs_error'):
-        fail(cfg['attrs_error'])
-    routed = cfg.get('routed')
-    count = routed if isinstance(routed, int) and not isinstance(routed, bool) else (1 if routed else 0)
-    emit(['COUNT(*)'], [[count]])
-elif lower.startswith('show global status'):
-    values = cfg.get('status', {})
-    names = re.findall(r"'([^']+)'", text)
-    emit(['Variable_name', 'Value'], [[name, values[name]] for name in names if name in values])
-elif lower in ('show replica status', 'show slave status', 'show all slaves status'):
-    channels = cfg.get('channels', [])
-    columns = list(channels[0]) if channels else []
-    emit(columns, [[row.get(name) for name in columns] for row in channels])
-elif lower in ('show replicas', 'show slave hosts'):
-    rows = cfg.get('replicas', [])
-    if rows and isinstance(rows[0], dict):
-        columns = list(rows[0])
+def run_one(part_sql):
+    text = re.sub(r'^/\*myflames:[^*]*\*/\s*', '', part_sql.strip()).rstrip(';')
+    lower = text.lower()
+    if cfg.get('error_on') and cfg['error_on'].lower() == lower:
+        fail(cfg.get('query_error', 'ERROR 1045 (28000): Refused login secret_payload'))
+    if lower == 'select @@version_comment':
+        comment = 'Readyset' if cfg.get('probe_readyset') and not part_sql.lstrip().startswith('/*') else variables['version_comment']
+        emit(['@@version_comment'], [[comment]])
+    elif lower == 'select @@version':
+        emit(['@@version'], [[variables['version']]])
+    elif lower.startswith('select @@global.'):
+        name = lower[len('select @@global.'):]
+        if cfg.get('exact_denied'):
+            fail('ERROR 1227 (42000): Access denied for exact variable read')
+        value = cfg.get('exact_variables', {}).get(name, variables.get(name))
+        emit(['@@GLOBAL.' + name], [[value]])
+    elif "variable_name = 'admin-version'" in lower:
+        rows = [[variables['version']]] if cfg.get('proxy') == 'proxysql' else []
+        emit(['variable_value'], rows)
+    elif lower == 'show readyset version':
+        emit(['name', 'value'], [['release version', 'stable-test']])
+    elif lower == 'show readyset status':
+        emit(['name', 'value'], [['Status', 'Online'], ['CDC Server', cfg.get('cdc_server')]])
+    elif 'from replication_status limit 0' in lower:
+        emit([], [])
+    elif 'from readyset.upstream_servers' in lower or 'from upstream_servers' in lower:
+        rows = cfg.get('upstreams', [])
+        columns = list(rows[0]) if rows else []
         emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif lower == 'show caches':
+        emit(['query_id', 'query'], [['q_secret', 'SELECT secret_sql FROM secret_table']])
+    elif 'from runtime_mysql_servers' in lower or 'from mysql_servers' in lower:
+        rows = cfg.get('servers', [])
+        columns = list(rows[0]) if rows else []
+        emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif 'from runtime_mysql_query_rules' in lower or 'from mysql_query_rules' in lower:
+        emit(['rule_id', 'comment'], [['1', 'secret_rule_sql']])
+    elif lower.startswith('show global variables'):
+        names = re.findall(r"'([^']+)'", text)
+        if 'report_host' in names and 'probe_uuid' in cfg:
+            local_vars = dict(variables, server_uuid=cfg['probe_uuid'])
+        else:
+            local_vars = variables
+        rows = [[name, local_vars[name]] for name in names if name in local_vars]
+        emit(['Variable_name', 'Value'], rows)
+    elif lower.startswith('set session print_identified_with_as_hex'):
+        return
+    elif lower.startswith("select '") and text.endswith("'") and text.count("'") == 2:
+        emit(['m'], [[text[8:-1]]])
+    elif 'from mysql.user order by user, host' in lower:
+        accts = cfg.get('accounts', [])
+        include_tls = 'ssl_type' in lower
+        inline_granted = 'from mysql.role_edges' in lower
+        rows = []
+        for a in accts:
+            row = [a['name'], a['host'], 'caching_sha2_password', 'N', 'N', None, None, '0', '0']
+            if include_tls:
+                row.extend(['', '', '', ''])
+            if inline_granted:
+                row.append('0')
+            rows.append(row)
+        emit(['User'] * (len(rows[0]) if rows else 0), rows)
+    elif lower.startswith('show grants for '):
+        target = text[len('SHOW GRANTS FOR '):].strip()
+        for a in cfg.get('accounts', []):
+            if ('`%s`@`%s`' % (a['name'], a['host'])) == target:
+                if a.get('grants_error'):
+                    fail(a['grants_error'])
+                emit(['Grants'], [[g] for g in a.get('grants', [])])
+                return
+        fail('ERROR 1141 (42000): There is no such grant defined for user')
+    elif lower.startswith('show create user '):
+        target = text[len('SHOW CREATE USER '):].strip()
+        for a in cfg.get('accounts', []):
+            if ('`%s`@`%s`' % (a['name'], a['host'])) == target:
+                emit(['CREATE USER'], [[a['create']]])
+                return
+        fail('ERROR 1396 (HY000): Operation SHOW CREATE USER failed')
+    elif 'from performance_schema.replication_group_members' in lower:
+        if cfg.get('no_gr_role') and 'member_role' in lower:
+            fail('ERROR 1054 (42S22): Unknown column MEMBER_ROLE')
+        role = cfg.get('role')
+        state = cfg.get('state', 'ONLINE')
+        present = role or cfg.get('has_gr')
+        if lower.startswith('select member_id'):
+            rows = cfg.get('gr_members', [])
+            columns = ['MEMBER_ID', 'MEMBER_HOST', 'MEMBER_PORT', 'MEMBER_STATE']
+            if 'member_role' in lower:
+                columns.append('MEMBER_ROLE')
+            emit(columns, [row[:len(columns)] for row in rows])
+        elif lower.startswith('select member_state'):
+            emit(['MEMBER_STATE'], [[state]] if present else [])
+        else:
+            emit(['MEMBER_ROLE', 'MEMBER_STATE'], [[role, state]] if present else [])
+    elif 'from performance_schema.replication_group_member_stats' in lower:
+        emit(['COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE'], [[cfg.get('queue', 0)]])
+    elif 'from performance_schema.session_connect_attrs' in lower:
+        if cfg.get('attrs_error'):
+            fail(cfg['attrs_error'])
+        routed = cfg.get('routed')
+        count = routed if isinstance(routed, int) and not isinstance(routed, bool) else (1 if routed else 0)
+        emit(['COUNT(*)'], [[count]])
+    elif lower.startswith('show global status'):
+        values = cfg.get('status', {})
+        names = re.findall(r"'([^']+)'", text)
+        emit(['Variable_name', 'Value'], [[name, values[name]] for name in names if name in values])
+    elif lower in ('show replica status', 'show slave status', 'show all slaves status'):
+        channels = cfg.get('channels', [])
+        columns = list(channels[0]) if channels else []
+        emit(columns, [[row.get(name) for name in columns] for row in channels])
+    elif lower in ('show replicas', 'show slave hosts'):
+        rows = cfg.get('replicas', [])
+        if rows and isinstance(rows[0], dict):
+            columns = list(rows[0])
+            emit(columns, [[row.get(name) for name in columns] for row in rows])
+        else:
+            emit(['Server_id', 'Host', 'Port'], rows)
+    elif 'from mysql.wsrep_cluster_members' in lower:
+        emit(['node_uuid', 'node_name', 'node_incoming_address'], cfg.get('wsrep_members', []))
+    elif 'from performance_schema.pxc_cluster_view' in lower:
+        emit(['HOST_NAME', 'UUID', 'STATUS', 'LOCAL_INDEX', 'SEGMENT'], cfg.get('pxc_members', []))
+    elif 'from information_schema.schemata' in lower:
+        emit(['SCHEMA_NAME'], [['mysql_innodb_cluster_metadata']] if cfg.get('innodb_cluster') else [])
+    elif 'from mysql_innodb_cluster_metadata' in lower:
+        rows = cfg.get('cluster_metadata', [])
+        columns = list(rows[0]) if rows else []
+        emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif 'from information_schema.plugins' in lower:
+        emit(['PLUGIN_NAME', 'PLUGIN_STATUS', 'PLUGIN_TYPE', 'PLUGIN_VERSION', 'PLUGIN_LIBRARY', 'LOAD_OPTION'],
+             cfg.get('plugins', [['auth', 'ACTIVE', 'AUTHENTICATION', '1.0', None, 'ON']]))
+    elif 'from mysql.component' in lower:
+        if cfg.get('component_denied'):
+            fail('ERROR 1142 (42000): SELECT command denied for user secret_component_user on mysql.component')
+        else:
+            emit(['component_urn'], [[value] for value in cfg.get('components', [])])
+    elif lower == 'select 1':
+        emit(['1'], [['1']])
     else:
-        emit(['Server_id', 'Host', 'Port'], rows)
-elif 'from mysql.wsrep_cluster_members' in lower:
-    emit(['node_uuid', 'node_name', 'node_incoming_address'], cfg.get('wsrep_members', []))
-elif 'from performance_schema.pxc_cluster_view' in lower:
-    emit(['HOST_NAME', 'UUID', 'STATUS', 'LOCAL_INDEX', 'SEGMENT'], cfg.get('pxc_members', []))
-elif 'from information_schema.schemata' in lower:
-    emit(['SCHEMA_NAME'], [['mysql_innodb_cluster_metadata']] if cfg.get('innodb_cluster') else [])
-elif 'from mysql_innodb_cluster_metadata' in lower:
-    rows = cfg.get('cluster_metadata', [])
-    columns = list(rows[0]) if rows else []
-    emit(columns, [[row.get(name) for name in columns] for row in rows])
-elif 'from information_schema.plugins' in lower:
-    emit(['PLUGIN_NAME', 'PLUGIN_STATUS', 'PLUGIN_TYPE', 'PLUGIN_VERSION', 'PLUGIN_LIBRARY', 'LOAD_OPTION'],
-         cfg.get('plugins', [['auth', 'ACTIVE', 'AUTHENTICATION', '1.0', None, 'ON']]))
-elif 'from mysql.component' in lower:
-    if cfg.get('component_denied'):
-        fail('ERROR 1142 (42000): SELECT command denied for user secret_component_user on mysql.component')
-    else:
-        emit(['component_urn'], [[value] for value in cfg.get('components', [])])
-elif lower == 'select 1':
-    emit(['1'], [['1']])
-else:
-    fail('ERROR 1064 (42000): unexpected synthetic read')
+        fail('ERROR 1064 (42000): unexpected synthetic read')
+
+for part in sql.split('\n;\n'):
+    if part.strip():
+        run_one(part)
 '''
 
 
@@ -873,7 +916,7 @@ class TopologyReadTests(GroupCase):
         member = next(row for row in report['members'] if row['profile_id'] == 'replica')
         self.assertEqual(member['behind']['value'], 100)
         sql = self.statements(observed)
-        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in statement for statement in sql), 4)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in statement for statement in sql), 2)
         self.assertFalse(any("'gtid_executed'" in statement for statement in sql))
 
     def test_mariadb_gtid_reads_full_global_position(self):
@@ -889,7 +932,81 @@ class TopologyReadTests(GroupCase):
             report = self.read()
         member = next(row for row in report['members'] if row['profile_id'] == 'replica')
         self.assertEqual(member['behind']['value'], 10)
-        self.assertEqual(sum('SELECT @@GLOBAL.gtid_current_pos' in sql for sql in self.statements(observed)), 4)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_current_pos' in sql for sql in self.statements(observed)), 2)
+
+    def test_identity_runs_preflight_and_evidence_bound_and_always_probes_proxysql(self):
+        with self.clients({'active.example': member_fixture(UUID_A)}) as observed:
+            report = self.read('plugins')
+        self.assertEqual(report['summary']['read'], 1)
+        sql = self.statements(observed)
+        # Base identity flow: preflight on raw transport + second _identity inside TargetEvidenceConnection.
+        self.assertEqual(sum('SELECT @@version_comment' in s for s in sql), 2)
+        self.assertEqual(sum("variable_name = 'admin-version'" in s for s in sql), 2)
+        self.assertEqual(sum("'group_replication_group_name'" in s for s in sql), 2)
+        # GTID position is skipped for plugins (and accounts).
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in s for s in sql), 0)
+        # Stale cached database facts must never skip ProxySQL Admin identification.
+        proxy = member_fixture(proxy='proxysql')
+        proxy['variables'].update(version='3.0.11', version_comment='MySQL Community Server - GPL')
+        from myflames import client_tools
+        stale_member = topology_group._entry({'id': 'm1', 'name': 'm1'})
+        stale_member.update(engine='mysql', product='MySQL', version='8.4.11',
+                            version_comment='MySQL Community Server - GPL')
+        with mock.patch('myflames.proxysql.identify', return_value=(True, '3.0.11')) as probe:
+            conn = mock.Mock()
+            conn._version_cache = '8.4.11'
+            conn._endpoint_key = lambda: ('stale-proxy-test.example', 6032, None, None, None)
+            conn.run.return_value = 'MySQL Community Server - GPL\n'
+            client_tools.remember_server(conn._endpoint_key(), 'mysql', '8.4.11')
+            values, exclusion = topology_group._identity(conn, stale_member, read_position=False)
+        probe.assert_called_once()
+        self.assertEqual(values, {})
+        self.assertEqual(exclusion, 'ProxySQL Admin is read for identity only.')
+        self.assertEqual(stale_member['product'], 'ProxySQL Admin')
+        self.assertEqual(stale_member['role'], 'proxy')
+
+    def test_preflight_vs_evidence_full_node_switch_is_refused(self):
+        # Router switches completely to another node between preflight and TargetEvidenceConnection:
+        # both the evidence prefix and body of the second _identity report UUID_B, while preflight saw UUID_A.
+        fixture = member_fixture(UUID_A, evidence_variables={'server_uuid': UUID_B}, switch_evidence_body=True)
+        with self.clients({'active.example': fixture}) as observed:
+            report = self.read('plugins')
+        self.assertEqual(report['summary']['failed'], 1, report)
+        self.assertEqual(report['plugins']['compared'], [])
+        self.assertEqual(report['plugins']['rows'], [])
+        self.assertIsNone(report['members'][0]['server_uuid'])
+        self.assertFalse(any('FROM information_schema.PLUGINS' in s for s in self.statements(observed)))
+
+    def test_accounts_chunked_identity_change_fails_member_like_base(self):
+        accts = [{
+            'name': 'u%03d' % i, 'host': '%',
+            'grants': ['GRANT SELECT ON *.* TO `u%03d`@`%%`' % i],
+            'create': "CREATE USER `u%03d`@`%%` IDENTIFIED WITH 'caching_sha2_password' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK" % i,
+        } for i in range(55)]
+        # Healthy 55-account group read succeeds in 2 evidence-bound chunk packets and skips GTID read.
+        healthy = member_fixture(UUID_A, accounts=accts)
+        with self.clients({'active.example': healthy}) as observed:
+            ok_report = self.read('accounts')
+        self.assertEqual(ok_report['summary']['read'], 1, ok_report)
+        self.assertEqual(ok_report['accounts']['compared'], ['active'])
+        self.assertEqual(len(ok_report['accounts']['rows']), 55)
+        ok_sql = self.statements(observed)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in s for s in ok_sql), 0)
+        self.assertEqual(sum('SHOW GRANTS FOR ' in s for s in ok_sql), 2)
+        # Identity switch on chunk 2 (contains u050) fails the member identically to base.
+        switching = member_fixture(UUID_A, accounts=accts, switch_on='u050',
+                                   evidence_variables={'server_uuid': UUID_B})
+        with self.clients({'active.example': switching}) as observed:
+            bad_report = self.read('accounts')
+        self.assertEqual(bad_report['summary']['failed'], 1, bad_report)
+        self.assertEqual(bad_report['accounts']['compared'], [])
+        self.assertEqual(bad_report['accounts']['rows'], [])
+        member = bad_report['members'][0]
+        self.assertIsNone(member['server_uuid'])
+        self.assertIsNone(member['engine'])
+        bad_sql = self.statements(observed)
+        # Only the 2 chunk packets ran (chunk 1 ok, chunk 2 failed identity) — no per-account fallback.
+        self.assertEqual(sum('SHOW GRANTS FOR ' in s for s in bad_sql), 2)
 
     def test_failed_exact_gtid_read_never_falls_back_to_show(self):
         fixture = member_fixture(role='PRIMARY', gtid=UUID_A + ':1-100', exact_denied=True)

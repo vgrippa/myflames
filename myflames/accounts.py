@@ -234,43 +234,22 @@ def _default_roles_clause(create, engine):
     return []
 
 
-@dbops.target_evidence
-def read_account(conn, name, host='%', role=False, engine=None, version=None, include_catalog=True):
-    """``account-1.0``: the account's own grants (credential-free), its
-    roles and default roles, non-secret attributes, the grants it inherits
-    through roles, dangerous-grant flags and the ``fingerprint``.
+def _build_account_from_reads(name, host, role, engine, version, grant_rows,
+                              create_rows=None, create_error=False, partial=False):
+    """Build the direct account model from SHOW GRANTS and SHOW CREATE USER rows.
 
-    Reads SHOW GRANTS FOR, SHOW CREATE USER (MySQL 8.0.17+ with
-    print_identified_with_as_hex so the hash cannot break the parse; parsed
-    in Python, never returned) and SHOW GRANTS FOR every role reached. Another
-    account needs SELECT on mysql. A missing account (1141) gives ``exists``
-    false; other errors raise, by number only.
+    Shared by read_account() and account_compare's batched reader so both paths
+    apply identical credential stripping, OMITTED_ACCOUNT_TEXT bounds and
+    MySQL/MariaDB attribute/default-role rules.
     """
-    if engine is None or version is None:
-        engine, version = _server(conn)
-    account = _name(name, host, engine, role)
-    reader = Reader(conn, TAG)
     out = {'schema_version': 'account-1.0', 'name': name, 'host': '' if role and engine == 'mariadb' else host,
            'role': role, 'engine': engine, 'version': version, 'exists': True, 'grants': [],
            'attributes': {}, 'roles': [], 'default_roles': [], 'warnings': [],
            'system': name in SYSTEM_ACCOUNTS}
-    try:
-        lines = reader.rows('SHOW GRANTS FOR ' + account)
-    except ConnectorError as exc:
-        code = dbops.error_code(str(exc))
-        if code in (1141, 1133, 1396):
-            out['exists'] = False
-            out['fingerprint'] = fingerprint(out)
-            return out
-        raise ConnectorError('Could not read the account grants (error %s).' % (code or 'unavailable')) from None
-    out['grants'] = [_strip_account_credentials(row[0]) for row in lines if row and row[0]]
+    out['grants'] = [_strip_account_credentials(row[0]) for row in grant_rows if row and row[0]]
     if OMITTED_ACCOUNT_TEXT in out['grants']:
         out['error'] = 'Account grants omitted: too long.'
         out['warnings'].append(out['error'])
-    partial = False
-    if engine == 'mysql':
-        partial = str(reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'")
-                      .get('partial_revokes', '')).upper() in ('ON', '1')
     out['partial_revokes'] = partial
     direct_lines, inherited_lines = [], []
     for line in out['grants']:
@@ -291,32 +270,94 @@ def read_account(conn, name, host='%', role=False, engine=None, version=None, in
     out['model'] = privileges.parse_grants(direct_lines, engine, version, partial)
     out['roles'] = [{k: r[k] for k in ('name', 'host', 'admin_option')} for r in out['model']['roles']
                     if r['grantee']['name'] == name and (role and engine == 'mariadb' or r['grantee']['host'] == host)]
-    create = ''
+    safe_create = ''
     if not (role and engine == 'mariadb'):
-        try:
-            sql = 'SHOW CREATE USER ' + account
-            if engine == 'mysql' and privileges.version_tuple(version) >= (8, 0, 17):
-                sql = 'SET SESSION print_identified_with_as_hex = ON; ' + TAG + sql
-            create = _rows_text(reader.rows(sql))
-            if not create:
-                raise ValueError('No SHOW CREATE USER result.')
-            out['attributes'] = _attributes(create)
-            out['attributes_checked'] = True
-        except (ConnectorError, ValueError):
+        create = '' if create_error else _rows_text(create_rows or ())
+        stripped_cells = [_strip_account_credentials(cell) for row in (create_rows or ()) for cell in row if cell]
+        if create_error or not create or len(create) > MAX_ACCOUNT_TEXT_CHARS or OMITTED_ACCOUNT_TEXT in stripped_cells:
             out['warnings'].append('Account attributes are unavailable; SELECT on the mysql database may be needed.')
             out['attributes_checked'] = False
+        else:
+            # Strip credentials with the existing stripper before parsing
+            # options and default roles; retain only plugin names from the
+            # bounded CREATE text and discard it immediately.
+            safe_create = _strip_account_credentials(create)
+            if safe_create == OMITTED_ACCOUNT_TEXT:
+                safe_create = ''
+                out['warnings'].append('Account attributes are unavailable; SELECT on the mysql database may be needed.')
+                out['attributes_checked'] = False
+            else:
+                attrs = _attributes(safe_create)
+                attrs['plugins'] = _attributes(create)['plugins']
+                out['attributes'] = attrs
+                out['attributes_checked'] = True
+        create = ''  # Never kept: it held the hash.
     else:
         out['attributes_checked'] = True
     if engine == 'mysql':
-        out['default_roles'] = _default_roles_clause(create, engine) if create else []
-        out['defaults_checked'] = bool(create) or role
+        out['default_roles'] = _default_roles_clause(safe_create, engine) if safe_create else []
+        out['defaults_checked'] = bool(safe_create) or role
     else:
         defaults = [r for r in out['model']['roles'] if r['default'] and r['grantee']['name'] == name]
         out['default_roles'] = [{'name': r['name'], 'host': ''} for r in defaults]
         out['defaults_checked'] = True
     for r in out['default_roles']:
         r.pop('role', None)
-    create = ''  # Never kept: it held the hash.
+    safe_create = ''
+    return out, inherited_lines
+
+
+@dbops.target_evidence
+def read_account(conn, name, host='%', role=False, engine=None, version=None, include_catalog=True,
+                 partial_revokes=None):
+    """``account-1.0``: the account's own grants (credential-free), its
+    roles and default roles, non-secret attributes, the grants it inherits
+    through roles, dangerous-grant flags and the ``fingerprint``.
+
+    Reads SHOW GRANTS FOR, SHOW CREATE USER (MySQL 8.0.17+ with
+    print_identified_with_as_hex so the hash cannot break the parse; parsed
+    in Python, never returned) and SHOW GRANTS FOR every role reached. Another
+    account needs SELECT on mysql. A missing account (1141) gives ``exists``
+    false; other errors raise, by number only.
+    """
+    if engine is None or version is None:
+        engine, version = _server(conn)
+    account = _name(name, host, engine, role)
+    reader = Reader(conn, TAG)
+    try:
+        lines = reader.rows('SHOW GRANTS FOR ' + account)
+    except ConnectorError as exc:
+        code = dbops.error_code(str(exc))
+        if code in (1141, 1133, 1396):
+            out = {'schema_version': 'account-1.0', 'name': name, 'host': '' if role and engine == 'mariadb' else host,
+                   'role': role, 'engine': engine, 'version': version, 'exists': False, 'grants': [],
+                   'attributes': {}, 'roles': [], 'default_roles': [], 'warnings': [],
+                   'system': name in SYSTEM_ACCOUNTS}
+            out['fingerprint'] = fingerprint(out)
+            return out
+        raise ConnectorError('Could not read the account grants (error %s).' % (code or 'unavailable')) from None
+    partial = False
+    if engine == 'mysql':
+        if partial_revokes is not None:
+            partial = bool(partial_revokes)
+        else:
+            partial = str(reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'")
+                          .get('partial_revokes', '')).upper() in ('ON', '1')
+    create_rows, create_error = None, False
+    if not (role and engine == 'mariadb'):
+        try:
+            sql = 'SHOW CREATE USER ' + account
+            if engine == 'mysql' and privileges.version_tuple(version) >= (8, 0, 17):
+                sql = 'SET SESSION print_identified_with_as_hex = ON; ' + TAG + sql
+            create_rows = reader.rows(sql)
+            if not _rows_text(create_rows):
+                create_error = True
+        except (ConnectorError, ValueError):
+            create_error = True
+    out, inherited_lines = _build_account_from_reads(
+        name, host, role, engine, version, lines, create_rows=create_rows,
+        create_error=create_error, partial=partial)
+    create_rows = None  # Never kept: it held the hash.
     out['role_grants'] = inherited_lines
     # Cache each reached role's parsed grants for this expansion only. Mark
     # it on enqueue so diamonds and cycles cannot grow the work queue.
@@ -578,7 +619,7 @@ def _protected(account):
     return ''
 
 
-def list_accounts(conn):
+def list_accounts(conn, include_tls=False, include_role_details=True):
     """``accounts-1.0``: users and roles, role grants and default roles,
     without selecting a password hash (MySQL compares
     ``authentication_string = ''`` on the server; MariaDB reads single keys
@@ -594,17 +635,35 @@ def list_accounts(conn):
         out['warnings'].append(privileges.NO_ROLES_NOTE)
     try:
         if engine == 'mysql':
+            extra_cols = ''
+            if include_tls:
+                extra_cols += ', ssl_type, HEX(ssl_cipher), HEX(x509_issuer), HEX(x509_subject)'
+            inline_granted = roles and not include_role_details
+            if inline_granted:
+                extra_cols += (', EXISTS (SELECT 1 FROM mysql.role_edges '
+                               'WHERE FROM_USER = mysql.user.User AND FROM_HOST = mysql.user.Host)')
             sql = ("SELECT User, Host, plugin, account_locked, password_expired, password_last_changed, "
                    "password_lifetime, (authentication_string = '' AND plugin IN "
                    "('mysql_native_password','caching_sha2_password','sha256_password')), "
-                   "(authentication_string = '') FROM mysql.user ORDER BY User, Host")
+                   "(authentication_string = '')" + extra_cols + " FROM mysql.user ORDER BY User, Host")
             rows = reader.rows(sql)
             # mysql.role_edges and mysql.default_roles exist from MySQL 8.0.
-            edges = reader.rows('SELECT FROM_USER, FROM_HOST, TO_USER, TO_HOST, WITH_ADMIN_OPTION FROM mysql.role_edges '
-                                'ORDER BY FROM_USER, FROM_HOST, TO_USER, TO_HOST') if roles else []
-            defaults = reader.rows('SELECT USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST FROM mysql.default_roles '
-                                   'ORDER BY USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST') if roles else []
-            granted = {(r[0], r[1]) for r in edges}
+            has_tls_cols = include_tls and (not rows or all(len(r) >= 13 for r in rows))
+            granted_col = 13 if include_tls else 9
+            has_inline_granted = inline_granted and (not rows or all(len(r) > granted_col for r in rows))
+            edges = (reader.rows('SELECT FROM_USER, FROM_HOST, TO_USER, TO_HOST, WITH_ADMIN_OPTION FROM mysql.role_edges '
+                                 'ORDER BY FROM_USER, FROM_HOST, TO_USER, TO_HOST')
+                     if roles and not has_inline_granted else [])
+            defaults = (reader.rows('SELECT USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST FROM mysql.default_roles '
+                                    'ORDER BY USER, HOST, DEFAULT_ROLE_USER, DEFAULT_ROLE_HOST')
+                        if roles and include_role_details else [])
+            granted = ({(r[0], r[1]) for r in rows if r[granted_col] == '1'}
+                       if has_inline_granted else {(r[0], r[1]) for r in edges})
+            if has_tls_cols:
+                out['tls'] = {
+                    (r[0], r[1]): {'type': r[9], 'cipher_hex': r[10], 'issuer_hex': r[11], 'subject_hex': r[12]}
+                    for r in rows
+                }
             for r in rows:
                 locked, expired, empty = r[3] == 'Y', r[4] == 'Y', r[8] == '1'
                 out['accounts'].append({
@@ -623,8 +682,9 @@ def list_accounts(conn):
                    "(JSON_VALUE(Priv, '$.authentication_string') = '' AND JSON_VALUE(Priv, '$.plugin') IN "
                    "('mysql_native_password','mysql_old_password')) FROM mysql.global_priv ORDER BY User, Host")
             rows = reader.rows(sql)
-            mapping = reader.rows('SELECT Host, User, Role, Admin_option FROM mysql.roles_mapping '
-                                  'ORDER BY Host, User, Role')
+            mapping = (reader.rows('SELECT Host, User, Role, Admin_option FROM mysql.roles_mapping '
+                                   'ORDER BY Host, User, Role')
+                       if include_role_details else [])
             for r in rows:
                 is_role = r[6] in ('1', 'true')
                 out['accounts'].append({
