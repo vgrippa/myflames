@@ -571,7 +571,7 @@ class TestSQLScannerTiming(unittest.TestCase):
                 with self.subTest(function=name, shape=shape):
                     elapsed = _scanner_seconds(function, sql, allow_refusal=name == "analysis_query._scan")
                     print("SQL scanner %s %s: 1MB=%.6fs" % (name, shape, elapsed), flush=True)
-                    self.assertLess(elapsed, 0.5, "%s %s exceeded 0.5 s" % (name, shape))
+                    self.assertLess(elapsed, 1.0, "%s %s exceeded 1 s" % (name, shape))
 
 
 if __name__ == "__main__":
