@@ -149,11 +149,34 @@ class TestHelpers(unittest.TestCase):
                     "test/fixtures/mariadb-10.11-030-y.json"):
             self.assertTrue(mod.is_managed(rel), rel)
         for rel in ("test/fixtures/mysql-5.7-union.json",
+                    "test/fixtures/mysql-9.7-hypergraph-on-cte-window-rank.json",
                     "test/fixtures/mariadb-11.8-intersect.json",
                     "test/fixtures/mariadb-11.4-explain-cte.json",
                     "test/fixtures/captures/explain-001-x.json",
                     "test/fixtures/explain-001-x.txt"):
             self.assertFalse(mod.is_managed(rel), rel)
+
+    def test_hypergraph_fixtures_are_unmanaged(self):
+        """Hand-recorded hypergraph fixtures must never match MANAGED_PATTERNS.
+
+        The generator scripts delete and recreate numbered fixtures, so
+        hand-recorded fixtures must carry unnumbered names to avoid being
+        wiped during regeneration or flagged as drift.
+        """
+        mod = _load_script()
+        fixtures_dir = Path(__file__).resolve().parent / "fixtures"
+        files = {
+            f"test/fixtures/{p.name}"
+            for p in fixtures_dir.glob("*.json")
+        }
+        files.update(mod.head_fixture_files())
+        hg_files = [rel for rel in sorted(files) if "hypergraph" in rel]
+        self.assertTrue(hg_files, "Expected to find hypergraph fixtures")
+        for rel in hg_files:
+            self.assertFalse(
+                mod.is_managed(rel),
+                f"{rel} matches MANAGED_PATTERNS: hand-recorded fixtures must not use numbered generator names",
+            )
 
 
 class TestGeneratorRemovesStaleFixtures(unittest.TestCase):

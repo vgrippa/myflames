@@ -387,7 +387,7 @@ class TestHashJoinDiagnoses(unittest.TestCase):
         self.assertTrue(a["nonsargable_joins"])
 
     def test_build_rows_come_from_the_hash_input(self):
-        text = _text(_fixture("explain-099-hypergraph-on-5t-avg-salary.json"))
+        text = _text(_fixture("mysql-9.7-hypergraph-on-5t-avg-salary.json"))
         root = parse_explain(text)
         hj = [n for n in flatten_nodes(root) if n["details"]["join_algorithm"] == "hash"][0]
         build = hj["children"][1]
