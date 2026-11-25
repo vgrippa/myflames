@@ -311,6 +311,10 @@ try {
   await page.waitForSelector('.editor-toolbar');
   for (const width of [390, 320]) {
     await page.setViewport({ width, height: 844 });
+    // The narrow workbench (panes become sheets) follows the viewport through
+    // matchMedia and a React render; measuring before it lands sees the wide
+    // layout's squeezed panel with its buttons outside the toolbar.
+    await page.waitForSelector('.editor-workbench.is-narrow');
     const clipped = await page.$$eval('.editor-toolbar button', (els) => els.filter((el) => {
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) return false;

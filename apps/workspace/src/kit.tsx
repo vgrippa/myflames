@@ -355,6 +355,15 @@ export function Popover({
       window.removeEventListener("scroll", place, true);
     };
   }, [open, wide, panelWidth]);
+  // A popover opened in a view's content must escape .view-main's stacking
+  // context (kit.css): with the compact 720 px Server layout the view's
+  // sticky toolbar (z-index 3, server.css) would otherwise paint over it.
+  // Those panels render through a portal to the body. Panels inside a native
+  // dialog (already in the top layer) or inside another popover stay inline,
+  // so nesting, outside-click dismissal and Escape order are unchanged.
+  const anchorEl = button.current;
+  const portal = open && !!anchorEl?.closest(".view-main") &&
+    !anchorEl.closest("dialog, .popover, .editor-options-popover");
   return (
     <span className={`popover-anchor ${className}`}>
       <button
@@ -377,11 +386,14 @@ export function Popover({
       >
         {trigger || <Icon name="info" size={15} />}
       </button>
-      {open && (
-        <div ref={panel} id={id} className={`popover${wide ? " is-wide" : ""}`} tabIndex={-1} role={menu ? "menu" : "dialog"} aria-label={label} style={style}>
-          {children}
-        </div>
-      )}
+      {open && (() => {
+        const panelNode = (
+          <div ref={panel} id={id} className={`popover${wide ? " is-wide" : ""}`} tabIndex={-1} role={menu ? "menu" : "dialog"} aria-label={label} style={style}>
+            {children}
+          </div>
+        );
+        return portal ? createPortal(panelNode, document.body) : panelNode;
+      })()}
     </span>
   );
 }

@@ -184,6 +184,48 @@ try {
   assert.equal(tally(/(\d+) problems?/, parts), tally(/(\d+) problems?/, [line]), `problems add up (${parts.join(" | ")} vs ${line})`);
   assert.equal(tally(/(\d+) to watch/, parts), tally(/(\d+) to watch/, [line]), "to watch adds up");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, "no sideways page scroll at 720 px");
+  // A popover opened inside the view paints above the view's sticky toolbar.
+  // With the Columns button in the lower half of the window the menu opens
+  // above it, over the toolbar band; probe the overlap. (.view-main is its own
+  // stacking context, so the panel renders through a portal.)
+  // Compact navigation: Back shows the pushed list, then choose the view. The
+  // compact layout follows the place's ResizeObserver, so wait for it first.
+  await page.waitForSelector('.server-layout.is-compact .server-view[data-view="health"] .server-back', { visible: true });
+  await page.click('.server-view[data-view="health"] .server-back');
+  await page.waitForSelector('.server-layout.show-list #server-nav-locks', { visible: true });
+  await page.click('#server-nav-locks');
+  await page.waitForSelector('.server-view[data-view="locks"]', { visible: true });
+  const columnsButton = '.server-view[data-view="locks"] button[aria-label="Columns of Transactions"]';
+  await page.waitForSelector(columnsButton, { visible: true });
+  const placed = await page.evaluate((button) => {
+    document.querySelector(button).scrollIntoView({ block: "center", behavior: "instant" });
+    const b = document.querySelector(button).getBoundingClientRect();
+    window.scrollBy(0, Math.round(b.top - (innerHeight * 0.72)));
+    return document.querySelector(button).getBoundingClientRect().toJSON();
+  }, columnsButton);
+  await page.click(columnsButton);
+  await page.waitForSelector('.popover[aria-label="Columns of Transactions"]', { visible: true });
+  const toolbarOf = '.server-layout.is-compact .server-view[data-view="locks"] > .view-toolbar';
+  const probe = await page.evaluate((bar) => {
+    const pop = document.querySelector('.popover[aria-label="Columns of Transactions"]');
+    const toolbar = document.querySelector(bar);
+    const pr = pop.getBoundingClientRect();
+    const br = toolbar.getBoundingClientRect();
+    if (!(pr.top < br.bottom - 4 && pr.bottom > br.top + 4))
+      return { overlap: false, pop: pr.toJSON(), bar: br.toJSON() };
+    const x = pr.left + pr.width / 2;
+    const y = Math.min(br.top + br.height / 2, pr.bottom - 4);
+    const el = document.elementFromPoint(x, y);
+    return { overlap: true, inside: pop.contains(el), hit: el ? String(el.className || el.tagName) : "none" };
+  }, toolbarOf);
+  assert.ok(probe.overlap, `the Columns menu opened above its button reaches the sticky toolbar (button at ${JSON.stringify(placed)}, popover ${JSON.stringify(probe.pop)}, toolbar ${JSON.stringify(probe.bar)})`);
+  assert.ok(probe.inside, `the Columns menu paints above the sticky toolbar where they overlap (hit: ${probe.hit})`);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('.popover[aria-label="Columns of Transactions"]'));
+  await page.click('.server-view[data-view="locks"] .server-back');
+  await page.waitForSelector('.server-layout.show-list #server-nav-health', { visible: true });
+  await page.$eval('#server-nav-health', (e) => e.click());
+  await page.waitForSelector(`${view} .summary-line`, { visible: true });
   await page.setViewport({ width: 1440, height: 1000 });
   await page.waitForFunction((v) => getComputedStyle(document.querySelector(`${v} .tile-section-status`)).display === "none", {}, view);
   assert.equal(state.seen[0].interval, 5);
