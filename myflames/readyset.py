@@ -1328,12 +1328,15 @@ _EXPORT_URL_CODE_UNSAFE = re.compile(
 )
 
 
-def _export_url_spans(sql, backslash_escapes=True, prefixes=None, scan=None):
+def _export_url_spans(sql, backslash_escapes=True, prefixes=None, scan=None, skipped=None):
     """URL password spans through the last @, under one backslash reading.
 
     A URL inside a complete backticked identifier is an identifier, not a
     credential. A second authority before the first @ is part of a malformed
     password. Ambiguous quoted text is hidden rather than partly exposed.
+    When *skipped* is a list, append ``(start, end)`` of each prefix skipped
+    because it started before *scanned*, so callers can fail closed if a
+    skipped prefix lies outside every yielded span.
     """
     if prefixes is None:
         if "://" not in sql:
@@ -1351,6 +1354,8 @@ def _export_url_spans(sql, backslash_escapes=True, prefixes=None, scan=None):
     scanned, ident, token, pending = 0, 0, 0, None
     for index, prefix in enumerate(prefixes):
         if prefix.start() < scanned:
+            if skipped is not None:
+                skipped.append((prefix.start(), prefix.end()))
             continue
         while ident < len(identifiers) and identifiers[ident][1] <= prefix.start():
             ident += 1
@@ -1857,6 +1862,20 @@ def _export_url_spans_safe(sql, url_spans, scan, ident_spans):
     return True
 
 
+def _has_uncovered_url_prefix(skipped, spans):
+    """True when any skipped URL prefix lies outside every yielded span."""
+    if not skipped:
+        return False
+    span_idx = 0
+    span_count = len(spans)
+    for p_start, p_end in skipped:
+        while span_idx < span_count and spans[span_idx][1] < p_end:
+            span_idx += 1
+        if span_idx >= span_count or spans[span_idx][0] > p_start:
+            return True
+    return False
+
+
 def _redact_export_sql(sql, password=None):
     """Redact credential syntax and password-bearing literals or comments.
 
@@ -1878,12 +1897,18 @@ def _redact_export_sql(sql, password=None):
     lit_spans = _merge_export_literal_spans(raw_sql, password, scan1=scan1, scan2=scan2)
 
     url_spans1, url_spans2 = [], []
+    url_skipped1, url_skipped2 = [], []
     if "://" in raw_sql:
         prefixes = list(_EXPORT_URL_CREDENTIALS.finditer(raw_sql))
         if prefixes:
-            url_spans1 = list(_export_url_spans(raw_sql, True, prefixes, scan=scan1))
-            url_spans2 = (list(_export_url_spans(raw_sql, False, prefixes, scan=scan2))
+            url_spans1 = list(_export_url_spans(raw_sql, True, prefixes, scan=scan1, skipped=url_skipped1))
+            url_spans2 = (list(_export_url_spans(raw_sql, False, prefixes, scan=scan2, skipped=url_skipped2))
                           if has_backslash else url_spans1)
+            if not has_backslash:
+                url_skipped2 = url_skipped1
+    if (_has_uncovered_url_prefix(url_skipped1, url_spans1) or
+            (has_backslash and _has_uncovered_url_prefix(url_skipped2, url_spans2))):
+        return _EXPORT_AMBIGUOUS_COMMENT, True
     url_disagree = url_spans1 != url_spans2
     url_spans = _merge_export_url_spans(url_spans1, url_spans2 if has_backslash else None)
 

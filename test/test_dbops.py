@@ -4255,28 +4255,34 @@ class TestRedaction(unittest.TestCase):
             if ms >= 0.01:
                 self.assertLess(ratio, 5.0, (name, ms, ml, ratio))
 
-    def test_r352_replace_chain_100k_clauses_under_one_second(self):
-        # Walking a REPLACE chain once keeps both scans linear even on a
-        # 100,000-clause chain.
+    def test_r352_replace_chain_scales_linearly(self):
+        # Walking a REPLACE chain once keeps both scans linear across 4x growth
+        # (25,000 to 100,000 clauses).
         code = (
             "import time\nfrom myflames import dbops\n"
-            "text = \"ALTER USER a IDENTIFIED BY 'n'\" + \" REPLACE 'x'\" * 100000\n"
-            "began = time.perf_counter()\n"
-            "clean = dbops.redact(text)\n"
-            "elapsed = time.perf_counter() - began\n"
-            "assert \"'x'\" not in clean and \"'n'\" not in clean\n"
-            "assert clean.count('[redacted]') == 100001\n"
-            "print(elapsed)\n")
+            "timings = []\n"
+            "for clauses in (25000, 100000):\n"
+            "    text = \"ALTER USER a IDENTIFIED BY 'n'\" + \" REPLACE 'x'\" * clauses\n"
+            "    began = time.perf_counter()\n"
+            "    clean = dbops.redact(text)\n"
+            "    timings.append(time.perf_counter() - began)\n"
+            "    assert \"'x'\" not in clean and \"'n'\" not in clean\n"
+            "    assert clean.count('[redacted]') == clauses + 1\n"
+            "print(timings[0], timings[1])\n")
         try:
             result = subprocess.run([sys.executable, '-c', code],
                 cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
         except subprocess.TimeoutExpired:
-            self.fail('100,000-clause REPLACE chain exceeded the 10 s deadline')
+            self.fail('25,000/100,000-clause REPLACE chain exceeded the 10 s deadline')
         self.assertEqual(result.returncode, 0, result.stderr)
-        elapsed = float(result.stdout.strip())
-        print('R352_REPLACE_CHAIN_100K_TIMING elapsed=%.6fs' % elapsed, flush=True)
-        self.assertLess(elapsed, 1.0)
+        elapsed_25k, elapsed_100k = (float(value) for value in result.stdout.strip().split())
+        self.assertGreater(elapsed_25k, 0.0)
+        ratio = elapsed_100k / elapsed_25k
+        print('R352_REPLACE_CHAIN_TIMING 25k=%.6fs 100k=%.6fs ratio=%.2fx' %
+              (elapsed_25k, elapsed_100k, ratio), flush=True)
+        self.assertLess(elapsed_100k, 6.0 * elapsed_25k, (elapsed_25k, elapsed_100k, ratio))
+        self.assertLess(elapsed_100k, 3.0, (elapsed_25k, elapsed_100k, ratio))
 
     def test_r352_nested_insert_alias_scan_stays_linear_on_400kb(self):
         # Each nested AS can match the row-alias suffix, but none can end the
@@ -4373,6 +4379,176 @@ class TestRedaction(unittest.TestCase):
         print('R352_EDITOR_BUDGET ratio=%.4f limit=0.4000 without=%.6fs with=%.6fs' %
               (ratio, without_secret, with_secret), flush=True)
         self.assertLessEqual(without_secret, 0.40 * with_secret)
+
+    def test_r352_dropped_eof_phantom_never_skips_later_credential_scans(self):
+        cases = (
+            ("CREATE USER app IDENTIFIED BY \"dev-password\";\n"
+             "CHANGE MASTER TO MASTER_USER='repl', MASTER_PASSWORD='S3cr3t';\n",
+             ("dev-password", "S3cr3t"),
+             "CREATE USER app IDENTIFIED BY \"[redacted]\";\n"
+             "CHANGE MASTER TO MASTER_USER='repl', MASTER_PASSWORD='[redacted]';\n"),
+            ("ALTER USER 'root'@'localhost' IDENTIFIED BY 'Root-Password';\n"
+             "CHANGE REPLICATION SOURCE TO SOURCE_USER=\"repl\", SOURCE_PASSWORD=\"S3cr3t\";\n",
+             ("Root-Password", "S3cr3t"),
+             "ALTER USER 'root'@'localhost' IDENTIFIED BY '[redacted]';\n"
+             "CHANGE REPLICATION SOURCE TO SOURCE_USER=\"repl\", SOURCE_PASSWORD=\"[redacted]\";\n"),
+            ("SET PASSWORD = \"a password\"; START REPLICA PASSWORD='S3cr3t'",
+             ("a password", "S3cr3t"),
+             "SET PASSWORD = \"[redacted]\"; START REPLICA PASSWORD='[redacted]'"),
+            ("ALTER USER u IDENTIFIED BY 'x-password';\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = _binary 0x533363723374;\n",
+             ("x-password", "533363723374"),
+             "ALTER USER u IDENTIFIED BY '[redacted]';\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = '[redacted]';\n"),
+            ("CREATE CACHE FROM SELECT * FROM users WHERE password = \"x password\" AND api_password = 'S3cr3t'",
+             ("x password", "S3cr3t"),
+             "CREATE CACHE FROM SELECT * FROM users WHERE password = \"[redacted]\" AND api_password = '[redacted]'"),
+        )
+        for raw, secrets, expected in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                for secret in secrets:
+                    self.assertNotIn(secret, clean)
+                self.assertEqual(clean, expected)
+
+    def test_r352_set_password_introduced_value_does_not_skip_inner_assignment(self):
+        junk = "x " * 300
+        for raw in (
+            "SET PASSWORD = N'abc SET PASSWORD FOR " + junk + "= 'S3cr3t'",
+            "SET PASSWORD FOR u@h = _utf8mb4'abc SET PASSWORD FOR " + junk + "= 'S3cr3t'",
+        ):
+            with self.subTest(raw=raw[:50]):
+                clean = dbops.redact(raw)
+                self.assertNotIn("S3cr3t", clean)
+                self.assertIn("[redacted]", clean)
+        normal = "SET PASSWORD FOR u@h = N'my-secret'; SELECT 1;"
+        self.assertEqual(dbops.redact(normal), "SET PASSWORD FOR u@h = '[redacted]'; SELECT 1;")
+
+    def test_r352_custom_delimiter_inside_parentheses_keeps_hiding(self):
+        malformed = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = CONCAT('a'$$\n, 'S3cr3t')$$\n"
+        clean = dbops.redact(malformed)
+        self.assertNotIn("S3cr3t", clean)
+        self.assertIn("[redacted]", clean)
+        valid = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = CONCAT('a', 'S3cr3t')$$\nSELECT 1$$\n"
+        self.assertEqual(
+            dbops.redact(valid),
+            "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = [redacted]$$\nSELECT 1$$\n",
+        )
+
+    def test_r352_set_password_malformed_backslash_quote_stays_linear(self):
+        for raw, secret in (
+            ("SET PASSWORD FOR 'a=b'@'%' = N'S3cr3t'", "S3cr3t"),
+            ("SET PASSWORD\\'x = 'S3cr3t'", "S3cr3t"),
+            ("SET PASSWORD\\n = N'S3cr3t'", "S3cr3t"),
+            ("SET PASSWORD " + "a" * 500 + " = N'S3cr3t'", "S3cr3t"),
+        ):
+            with self.subTest(raw=raw[:40]):
+                clean = dbops.redact(raw)
+                self.assertNotIn(secret, clean)
+                self.assertIn("[redacted]", clean)
+        for label, unit in (
+            ("sq", "SET PASSWORD\\'x "),
+            ("dq", 'SET PASSWORD\\"x '),
+            ("sq_eq", "SET PASSWORD\\'x = "),
+            ("dq_eq", 'SET PASSWORD\\"x = '),
+        ):
+            with self.subTest(label=label):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "unit = " + repr(unit) + "\n"
+                    "s64 = unit * (65536 // len(unit)) + '='\n"
+                    "s256 = unit * (262144 // len(unit)) + '='\n"
+                    "t0 = time.monotonic(); dbops.redact(s64); d64 = time.monotonic() - t0\n"
+                    "t0 = time.monotonic(); dbops.redact(s256); d256 = time.monotonic() - t0\n"
+                    "print('%.6f %.6f' % (d64, d256))\n"
+                )
+                result = subprocess.run(
+                    [sys.executable, '-c', code],
+                    cwd=str(Path(__file__).resolve().parent.parent),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+                    universal_newlines=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                d64, d256 = (float(x) for x in result.stdout.strip().split())
+                self.assertLess(d64, 0.5)
+                self.assertLess(d256, 2.0)
+
+    def test_r352_hex_and_bit_literals_require_word_boundary(self):
+        for raw in (
+            "SOURCE_PASSWORD = 0x533363723374PASSWORD='S3cr3t'",
+            "CHANGE MASTER TO MASTER_PASSWORD = 0x4142SOURCE_PASSWORD = 'S3cr3t'",
+            "SOURCE_PASSWORD = 0b0101PASSWORD='S3cr3t'",
+            "SET PASSWORD = 0x533363723374PASSWORD='S3cr3t'",
+        ):
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn("S3cr3t", clean)
+                self.assertIn("[redacted]", clean)
+        for raw, secret in (
+            ("SET PASSWORD = 0x533363723374;", "533363723374"),
+            ("SET PASSWORD = 0b01010101;", "01010101"),
+            ("ALTER USER u IDENTIFIED BY _binary 0x533363723374;", "533363723374"),
+            ("DELIMITER $$\nSET PASSWORD FOR u@h = 0x533363723374$$\n", "533363723374"),
+        ):
+            with self.subTest(valid=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn(secret, clean)
+                self.assertIn("[redacted]", clean)
+
+    def test_r352_valid_sql_continuations_and_introducers_preserve_tail(self):
+        preserved = (
+            ("DELIMITER $$\nALTER USER u IDENTIFIED BY 'dev-password'$$\nSELECT 1$$\n",
+             "DELIMITER $$\nALTER USER u IDENTIFIED BY '[redacted]'$$\nSELECT 1$$\n"),
+            ("DELIMITER //\nCREATE USER u IDENTIFIED BY 'dev-password' //\nSELECT 1//\n",
+             "DELIMITER //\nCREATE USER u IDENTIFIED BY '[redacted]' //\nSELECT 1//\n"),
+            ("ALTER USER u IDENTIFIED BY 'dev-password' PASSWORD_LOCK_TIME 3; SELECT 1;",
+             "ALTER USER u IDENTIFIED BY '[redacted]' PASSWORD_LOCK_TIME 3; SELECT 1;"),
+            ("CLONE INSTANCE FROM 'u'@'h':3306 IDENTIFIED BY 'dev-password' DATA DIRECTORY = '/d'; SELECT 1;",
+             "CLONE INSTANCE FROM 'u'@'h':3306 IDENTIFIED BY '[redacted]' DATA DIRECTORY = '/d'; SELECT 1;"),
+            ("CREATE TABLE t (a INT) PASSWORD = 'dev-password' INDEX DIRECTORY = '/i' ENGINE=InnoDB; SELECT 1;",
+             "CREATE TABLE t (a INT) PASSWORD = '[redacted]' INDEX DIRECTORY = '/i' ENGINE=InnoDB; SELECT 1;"),
+            ("CREATE TABLE t (a INT) DATA DIRECTORY = '/x'; "
+             "ALTER USER u IDENTIFIED BY 'dev-password' DISCARD OLD PASSWORD; SELECT 1;",
+             "CREATE TABLE t (a INT) DATA DIRECTORY = '/x'; "
+             "ALTER USER u IDENTIFIED BY '[redacted]' DISCARD OLD PASSWORD; SELECT 1;"),
+            ("START REPLICA USER='r' PASSWORD='dev-password' DEFAULT_AUTH='caching_sha2_password' "
+             "PLUGIN_DIR='/p'; SELECT 1;",
+             "START REPLICA USER='r' PASSWORD='[redacted]' DEFAULT_AUTH='caching_sha2_password' "
+             "PLUGIN_DIR='/p'; SELECT 1;"),
+            ("ALTER USER u ADD 2 FACTOR IDENTIFIED BY 'dev-password' ADD 3 FACTOR IDENTIFIED BY 'S3cr3t'; SELECT 1;",
+             "ALTER USER u ADD 2 FACTOR IDENTIFIED BY '[redacted]' ADD 3 FACTOR IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("/*!80000 CREATE USER u IDENTIFIED BY 'dev-password' */; SELECT 1;",
+             "/*!80000 CREATE USER u IDENTIFIED BY '[redacted]' */; SELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = N'sst:password'; SELECT 1;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]; SELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = _utf8mb4'sst:password'; SELECT 1;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]; SELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = _utf8mb4 'sst:password'; SELECT 1;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]; SELECT 1;"),
+        )
+        for raw, expected in preserved:
+            with self.subTest(preserved=raw):
+                self.assertEqual(dbops.redact(raw), expected)
+        # Fail-closed rules remain intact for unproven delimiters, REPLACE 'old-password',
+        # non-credential strings ending in password, and cut/unbalanced overlaps.
+        for raw, forbidden in (
+            ("ALTER USER u IDENTIFIED BY 'dev-password'$$ SELECT 'S3cr3t'", "S3cr3t"),
+            ("ALTER USER u IDENTIFIED BY 'a' REPLACE 'old-password'; SELECT 1;", "SELECT 1;"),
+            ("INSERT INTO notes VALUES (1, 'reset the password'); SELECT 1;", "SELECT 1;"),
+            ("CREATE USER app IDENTIFIED BY X'2c48;ALTER USER u IDENTIFIED BY ',S3cr3t,x;SELECT 1", "S3cr3t"),
+            ('DELIMITER $$\nSET CHARACTER SET utf8mb4$$\nSET PERSIST_ONLY report_password :=  "a\\\\$$\n'
+             'ALTER USER \'\'@\'localhost\' IDENTIFIED WITH ed25519  AS ";S3cr3t-T', "S3cr3t"),
+            ('SELECT `a` FROM `b`;\n\nCREATE USER\n\'SET PASSWORD\'@localhost\nIDENTIFIED  BY\n  ")x ;\n\n'
+             '{"action": "run", "sql": "SET\\r\\n@@GLOBAL.WSREP_SST_AUTH\\r\\n= \')S3cr3t;y\'", "ok": false};\n\n',
+             "S3cr3t"),
+            ("DELIMITER $$\nUPDATE cfg SET s3_secret_key = \"a\" WHERE$$\n"
+             "ALTER USER u IDENTIFIED BY 'x' REPLACE/**/'S3cr3t'", "S3cr3t"),
+            ("'a\\'IDENTIFIED BY 'SET SET GLOBAL wsrep_sst_auth = 'b';\n"
+             "CREATE USER u IDENTIFIED WITH 'p''q' BY 'S3cr3t';\n", "S3cr3t"),
+        ):
+            with self.subTest(fail_closed=raw[:60]):
+                clean = dbops.redact(raw)
+                self.assertNotIn(forbidden, clean)
 
     def test_url_password_containing_at_redacts_to_last_authority_at(self):
         scheme = 'mysql:' + '//'

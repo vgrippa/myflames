@@ -2602,6 +2602,36 @@ assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
                 self.assertNotIn("SECRET_PW", json.dumps(result))
                 self.assertEqual(conn.writes, [])
 
+    def test_export_skipped_uncovered_url_prefix_fails_closed(self):
+        fail_closed = (
+            "CREATE CACHE FROM SELECT * FROM t WHERE mysql://a:b@h OR http://u:S3cr3t'x@h OR c = 'p' OR d = 'q",
+            "CREATE CACHE FROM SELECT * FROM t WHERE mysql://a:b OR http://u:S3cr3t'x@h OR c = 'p' OR d = 'q",
+            "CREATE CACHE FROM SELECT * FROM t WHERE /* http://h1:80 http://u:S3cr3t*/@h */ 1 = 1",
+        )
+        for sql in fail_closed:
+            with self.subTest(fail_closed=sql):
+                output, changed = readyset._redact_export_sql(sql, "PW")
+                self.assertEqual((output, changed), (readyset._EXPORT_AMBIGUOUS_COMMENT, True))
+                self.assertNotIn("S3cr3t", output)
+                conn = FakeCacheExport()
+                conn.password = "PW"
+                conn.definition = sql + ";"
+                result = readyset.export_caches(conn)
+                self.assertEqual(result["caches"][0]["statement"], readyset._EXPORT_AMBIGUOUS_COMMENT)
+                self.assertNotIn("S3cr3t", json.dumps(result))
+                self.assertEqual(conn.writes, [])
+        # A skipped prefix strictly inside a yielded URL span, or a URL inside a
+        # backticked identifier after a code URL, stays inline redacted.
+        preserved = (
+            ("CREATE CACHE FROM SELECT * FROM t WHERE u = 'mysql://a:b@h http://u:p@h'",
+             "CREATE CACHE FROM SELECT * FROM t WHERE u = 'mysql://a:[redacted]@h'"),
+            ("CREATE CACHE FROM SELECT * FROM t WHERE mysql://a:b@h AND `mysql://u:p@h` = 1",
+             "CREATE CACHE FROM SELECT * FROM t WHERE mysql://a:[redacted]@h AND `mysql://u:p@h` = 1"),
+        )
+        for sql, expected in preserved:
+            with self.subTest(preserved=sql):
+                self.assertEqual(readyset._redact_export_sql(sql, "PW"), (expected, True))
+
     def test_export_url_redaction_scales_linearly_to_1mb(self):
         # 256 KB and 1 MB definitions with many URLs must scale linearly
         # (under 5x per 4x input size) and keep their redacted export.

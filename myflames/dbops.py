@@ -3528,7 +3528,7 @@ _STRING_NO_BACKSLASH = r"""(?:'(?:''|[^'])*(?:'|\Z)|"(?:""|[^"])*(?:"|\Z))"""
 # even where that credential clause would reject their spelling on a server.
 # Escaped openers belong to dynamic SQL and need its enclosing-string end.
 _SECRET_VALUE = (
-    r"(?:(?:(?<![\w])_[\w]+\s+)?0[xb][\w]+"
+    r"(?:(?:(?<![\w])_[\w]+\s+)?(?:0x[0-9a-fA-F]+|0b[01]+)\b"
     r"|(?:(?<![\w])_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)?(?:" + _STRING + r"|\\['\"]))"
     r"(?:\s+COLLATE\s+(?:`[^`]*`|[\w]+))?")
 _SECRET_VALUE_OPENER = re.compile(
@@ -3576,26 +3576,99 @@ _SECRET_CONCAT_PREFIX = re.compile(
     r"(?:\A|;)\s*SET\s+@[\w$]+\s*(?::=|=)\s*CONCAT\s*\(\s*\Z", re.I)
 _SECRET_CONCAT_QUOTE = re.compile(
     r"\s*,\s*QUOTE\s*\(\s*@[\w$]+\s*\)\s*\)(?=\s*(?:;|\Z))", re.I)
-_SECRET_PATTERNS = tuple(re.compile(p + "(?P<secret>" + _SECRET_VALUE + ")", re.I | re.S) for p in (
-    # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
-    # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
-    r"(\bIDENTIFIED\s+(?:WITH\s+(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s+)?(?:BY|AS)\s+(?:PASSWORD\s+)?)",
-    # MariaDB IDENTIFIED VIA plugin USING 'x' or USING PASSWORD('x').
-    r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
-    # PASSWORD('x'), OLD_PASSWORD('x').
-    r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
-    # Skip quoted account names before recognizing an assignment. Otherwise
-    # the b in FOR 'a=b'@'%' could be mistaken for an introduced bit literal.
-    # Lock each quoted token to its greedy reading before repeating it.
-    # Otherwise 'a''a' can split into one string or two, causing exponential
-    # retries when '=' is absent. Lookahead plus a backreference is the
-    # Python 3.7-compatible equivalent of an atomic group.
-    r"(\bSET\s+PASSWORD\b(?:(?=(?P<account>" + _STRING +
-    r"|`(?:``|[^`])*(?:`|\Z)))(?P=account)|[^=;'\"`]){0,512}=\s*)",
-    # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
-    # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
-    r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
-)) + (
+_SET_PASSWORD_KEYWORD = re.compile(r"\bSET\s+PASSWORD\b", re.I)
+
+
+class _SetPasswordMatch:
+    """Minimal re.Match-compatible result for the character-bounded SET PASSWORD scan."""
+    __slots__ = ('_start', '_secret_start', '_end')
+
+    def __init__(self, start, secret_start, end):
+        self._start = start
+        self._secret_start = secret_start
+        self._end = end
+
+    def start(self, group=0):
+        if group == 'secret':
+            return self._secret_start
+        if group == 0:
+            return self._start
+        raise IndexError(group)
+
+    def end(self):
+        return self._end
+
+
+class _BoundedSetPasswordPattern:
+    """Character-bounded SET PASSWORD prefix scan (512 chars max before '=').
+
+    Skips closed quoted account tokens (for example FOR 'a=b'@'%') so '=' inside
+    a quoted account name never ends the prefix early, while bounding the total
+    account walk to 512 characters rather than 512 tokens and refusing a bare
+    backslash before a quote in backslash-escape mode so repeated malformed
+    prefixes stay strictly linear.
+    """
+    __slots__ = ('pattern', 'flags', '_account', '_tail')
+
+    def __init__(self, backslash_escapes=True):
+        if backslash_escapes:
+            account_quoted = (
+                r"'(?:''|\\[\s\S]|[^'\\])*'|\"(?:\"\"|\\[\s\S]|[^\"\\])*\"|`(?:``|[^`])*`")
+            unquoted = r"\\(?!['\"])|[^=;'\"`\\]"
+            secret_value = _SECRET_VALUE
+        else:
+            account_quoted = r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`"
+            unquoted = r"[^=;'\"`]"
+            secret_value = (_SECRET_VALUE.replace(_STRING, _STRING_NO_BACKSLASH)
+                            .replace(r"|\\['\"]", ''))
+        account_expr = (
+            r"(?:(?=(?P<account>" + account_quoted + r"))(?P=account)|" + unquoted + r")*=")
+        self.flags = re.I | re.S
+        self.pattern = r"(\bSET\s+PASSWORD\b" + account_expr + r"\s*)(?P<secret>" + secret_value + r")"
+        self._account = re.compile(account_expr, re.S)
+        self._tail = re.compile(r"\s*(?P<secret>" + secret_value + r")", re.I | re.S)
+
+    def search(self, text, pos=0):
+        text_len = len(text)
+        account_match = self._account.match
+        tail_match = self._tail.match
+        kw_search = _SET_PASSWORD_KEYWORD.search
+        while pos < text_len:
+            cmd = kw_search(text, pos)
+            if cmd is None:
+                return None
+            start = cmd.end()
+            limit = min(text_len, start + 513)
+            if text.find('=', start, limit) != -1:
+                prefix = account_match(text, start, limit)
+                if prefix is not None:
+                    tail = tail_match(text, prefix.end())
+                    if tail is not None:
+                        return _SetPasswordMatch(cmd.start(), tail.start('secret'), tail.end())
+            pos = start
+        return None
+
+
+_SET_PASSWORD_BOUNDED = _BoundedSetPasswordPattern(True)
+_SET_PASSWORD_BOUNDED_NO_BACKSLASH = _BoundedSetPasswordPattern(False)
+_SECRET_PATTERNS = tuple(
+    p if isinstance(p, _BoundedSetPasswordPattern)
+    else re.compile(p + "(?P<secret>" + _SECRET_VALUE + ")", re.I | re.S)
+    for p in (
+        # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
+        # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
+        r"(\bIDENTIFIED\s+(?:WITH\s+(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s+)?(?:BY|AS)\s+(?:PASSWORD\s+)?)",
+        # MariaDB IDENTIFIED VIA plugin USING 'x' or USING PASSWORD('x').
+        r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
+        # PASSWORD('x'), OLD_PASSWORD('x').
+        r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
+        # Character-bounded account walk before recognizing an assignment.
+        _SET_PASSWORD_BOUNDED,
+        # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
+        # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
+        r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
+    )
+) + (
     _SECRET_VARIABLE_LITERAL,
     # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
     re.compile(r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)(?P<secret>" +
@@ -3609,8 +3682,10 @@ _SECRET_PATTERNS_NO_BACKSLASH = {
     # A backslash before an opener is only an escaped dynamic quote in the
     # escaping reading; treating it as an opener in the other mode invents a
     # value with no end and can consume subsequent, independent statements.
-    pattern: re.compile(pattern.pattern.replace(_STRING, _STRING_NO_BACKSLASH)
-                        .replace(r"|\\['\"]", ''), pattern.flags)
+    pattern: (_SET_PASSWORD_BOUNDED_NO_BACKSLASH
+              if pattern is _SET_PASSWORD_BOUNDED
+              else re.compile(pattern.pattern.replace(_STRING, _STRING_NO_BACKSLASH)
+                              .replace(r"|\\['\"]", ''), pattern.flags))
     for pattern in _SECRET_PATTERNS + (_SET_PASSWORD_LEGACY_LITERAL,)}
 # Each keyword is required by its corresponding pattern, independent of SQL
 # context. REPLACE must not require RANDOM: earlier substitutions supply the
@@ -3644,7 +3719,6 @@ _SET_PASSWORD_ACCOUNT_TOKEN_NO_BACKSLASH = re.compile(
     r"|(?P<quoted>'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`)"
     r"|(?P<at>@)|(?P<lp>\()|(?P<rp>\))"
     r"|(?P<word>[\w$.-]+)|(?P<bad>[\s\S])")
-_SET_PASSWORD_KEYWORD = re.compile(r"\bSET\s+PASSWORD\b", re.I)
 _SET_PASSWORD_SEPARATOR = re.compile(r"\bSET\s+PASSWORD\b|[=;]", re.I)
 _SET_PASSWORD_FROM_KEYWORD = re.compile(
     _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
@@ -3918,7 +3992,7 @@ def _may_have_secret_variables(text):
 
 def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries=True,
                            custom_boundaries=None, pass1_redacted=None,
-                           fail_closed_boundaries=False):
+                           fail_closed_boundaries=False, include_stage=False):
     """Find SET values from the shared inventory in one quote-mode reading.
 
     Top-level clauses end a value; commas and later SET statements start new
@@ -3929,6 +4003,7 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
     value_start, value_end = None, None
     in_set, depth, name_parts, awaiting_value = False, 0, None, False
     insert, value_can_end = False, False
+    stuck_351, value_no_drop = False, False
     version_tail_at = None
     tail_clean_from = len(text)
     tokens = _secret_variable_tokens(
@@ -3967,6 +4042,8 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
         restart = (word == 'SET' and in_set and depth == 0 and not awaiting_value
                    and (not name_parts or name_parts[-1].upper() != 'CHARACTER'))
         if restart:
+            if name_parts is not None:
+                stuck_351 = True
             in_set = False
             insert = False
         if depth == 0 and not in_set:
@@ -3977,8 +4054,14 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
                 insert = False
         # AS ends an INSERT SET value at its row alias. In other statements
         # it can be ambiguous secret text; keep hiding the whole value there.
+        # A clause keyword glued to a split custom delimiter starting with a
+        # word/$ character (such as WHERE$$) was one word in 3.5.1 and must let
+        # the delimiter tail check decide whether to keep hiding.
+        glued_word_delim = (
+            token.end() < len(text)
+            and (text[token.end()].isalnum() or text[token.end()] in ('_', '$')))
         clause_end = (depth == 0 and value_start is not None and value_end is not None
-                      and word in _SET_VALUE_ENDS and (word != 'AS' or
+                      and word in _SET_VALUE_ENDS and not glued_word_delim and (word != 'AS' or
                       insert and _SET_ROW_ALIAS.match(text, token.start()) and (
                           (value_can_end and _SET_ALIAS_VALUE.fullmatch(text, value_start, value_end))
                           or (pass1_redacted is not None
@@ -3987,7 +4070,7 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
                 and (restart or clause_end)):
             body = text[value_start:value_end]
             quote = body[0] if body[:1] in ("'", '"') else ''
-            yield value_start, value_end, quote
+            yield (value_start, value_end, quote, value_no_drop) if include_stage else (value_start, value_end, quote)
             value_start, value_end = None, None
             in_set, name_parts = False, None
             insert = False
@@ -3999,7 +4082,7 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
             # glued to non-whitespace / a flipped-parity doubled-quote value.
             # Memoize the earliest clean suffix so at most one regex search
             # runs per call.
-            keep_hiding = fail_closed_boundaries or (tail_at < len(text) and (
+            keep_hiding = fail_closed_boundaries or depth > 0 or (tail_at < len(text) and (
                 text[tail_at] not in _CLIENT_SPACE or
                 (value_start is not None and value_end is not None and
                  text[value_start:value_start + 2] in ("''", '""') and
@@ -4012,7 +4095,7 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
             if keep_hiding:
                 start = token.start() if value_start is None else value_start
                 quote = text[start] if value_start is not None and text[start:start + 1] in ("'", '"') else ''
-                yield start, len(text), quote
+                yield (start, len(text), quote, value_no_drop) if include_stage else (start, len(text), quote)
                 return
         if awaiting_value:
             value_start = token.start() if value not in (',', ';') else None
@@ -4038,9 +4121,14 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
             if value_start is not None:
                 body = text[value_start:value_end]
                 quote = body[0] if body[:1] in ("'", '"') else ''
-                yield value_start, value_end, quote
+                yield (value_start, value_end, quote, value_no_drop) if include_stage else (value_start, value_end, quote)
                 value_start, value_end = None, None
             if value == ';':
+                if token.lastgroup == 'delimiter':
+                    if in_set and name_parts is not None:
+                        stuck_351 = True
+                else:
+                    stuck_351 = False
                 in_set, depth = False, 0
                 insert = False
             name_parts = [] if in_set else None
@@ -4055,13 +4143,17 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
                         name_parts = name_parts[2:]
                 if sensitive(''.join(name_parts)):
                     awaiting_value = True
+                    value_no_drop = fail_closed_boundaries or stuck_351
+                stuck_351 = False
                 name_parts = None
             else:
                 name_parts.append(value)
+        elif depth == 0 and value in ('=', ':='):
+            stuck_351 = False
     if value_start is not None:
         body = text[value_start:value_end]
         quote = body[0] if body[:1] in ("'", '"') else ''
-        yield value_start, value_end, quote
+        yield (value_start, value_end, quote, value_no_drop) if include_stage else (value_start, value_end, quote)
 
 
 _QUOTE_CLOSE = {
@@ -4094,14 +4186,35 @@ _TRACKER_CONT = {
 # 3.5.1 sequential redaction stage order:
 # 0: _redact_set_password_all, 1: _redact_secret_variables,
 # 2..8: _SECRET_PATTERNS[0..6] (_REPLACE_FOLLOW matches run at stage 8).
+# _NO_DROP_FLAG marks 3.5.2-only stage-1 spans (prefix_boundaries or after
+# assignment-free SET resets) so overlaps on their closing quote fail closed
+# while still keeping stage 1 when they overlap a later-stage span.
 _REPLACE_STAGE = 8
+_NO_DROP_FLAG = 1 << 8
+_SECRET_VALUE_INTRODUCER = re.compile(r"(?:_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)", re.I)
+_AFTER_LITERAL_WS = re.compile(r"[ \t\r\n]*")
 # Valid SQL continuation immediately after the closing quote of a balanced
 # literal (used to distinguish a real literal terminator from a cut literal
 # that stole the opening quote of a following secret).
 _VALID_AFTER_LITERAL = re.compile(
-    r"[ \t\r\n]*(?:;|,|\)|\b(?:WHERE|ORDER|LIMIT|ON|AS|FOR|AND|OR|REQUIRE|WITH|"
-    r"REPLACE|RETAIN|PASSWORD|ACCOUNT|COMMENT|ATTRIBUTE|FAILED_LOGIN_ATTEMPTS|"
-    r"DEFAULT|RETURNING|USING|COLLATE|END)\b|/\*|--(?=\s|\Z)|#|\Z)",
+    r"[ \t\r\n]*(?:;|,|\)|\b(?:"
+    r"WHERE|ORDER|LIMIT|ON|AS|FOR|AND|OR|REQUIRE|WITH|REPLACE|RETAIN|"
+    r"PASSWORD|ACCOUNT|COMMENT|ATTRIBUTE|FAILED_LOGIN_ATTEMPTS|"
+    r"PASSWORD_LOCK_TIME|DISCARD\s+OLD\s+PASSWORD|"
+    r"ADD\s+[23]\s+FACTOR|MODIFY\s+[23]\s+FACTOR|"
+    r"DEFAULT_AUTH|PLUGIN_DIR|DATA\s+DIRECTORY|INDEX\s+DIRECTORY|"
+    r"ENGINE|SECONDARY_ENGINE|MAX_ROWS|MIN_ROWS|AVG_ROW_LENGTH|"
+    r"COMPRESSION|ENCRYPTION|AUTO_INCREMENT|PACK_KEYS|"
+    r"STATS_AUTO_RECALC|STATS_PERSISTENT|STATS_SAMPLE_PAGES|"
+    r"CHECKSUM|TABLE_CHECKSUM|PAGE_CHECKSUM|DELAY_KEY_WRITE|ROW_FORMAT|"
+    r"UNION|CHARACTER\s+SET|CHARSET|INSERT_METHOD|TABLESPACE|STORAGE|"
+    r"CONNECTION|KEY_BLOCK_SIZE|START\s+TRANSACTION|"
+    r"ENGINE_ATTRIBUTE|SECONDARY_ENGINE_ATTRIBUTE|AUTOEXTEND_SIZE|"
+    r"FILE_FORMAT|FILES|ALLOW_MISSING_FILES|VERIFY_KEY_CONSTRAINTS|"
+    r"STRICT_LOAD|AUTO_REFRESH|AUTO_REFRESH_SOURCE|"
+    r"TRANSACTIONAL|SEQUENCE|PARTITION\s+BY|"
+    r"DEFAULT|RETURNING|USING|COLLATE|END"
+    r")\b|/\*|\*/|--(?=\s|\Z)|#|\Z)",
     re.I)
 
 
@@ -4254,7 +4367,8 @@ def _remap_custom_boundaries(text, applied_spans, boundaries):
     return remapped
 
 
-def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False):
+def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False,
+                       allow_custom_boundaries=False):
     """Replace ordered spans, failing closed on mis-paired overlapping quotes.
 
     Returns ``(redacted_text, any_overlap, needs_followup, remapped, unquoted_redacted)``,
@@ -4276,12 +4390,16 @@ def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False
     g_first_bs = True
     g_stages = None
     g_bs_stages = None
+    g_no_drop_end = -1
     any_swallowed = False
     any_fail_eof = False
     balance_cache = {}
+    boundary_starts = None
     for start, end, quote, tag in spans:
-        stage = tag >> 1
-        bs_mode = bool(tag & 1)
+        no_drop = bool(tag & _NO_DROP_FLAG)
+        base_tag = tag & ~_NO_DROP_FLAG
+        stage = base_tag >> 1
+        bs_mode = bool(base_tag & 1)
         if start < last_end:
             group = groups[-1]
             old_start, old_end, old_quote, end_quote, swallowed, _, fail_eof = group
@@ -4312,14 +4430,19 @@ def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False
                             min((s for s, e in g_bs_stages.items() if e > start), default=None)
                             if has_backslash else earlier_stage)
                         if stage < earlier_stage or (
-                                earlier_bs_stage is not None and stage < earlier_bs_stage):
+                                earlier_bs_stage is not None and stage < earlier_bs_stage) or (
+                                start < g_no_drop_end):
                             group[6] = True
                             any_fail_eof = True
                         elif all_closing and earlier_bs_stage is not None and not (
                                 earlier_stage == 0 and stage == 0) and not (
                                 earlier_stage == 0 and stage == 5) and (
                                 closing_starts[0] == old_start
-                                or (earlier_bs_stage == 1 and start < old_end - 1)):
+                                or (earlier_bs_stage == 1 and (
+                                    start < old_end - 1
+                                    or (closing_starts[0] > old_start
+                                        and _SECRET_VALUE_INTRODUCER.fullmatch(
+                                            text, old_start, closing_starts[0]) is not None)))):
                             if True not in balance_cache:
                                 balance_cache[True] = _balanced_strings(text, True)
                             bal_kind = _is_balanced_span(
@@ -4329,16 +4452,55 @@ def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False
                                     balance_cache[False] = _balanced_strings(text, False)
                                 bal_kind = _is_balanced_span(
                                     balance_cache[False], closing_starts[1], start + 1, quote)
-                            if bal_kind and (
-                                    bal_kind == 2
-                                    or _VALID_AFTER_LITERAL.match(text, start + 1) is not None):
+                            valid_after = bal_kind and (
+                                bal_kind == 2
+                                or _VALID_AFTER_LITERAL.match(text, start + 1) is not None)
+                            if bal_kind == 1 and not valid_after:
+                                if boundary_starts is None:
+                                    if boundaries is None and allow_custom_boundaries:
+                                        boundaries = _secret_variable_boundary_plan(text)[0]
+                                    boundary_starts = frozenset(
+                                        b_start for b_start, _ in (boundaries or ()))
+                                if boundary_starts:
+                                    after_ws = _AFTER_LITERAL_WS.match(text, start + 1).end()
+                                    valid_after = after_ws in boundary_starts
+                            if valid_after:
                                 # A later (or equal) 3.5.1 stage starting on the real
-                                # closing quote of a balanced plain literal followed by
-                                # valid SQL continuation was already removed before that
-                                # stage ran in 3.5.1: drop it so valid SQL stays intact.
+                                # closing quote of a balanced plain or introduced literal
+                                # followed by a valid SQL continuation or proven custom
+                                # delimiter was already removed before that stage ran in
+                                # 3.5.1: drop it so valid SQL stays intact.
                                 continue
                 if start != old_start or end != old_end:
                     group[5] = True
+                if not group[6] and end <= old_end:
+                    # An earlier 3.5.1 stage strictly nested inside a later-stage
+                    # span ran before the outer span in 3.5.1 and could remove
+                    # separators or quotes. Fail closed when the quotes are not
+                    # cleanly balanced.
+                    earlier_stage = min(s for s, e in g_stages.items() if e > start)
+                    earlier_bs_stage = (
+                        min((s for s, e in g_bs_stages.items() if e > start), default=None)
+                        if has_backslash else earlier_stage)
+                    if stage < earlier_stage or (
+                            earlier_bs_stage is not None and stage < earlier_bs_stage):
+                        if True not in balance_cache:
+                            balance_cache[True] = _balanced_strings(text, True)
+                        old_is_lit = old_quote in ("'", '"') and text[old_start] == old_quote
+                        ok = (quote in ("'", '"')
+                              and _is_balanced_span(balance_cache[True], start, end, quote)
+                              and (not old_is_lit
+                                   or _is_balanced_span(balance_cache[True], old_start, old_end, old_quote)))
+                        if not ok and has_backslash:
+                            if False not in balance_cache:
+                                balance_cache[False] = _balanced_strings(text, False)
+                            ok = (quote in ("'", '"')
+                                  and _is_balanced_span(balance_cache[False], start, end, quote)
+                                  and (not old_is_lit
+                                       or _is_balanced_span(balance_cache[False], old_start, old_end, old_quote)))
+                        if not ok:
+                            group[6] = True
+                            any_fail_eof = True
                 if end > old_end:
                     # The later span swallowed the earlier span's closing quote.
                     if end_quote in ("'", '"'):
@@ -4373,6 +4535,8 @@ def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False
                 g_stages[stage] = end
             if bs_mode and end > g_bs_stages.get(stage, -1):
                 g_bs_stages[stage] = end
+            if no_drop and end > g_no_drop_end:
+                g_no_drop_end = end
             continue
         groups.append([start, end, quote, quote, None, False, False])
         last_end = end
@@ -4382,6 +4546,7 @@ def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False
         g_first_bs = bs_mode
         g_stages = None
         g_bs_stages = None
+        g_no_drop_end = end if no_drop else -1
 
     if any_swallowed or any_fail_eof:
         merged = []
@@ -4462,7 +4627,7 @@ def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False
     remapped = ()
     unquoted_redacted = None
     if needs_followup and parts:
-        applied = [] if (boundaries and not any_overlap and not removed_semi) else None
+        applied = [] if (boundaries and allow_custom_boundaries and not any_overlap and not removed_semi) else None
         unquoted = set()
         kept_pos = 0
         delta = 0
@@ -4635,8 +4800,6 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True, stage=None):
             followed.add(match.end())
             forced = follow_match(text, match.end())
         if not was_forced:
-            if end >= text_len:
-                break
             # Resume just inside the matched value so a keyword swallowed by an
             # unterminated or mis-framed literal is still scanned; spans are
             # sorted and unioned before rewriting.
@@ -4810,11 +4973,13 @@ def _set_password_separator_spans(text):
         elif value == '=':
             if pending:
                 literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                plain = literal is not None
                 if literal is None and _is_set_password_account(text, command_end, token.start()):
                     literal = _SET_PASSWORD_VALUE.match(text, token.end())
                 if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
                     yield literal.start(2), literal.end(2)
-                    kept = literal.end()
+                    if plain:
+                        kept = literal.end()
             pending = False
         else:
             pending, command_end = True, token.end()
@@ -4834,11 +4999,13 @@ def _set_password_keyword_spans(text):
             cursor = token.end()
             if token.group() == '=':
                 literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                plain = literal is not None
                 if literal is None and _is_set_password_account(text, command.end(), token.start()):
                     literal = _SET_PASSWORD_VALUE.match(text, token.end())
                 if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
                     yield literal.start(2), literal.end(2)
-                    cursor = literal.end()
+                    if plain:
+                        cursor = literal.end()
             break
 
 
@@ -4881,27 +5048,35 @@ def _redact_credential_pass(text, allow_custom_boundaries=True, semicolon_only=F
                       1 if text[start] in ("'", '"') else 11)
                      for start, end in spans)
         scans.append(_secret_literal_readings(text, _SET_PASSWORD_LEGACY_LITERAL, 5))
-    boundaries, prefix_boundaries = (), ()
+    boundaries, prefix_boundaries = None, ()
     if inventory:
         if custom_boundaries is not None:
             boundaries = custom_boundaries
         elif allow_custom_boundaries:
             boundaries, prefix_boundaries = _secret_variable_boundary_plan(text)
-        scans.append((start, end, quote, 3)
-                     for start, end, quote in _secret_variable_spans(
-                         text, True, allow_custom_boundaries, boundaries, pass1_redacted))
+        else:
+            boundaries = ()
+        scans.append((start, end, quote, 3 | (_NO_DROP_FLAG if no_drop else 0))
+                     for start, end, quote, no_drop in _secret_variable_spans(
+                         text, True, allow_custom_boundaries, boundaries, pass1_redacted,
+                         include_stage=True))
         if has_backslash:
-            scans.append((start, end, quote, 2)
-                         for start, end, quote in _secret_variable_spans(
-                             text, False, allow_custom_boundaries, boundaries, pass1_redacted))
+            scans.append((start, end, quote, 2 | (_NO_DROP_FLAG if no_drop else 0))
+                         for start, end, quote, no_drop in _secret_variable_spans(
+                             text, False, allow_custom_boundaries, boundaries, pass1_redacted,
+                             include_stage=True))
         if prefix_boundaries:
-            scans.append((start, end, quote, 3)
+            prefix_bs_tag = 3 | _NO_DROP_FLAG
+            prefix_nobs_tag = 2 | _NO_DROP_FLAG
+            scans.append((start, end, quote, prefix_bs_tag)
                          for start, end, quote in _secret_variable_spans(
                              text, True, False, prefix_boundaries, pass1_redacted, True))
             if has_backslash:
-                scans.append((start, end, quote, 2)
+                scans.append((start, end, quote, prefix_nobs_tag)
                              for start, end, quote in _secret_variable_spans(
                                  text, False, False, prefix_boundaries, pass1_redacted, True))
+    elif custom_boundaries is not None:
+        boundaries = custom_boundaries
     for index, (pattern, keyword) in enumerate(zip(_SECRET_PATTERNS, _SECRET_PATTERN_KEYWORDS)):
         if semicolon_only and pattern is not _SECRET_PATTERNS[3]:
             continue
@@ -4921,8 +5096,9 @@ def _redact_credential_pass(text, allow_custom_boundaries=True, semicolon_only=F
         return text, False, False, (), None
     merged = scans[0] if len(scans) == 1 else heapq.merge(*scans)
     return _redact_spans_pass(
-        text, merged, boundaries=boundaries if allow_custom_boundaries else None,
-        set_password_possible=set_password_possible)
+        text, merged, boundaries=boundaries,
+        set_password_possible=set_password_possible,
+        allow_custom_boundaries=allow_custom_boundaries)
 
 
 def redact(text, password=None, quoted=True):
