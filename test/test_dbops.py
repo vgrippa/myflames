@@ -4603,6 +4603,29 @@ class TestRedaction(unittest.TestCase):
                 clean = dbops.redact(raw)
                 self.assertNotIn(forbidden, clean)
 
+    def test_r352_balanced_backslash_reading_never_drops_credential_under_nobs(self):
+        for secret in ("Union-S3cr3t", "Default!S3cr3t", ";S3cr3t"):
+            raw = (
+                "INSERT INTO notes VALUES (1, 'don\\'t forget');\n"
+                "START REPLICA USER='repl-password' PASSWORD='" + secret + "';\n"
+                "INSERT INTO notes VALUES (2, 'it\\'s done');"
+            )
+            with self.subTest(secret=secret):
+                clean = dbops.redact(raw)
+                self.assertNotIn("S3cr3t", clean)
+                self.assertNotIn(secret, clean)
+                self.assertIn("[redacted]", clean)
+
+    def test_r352_nested_earlier_stage_in_phantom_fails_closed(self):
+        for raw in (
+            "CREATE USER 'SET PASSWORD'@localhost IDENTIFIED BY \";\" x = 'S3cr3t'",
+            "CREATE USER 'SET PASSWORD'@localhost IDENTIFIED BY \"a=b\" x = 'S3cr3t'",
+        ):
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn("S3cr3t", clean)
+                self.assertIn("[redacted]", clean)
+
     def test_url_password_containing_at_redacts_to_last_authority_at(self):
         scheme = 'mysql:' + '//'
 

@@ -4447,7 +4447,7 @@ def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False
                                 balance_cache[True] = _balanced_strings(text, True)
                             bal_kind = _is_balanced_span(
                                 balance_cache[True], closing_starts[0], start + 1, quote)
-                            if not bal_kind and has_backslash:
+                            if not bal_kind and has_backslash and balance_cache[True] is None:
                                 if False not in balance_cache:
                                     balance_cache[False] = _balanced_strings(text, False)
                                 bal_kind = _is_balanced_span(
