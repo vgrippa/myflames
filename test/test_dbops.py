@@ -321,7 +321,9 @@ class TestSplitterScaling(unittest.TestCase):
     def test_custom_boundary_semicolon_budget_fails_closed(self):
         suffix = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'value-private'//\n"
                   "SELECT 'tail-private'//")
-        raw = 'SELECT 1;\n' * 4096 + suffix
+        # Count declared custom delimiters toward the same 4,096 token budget
+        # as semicolons (suffix contributes 3 '//' tokens).
+        raw = 'SELECT 1;\n' * (4096 - suffix.count('//')) + suffix
         self.assertTrue(dbops._secret_variable_boundaries(raw))
         self.assertIn("SELECT 'tail-private'//", dbops.redact(raw))
         raw = 'SELECT 1;\n' + raw
@@ -331,6 +333,53 @@ class TestSplitterScaling(unittest.TestCase):
         self.assertNotIn('value-private', clean)
         self.assertNotIn('tail-private', clean)
         self.assertIn('[redacted]', clean)
+        # Custom-delimiter tokens alone (including quoted DELIMITER arguments)
+        # also trip the 4,096 budget and fail closed without calling the splitter.
+        for declaration in ('$$', '"$$"', "'$$'"):
+            with self.subTest(declaration=declaration):
+                body = ("DELIMITER " + declaration + "\n"
+                        "SET GLOBAL wsrep_sst_auth = 'value-private'$$\n"
+                        "SELECT 'tail-private'$$\n")
+                at_limit = body + 'SELECT 1$$\n' * (4096 - body.count('$$'))
+                self.assertEqual(at_limit.count('$$'), 4096)
+                self.assertTrue(dbops._secret_variable_boundaries(at_limit))
+                self.assertIn("SELECT 'tail-private'$$", dbops.redact(at_limit))
+                over_limit = at_limit + 'SELECT 1$$\n'
+                with mock.patch.object(dbops, 'split_statements',
+                                       side_effect=AssertionError('over-budget splitter')):
+                    self.assertEqual(dbops._secret_variable_boundaries(over_limit), [])
+                    clean_custom = dbops.redact(over_limit)
+                self.assertNotIn('value-private', clean_custom)
+                self.assertNotIn('tail-private', clean_custom)
+                self.assertIn('[redacted]', clean_custom)
+
+    def test_custom_boundary_2mib_custom_delimiter_comment_abuse_under_one_second(self):
+        # Repeating /*!99999$$ after DELIMITER $$ (unquoted or quoted) must hit
+        # the 4,096 token bound before lexing so 2 MiB stays linear and under 1 s.
+        for declaration in ('$$', '"$$"'):
+            with self.subTest(declaration=declaration):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "head = 'DELIMITER ' + %r + '\\nSELECT SLEEP(600) /* wsrep */ '\n"
+                    "unit = '/*!99999$$'\n"
+                    "text = head + unit * ((2 * 1024 * 1024 - len(head) - 3) // len(unit)) + ' */'\n"
+                    "assert dbops._secret_variable_boundaries(text) == []\n"
+                    "began = time.perf_counter()\n"
+                    "clean = dbops.redact(text)\n"
+                    "elapsed = time.perf_counter() - began\n"
+                    "assert clean == text\n"
+                    "print(elapsed)\n" % declaration)
+                try:
+                    result = subprocess.run([sys.executable, '-c', code],
+                        cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                except subprocess.TimeoutExpired:
+                    self.fail('2 MiB custom-delimiter comment probe exceeded the 5 s deadline')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                elapsed = float(result.stdout.strip())
+                print('R352_CUSTOM_DELIMITER_2MIB_TIMING declaration=%s elapsed=%.6fs' %
+                      (declaration, elapsed), flush=True)
+                self.assertLess(elapsed, 1.0)
 
     def test_custom_boundary_text_budget_fails_closed(self):
         # At the exact size limit the normal proof is still attempted.
@@ -3113,6 +3162,68 @@ class TestRedaction(unittest.TestCase):
                 clean = dbops.redact(raw)
                 self.assertNotIn('delimiter-private', clean)
                 self.assertIn('[redacted]', clean)
+
+    def test_r352_swallowed_literal_never_exposes_later_credential(self):
+        # An unterminated or mis-framed literal must not advance the scan past
+        # a later credential keyword of the same pattern.
+        cases = (
+            ("N4a cut REPLACE single quote",
+             "ALTER USER a IDENTIFIED BY 'n' REPLACE 'cut off here\n"
+             "CREATE USER b IDENTIFIED WITH caching_sha2_password BY 'S3cr3t';"),
+            ("N4b cut REPLACE double quote",
+             'ALTER USER a IDENTIFIED BY \'n\' REPLACE "trunc\n'
+             '---TRANSACTION 421\n'
+             'ALTER USER b IDENTIFIED BY "S3cr3t"'),
+            ("N4g cut REPLACE doubled quote",
+             "ALTER USER a IDENTIFIED BY 'n' REPLACE 'it''s\n"
+             "ALTER USER b IDENTIFIED BY 'S3cr3t'"),
+            ("N3a earlier SET PASSWORD account and REPLACE quote",
+             "ALTER USER 'SET PASSWORD'@'h' IDENTIFIED BY 'a' REPLACE \"b' OR '1'='1\";\n"
+             "/*!80000 SET PASSWORD FOR app = 'S3cr3t' */"),
+            ("introduced N literal cut",
+             "ALTER USER a IDENTIFIED WITH p AS N'cut ;\n"
+             "GRANT ALL ON *.* TO b IDENTIFIED BY 'S3cr3t'"),
+            ("introduced _latin1 literal cut",
+             "SELECT PASSWORD(_latin1'cut\nSELECT password('S3cr3t')"),
+            ("plain cut IDENTIFIED BY",
+             "ALTER USER a IDENTIFIED BY 'cut ;\n"
+             "GRANT ALL ON *.* TO b IDENTIFIED BY 'S3cr3t'"),
+            ("plain cut SET PASSWORD",
+             "SET PASSWORD = 'cut;\nSET PASSWORD = 'S3cr3t'"),
+            ("harmless literal ending in IDENTIFIED BY before real credential",
+             "SELECT * FROM t WHERE d = 'IDENTIFIED BY ' AND IDENTIFIED BY 'S3cr3t'"),
+            ("nested double-quoted REPLACE after cut single-quoted REPLACE",
+             "ALTER USER a IDENTIFIED BY 'n' REPLACE 'a\n"
+             "ALTER USER b IDENTIFIED BY \"x\" REPLACE \"p' REPLACE 'q' S3cr3t\""),
+        )
+        for label, raw in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+
+    def test_r352_replace_chain_100k_clauses_under_one_second(self):
+        # Walking a REPLACE chain once keeps both scans linear even on a
+        # 100,000-clause chain.
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "text = \"ALTER USER a IDENTIFIED BY 'n'\" + \" REPLACE 'x'\" * 100000\n"
+            "began = time.perf_counter()\n"
+            "clean = dbops.redact(text)\n"
+            "elapsed = time.perf_counter() - began\n"
+            "assert \"'x'\" not in clean and \"'n'\" not in clean\n"
+            "assert clean.count('[redacted]') == 100001\n"
+            "print(elapsed)\n")
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('100,000-clause REPLACE chain exceeded the 10 s deadline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        elapsed = float(result.stdout.strip())
+        print('R352_REPLACE_CHAIN_100K_TIMING elapsed=%.6fs' % elapsed, flush=True)
+        self.assertLess(elapsed, 1.0)
 
     def test_r352_nested_insert_alias_scan_stays_linear_on_400kb(self):
         # Each nested AS can match the row-alias suffix, but none can end the

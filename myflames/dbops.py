@@ -788,6 +788,7 @@ def skipped_executable_comments(sql, engine, server_version, backslash_escapes=N
 #: command in --binary-mode (client/mysql.cc find_command and
 #: is_delimiter_command compare only the first 9 characters).
 _DELIMITER_COMMAND = re.compile(r"[ \t\v\f\r]*(delimiter[^ \t\r\n\f\v]*)", re.I | re.ASCII)
+_DELIMITER_LINE = re.compile(r"^[ \t\v\f\r]*delimiter[^ \t\r\n\f\v]*", re.I | re.M | re.ASCII)
 _CLIENT_SPACE = " \t\n\r\f\v"
 _NAMED_CLIENT_COMMAND = re.compile(r"delimiter|charset|sandbox", re.I | re.ASCII)
 # Union of named commands in the supported client command tables, used only
@@ -3615,18 +3616,35 @@ def _secret_variable_boundaries(text):
     Only the shared client splitter can establish custom statement endings.
     Ignore ambiguous/unclosed units so uncertain framing still hides more.
     Both backslash readings must agree before revealing anything after it.
-    Above 2 Mi characters or 4,096 semicolons, skip these two complete
-    lexer/splitter passes: redaction also runs synchronously during editor
-    and investigation saves. Count potential endings before lexing, even
-    inside quotes/comments, to bound comment-heavy inputs whose client
-    command lookahead can revisit the remaining text at every ending.
-    Without custom endings, secret values conservatively run to the end, as
-    in 3.5.1; this can hide following SQL but cannot expose a secret tail.
-    The splitter itself stays unbounded for Query editor callers.
+    Above 2 Mi characters or 4,096 delimiter tokens (semicolons plus every
+    declared custom delimiter), skip these two complete lexer/splitter
+    passes: redaction also runs synchronously during editor and investigation
+    saves. Count potential endings before lexing, even inside quotes/comments,
+    to bound comment-heavy inputs whose client command lookahead can revisit
+    the remaining text at every ending. Without custom endings, secret values
+    conservatively run to the end, as in 3.5.1; this can hide following SQL
+    but cannot expose a secret tail. The splitter itself stays unbounded for
+    Query editor callers.
     """
-    if (len(text) > 2 * 1024 * 1024 or 'delimiter' not in text.lower()
-            or text.count(';') > 4096):
+    if len(text) > 2 * 1024 * 1024 or 'delimiter' not in text.lower():
         return []
+    total = text.count(';')
+    if total > 4096:
+        return []
+    declared = set()
+    commands = 0
+    for match in _DELIMITER_LINE.finditer(text):
+        commands += 1
+        if commands > 4096:
+            return []
+        value, _ = _delimiter_argument(text, match.end())
+        if value and '\\' not in value and value != ';' and value not in declared:
+            declared.add(value)
+            if len(declared) > 64:
+                return []
+            total += text.count(value)
+            if total > 4096:
+                return []
     readings = []
     for escapes in (True, False):
         endings = set()
@@ -3936,36 +3954,46 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
     arbitrary diagnostic must still take the conservative fallback.
     """
     follow_pattern = _REPLACE_FOLLOW if backslash_escapes else _REPLACE_FOLLOW_NO_BACKSLASH
-    strings = None
-    enclosing, context_start = None, 0
+    inventory_pattern = (pattern is _SECRET_VARIABLE_LITERAL or pattern is
+                         _SECRET_PATTERNS_NO_BACKSLASH.get(_SECRET_VARIABLE_LITERAL))
+    contexts, context_ends = None, None
+    found = []
+    followed = set()
+    bisect_right = bisect.bisect_right
+    pattern_search = pattern.search
+    follow_match = follow_pattern.match
+    text_len = len(text)
     cursor, forced = 0, None
-    while cursor < len(text):
-        match, forced = forced or pattern.search(text, cursor), None
+    while cursor < text_len:
+        was_forced = forced is not None
+        match, forced = forced or pattern_search(text, cursor), None
         if match is None:
             break
         start, end = match.start("secret"), match.end()
-        if strings is None:
-            strings = _secret_literal_contexts(text, backslash_escapes)
-            enclosing = next(strings, None)
-        while enclosing is not None and enclosing.end() <= match.start():
-            context_start = enclosing.end()
-            enclosing = next(strings, None)
-        opener = _SECRET_VALUE_OPENER.match(text, start, end)
-        escaped = opener is not None and bool(opener.group(1))
-        quote = '' if escaped else opener.group(2) if opener is not None else "'"
-        if enclosing is not None and enclosing.start() < match.start():
+        if contexts is None:
+            contexts = list(_secret_literal_contexts(text, backslash_escapes))
+            context_ends = [item.end() for item in contexts]
+        at = bisect_right(context_ends, match.start())
+        enclosing = contexts[at] if at < len(contexts) else None
+        ch = text[start]
+        if ch == "'" or ch == '"':
+            escaped, quote = False, ch
+        else:
+            opener = _SECRET_VALUE_OPENER.match(text, start, end)
+            escaped = opener is not None and bool(opener.group(1))
+            quote = '' if escaped else opener.group(2) if opener is not None else "'"
+        if enclosing is not None and enclosing.start() < match.start() and start < enclosing.end():
             outer_quote = text[enclosing.start()]
             closed = enclosing.group(enclosing.lastgroup) == outer_quote
             limit = enclosing.end() - int(closed)
             if (start == limit and closed
-                    and _SECRET_CONCAT_PREFIX.search(text, context_start, enclosing.start())
+                    and _SECRET_CONCAT_PREFIX.search(text, context_ends[at - 1] if at else 0, enclosing.start())
                     and _SECRET_CONCAT_QUOTE.match(text, enclosing.end())):
                 # Resume at the real close, not the fallback match's end:
                 # that match may have swallowed a later real assignment.
-                cursor = enclosing.end()
+                if not was_forced:
+                    cursor = enclosing.end()
                 continue
-            inventory_pattern = (pattern is _SECRET_VARIABLE_LITERAL or pattern is
-                                 _SECRET_PATTERNS_NO_BACKSLASH.get(_SECRET_VARIABLE_LITERAL))
             # Different inner/outer quotes have an unambiguous value end.
             # Keep diagnostic punctuation after it, while preserving the
             # inventory fallback's older conservative enclosing-string rule.
@@ -3976,16 +4004,24 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
         if escaped and end == match.end():
             # An escaped opener without a known enclosing string has no
             # trustworthy end. Never leave its trailing value visible.
-            end = len(text)
-        yield start, end, quote
-        if end < len(text):
+            end = text_len
+        found.append((start, end, quote))
+        if end < text_len and match.end() not in followed:
             # Capture a following REPLACE literal in the original text before
             # merged spans from another quote reading can cover its keyword,
-            # and run it through the same enclosing-string rule on the next step.
-            forced = follow_pattern.match(text, match.end())
-        # Resume at match.end() after an extension so a later assignment whose
-        # name fell inside an extended false enclosing string is still scanned.
-        cursor = match.end() if end > match.end() and end < len(text) else end
+            # and walk each follow position only once so keywords re-found
+            # inside an already followed literal cannot restart a chain.
+            followed.add(match.end())
+            forced = follow_match(text, match.end())
+        if not was_forced:
+            if end >= text_len:
+                break
+            # Resume just inside the matched value so a keyword swallowed by an
+            # unterminated or mis-framed literal is still scanned; spans are
+            # sorted and unioned before rewriting.
+            cursor = start + 1
+    found.sort()
+    return iter(found)
 
 
 def _secret_literal_readings(text, pattern):
