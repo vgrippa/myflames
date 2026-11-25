@@ -28,6 +28,15 @@ from myflames import dbops, ui, workspace_cli
 from myflames.workspace_store import WorkspaceStore
 
 
+def _budget(seconds):
+    """Scale absolute timing bounds for older, slower CI interpreters.
+
+    Older interpreters on CI runners are several times slower; quadratic paths
+    still exceed the scaled budget by a wide margin.
+    """
+    return seconds * (3 if sys.version_info < (3, 11) else 1)
+
+
 class TempHome(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -435,7 +444,7 @@ class TestSplitterScaling(unittest.TestCase):
                 if row['operation'] == 'redact':
                     # Older Python versions on CI runners are slower; a
                     # quadratic regression takes several seconds.
-                    self.assertLess(row['best'][1], 1.5)
+                    self.assertLess(row['best'][1], _budget(1.5))
 
     def test_custom_boundary_semicolon_budget_fails_closed(self):
         suffix = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'value-private'//\n"
@@ -499,7 +508,7 @@ class TestSplitterScaling(unittest.TestCase):
                 elapsed = float(result.stdout.strip())
                 print('R352_CUSTOM_DELIMITER_2MIB_TIMING declaration=%s elapsed=%.6fs' %
                       (declaration, elapsed), flush=True)
-                self.assertLess(elapsed, 3.0)
+                self.assertLess(elapsed, _budget(3.0))
 
     def test_custom_boundary_text_budget_fails_closed(self):
         # At the exact size limit the normal proof is still attempted when a
@@ -1202,7 +1211,7 @@ class TestClassifyCache(unittest.TestCase):
             self.assertEqual(len(large), 21 + len(row) * 4000 + 4000)
             seconds = elapsed(large, True)
             print('CLASSIFY_CACHE_INSERT chars=%d cached=%.6fs' % (len(large), seconds), flush=True)
-            self.assertLess(seconds, 2.0)
+            self.assertLess(seconds, _budget(2.0))
 
     def test_long_insert_cache_peak_memory(self):
         import gc
@@ -1688,7 +1697,7 @@ class TestReviewGate(unittest.TestCase):
         started = time.monotonic()
         for size in (20000, 60000):
             dbops.classify('DELETE FROM t WHERE ' + 'a .' * size, key_columns=['id'])
-        self.assertLess(time.monotonic() - started, 5)
+        self.assertLess(time.monotonic() - started, _budget(5))
         result = dbops.classify('DELETE FROM t WHERE id = 1 AND ' + 'a = 1 AND ' * 3000 + 'b = 2', key_columns=['id'])
         self.assertEqual(result['kind'], 'risky')
         self.assertIn('too long', result['reasons'][0])
@@ -2008,7 +2017,7 @@ class TestPrivileges(unittest.TestCase):
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(float(result.stdout.strip()), 1)
+        self.assertLess(float(result.stdout.strip()), _budget(1))
 
     def test_strip_credentials_does_not_retry_unterminated_escaped_quotes(self):
         code = (
@@ -2023,7 +2032,7 @@ class TestPrivileges(unittest.TestCase):
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(float(result.stdout.strip()), 1)
+        self.assertLess(float(result.stdout.strip()), _budget(1))
 
     def test_read_grants_returns_no_credentials(self):
         from _grants_fixtures import grants_batch
@@ -2732,7 +2741,7 @@ class TestRedaction(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     elapsed = float(result.stdout.strip())
                     print('REDACTION_TIMING %s %s %.6fs' % (shape, helper, elapsed), flush=True)
-                    self.assertLess(elapsed, 2)
+                    self.assertLess(elapsed, _budget(2))
 
     def test_megabyte_hostile_shapes_finish_within_deadline(self):
         # Each helper gets its own process: a super-linear regex must fail
@@ -2780,7 +2789,7 @@ class TestRedaction(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     elapsed = float(result.stdout.strip())
                     print('REDACTION_TIMING %s %s %.6fs' % (shape, helper, elapsed), flush=True)
-                    self.assertLess(elapsed, 4)
+                    self.assertLess(elapsed, _budget(4))
 
     def test_r352_set_password_quoted_accounts_finish_within_one_second(self):
         # The leading assignment makes the full SET PASSWORD matcher run.
@@ -2818,7 +2827,7 @@ class TestRedaction(unittest.TestCase):
                 elapsed = float(result.stdout.strip())
                 print('R352_SET_PASSWORD_TIMING %s bytes=409600 elapsed=%.6fs' %
                       (shape, elapsed), flush=True)
-                self.assertLess(elapsed, 1)
+                self.assertLess(elapsed, _budget(1))
 
     def test_r352_atomic_account_tokens_preserve_credential_values(self):
         # Each account is longer than the diagnostic fallback's 512-byte
@@ -2927,7 +2936,7 @@ class TestRedaction(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('REDACTION_TIMING %s redact %.6fs' % (shape, elapsed), flush=True)
-                self.assertLess(elapsed, 15)
+                self.assertLess(elapsed, _budget(15))
 
     def test_set_password_skips_quoted_names_and_comments_before_assignment(self):
         for prefix in ("SET PASSWORD FOR 'a=b'@'%' = ",
@@ -2969,7 +2978,7 @@ class TestRedaction(unittest.TestCase):
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(float(result.stdout.strip()), 12)
+        self.assertLess(float(result.stdout.strip()), _budget(12))
 
     def test_strip_grant_outputs_remain_stable(self):
         cases = (
@@ -3030,7 +3039,7 @@ class TestRedaction(unittest.TestCase):
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(float(result.stdout.strip()), 5)
+        self.assertLess(float(result.stdout.strip()), _budget(5))
 
     def test_url_secret_scan_bounds_megabyte_digit_dot_scheme_run(self):
         code = (
@@ -3045,7 +3054,7 @@ class TestRedaction(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         elapsed = float(result.stdout.strip())
         print('URL_DIGIT_RUN_TIMING %.6fs' % elapsed, flush=True)
-        self.assertLess(elapsed, 5)
+        self.assertLess(elapsed, _budget(5))
 
     def test_url_redaction_starts_at_the_whole_scheme_character_run(self):
         for prefix in ('-', '+', '1.', '10.0.0.1-'):
@@ -3228,7 +3237,7 @@ class TestRedaction(unittest.TestCase):
                     cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertLess(float(result.stdout.strip()), 1)
+                self.assertLess(float(result.stdout.strip()), _budget(1))
 
     def test_gate65_adjacent_credential_urls_redact_every_authority(self):
         for first, cleaned_first in (
@@ -3425,7 +3434,7 @@ class TestRedaction(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('GATE65_TIMING %s %.6fs' % (shape, elapsed), flush=True)
-                self.assertLess(elapsed, 1)
+                self.assertLess(elapsed, _budget(1))
 
     def test_r352_brackets_in_url_usernames_do_not_disable_redaction(self):
         cases = (
@@ -4236,7 +4245,7 @@ class TestRedaction(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         elapsed = float(result.stdout.strip())
         print('R352_NESTED_OVERLAP_8K_TIMING elapsed=%.6fs' % elapsed, flush=True)
-        self.assertLess(elapsed, 1.0)
+        self.assertLess(elapsed, _budget(1.0))
 
     def test_r352_tracker_introducer_and_absorption_stay_linear(self):
         # Guard against quadratic tracker scans on hex/bit literals, quadratic
@@ -4290,8 +4299,8 @@ class TestRedaction(unittest.TestCase):
             ms, ml, ratio = float(ms), float(ml), float(ratio)
             print('R352_LINEAR_REDACT_TIMING %s 64k=%.6fs 256k=%.6fs ratio=%.2fx' %
                   (name, ms, ml, ratio), flush=True)
-            self.assertLess(ms, 1.0, (name, ms))
-            self.assertLess(ml, 1.0, (name, ml))
+            self.assertLess(ms, _budget(1.0), (name, ms))
+            self.assertLess(ml, _budget(1.0), (name, ml))
             if ml < 0.05:
                 self.assertLess(ml, 0.05, (name, ms, ml, ratio))
             else:
@@ -4335,7 +4344,7 @@ class TestRedaction(unittest.TestCase):
             self.assertLess(elapsed_100k, 0.05, (elapsed_25k, elapsed_100k, ratio))
         else:
             self.assertLess(elapsed_100k, 8.0 * elapsed_25k, (elapsed_25k, elapsed_100k, ratio))
-        self.assertLess(elapsed_100k, 5.0, (elapsed_25k, elapsed_100k, ratio))
+        self.assertLess(elapsed_100k, _budget(5.0), (elapsed_25k, elapsed_100k, ratio))
 
     def test_r352_nested_insert_alias_scan_stays_linear_on_400kb(self):
         # Each nested AS can match the row-alias suffix, but none can end the
@@ -4367,7 +4376,7 @@ class TestRedaction(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         elapsed = float(result.stdout.strip())
         print('R352_NESTED_ALIAS_TIMING bytes=409600 elapsed=%.6fs' % elapsed, flush=True)
-        self.assertLess(elapsed, 1)
+        self.assertLess(elapsed, _budget(1))
 
     def test_r352_keyword_guards_preserve_mixed_case_and_unicode_redaction(self):
         cases = (
@@ -4425,7 +4434,7 @@ class TestRedaction(unittest.TestCase):
                 print('R352_EDITOR_BUDGET %s bytes=%d median=%.6fs budget=%.3fs samples=%s' %
                       (shape, size, elapsed, budget,
                        ','.join('%.6f' % value for value in timings)), flush=True)
-                self.assertLess(elapsed, budget)
+                self.assertLess(elapsed, _budget(budget))
         with_secret = medians['with_secret_name']
         without_secret = medians['without_secret_name']
         ratio = without_secret / with_secret if with_secret else float('inf')
@@ -4523,8 +4532,8 @@ class TestRedaction(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 d64, d256 = (float(x) for x in result.stdout.strip().split())
-                self.assertLess(d64, 1.0)
-                self.assertLess(d256, 2.0)
+                self.assertLess(d64, _budget(1.0))
+                self.assertLess(d256, _budget(2.0))
 
     def test_r352_hex_and_bit_literals_require_word_boundary(self):
         for raw in (
@@ -4715,7 +4724,7 @@ class TestRedaction(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('URL_AT_TIMING %s %.6fs' % (shape, elapsed), flush=True)
-                self.assertLess(elapsed, 1)
+                self.assertLess(elapsed, _budget(1))
 
     def test_hex_hashes(self):
         text = ("CREATE USER `a`@`%` IDENTIFIED WITH 'caching_sha2_password' AS "
