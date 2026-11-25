@@ -195,4 +195,4 @@ What you see: the cache is created and appears on the **Caches** tab with its ty
 Good to know:
 
 - The support check runs EXPLAIN CREATE CACHE as a dry run; when one cache type is unsupported the sheet says why and pre-selects the other.
-- A new cache whose query collides with an existing cache replaces it; the sheet names the collision before you confirm. The **Caches** tab's **Export SQL** exports the cache definitions as DDL; exports with non-ASCII cache or database names start with a `charset utf8mb4` line, so import them with the `mysql` or `mariadb` client.
+- A new cache whose query collides with an existing cache replaces it; the sheet names the collision before you confirm. The **Caches** tab's **Export SQL** exports the cache definitions as DDL; exports start with a `charset utf8mb4` line when runnable SQL or an emitted `USE` statement contains a non-ASCII character immediately before a backtick or backslash, so import them with the `mysql` or `mariadb` client.

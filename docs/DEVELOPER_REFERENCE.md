@@ -368,9 +368,9 @@ Failures and timeouts are not retained, and a file replaced or changed during or
 after its probe (`_probe_key` mismatch) is not cached. Concurrent probes of one
 identity share a flight, including its failure (if an owning caller stops via
 `stop` or `CancelledRead`, unrelated waiters retry rather than inheriting the
-cancellation); child processes run outside the cache lock. Cancellation checks
-(`read_cancel.check()`, `stop`) run between candidates in `snapshot` and
-`discover` and before each probe; with `stop` or `read_cancel.current()`
+cancellation); child processes run outside the cache lock. `snapshot` checks `read_cancel.check()` before scanning and between candidates,
+while `discover` checks `read_cancel.check()` and the explicit `stop` event
+before calling `snapshot`, between returned candidates and before each probe; with `stop` or `read_cancel.current()`
 (combining both in `ProbeCancellation` when both are present, with
 `read_cancel.check()` taking precedence on cleanup), `probe` runs
 `connector._run_bounded(..., kill_tree=True)` so stopping or cancelling a read
@@ -718,9 +718,10 @@ the Settings gear included, so the state survives the menu closing, and
 `UpdateBadge` shows the spinner on the 720 px icon rail as well) until the
 dialog is open, and a chunk that cannot be read keeps the dialog closed and
 leaves a dismissible error with **Retry** (`UpdateOpenError`) at the launching
-control instead of the generic lazy-load failure. Each **Retry** loads a fresh
-cache-busted `?open-retry` variant (`retryUpdateDialog` in `updateStatus.ts`, so
-repeated failures past the second attempt still retry afresh); **Dismiss**
+control instead of the generic lazy-load failure. The first four **Retry** attempts each load a separate
+cache-busted `?open-retry` variant (`retryUpdateDialog` in `updateStatus.ts`),
+while later attempts reuse the fourth variant and may require reloading the
+window; **Dismiss**
 returns focus to the launching control, and a failed **Retry** keeps focus on
 **Retry**. `UpdateOpenError` and `useMinuteClock` live in `UpdateBadge.tsx` so
 `UpdateCheck.tsx` stays out of the entry chunk.
@@ -1717,16 +1718,17 @@ in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
 connections, the investigation notebook, `ClientMissingNotice` (`CLIENT_HINT`)
 and the shared kit (about 451 KB, `451,196` bytes, down from `499,503` bytes in
 3.5.1 and 1.1 MB before the original split, after moving `CommandPalette`,
-`ClientToolsDialog`, the `accountsApi` runtime code, `sqlHighlight`, the shared
-database catalog cache (`schemaCatalog.ts`), `example.json`, `UpdateCheck`
-controls (`UpdateOpenError` / `useMinuteClock` moved into `UpdateBadge.tsx`)
-and the `readiness` module behind lazy chunks). `CommandPalette` warms on
+`ClientToolsDialog`, the `accountsApi` runtime code, `example.json`,
+`UpdateCheck` controls (`UpdateOpenError` / `useMinuteClock` moved into
+`UpdateBadge.tsx`) and the `readiness` module behind lazy chunks; the shell
+still statically imports `sqlHighlight` and the shared database catalog cache
+in `schemaCatalog.ts`). `CommandPalette` warms on
 toolbar hover/focus and loads in `preloadWhenIdle`; `ClientToolsDialog` warms on
 hover/focus of **Choose client tools…**; `ReadinessFacts` (`readiness.tsx`)
 preloads beside the first screen while `checkReadiness` and `copyReadiness` load
 on demand; `privileges.ts` keeps `/api/live/privileges` inline so
 `accountsApi.ts` loads only with `Accounts` (other shell/Server callers import
-types only); and `sqlHighlight` / `example.json` import dynamically on demand. Other places and views load their own chunk the
+types only); and `example.json` imports dynamically on demand. Other places and views load their own chunk the
 first time they mount, through `lazyComponent` in `src/lazy.tsx` (React.lazy
 with its own Suspense boundary; the fallback shows nothing for 300 ms, then one
 "Loading…" line, and a chunk that cannot be read shows "This part of the
@@ -1918,13 +1920,15 @@ writing; malformed-field exceptions (`TypeError`, `KeyError`, `AttributeError`,
 others: `"Could not complete the request. Try again or use the CLI."`) and log
 a redacted traceback; any other unexpected exception answers HTTP `500` with
 that neutral sentence and logs a redacted traceback. `ui._log_unexpected_error`
-strips `ui._secret_values(payload, store)` (any request key containing
-`password` or equal to `secret`, saved passwords of connections naming
+strips `ui._secret_values(payload, store)` (non-empty string values under any
+request key containing `password` or equal to `secret` through nesting depth
+12, saved passwords of connections naming
 `profile_id` without a password, and saved member passwords of an explicitly
-named `group_name`, in raw, `repr()` and JSON-escaped forms), then runs
-`dbops.redact` over the complete traceback to hide SQL and URL credentials
-absent from the request payload, and truncates the logged traceback at 64 KiB
-(`64 * 1024` characters, appending `"\n[traceback truncated]\n"`). Tests:
+named `group_name`, in raw, `repr()` and JSON-escaped forms), followed by
+`dbops.redact` over the complete traceback to hide recognized SQL and URL credentials
+absent from the request payload, and caps the logged traceback at 65,536
+characters (`64 * 1024`) before the truncation marker
+(`"\n[traceback truncated]\n"`) and log prefix. Tests:
 `test/test_ui.py`
 (`test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr`,
 `test_unexpected_error_log_redacts_every_password_form`) and
@@ -1946,9 +1950,9 @@ Read-only workspace endpoints in `ui._CANCELLABLE_READ_PATHS` (`_SERVER_VIEW_PAT
 all writes never take this path) run inside `myflames/read_cancel.py` under
 `WorkspaceHandler._cancellable_read`. After reading the complete request body,
 the handler installs a non-blocking watcher thread (`myflames-read-disconnect`)
-using the platform selector (`selectors.DefaultSelector`, i.e., `kqueue` or
-`epoll`, never `select()`, avoiding `FD_SETSIZE` limits when many clients are
-open). Every `0.1` s it checks readability and peeks the socket with
+using `selectors.DefaultSelector` (normally `kqueue` on macOS or `epoll` on
+Linux, avoiding `FD_SETSIZE` limits when many clients are open, with the
+platform's available selector on Windows). Every `0.1` s it checks readability and peeks the socket with
 `recv(1, socket.MSG_PEEK)` (never consuming pipelined bytes). An EOF (including
 a TCP write half-close, which the workspace client never uses) sets the
 cancellation event; a watcher `OSError` or `ValueError` returns without
@@ -3898,29 +3902,51 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `1231` errors, `redact` collects all credential, `SET PASSWORD`, and `SET`
   secret-variable spans against the same original text under both
   `NO_BACKSLASH_ESCAPES` interpretations (escapes on and off whenever `\` is
-  present) and merges them (`_redact_spans`) before replacing anything, so
-  substitutions in one reading never mask assignments or shift boundaries in
-  the other. It removes literals after IDENTIFIED BY / AS / USING,
+  present) and merges them (`_redact_spans` / `_redact_spans_pass`) before
+  replacing anything, so substitutions in one reading never mask assignments or
+  shift boundaries in the other. When overlapping spans disagree on quote
+  boundaries (`_redact_spans_pass`), a later overlapping span that starts right
+  on an earlier string's closing quote proves quote-parity breakage and fails
+  closed through the end of the text, while a later overlapping span that
+  swallows an earlier span's closing quote extends to that closing quote under
+  both backslash readings (`_extend_swallowed_quote`), or to the end of the
+  text. When a pass merges non-identical overlapping spans or removes a
+  semicolon inside a redacted span, `redact` runs one bounded follow-up
+  credential pass (`_redact_credential_pass` with
+  `allow_custom_boundaries=False` and `semicolon_only=not overlapped`) without
+  reopening custom delimiter boundaries, so secrets exposed only after a
+  mis-paired overlap or redacted semicolon collapsed intervening SQL are still
+  hidden. It removes literals after IDENTIFIED BY / AS / USING,
   PASSWORD(...), SET PASSWORD (locking each quoted account token with
   lookahead+backreference `(?=(?P<account>...))(?P=account)` so malformed
   statements without `=` cannot backtrack exponentially), `*PASSWORD = '...'`
   (SOURCE_PASSWORD, MASTER_PASSWORD, START REPLICA PASSWORD, CREATE SERVER
   OPTIONS), REPLACE '...' immediately after a redacted credential (`_REPLACE_FOLLOW`,
-  preserving its arm across quoted account names and comments), and hex/bit/national/charset-introducer
+  preserving its arm across quoted account names and comments, and walking each
+  `match.end()` follow-up position at most once in `_secret_literal_spans` so
+  keywords re-found inside an already followed literal cannot restart a chain),
+  and hex/bit/national/charset-introducer
   credential values (`X'..'`, `0x..`, `0b..`, `N'..'`, `_charset'..'`, plus
-  optional `COLLATE` and escaped `\'`/`\"` openers). Because the credential-clause
+  charset-introduced hex and bit literals `_charset 0x..`, `_charset 0b..`,
+  `_charset X'..'`, `_charset B'..'`, optional `COLLATE` and escaped `\'`/`\"`
+  openers). Because the credential-clause
   scanner rewrite was reverted (`1b94b68f`), credential clauses require
   whitespace between the keyword and value (known limit: forms with a comment
   or no whitespace such as `IDENTIFIED BY'x'` or `IDENTIFIED BY /* c */ 'x'`,
-  and MariaDB `IDENTIFIED VIA ... USING`/`AS` chains, can still remain
-  unredacted as in 3.5.1). Inside dynamic SQL strings
+  MariaDB `IDENTIFIED VIA ... USING`/`AS` chains, and server error echoes that
+  start inside a secret such as `ERROR 1064 ... near '<tail of the secret>'`
+  can still remain unredacted as in 3.5.1). Inside dynamic SQL strings
   (`_secret_literal_contexts`), credential clauses and dynamic secret-variable
   assignments extend through the closing delimiter of the enclosing string; quotes
   inside ordinary block/line comments or backtick identifiers stay bounded so
   prose apostrophes cannot open false strings (while executable comments stay
   transparent and `SET @q = CONCAT(..., QUOTE(@pw))` stays intact), distinct
-  inner/outer quotes keep their own end cleanly, and scanning resumes at
-  `match.end()` after an extension so later secret assignments stay covered.
+  inner/outer quotes keep their own end cleanly, an escaped opener without a
+  known enclosing string fails closed to the end of the text, and after a
+  non-forced match `_secret_literal_spans` resumes at `start + 1` (just inside
+  the matched value) so a credential keyword swallowed by a cut-off,
+  unterminated or mis-framed literal is still scanned before spans are sorted
+  and unioned.
   It also removes URL user-info passwords, including embedded `@` and malformed
   slash-bearing passwords: only a valid bracketed IPv6 literal (`_URL_IPV6_HOST`)
   directly after `://` turns the colon into a host colon (so `[` inside a user
@@ -3949,15 +3975,21 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   unambiguous value shape in an `INSERT` row alias `_SET_ROW_ALIAS`) so
   following clauses survive in stored SQL. Custom `DELIMITER` boundaries come
   from `split_statements` only where both backslash readings agree on
-  unambiguous units (`_secret_variable_boundaries` skips custom-delimiter
-  parsing above 2 MiB (`2 * 1024 * 1024` characters) or 4,096 semicolons, or
-  when `'delimiter'` is absent, hiding secret values to the end as in 3.5.1
-  while `split_statements` itself stays unbounded for Query editor callers);
+  unambiguous units, walking units in reverse and keeping a custom boundary only
+  after the last unit with an issue or unclosed state (`_secret_variable_boundaries`
+  skips custom-delimiter parsing above 2,097,152 characters (`2 * 1024 * 1024`),
+  when `'delimiter'` is absent, or above 4,096 delimiter lines, 64 distinct
+  declared custom delimiters, or 4,096 total delimiter tokens counting
+  semicolons plus every declared custom delimiter, hiding secret values to the
+  end as in 3.5.1 while `split_statements` itself stays unbounded for Query
+  editor callers);
   even with a valid custom `DELIMITER`, `_secret_variable_spans` keeps hiding
   through the end of text (as in 3.5.1) when the delimiter is followed by
-  non-whitespace, a doubled-quote parity flip, or remaining text containing a
-  credential keyword (`IDENTIFIED`, `USING`, `REPLACE`, `PASSWORD`) or a
-  `_SECRET_VARIABLES` name (`_DELIMITER_TAIL_CREDENTIAL`). A new top-level
+  non-whitespace, a doubled-quote parity flip, or remaining text matching
+  `_DELIMITER_TAIL_CREDENTIAL`: a credential keyword (`IDENTIFIED`, `USING`,
+  `REPLACE`, `PASSWORD`), a `_SECRET_VARIABLES` name, a URL scheme (`://`), or
+  a client error echo (`\bERROR\s+\d{3,5}\b`), including keywords and variable
+  names immediately after escaped whitespace (`\n`, `\r`, `\t`, `\f`, `\v`). A new top-level
   `SET` after an assignment starts fresh
   even without a semicolon unless it is the `SET` of `CHARACTER SET`. A
   context-free inventory pattern also hides quoted and encoded literals after
@@ -7073,7 +7105,7 @@ Backend `myflames/replication.py` (contract and evidence: the replication skill 
 - `python3 -m myflames replication skip --channel NAME [--yes] [--json] [-o PATH] [-q]`: policy from `--profile` before any prompt or connection, plan and drift warning on stderr, `[y/N]`, non-TTY needs `--yes`. Exit 0 skipped, 1 a sent skip was denied, failed or was not verified, 2 an unsent refusal, decline, bad input or connection failure. `--channel ''` is the default channel.
 - `SkipLoop` (`replication-skip-loop-1.0`): selected error codes only (none preselected), `max_skips` 1 to 1000 (CLI default 10), optional duration, check interval 1 to 60 s with the wait doubling per consecutive skip up to 60 s. Stops at once (`STOP_REASONS`, `needs_attention`): user stop (wakes a waiting loop), cap, duration, an unselected error, the same transaction failing again, the applier stopped without an error, channel gone or now Group Replication, source host/port/UUID, gtid_mode, AGAT or skip method changed, Uptime went down or the boot-time interval estimated from Uptime and the monotonic clock changed, lost connection, a refused, denied or failed skip. Receiver reconnect monitoring is optional at startup: readable, enabled stage counters capture an epoch and a changed epoch stops with `receiver_reconnected`. If those counters become disabled, absent or unreadable after being enabled, stop with `receiver_unverified`; never silently drop an active guard. When instrumentation is off, absent or denied at startup, or Performance Schema is off, the loop runs with the other guards and keeps reconnect monitoring off for that run. Loop snapshots carry `receiver_guard` (`"on"` or `"off"`), `receiver_guard_reason` (string or null), `receiver_guard_instrument` (exact stage name, null before the engine is known), and `receiver_guard_note` (coverage and enable guidance). `Start` reads the initial receiver identity on the loop's own connection before returning, bounded by the existing connection/query timeouts, so its first snapshot already reports actual coverage and the instrument; pending initialization is never reported as disabled instrumentation. `receiver_guard_plan(conn, report)` reads this coverage for a confirmation without changing instrumentation; the workspace replication response includes these fields at the report level and on each `skip_plan`. The confirmation and running status should display the note and reason. Echo `receiver_guard` to `skip-loop/start`: `"on"` requires coverage from the first loop read, so losing it after confirmation also stops. `replication_receiver` in Instruments maps `events_stages_summary_by_thread_by_event_name`, `threads`, `global_instrumentation`, `thread_instrumentation` and the engine-specific `stage/sql/Checking source version` (MySQL) or `stage/sql/Checking master version` (MariaDB). Both stages are off by default; counts suffice without timing, and receiver background threads do not depend on `setup_actors`. myflames never enables instruments. Each skip goes through `skip_one` with the loop's decision and is one audit record (`replication_skip_loop`). Workspace loops reload the profile from the store before every skip and recheck at the send boundary. A changed policy, deleted profile or moved endpoint stops with `policy_changed`; editing a profile to read-only or deleting it also signals its registered loops immediately. `WorkspaceServer.server_close` stops and joins all loops. Status and Stop remain usable after a policy change. In memory only: nothing resumes after a restart.
 - `python3 -m myflames replication skip-loop --channel NAME --errors 1062,1032 [--max N] [--max-minutes M] [--interval S] [--yes] [--json] [-o PATH] [-q]`: runs in the foreground and prints each live event on stderr (suppressed by `-q`); writes the final JSON snapshot of a started loop, or the final message without `--json` to stdout or `-o`, with identical payload bytes for either destination; Ctrl+C stops it. Exit 0 stopped by Ctrl+C, `--max` or `--max-minutes`, 1 a started loop stopped on a condition that needs attention, 2 an unsent refusal, decline, bad input or connection failure (also a lost connection).
-- Wrong-shape request errors (`TypeError`, `KeyError`, `AttributeError`, `RecursionError`, `OverflowError`; JSON nesting recursion already maps to `ValueError`) answer HTTP 400 on read and non-SQL-sending endpoints with `ui._unexpected_error_message`, whereas endpoints in `ui._SQL_OUTCOME_PATHS` (including `replication/skip` and `skip-loop/start`) answer HTTP 500 with `"The request could not be completed. Its outcome is unknown. Check the server state before trying again."` for any unexpected exception (`ui._log_unexpected_error` strips `ui._secret_values`, runs `dbops.redact` for SQL/URL credentials, and caps tracebacks at 64 KiB; see [Local authentication and request limits](#local-authentication-and-request-limits)). Tests: `test/test_ui.py` and `test/test_workspace_api.py`.
+- Wrong-shape request errors (`TypeError`, `KeyError`, `AttributeError`, `RecursionError`, `OverflowError`; JSON nesting recursion already maps to `ValueError`) answer HTTP 400 on read and non-SQL-sending endpoints with `ui._unexpected_error_message`, whereas endpoints in `ui._SQL_OUTCOME_PATHS` (including `replication/skip` and `skip-loop/start`) answer HTTP 500 with `"The request could not be completed. Its outcome is unknown. Check the server state before trying again."` for any unexpected exception (`ui._log_unexpected_error` strips `ui._secret_values`, runs `dbops.redact` for SQL/URL credentials, and caps tracebacks at 65,536 characters before the truncation marker and log prefix; see [Local authentication and request limits](#local-authentication-and-request-limits)). Tests: `test/test_ui.py` and `test/test_workspace_api.py`.
 - Every 400 answer of `do_POST` (ValueError and friends, and ConnectorError) goes through `ui.request_error_text`. A common connection error leads with plain words and what to check (`dbops.connection_error_text`), then the client's line from `ERROR n` on, with the `mysql client exited N:` wrapper dropped and anything after the line (an SSH tunnel note) kept. 2002/2003: "Could not connect to the server. Check that it is running and that the host and port are right." ("… the socket path is right." for a socket failure; MariaDB's client reports a refused TCP connection as 2002). 2005: "Could not find the server's host name. Check the host for a typing error, or use its IP address." 2006/2013: "Lost the connection to the server. Check that it is still running: it may have restarted, or a network or time limit ended the connection." followed by the whole original message, so a write's context ("Could not end connection 41: …") stays. 1045 only when the text says Access denied: "The server refused the user name or password. Check both, and that the account may connect from your address." ("The server refused the login, and no password was sent. Enter the password, or check the user name." for `(using password: NO)`); a 1045 without Access denied gets no password hint. For 2002, 2003, 2005 and 1045 no session was opened, so a reader's context before the error ("Could not read the server status: ") is dropped. Other messages keep their words; only one that does not start with "Could not ", "Cannot ", "Can't ", "Unable to " or "Failed to " gets "Could not complete the request: ", and a ConnectorError without a mapped code passes through unchanged. The neutral 500 text is unchanged. Codes come from `include/errmsg.h` (texts checked in MySQL's `libmysql/errmsg.cc` and MariaDB's `sql-common/errmsg.c`). The CLI still prints its own context ("Could not read the server status: ERROR 2003 …"), and Cluster's `failureText` keeps its one sentence. Tests: `TestConnectionErrorText` in `test/test_dbops.py`; `test_failed_reads_lead_with_plain_words_on_every_server_view` and `test_a_reader_context_and_the_generic_prefix_never_stack` in `test/test_ui_http.py`.
 - Saved passwords are bound to the exact `ENDPOINT_FIELDS` (`host`, `port`, `user`, `ssl_mode`, `ssl_ca`): a profile saved without `ssl_mode` means the client's own default (not PREFERRED for every client, for example MariaDB 11.4+ verifies by default), so a request that names PREFERRED is refused until the profile is saved with it (`test_saved_password_binds_to_the_exact_tls_mode`). `scripts/ga-matrix.sh profiles` saves `ssl_mode` PREFERRED for that reason; an endpoint mismatch also shows the connection as Production in the picker (`connectionSafety`).
 - Endpoints: `POST /api/live/replication` (status; `_CONNECTION_PATHS`, saved-password helper), `POST /api/live/replication/skip` (`channel`, `expect`, `statements`, `confirmed: true`; `_WRITE_PATHS`: policy, then the saved password, then `skip_one`), `POST /api/live/replication/skip-loop/start` (`channel`, `codes`, `max_skips`, `max_minutes`, `poll_s`, `confirmed: true`; same order; the loop keeps its own connection and closes it when it stops), `.../skip-loop/status` (`job_id` or every loop of this connection) and `.../skip-loop/stop` (`job_id`). Loops live in `workspace.replication_loops` (`SkipLoopRegistry`) keyed by `dbops.connection_identity` and matched by its endpoint (`dbops.identity_endpoint`: saved connection id, host, port, user, TLS), so status and stop from another connection are refused while a change of the connection's type or read-only flag keeps them (one loop per channel and endpoint); status and stop open no connection. A refused or unconfirmed request is audited.
@@ -8434,7 +8466,9 @@ retries smaller chunks after client timeouts within the deadline. When account
 names leave no fixed evidence-packet delimiter, batches split recursively, and
 a single-account packet that exhausts fixed candidates uses a random 15-byte
 `__mf_<8 hex>__` delimiter in `TargetEvidenceConnection.run`; statement errors in
-a batch still fall back to per-account reads for that batch. The two sides are read one after the
+evidence-mode batches trigger per-account fallback for that batch, while
+script-mode batches retain per-statement account errors when their framing
+remains valid. The two sides are read one after the
 other. Accounts: at most 1,000, with an incomplete note beyond.
 Parameter files and snapshots: at most 10,000 items and 8 MiB
 (`MAX_FILE_BYTES`; CLI files are read in binary, refused before decoding when
@@ -10677,7 +10711,14 @@ statement in the inspector is copy-only.
   comments have the same boundaries with and without backslash escapes: the
   mysql client splits the script itself and honors NO_BACKSLASH_ESCAPES, so
   `'it\'s'` is refused (write `'it''s'`), while `'a\nb'` and `'C:\\x'` pass.
-  Unclosed strings and comments are refused. The script runs without `--force`,
+  Unclosed strings and comments are refused. `live.TOKEN`,
+  `live.TOKEN_NO_BACKSLASH` and `collectors._TOKENS` wrap their comment and
+  quoted-token regexes in `collectors._SQLTokenScanner`, which keeps the
+  original patterns' matches and replacement callbacks while stopping retries of
+  an opener kind (`/*`, `#`, `'`, `"`, `` ` ``) after its first failure (tested
+  for exact match/substitution equivalence and linear time on unterminated
+  comments and quotes in `test/test_collectors.py` and `test/test_live.py`).
+  The script runs without `--force`,
   so a failed `SET SESSION TRANSACTION READ ONLY` or `START TRANSACTION READ ONLY`
   stops it before the query; nothing before the query may fail on a supported
   server (`explain_json_format_version` is set only on MySQL 8.3+). Ctrl+C in
