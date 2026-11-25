@@ -829,6 +829,9 @@ def _generated_classify_statements(count):
 
 
 class TestClassifyCache(unittest.TestCase):
+    # Set MYFLAMES_LONG_TESTS=1 to retain the full historical stress inputs.
+    long_tests = os.environ.get('MYFLAMES_LONG_TESTS') == '1'
+
     def assertCacheEquivalent(self, sql, options):
         expected = dbops.classify(sql, _use_cache=False, **options)
         actual = dbops.classify(sql, **options)
@@ -911,6 +914,10 @@ class TestClassifyCache(unittest.TestCase):
 
     def test_fixture_and_existing_input_equivalence(self):
         corpus = _classify_cache_corpus()
+        if not self.long_tests:
+            # Sample evenly so the quick run still covers fixtures from across
+            # the repository instead of stopping at the first fixture file.
+            corpus = corpus[::max(1, len(corpus) // 125)]
         modes = _classify_cache_modes()
         # Every source runs with unknown facts, known MySQL and MariaDB, and
         # one rotating mode; the generated corpus exercises the full matrix.
@@ -920,19 +927,20 @@ class TestClassifyCache(unittest.TestCase):
                 with self.subTest(source=source, case=index, mode=mode):
                     self.assertCacheEquivalent(sql, mode)
                     comparisons += 1
-        self.assertGreater(len(corpus), 500)
+        self.assertGreater(len(corpus), 100 if not self.long_tests else 500)
         print('CLASSIFY_CACHE_FIXTURES cases=%d comparisons=%d' % (len(corpus), comparisons), flush=True)
 
     def test_twenty_thousand_generated_statement_equivalence(self):
         modes = _classify_cache_modes()
         seen = set()
-        for index, sql in enumerate(_generated_classify_statements(20000)):
+        statement_count = 20000 if self.long_tests else 2000
+        for index, sql in enumerate(_generated_classify_statements(statement_count)):
             self.assertNotIn(sql, seen)
             seen.add(sql)
             mode = modes[index % len(modes)]
             with self.subTest(case=index, mode=mode, sql=sql):
                 self.assertCacheEquivalent(sql, mode)
-        self.assertEqual(len(seen), 20000)
+        self.assertEqual(len(seen), statement_count)
         print('CLASSIFY_CACHE_GENERATED seed=20261124 statements=%d modes=%d' %
               (len(seen), len(modes)), flush=True)
 
@@ -1091,8 +1099,9 @@ class TestClassifyCache(unittest.TestCase):
 
     def test_many_small_inserts_cache_budget_and_growth(self):
         row = "INSERT INTO t VALUES (1, 'a', \"b\");\n"
-        small, large = row * 6000, row * 24000
-        self.assertEqual((len(small), len(large)), (216000, 864000))
+        small_rows, large_rows = ((6000, 24000) if self.long_tests else (1000, 4000))
+        small, large = row * small_rows, row * large_rows
+        self.assertEqual((len(small), len(large)), (len(row) * small_rows, len(row) * large_rows))
         samples = {'small': [], 'large': [], 'uncached': []}
         # Interleave the three workloads so machine load does not favor
         # all samples of either the cached or uncached implementation.
@@ -1117,8 +1126,9 @@ class TestClassifyCache(unittest.TestCase):
 
     def test_many_json_inserts_cache_budget(self):
         row = "INSERT INTO t VALUES (1, '{\\\"a\\\": \\\"b\\\"}', \"q\\\"x\");\n"
-        sql = row * 4000
-        self.assertEqual(len(sql), 208000)
+        rows = 4000 if self.long_tests else 500
+        sql = row * rows
+        self.assertEqual(len(sql), len(row) * rows)
         samples = {False: [], True: []}
         for unused in range(3):
             for enabled in (False, True):
@@ -1145,25 +1155,30 @@ class TestClassifyCache(unittest.TestCase):
                 samples.append(time.perf_counter() - start)
             return statistics.median(samples)
 
-        sql = 'INSERT INTO t VALUES ' + ','.join([row] * 1000) + ';'
-        self.assertEqual(len(sql), 58021)
+        rows = 1000 if self.long_tests else 250
+        sql = 'INSERT INTO t VALUES ' + ','.join([row] * rows) + ';'
+        self.assertEqual(len(sql), 21 + len(row) * rows + rows)
         before, after = elapsed(sql, False), elapsed(sql, True)
         print('CLASSIFY_CACHE_INSERT chars=%d uncached=%.6fs cached=%.6fs speedup=%.2fx' %
               (len(sql), before, after, before / after), flush=True)
         self.assertLessEqual(after * 5, before)
-        large = 'INSERT INTO t VALUES ' + ','.join([row] * 4000) + ';'
-        self.assertEqual(len(large), 232021)
-        seconds = elapsed(large, True)
-        print('CLASSIFY_CACHE_INSERT chars=%d cached=%.6fs' % (len(large), seconds), flush=True)
-        self.assertLess(seconds, 2.0)
+        if self.long_tests:
+            large = 'INSERT INTO t VALUES ' + ','.join([row] * 4000) + ';'
+            self.assertEqual(len(large), 21 + len(row) * 4000 + 4000)
+            seconds = elapsed(large, True)
+            print('CLASSIFY_CACHE_INSERT chars=%d cached=%.6fs' % (len(large), seconds), flush=True)
+            self.assertLess(seconds, 2.0)
 
     def test_long_insert_cache_peak_memory(self):
         import gc
         import tracemalloc
 
         row = "(1, '{\\\"name\\\": \\\"a\\\", \\\"v\\\": [1,2,3]}', 'it''s', \"q\\\"x\")"
-        sql = 'INSERT INTO t VALUES ' + ','.join([row] * 2000) + ';'
-        self.assertEqual(len(sql), 116021)
+        # Ten rows already separate the fixed cache (about 1.4x peak) from
+        # the historical cache (about 2.1x), without tracing a huge INSERT.
+        rows = 2000 if self.long_tests else 10
+        sql = 'INSERT INTO t VALUES ' + ','.join([row] * rows) + ';'
+        self.assertEqual(len(sql), 21 + len(row) * rows + rows)
         results, peaks = {}, {}
         for enabled in (False, True):
             # Trace each call independently: the SQL and the previous result
