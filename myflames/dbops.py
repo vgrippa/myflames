@@ -402,7 +402,7 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             dollar_quotes=False, client=False, unknown_execute=True, wsrep_on=None,
             client_delimiter=None, framing=(), ansi_quotes=False, mssql=False,
             sql_mode=None, comment_dialect=None, client_engine=None, client_ansi_quotes=False,
-            client_backslash_escapes=None):
+            client_backslash_escapes=None, _cache=None, _framing_key=None):
     """Read SQL once, preserving source spans and every lexical uncertainty.
 
     Tokens are (kind, start, end). Executed comment openers/closers are
@@ -440,11 +440,41 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             backslash_escapes = client_backslash_escapes
     version = parse_version_tuple(server_version, leading=True, prefer_mariadb=engine == "mariadb", default=None)
     version_id = None if version is None else version[0] * 10000 + version[1] * 100 + version[2]
+    # The splitter supplies the retained scan's integer identity. Derive its
+    # delimiter map once; equal maps still share a lexer result when other
+    # client token roles differ. Arbitrary caller-owned framing stays mutable
+    # and is snapshotted on every call, as on the uncached path.
+    saved_framing = _cache.get(("framing", _framing_key)) if _cache is not None and _framing_key is not None else None
+    if saved_framing is None:
+        framing_at = {start: end for kind, start, end in framing if kind in ("delimiter_command", "delimiter")}
+        framing_key = tuple(sorted(framing_at.items())) if _cache is not None else None
+        if _cache is not None and _framing_key is not None:
+            values = _cache.setdefault("framing_values", {})
+            framing_key = values.setdefault(framing_key, len(values))
+            _cache[("framing", _framing_key)] = (framing_at, framing_key)
+    else:
+        framing_at, framing_key = saved_framing
+    cache_key = None
+    if _cache is not None:
+        # Cache the scanner's effective inputs, after mode/status overrides.
+        # The version/comment switches are only read in the /* branch. Keep
+        # the delimiter even in server scans: optimizer-hint checks use it.
+        comments = (version_id, unknown_execute, wsrep_on, comment_dialect) if "/*" in sql else ()
+        cache_key = ("lex", sql, backslash_escapes, engine, dollar_quotes, client,
+                     client_delimiter, framing_key, ansi_quotes, mssql,
+                     client_engine, comments)
+        try:
+            cached = _cache.get(cache_key)
+        except TypeError:
+            # Preserve the uncached handling of unusual, unhashable options.
+            cache_key = None
+        else:
+            if cached is not None:
+                return cached
     tokens, comments, unclosed, issues = [], [], [], []
     n, pos, code_start = len(sql), 0, 0
     active, pending = None, False
     command_start = 0
-    framing_at = {start: end for kind, start, end in framing if kind in ("delimiter_command", "delimiter")}
 
     def token(kind, start, end):
         if code_start < start:
@@ -756,7 +786,10 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
         active["end"] = n
         active["problem"] = "unterminated executable comment"
         unclosed.append((active["start"], n))
-    return {"tokens": tokens, "comments": comments, "unclosed": unclosed, "issues": issues}
+    result = {"tokens": tokens, "comments": comments, "unclosed": unclosed, "issues": issues}
+    if cache_key is not None:
+        _cache[cache_key] = result
+    return result
 
 
 def skipped_executable_comments(sql, engine, server_version, backslash_escapes=None, wsrep_on=None,
@@ -986,8 +1019,37 @@ def _delimiter_argument(sql, at, client_engine=None):
 
 # ---- splitting -----------------------------------------------------------------------
 
-def _masked_fragment(sql, scan, start, end):
+def _scan_cache_key(scan, cache):
+    """Intern immutable scan contents once per object in one classify call.
+
+    Keep the scan alive alongside its integer key so object ids cannot be
+    reused. Full tuples are hashed only when interning a new scan, never
+    for each statement's fragment lookup. The optional derived ends index
+    does not change a scan's meaning.
+    """
+    keys = cache.setdefault("scan_keys", {})
+    saved = keys.get(id(scan))
+    if saved is None:
+        key = (tuple(scan["tokens"]),
+               tuple(tuple(sorted(comment.items())) for comment in scan["comments"]),
+               tuple(scan["unclosed"]), tuple(scan["issues"]))
+        values = cache.setdefault("scan_values", {})
+        saved = keys[id(scan)] = (scan, values.setdefault(key, len(values)))
+    return saved[1]
+
+
+def _masked_fragment(sql, scan, start, end, _cache=None):
     """Mask one source range using the server tokens, never rescan with a regex."""
+    cache_key = None
+    if _cache is not None:
+        cache_key = ("mask", sql, _scan_cache_key(scan, _cache), start, end)
+        try:
+            cached = _cache.get(cache_key)
+        except TypeError:
+            cache_key = None
+        else:
+            if cached is not None:
+                return cached
     code, idents, spans = [], [], []
     ends = scan.get("ends")
     if ends is None:
@@ -1010,13 +1072,16 @@ def _masked_fragment(sql, scan, start, end):
         else:
             code.append(" ")
         at += 1
-    return _CODE_SPACE.sub(" ", "".join(code)).strip(" "), idents, tuple(spans)
+    result = _CODE_SPACE.sub(" ", "".join(code)).strip(" "), idents, tuple(spans)
+    if cache_key is not None:
+        _cache[cache_key] = result
+    return result
 
 
 def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False,
                      engine=None, server_version=None, unknown_execute=True, wsrep_on=None,
                      ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None,
-                     client_ansi_quotes=False, discarded_prefixes=None, client_backslash_escapes=None):
+                     client_ansi_quotes=False, discarded_prefixes=None, client_backslash_escapes=None, _cache=None):
     """Client statement boundaries with code masked by the server's SQL lexer.
 
     ``text`` and offsets retain the original SQL. ``code``, ``idents`` and
@@ -1043,10 +1108,40 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
     framing = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes, client=True,
                       client_delimiter=delimiter, sql_mode=sql_mode, ansi_quotes=ansi_quotes,
                       client_engine=client_engine, comment_dialect=comment_dialect,
-                      client_ansi_quotes=client_ansi_quotes, client_backslash_escapes=client_backslash_escapes)
+                      client_ansi_quotes=client_ansi_quotes, client_backslash_escapes=client_backslash_escapes,
+                      _cache=_cache)
+    framing_key = _scan_cache_key(framing, _cache) if _cache is not None else None
     scan = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes,
                    unknown_execute=unknown_execute, wsrep_on=wsrep_on, framing=framing["tokens"],
-                   ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect)
+                   ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect,
+                   _cache=_cache, _framing_key=framing_key)
+    cache_key = None
+    if _cache is not None:
+        scan_key = _scan_cache_key(scan, _cache)
+        # Equal complete scans produce equal units even when the original
+        # mode arguments differ. Prefix collection has an output argument,
+        # so leave that splitter path uncached.
+        if discarded_prefixes is None:
+            cache_key = ("split", sql, delimiter, client_engine,
+                         framing_key, scan_key)
+            try:
+                cached = _cache.get(cache_key)
+            except TypeError:
+                cache_key = None
+            else:
+                if cached is not None:
+                    return cached
+        # _masked_fragment adds an ends index. Give it private dictionaries;
+        # tokens/comments/issues and the resulting idents are only read by
+        # the splitter and classification consumers. Populate both indexes
+        # even on a fragment-cache hit, which does not run the helper body.
+        framing = dict(framing, ends=[token[2] for token in framing["tokens"]])
+        scan = dict(scan, ends=[token[2] for token in scan["tokens"]])
+        # These private copies differ only by their derived ends indexes.
+        # Carry the originals' identities instead of hashing their contents
+        # again, and retain the copies so their object ids cannot be reused.
+        _cache["scan_keys"][id(framing)] = (framing, framing_key)
+        _cache["scan_keys"][id(scan)] = (scan, scan_key)
 
     def interval_index(ranges):
         starts, ends = [], []
@@ -1093,7 +1188,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
 
     def finish(end, next_start):
         start = state["start"]
-        code, idents, tokens = _masked_fragment(sql, scan, start, end)
+        code, idents, tokens = _masked_fragment(sql, scan, start, end, _cache=_cache)
         # A skipped comment cannot mask SQL across separate COM_QUERYs.
         # In --force mode a later fragment could execute after the first
         # fragment's unclosed-comment error. Refuse this framing, including
@@ -1123,7 +1218,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             # mysql-8.4.0:client/readline.cc:75-95.
             if sys.platform == "win32" and client_engine != "mariadb" and "\r\n" in text:
                 issue(REASON_CRLF_TRANSPORT)
-            unused_code, unused_idents, client_tokens = _masked_fragment(sql, framing, start, end)
+            unused_code, unused_idents, client_tokens = _masked_fragment(sql, framing, start, end, _cache=_cache)
             out.append({"text": text, "start": start + lead, "end": start + lead + len(text),
                         "code": code, "idents": idents, "token_spans": tokens,
                         "client_token_spans": client_tokens,
@@ -1147,7 +1242,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             # when this DELIMITER is the last line of the run.
             # mysql-8.4.0:client/mysql.cc:2455-2471,2895-2902;
             # mariadb-11.8.9:sql/sql_lex.cc:2416-2467.
-            prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left)
+            prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left, _cache=_cache)
             ignored = not prefix_code and not overlaps(executed_comments, state["start"], left)
             if ignored:
                 consumed_delimiters.add(command.start(1))
@@ -1192,6 +1287,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             state["pending"] = True
         pos += 1
     finish(n, n)
+    if cache_key is not None:
+        _cache[cache_key] = out
     return out
 
 
@@ -1925,10 +2022,10 @@ def _classify_statement(stmt, key_columns, native_functions=None):
 
 
 def _classify_reading(sql, backslash_escapes, key_columns, engine=None, server_version=None,
-                      unknown_execute=True, wsrep_on=None, delimiter=";", **quote_args):
+                      unknown_execute=True, wsrep_on=None, delimiter=";", _cache=None, **quote_args):
     units = split_statements(sql, backslash_escapes, delimiter=delimiter, engine=engine,
                              server_version=server_version, unknown_execute=unknown_execute,
-                             wsrep_on=wsrep_on, **quote_args)
+                             wsrep_on=wsrep_on, _cache=_cache, **quote_args)
     statements = []
     native_functions = _native_read_functions(engine, server_version)
     for stmt in units:
@@ -1940,7 +2037,7 @@ def _classify_reading(sql, backslash_escapes, key_columns, engine=None, server_v
 
 
 def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_version=None, wsrep_on=None,
-             sql_mode=None, client_engine=None, client_status_synced=False, delimiter=";"):
+             sql_mode=None, client_engine=None, client_status_synced=False, delimiter=";", _use_cache=True):
     """Classify every modelled server reading and keep the worst effect.
 
     Unknown engines or MySQL versions use all version-number grammars. Unknown quote modes
@@ -1952,12 +2049,16 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
         raise ValueError("Pass SQL text.")
     if len(sql) > 1000000:
         raise ValueError("SQL text is limited to 1,000,000 characters.")
+    # Never retain SQL (which can contain credentials) between requests or
+    # share mutable scanner results with concurrent classifier calls. Tests
+    # can disable reuse while exercising the same complete reading logic.
+    cache = {} if _use_cache else None
     readings = lexer_readings(backslash_escapes, engine, sql_mode, server_version, client_engine, sql,
                               client_status_synced=client_status_synced)
     units, statements = _classify_reading(sql, key_columns=key_columns, engine=engine,
                                          server_version=server_version, wsrep_on=wsrep_on,
-                                         delimiter=delimiter, **readings[0])
-    reference = _mode_reading(units)
+                                         delimiter=delimiter, _cache=cache, **readings[0])
+    reference = _mode_reading(units, _cache=cache)
     skipped_reference = None
     summary = _worst(statements)
     ambiguous = False
@@ -1977,8 +2078,8 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
     for reading in readings[1:]:
         units, alternative = _classify_reading(sql, key_columns=key_columns, engine=engine,
                                               server_version=server_version, wsrep_on=wsrep_on,
-                                              delimiter=delimiter, **reading)
-        meaning = _mode_reading(units)
+                                              delimiter=delimiter, _cache=cache, **reading)
+        meaning = _mode_reading(units, _cache=cache)
         if meaning != reference:
             # A future gate cannot execute with the legacy five-digit
             # grammar. If that yields exactly the existing all-skip reading,
@@ -1989,8 +2090,8 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
                 if skipped_reference is None:
                     skipped, unused = _classify_reading(
                         sql, key_columns=key_columns, engine=engine, server_version=server_version,
-                        unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, **readings[0])
-                    skipped_reference = _mode_reading(skipped)
+                        unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, _cache=cache, **readings[0])
+                    skipped_reference = _mode_reading(skipped, _cache=cache)
                 ambiguous = ambiguous or meaning != skipped_reference
             else:
                 ambiguous = True
@@ -1999,12 +2100,12 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
     if ambiguous:
         summary["reasons"].append(AMBIGUOUS_REASON)
     for reading in readings if "/*" in sql else ():
-        scan = lex_sql(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, **reading)
+        scan = lex_sql(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, _cache=cache, **reading)
         uncertain = [c for c in scan["comments"] if c["problem"]]
         if uncertain:
             unused_units, alternative = _classify_reading(
                 sql, key_columns=key_columns, engine=engine, server_version=server_version,
-                unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, **reading)
+                unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, _cache=cache, **reading)
             summary = _worst([summary, _worst(alternative)])
             merge(alternative)
             if len({c["opener"] for c in uncertain}) > 1 or any(
@@ -2019,9 +2120,9 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
                     statement.update(_worst([statement, unknown]))
     for reading in readings if "$" in sql else ():
         plain = split_statements(sql, delimiter=delimiter, engine=engine, server_version=server_version,
-                                 wsrep_on=wsrep_on, **reading)
+                                 wsrep_on=wsrep_on, _cache=cache, **reading)
         dollars = split_statements(sql, delimiter=delimiter, dollar_quotes=True, engine=engine,
-                                   server_version=server_version, wsrep_on=wsrep_on, **reading)
+                                   server_version=server_version, wsrep_on=wsrep_on, _cache=cache, **reading)
         if _target_reading(plain) != _target_reading(dollars):
             ambiguous = True
             summary = _verdict("risky", "unknown", "Dollar quotes change the SQL interpretation between clients.")
@@ -2427,13 +2528,18 @@ def _target_reading(units):
              u.get("token_spans", ()), u.get("client_token_spans", ()), u.get("next_start")) for u in units]
 
 
-def _mode_reading(units):
+def _mode_reading(units, _cache=None):
     """Compare boundaries, token roles, restored identifiers and effects.
 
     A double-quoted identifier is not interchangeable with a string, even
     when both classify as a read or DDL. The editor needs the actual names
     for ALTER preflight, timeout guards and typed DROP confirmation.
     """
+    cache_key = ("mode", id(units))
+    if _cache is not None:
+        cached = _cache.get(cache_key)
+        if cached is not None:
+            return cached[1]
     out = []
     for unit in units:
         verdict = _classify_statement(unit, None)
@@ -2442,6 +2548,10 @@ def _mode_reading(units):
         out.append((unit["start"], unit["end"], unit["delimiter"],
                     code, unit.get("token_spans", ()),
                     unit["unclosed"], unit["issues"], verdict["kind"], verdict["category"]))
+    if _cache is not None:
+        # Comparison tuples are read-only. Retain the units with the result
+        # so their id remains unique for the lifetime of this call's cache.
+        _cache[cache_key] = (units, out)
     return out
 
 

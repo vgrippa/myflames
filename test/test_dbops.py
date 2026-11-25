@@ -4,16 +4,22 @@ confirmation policy, privilege hints, redaction, and the audit trail.
 Every test that reaches the workspace database uses a temporary HOME and
 MYFLAMES_SECRET_BACKEND=vault, never ~/.myflames or the OS keychain.
 """
+import ast
 import contextlib
 import csv
+import html
 import io
 import json
 import os
 from pathlib import Path
+import random
+import re
 import sqlite3
+import statistics
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -594,6 +600,378 @@ CASES = (
     ('', 'read', 'read', []),
     ('-- only a comment\n/* and another */', 'read', 'read', []),
 )
+
+
+def _classify_cache_modes():
+    """Exercise unknown facts and both sides of version/quote grammar gates."""
+    return (
+        {},
+        {'engine': 'mysql'},
+        {'engine': 'mariadb'},
+        {'engine': 'mysql', 'server_version': '5.7.44', 'client_engine': 'mysql'},
+        {'engine': 'mysql', 'server_version': '8.0.20', 'sql_mode': ''},
+        {'engine': 'mysql', 'server_version': '8.0.21', 'sql_mode': 'ANSI_QUOTES'},
+        {'engine': 'mysql', 'server_version': '8.1.0', 'client_engine': 'mariadb'},
+        {'engine': 'mysql', 'server_version': '8.4.3', 'sql_mode': 'NO_BACKSLASH_ESCAPES'},
+        {'engine': 'mysql', 'server_version': '9.7.0', 'sql_mode': 'ANSI_QUOTES,NO_BACKSLASH_ESCAPES',
+         'client_engine': 'mysql', 'client_status_synced': True},
+        {'engine': 'mariadb', 'server_version': '10.11.1', 'client_engine': 'mariadb'},
+        {'engine': 'mariadb', 'server_version': '11.4.13', 'sql_mode': ''},
+        {'engine': 'mariadb', 'server_version': '11.8.9', 'sql_mode': 'MSSQL'},
+        {'engine': 'mariadb', 'server_version': '12.0.1', 'sql_mode': 'ORACLE',
+         'client_engine': 'mysql'},
+        {'engine': 'mariadb', 'server_version': '13.0.2', 'sql_mode': 'ANSI_QUOTES,NO_BACKSLASH_ESCAPES',
+         'client_engine': 'mariadb', 'client_status_synced': True},
+        {'engine': 'mariadb', 'server_version': '5.5.5-10.11.16-MariaDB', 'wsrep_on': True},
+        {'engine': 'mariadb', 'server_version': '11.4.13', 'wsrep_on': False},
+        {'engine': 'mysql', 'server_version': 'unavailable', 'sql_mode': 'MSSQL'},
+        {'engine': 'readyset', 'server_version': '', 'client_engine': 'mysql'},
+        {'server_version': '8.4.3', 'backslash_escapes': False},
+        {'backslash_escapes': True, 'key_columns': ['id', 'my id']},
+        {'sql_mode': 'ANSI', 'client_status_synced': True},
+        {'delimiter': '//', 'engine': 'mysql', 'server_version': '8.4.3'},
+        {'delimiter': '$$', 'engine': 'mariadb', 'server_version': '11.4.13'},
+    )
+
+
+def _classify_cache_corpus():
+    """Collect repository SQL as data, without importing or executing fixtures."""
+    root = Path(__file__).resolve().parent.parent
+    corpus = {}
+    sql_start = re.compile(
+        r'^\s*(?:\(*\s*(?:SELECT|WITH|INSERT|REPLACE|UPDATE|DELETE|SET|SHOW|EXPLAIN|'
+        r'CREATE|ALTER|DROP|TRUNCATE|DELIMITER|CALL|EXECUTE|PREPARE|DEALLOCATE|BEGIN|'
+        r'START|STOP|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|GRANT|REVOKE|RENAME|USE|'
+        r'KILL|LOCK|UNLOCK|FLUSH|RESET|CHANGE|LOAD|ANALYZE|OPTIMIZE|REPAIR|'
+        r'INSTALL|UNINSTALL|SHUTDOWN|RESTART|DO|HANDLER|TABLE|VALUES|DESC|DESCRIBE|'
+        r'HELP|XA|PURGE|CACHE|BINLOG|IMPORT|BACKUP)\b|/\*|--|#)', re.I)
+    sql_keys = {'sql', 'query', 'statement', 'sql_text', 'query_text', 'digest_text',
+                'sample_sql', 'sample_query', 'query_sample', 'original_sql'}
+
+    def add(sql, source, explicit=False):
+        if isinstance(sql, str) and (explicit or sql_start.match(sql)):
+            corpus.setdefault(sql, source)
+
+    def text_sql(text, source, explicit=False):
+        add(text, source, explicit)
+        # Client result fixtures embed their complete sent SQL in XML.
+        for match in re.finditer(r'\bstatement="([^"]*)"', text):
+            add(html.unescape(match.group(1)), source + ':statement', True)
+        for line in text.splitlines():
+            add(line, source + ':line')
+
+    def visit(value, source, key=''):
+        if isinstance(value, dict):
+            for name, item in value.items():
+                visit(item, source, name.lower())
+            # The shared splitter fixture uses | as a cursor annotation.
+            if 'index' in value and isinstance(value.get('sql'), str):
+                add(value['sql'].replace('|', '', 1), source + ':cursor', True)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, source, key)
+        elif isinstance(value, str):
+            text_sql(value, source, key in sql_keys)
+
+    for directory in (root / 'test/fixtures', root / 'apps/workspace/test/fixtures'):
+        for path in sorted(directory.rglob('*')):
+            if not path.is_file():
+                continue
+            source = str(path.relative_to(root))
+            if path.suffix == '.json':
+                visit(json.loads(path.read_text(encoding='utf-8')), source)
+            elif path.suffix in ('.sql', '.txt', '.log', '.xml'):
+                text_sql(path.read_text(encoding='utf-8'), source, path.suffix == '.sql')
+
+    # Literal SQL includes malformed input and fragments that tests combine
+    # dynamically. The actual assembled CASES are included separately below.
+    paths = [root / 'test/test_dbops.py'] + sorted((root / 'test').glob('test_editor_session*.py'))
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+            # Python 3.7 parses Str nodes; newer versions use Constant and
+            # Python 3.14 removes the deprecated ast.Str alias entirely.
+            value = node.value if isinstance(node, ast.Constant) else getattr(node, 's', None)
+            if isinstance(value, str):
+                text_sql(value, '%s:%d' % (path.name, node.lineno))
+    for sql, unused_kind, unused_category, unused_verbs in CASES:
+        add(sql, 'test_dbops.CASES', True)
+    return sorted(corpus.items())
+
+
+def _generated_classify_statements(count):
+    """Fixed-seed complete and malformed readings, with a unique numeric prefix."""
+    rng = random.Random(20261124)
+    fragments = (
+        "SELECT 'it''s; ok'", 'SELECT "a""b;c"', 'SELECT `a``;b` FROM t',
+        "SELECT 'a\\'; DROP TABLE t; -- '\n", 'SELECT "a\\\"; DROP TABLE t; -- "\n',
+        'SELECT "fn"(1)', 'SELECT [a; b], "column" FROM t',
+        "INSERT INTO t VALUES (1, '{\\\"k\\\": [1,2]}')",
+        'UPDATE t SET x = 1 WHERE id = 2', 'DELETE FROM t WHERE "id" = 2',
+        'SELECT 1 /* ordinary ; \' \\" */', 'SELECT 1 -- comment ; \' \\"\n',
+        'SELECT 1 # comment ; \' \\"\n', '/*!50000 SELECT 1; DELETE FROM t */',
+        '/*!80000 SELECT 1 */', '/*!999999 SELECT "a\\\"b" */',
+        '/*M!100100 SELECT 1; DROP TABLE t */', '/*M!999999 SELECT 1 */',
+        '/*!99997 SET @x = 1 */', '/*!!50000 SELECT 1 */',
+        '/*!50000 SELECT 1; /*M!999999 DROP TABLE t */ SELECT 2 */',
+        '/*+ hint("x") */ SELECT 1', '/* unterminated \' \\"',
+        "DELIMITER //\nSELECT 'a;//'; SELECT 2//\nDELIMITER ;\n",
+        "DELIMITER '$$'\nSELECT 'x;$$'$$\nDELIMITER ;\n",
+        'DELIMITER "//"\nSELECT 1//\nDELIMITER ;\n',
+        'DELIMITER \'\'\nSELECT 1;', 'SELECT $tag$ x; y $tag$',
+        'SELECT 1\\g SELECT 2\\G', 'SELECT 1;\n\\! command\n',
+        'SELECT "unterminated', "SELECT 'unterminated", 'SELECT 1\r\n; SELECT 2',
+        'SET sql_mode = "ANSI_QUOTES"; SELECT "name" FROM t',
+    )
+    for index in range(count):
+        body = ';\n'.join(rng.choice(fragments) for unused in range(rng.randint(1, 4)))
+        yield 'SELECT %d;\n%s' % (index, body)
+
+
+class TestClassifyCache(unittest.TestCase):
+    def assertCacheEquivalent(self, sql, options):
+        expected = dbops.classify(sql, _use_cache=False, **options)
+        actual = dbops.classify(sql, **options)
+        self.assertEqual(actual, expected)
+
+    def test_fixture_and_existing_input_equivalence(self):
+        corpus = _classify_cache_corpus()
+        modes = _classify_cache_modes()
+        # Every source runs with unknown facts, known MySQL and MariaDB, and
+        # one rotating mode; the generated corpus exercises the full matrix.
+        comparisons = 0
+        for index, (sql, source) in enumerate(corpus):
+            for mode in (modes[0], modes[7], modes[11], modes[index % len(modes)]):
+                with self.subTest(source=source, case=index, mode=mode):
+                    self.assertCacheEquivalent(sql, mode)
+                    comparisons += 1
+        self.assertGreater(len(corpus), 500)
+        print('CLASSIFY_CACHE_FIXTURES cases=%d comparisons=%d' % (len(corpus), comparisons), flush=True)
+
+    def test_twenty_thousand_generated_statement_equivalence(self):
+        modes = _classify_cache_modes()
+        seen = set()
+        for index, sql in enumerate(_generated_classify_statements(20000)):
+            self.assertNotIn(sql, seen)
+            seen.add(sql)
+            mode = modes[index % len(modes)]
+            with self.subTest(case=index, mode=mode, sql=sql):
+                self.assertCacheEquivalent(sql, mode)
+        self.assertEqual(len(seen), 20000)
+        print('CLASSIFY_CACHE_GENERATED seed=20261124 statements=%d modes=%d' %
+              (len(seen), len(modes)), flush=True)
+
+    def test_returned_mutable_values_are_not_shared_between_calls(self):
+        sql = 'SELECT "a\\\"; DROP TABLE t; -- "\n; SELECT 1'
+        expected = dbops.classify(sql, _use_cache=False)
+        result = dbops.classify(sql)
+        result['reasons'].append('caller mutation')
+        for statement in result['statements']:
+            statement['reasons'].append('caller mutation')
+            statement['text'] = 'caller mutation'
+        result['statements'].append({'text': 'caller mutation'})
+        self.assertEqual(dbops.classify(sql), expected)
+
+    def test_shared_helper_results_are_not_mutated_by_consumers(self):
+        import copy
+
+        sql = ('SELECT `a`, "q\\\"x" FROM t; /*!99999 DELETE FROM t */; '
+               'SELECT $tag$x; y$tag$')
+        observed = {}
+
+        def observer(name, original):
+            seen, calls = {}, []
+            observed[name] = (seen, calls)
+
+            def wrapped(*args, **kwargs):
+                result = original(*args, **kwargs)
+                if kwargs.get('_cache') is not None:
+                    calls.append(id(result))
+                    seen.setdefault(id(result), (result, copy.deepcopy(result)))
+                return result
+
+            return wrapped
+
+        with contextlib.ExitStack() as patches:
+            for name in ('lex_sql', 'split_statements', '_masked_fragment', '_mode_reading'):
+                patches.enter_context(mock.patch.object(dbops, name, observer(name, getattr(dbops, name))))
+            self.assertCacheEquivalent(sql, {})
+        for name, (seen, calls) in observed.items():
+            with self.subTest(helper=name):
+                self.assertTrue(seen)
+                self.assertLess(len(seen), len(calls), 'probe must exercise shared results')
+                for result, original in seen.values():
+                    self.assertEqual(result, original, '%s result was mutated' % name)
+
+    def test_lexer_cache_copies_mutable_framing_keys(self):
+        sql, cache = 'SELECT 1; SELECT 2', {}
+        framing = [('delimiter', 8, 9)]
+        first = dbops.lex_sql(sql, framing=framing, _cache=cache)
+        expected_first = dbops.lex_sql(sql, framing=list(framing))
+        framing[0] = ('delimiter', 9, 10)
+        second = dbops.lex_sql(sql, framing=framing, _cache=cache)
+        self.assertEqual(first, expected_first)
+        self.assertEqual(second, dbops.lex_sql(sql, framing=framing))
+        self.assertNotEqual(first, second)
+
+    def test_scan_keys_preserve_all_lexical_evidence(self):
+        import copy
+
+        sql, cache = '/*!50000 SELECT 1 */', {}
+        scan = dbops.lex_sql(sql)
+        key = dbops._scan_cache_key(scan, cache)
+        self.assertIsInstance(key, int)
+        equivalent = copy.deepcopy(scan)
+        equivalent['ends'] = [token[2] for token in scan['tokens']]
+        # An index or dictionary insertion order cannot change the reading.
+        equivalent['comments'] = [dict(reversed(list(comment.items())))
+                                  for comment in equivalent['comments']]
+        self.assertEqual(dbops._scan_cache_key(equivalent, cache), key)
+        self.assertEqual(dbops._scan_cache_key(scan, cache), key)
+        variants = {
+            'tokens': scan['tokens'] + [('code', len(sql), len(sql) + 1)],
+            'comments': [dict(scan['comments'][0], certain=not scan['comments'][0]['certain'])],
+            'unclosed': [(0, len(sql))],
+            'issues': [(0, dbops.REASON_COMMENT_COMMAND)],
+        }
+        keys = {key}
+        for field, value in variants.items():
+            with self.subTest(field=field):
+                different = copy.deepcopy(scan)
+                different[field] = value
+                other = dbops._scan_cache_key(different, cache)
+                self.assertIsInstance(other, int)
+                self.assertNotIn(other, keys)
+                keys.add(other)
+
+    def test_shared_scan_keys_keep_distinct_sql_text(self):
+        cache, keys, fragments, units = {}, [], [], []
+        for sql in ('SELECT `a` FROM t; SELECT 1', 'SELECT `b` FROM u; SELECT 2'):
+            scan = dbops.lex_sql(sql, _cache=cache)
+            keys.append(dbops._scan_cache_key(scan, cache))
+            # The splitter uses private copies for its derived token index.
+            fragment = dbops._masked_fragment(sql, dict(scan), 0, len(sql), _cache=cache)
+            self.assertEqual(fragment, dbops._masked_fragment(sql, dict(scan), 0, len(sql)))
+            fragments.append(fragment)
+            split = dbops.split_statements(sql, _cache=cache)
+            self.assertEqual(split, dbops.split_statements(sql))
+            units.append(split)
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotEqual(fragments[0], fragments[1])
+        self.assertNotEqual(units[0], units[1])
+
+    def test_concurrent_classifications_have_separate_caches(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        queries = ['SELECT %d, "private\\\"value"; SELECT `id` FROM t' % index for index in range(8)]
+        expected = [dbops.classify(sql, _use_cache=False) for sql in queries]
+        original = dbops._classify_reading
+        observed, lock = {}, threading.Lock()
+
+        def capture(sql, *args, **kwargs):
+            cache = kwargs.get('_cache')
+            with lock:
+                # Retain the actual objects so id reuse after a completed
+                # request cannot conceal cross-request cache ownership.
+                observed.setdefault(sql, []).append(cache)
+            return original(sql, *args, **kwargs)
+
+        with mock.patch.object(dbops, '_classify_reading', capture):
+            with ThreadPoolExecutor(max_workers=4) as workers:
+                actual = list(workers.map(dbops.classify, queries))
+        self.assertEqual(actual, expected)
+        first_caches = []
+        for sql in queries:
+            caches = observed[sql]
+            self.assertIsNotNone(caches[0])
+            self.assertTrue(all(cache is caches[0] for cache in caches))
+            first_caches.append(caches[0])
+        self.assertEqual(len({id(cache) for cache in first_caches}), len(queries))
+
+    def test_input_refusals_are_identical(self):
+        for sql, options in ((None, {}), (b'SELECT 1', {}), (42, {}), ('x' * 1000001, {}),
+                             ('SELECT 1', {'delimiter': ''}), ('SELECT 1', {'delimiter': '\\g'}),
+                             ('SELECT 1', {'delimiter': 'long_delimiter_16'})):
+            errors = []
+            for enabled in (False, True):
+                with self.assertRaises(ValueError) as raised:
+                    dbops.classify(sql, _use_cache=enabled, **options)
+                errors.append(str(raised.exception))
+            self.assertEqual(errors[0], errors[1])
+
+    def test_unhashable_sql_text_keeps_uncached_acceptance(self):
+        class UnhashableSQL(str):
+            __hash__ = None
+
+        self.assertCacheEquivalent(UnhashableSQL('SELECT "a\\\"b"; SELECT `id` FROM t'), {})
+
+    def test_many_small_inserts_cache_budget_and_growth(self):
+        row = "INSERT INTO t VALUES (1, 'a', \"b\");\n"
+        small, large = row * 6000, row * 24000
+        self.assertEqual((len(small), len(large)), (216000, 864000))
+        samples = {'small': [], 'large': [], 'uncached': []}
+        # Interleave the three workloads so machine load does not favor
+        # all samples of either the cached or uncached implementation.
+        for unused in range(3):
+            for label, sql, enabled in (('small', small, True), ('uncached', large, False),
+                                        ('large', large, True)):
+                start = time.perf_counter()
+                result = dbops.classify(sql, _use_cache=enabled)
+                samples[label].append(time.perf_counter() - start)
+                if label == 'uncached':
+                    expected = result
+                elif label == 'large':
+                    self.assertEqual(result, expected)
+        small_seconds, large_seconds, uncached_seconds = (
+            statistics.median(samples[label]) for label in ('small', 'large', 'uncached'))
+        print('CLASSIFY_CACHE_MANY_SMALL chars=%d uncached=%.6fs cached=%.6fs ratio=%.2fx '
+              'small_chars=%d small_cached=%.6fs growth=%.2fx' %
+              (len(large), uncached_seconds, large_seconds, large_seconds / uncached_seconds,
+               len(small), small_seconds, large_seconds / small_seconds), flush=True)
+        self.assertLessEqual(large_seconds, uncached_seconds * 1.5)
+        self.assertLess(large_seconds, small_seconds * 5)
+
+    def test_many_json_inserts_cache_budget(self):
+        row = "INSERT INTO t VALUES (1, '{\\\"a\\\": \\\"b\\\"}', \"q\\\"x\");\n"
+        sql = row * 4000
+        self.assertEqual(len(sql), 208000)
+        samples = {False: [], True: []}
+        for unused in range(3):
+            for enabled in (False, True):
+                start = time.perf_counter()
+                result = dbops.classify(sql, _use_cache=enabled)
+                samples[enabled].append(time.perf_counter() - start)
+                if enabled:
+                    self.assertEqual(result, expected)
+                else:
+                    expected = result
+        before, after = (statistics.median(samples[enabled]) for enabled in (False, True))
+        print('CLASSIFY_CACHE_MANY_JSON chars=%d uncached=%.6fs cached=%.6fs speedup=%.2fx' %
+              (len(sql), before, after, before / after), flush=True)
+        self.assertLess(after, before)
+
+    def test_long_insert_cache_budget(self):
+        row = "(1, '{\\\"name\\\": \\\"a\\\", \\\"v\\\": [1,2,3]}', 'it''s', \"q\\\"x\")"
+
+        def elapsed(sql, enabled):
+            samples = []
+            for unused in range(3):
+                start = time.perf_counter()
+                dbops.classify(sql, _use_cache=enabled)
+                samples.append(time.perf_counter() - start)
+            return statistics.median(samples)
+
+        sql = 'INSERT INTO t VALUES ' + ','.join([row] * 1000) + ';'
+        self.assertEqual(len(sql), 58021)
+        before, after = elapsed(sql, False), elapsed(sql, True)
+        print('CLASSIFY_CACHE_INSERT chars=%d uncached=%.6fs cached=%.6fs speedup=%.2fx' %
+              (len(sql), before, after, before / after), flush=True)
+        self.assertLessEqual(after * 5, before)
+        large = 'INSERT INTO t VALUES ' + ','.join([row] * 4000) + ';'
+        self.assertEqual(len(large), 232021)
+        seconds = elapsed(large, True)
+        print('CLASSIFY_CACHE_INSERT chars=%d cached=%.6fs' % (len(large), seconds), flush=True)
+        self.assertLess(seconds, 2.0)
 
 
 class TestSelectFunctionSafety(unittest.TestCase):

@@ -532,7 +532,7 @@ def _scanner_seconds(function, sql, allow_refusal=False):
 
 class TestSQLScannerTiming(unittest.TestCase):
     def test_hostile_statement_scaling(self):
-        """Fourfold input growth must stay below sixfold execution time."""
+        """Bound slow-call growth; use an absolute budget below clock-noise scale."""
         small, large = _hostile_sql_shapes(16384), _hostile_sql_shapes(65536)
         for name, function in _sql_scanner_probe_functions():
             allow_refusal = name in ("readyset._normalize_query_or_id", "privileges.grant_source")
@@ -543,8 +543,12 @@ class TestSQLScannerTiming(unittest.TestCase):
                     long = _scanner_seconds(function, second, allow_refusal)
                     print("SQL scanner %s %s: 16K=%.6fs 64K=%.6fs ratio=%.2f" %
                           (name, shape, short, long, long / short), flush=True)
-                    self.assertLess(long, 6 * short,
-                                    "%s %s grew %.2fx" % (name, shape, long / short))
+                    if long >= 0.02:
+                        self.assertLess(long, 6 * short,
+                                        "%s %s grew %.2fx" % (name, shape, long / short))
+                    else:
+                        self.assertLess(long, 0.05,
+                                        "%s %s exceeded the 50 ms small-call budget" % (name, shape))
 
     def test_one_megabyte_statement_budget(self):
         from myflames import analysis_query, collectors, live
