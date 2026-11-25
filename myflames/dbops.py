@@ -788,6 +788,14 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
         unclosed.append((active["start"], n))
     result = {"tokens": tokens, "comments": comments, "unclosed": unclosed, "issues": issues}
     if cache_key is not None:
+        # Different mode inputs can yield identical complete scans. Retain
+        # one result per interned meaning, not another large token list for
+        # every input key. Only canonical scans need their ids kept alive.
+        scan_key = _scan_cache_key(result, _cache)
+        shared = _cache.setdefault("scans", {}).setdefault(scan_key, result)
+        if shared is not result:
+            del _cache["scan_keys"][id(result)]
+        result = shared
         _cache[cache_key] = result
     return result
 
@@ -1038,11 +1046,13 @@ def _scan_cache_key(scan, cache):
     return saved[1]
 
 
-def _masked_fragment(sql, scan, start, end, _cache=None):
+def _masked_fragment(sql, scan, start, end, _cache=None, _scan_key=None):
     """Mask one source range using the server tokens, never rescan with a regex."""
     cache_key = None
     if _cache is not None:
-        cache_key = ("mask", sql, _scan_cache_key(scan, _cache), start, end)
+        if _scan_key is None:
+            _scan_key = _scan_cache_key(scan, _cache)
+        cache_key = ("mask", sql, _scan_key, start, end)
         try:
             cached = _cache.get(cache_key)
         except TypeError:
@@ -1116,6 +1126,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
                    ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect,
                    _cache=_cache, _framing_key=framing_key)
     cache_key = None
+    scan_key = None
     if _cache is not None:
         scan_key = _scan_cache_key(scan, _cache)
         # Equal complete scans produce equal units even when the original
@@ -1137,11 +1148,9 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
         # even on a fragment-cache hit, which does not run the helper body.
         framing = dict(framing, ends=[token[2] for token in framing["tokens"]])
         scan = dict(scan, ends=[token[2] for token in scan["tokens"]])
-        # These private copies differ only by their derived ends indexes.
-        # Carry the originals' identities instead of hashing their contents
-        # again, and retain the copies so their object ids cannot be reused.
-        _cache["scan_keys"][id(framing)] = (framing, framing_key)
-        _cache["scan_keys"][id(scan)] = (scan, scan_key)
+        # Pass the originals' integer keys to fragment lookups. The private
+        # copies and their ends indexes can die when this split finishes;
+        # retaining their object ids would keep every index alive too.
 
     def interval_index(ranges):
         starts, ends = [], []
@@ -1188,7 +1197,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
 
     def finish(end, next_start):
         start = state["start"]
-        code, idents, tokens = _masked_fragment(sql, scan, start, end, _cache=_cache)
+        code, idents, tokens = _masked_fragment(sql, scan, start, end, _cache=_cache, _scan_key=scan_key)
         # A skipped comment cannot mask SQL across separate COM_QUERYs.
         # In --force mode a later fragment could execute after the first
         # fragment's unclosed-comment error. Refuse this framing, including
@@ -1218,7 +1227,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             # mysql-8.4.0:client/readline.cc:75-95.
             if sys.platform == "win32" and client_engine != "mariadb" and "\r\n" in text:
                 issue(REASON_CRLF_TRANSPORT)
-            unused_code, unused_idents, client_tokens = _masked_fragment(sql, framing, start, end, _cache=_cache)
+            unused_code, unused_idents, client_tokens = _masked_fragment(
+                sql, framing, start, end, _cache=_cache, _scan_key=framing_key)
             out.append({"text": text, "start": start + lead, "end": start + lead + len(text),
                         "code": code, "idents": idents, "token_spans": tokens,
                         "client_token_spans": client_tokens,
@@ -1242,7 +1252,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             # when this DELIMITER is the last line of the run.
             # mysql-8.4.0:client/mysql.cc:2455-2471,2895-2902;
             # mariadb-11.8.9:sql/sql_lex.cc:2416-2467.
-            prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left, _cache=_cache)
+            prefix_code, unused_idents, unused_tokens = _masked_fragment(
+                sql, scan, state["start"], left, _cache=_cache, _scan_key=scan_key)
             ignored = not prefix_code and not overlaps(executed_comments, state["start"], left)
             if ignored:
                 consumed_delimiters.add(command.start(1))

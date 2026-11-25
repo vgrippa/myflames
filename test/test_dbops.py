@@ -973,6 +973,30 @@ class TestClassifyCache(unittest.TestCase):
         print('CLASSIFY_CACHE_INSERT chars=%d cached=%.6fs' % (len(large), seconds), flush=True)
         self.assertLess(seconds, 2.0)
 
+    def test_long_insert_cache_peak_memory(self):
+        import gc
+        import tracemalloc
+
+        row = "(1, '{\\\"name\\\": \\\"a\\\", \\\"v\\\": [1,2,3]}', 'it''s', \"q\\\"x\")"
+        sql = 'INSERT INTO t VALUES ' + ','.join([row] * 2000) + ';'
+        self.assertEqual(len(sql), 116021)
+        results, peaks = {}, {}
+        for enabled in (False, True):
+            # Trace each call independently: the SQL and the previous result
+            # predate tracing, while every temporary allocation in classify
+            # counts towards its peak. Collect cycles before either sample.
+            gc.collect()
+            tracemalloc.start()
+            try:
+                results[enabled] = dbops.classify(sql, _use_cache=enabled)
+                peaks[enabled] = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+        self.assertEqual(results[True], results[False])
+        print('CLASSIFY_CACHE_MEMORY chars=%d uncached=%d cached=%d ratio=%.2fx' %
+              (len(sql), peaks[False], peaks[True], peaks[True] / peaks[False]), flush=True)
+        self.assertLessEqual(peaks[True], peaks[False] * 1.5)
+
 
 class TestSelectFunctionSafety(unittest.TestCase):
     def test_administrative_and_unknown_calls_require_review_in_both_types(self):
