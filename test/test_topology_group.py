@@ -2949,6 +2949,33 @@ class TopologyReadTests(GroupCase):
         edge = report['map']['edges'][0]
         self.assertEqual((edge['to'], edge['state'], edge['label']), ('a', 'ONLINE', 'hostgroup 10'))
 
+    def test_map_proxysql_same_hostgroup_keeps_distinct_backend_endpoints_separate(self):
+        self.save('a', 'G', host='192.0.2.10')
+        db = member_fixture(UUID_B)
+        db['variables']['hostname'] = 'db.internal'
+        rows = (
+            {'hostgroup_id': '10', 'hostname': '192.0.2.10', 'port': '3306', 'status': 'ONLINE'},
+            {'hostgroup_id': '10', 'hostname': 'db.internal', 'port': '3306', 'status': 'OFFLINE_HARD'},
+        )
+        for servers in (rows, tuple(reversed(rows))):
+            with self.subTest(first=servers[0]['hostname']):
+                proxy = member_fixture(proxy='proxysql', servers=list(servers))
+                proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+                with self.clients({'active.example': proxy, '192.0.2.10': db}):
+                    report = self.read('map')
+                self.assert_map_schema(report)
+                edges = report['map']['edges']
+                self.assertEqual(len(edges), 2)
+                self.assertTrue(all(edge['from'] == 'active' and edge['to'] == 'a'
+                                    and edge['kind'] == 'proxy_route' and edge['label'] == 'hostgroup 10'
+                                    for edge in edges))
+                by_state = {edge['state']: edge for edge in edges}
+                self.assertEqual(set(by_state), {'ONLINE', 'OFFLINE_HARD'})
+                self.assertNotIn('reason', by_state['ONLINE'])
+                self.assertIn('out of traffic', by_state['OFFLINE_HARD']['reason'])
+                self.assertEqual((by_state['ONLINE']['evidence'], by_state['OFFLINE_HARD']['evidence']),
+                                 ('endpoint', 'hostname_port'))
+
     def test_map_proxysql_address_routes_with_router_alias_and_ambiguous_members(self):
         self.save('router', 'G', port=6446)
         self.save('proxy', 'G', port=6032)

@@ -1903,16 +1903,21 @@ After explicit refusal and validation errors (`ClientMissingError` /
 `WorkspaceHandler.do_POST` handles unexpected exceptions by endpoint kind.
 Endpoints in `ui._SQL_OUTCOME_PATHS` (`_WRITE_PATHS` plus
 `/api/table-data/apply`, `/api/table-data/cancel`, `/api/table-data/close`,
-`/api/editor/rollback`, `/api/editor/stop`, `/api/editor/close` and
-`/api/editor/use`) can send SQL (including `KILL QUERY`): any unexpected
-exception (including `TypeError`, `KeyError`, `AttributeError`,
-`RecursionError`, `OverflowError`, and socket disconnect or timeout errors)
-logs a redacted traceback and answers HTTP `500` with
-`ui._unexpected_error_message`: `"The request could not be completed. Its
+`/api/editor/rollback`, `/api/editor/stop`, `/api/editor/close`,
+`/api/editor/use`, `/api/lifecycle/cancel`, `/api/live/cancel` and
+`/api/import/csv/stop`) can send SQL (including `KILL QUERY`): any unexpected
+exception before the `200` response send begins (including `TypeError`,
+`KeyError`, `AttributeError`, `RecursionError`, `OverflowError`, and socket
+disconnect or timeout errors) logs a redacted traceback and answers HTTP `500`
+with `ui._unexpected_error_message`: `"The request could not be completed. Its
 outcome is unknown. Check the server state before trying again."`, never a
-`4xx` that reads as nothing sent. On read and non-SQL-sending endpoints,
-`(BrokenPipeError, ConnectionResetError, TimeoutError)` returns without
-writing; malformed-field exceptions (`TypeError`, `KeyError`, `AttributeError`,
+`4xx` that reads as nothing sent. Once `self._send(200, result)` has begun,
+transport disconnect or timeout errors (`BrokenPipeError`,
+`ConnectionResetError`, `ConnectionAbortedError`, `TimeoutError`,
+`socket.timeout`) end quietly with `close_connection = True`, no unexpected
+error log and no second response. On read and non-SQL-sending endpoints,
+`(BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError,
+socket.timeout)` returns with `close_connection = True` and without writing; malformed-field exceptions (`TypeError`, `KeyError`, `AttributeError`,
 `RecursionError`, `OverflowError`; JSON nesting recursion already maps to
 `ValueError`) answer HTTP `400` with `ui._unexpected_error_message`
 (`_PLAN_PATHS`: `"Could not render this plan. Try another view or the CLI."`;
@@ -1935,6 +1940,8 @@ characters (`64 * 1024`) before the truncation marker
 `test/test_workspace_api.py` (`test_request_shape_errors_are_logged_redacted_400s`,
 `test_other_backend_errors_remain_logged_redacted_500s`,
 `test_write_internal_errors_after_send_are_logged_redacted_500s`,
+`test_cancel_routes_unexpected_error_after_cancel_returns_500_outcome_unknown`,
+`test_sql_outcome_path_disconnect_during_200_send_and_error_before_send`,
 `test_reviewed_executor_readback_error_after_transport_send_is_500`,
 `test_read_with_malformed_field_keeps_logged_400`,
 `test_handler_error_log_redacts_sql_and_url_credentials`,
@@ -8973,7 +8980,11 @@ logs in.
     ProxySQL `proxy_route` edge `state` comes only from runtime rows
     (`status_source` `"config"` gives `state: None`), reading
     `stats_mysql_connection_pool` and monitors' `offline_hostgroup` columns in
-    `_map_probe`. The drawn `label` stays short (`"hostgroup N"` or
+    `_map_probe`. Map edges deduplicate on `(source, destination, kind, '' for
+    replication or label, target_key)`, where `target_key` is `('', 0)` except
+    for `proxy_route` edges, which include `(normalized_host.lower(), port)`
+    so distinct backends in the same hostgroup that resolve to the same saved
+    server keep separate edges with their own `state` and `reason`. The drawn `label` stays short (`"hostgroup N"` or
     `"hostgroup ?"`; `docs/schemas/topology-group-1.0.json`), while any
     explanation travels in the optional `reason` field (omitted when healthy;
     joined sentences for `"In the monitor's offline hostgroup."`,

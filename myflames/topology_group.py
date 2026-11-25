@@ -777,10 +777,10 @@ def _build_map(entries, probes, profiles):
             return found['profile_id'], evidence, False
         return peer(host, port, uuid, observer), None, False
 
-    def edge(observer, source, destination, kind, evidence, verified, state, label, reason=None):
+    def edge(observer, source, destination, kind, evidence, verified, state, label, reason=None, target_key=('', 0)):
         if not source or not destination or source == destination:
             return
-        key = (source, destination, kind, '' if kind == 'replication' else label)
+        key = (source, destination, kind, '' if kind == 'replication' else label, target_key)
         if kind == 'replication' and evidence == 'server_id' and not verified:
             label = 'server ID match, not verified'
         value = dict(**{'from': source, 'to': destination}, kind=kind, evidence=evidence,
@@ -872,7 +872,12 @@ def _build_map(entries, probes, profiles):
                          all(s in ('SHUNNED', 'SHUNNED_REPLICATION_LAG', 'SHUNNED_AWS_BGD',
                                    'OFFLINE_SOFT', 'OFFLINE_HARD') for s in group_states)}
             for backend in servers:
-                destination, evidence, verified = target(pid, backend.get('hostname'), backend.get('port'))
+                raw_host = backend.get('hostname')
+                backend_host = _map_host(raw_host)
+                if backend_host is None:
+                    backend_host = raw_host.strip() if isinstance(raw_host, str) else ''
+                backend_port = _map_port(backend.get('port')) or 0
+                destination, evidence, verified = target(pid, raw_host, backend.get('port'))
                 hostgroup = _number(backend.get('hostgroup_id'))
                 raw_state = None if backend.get('status_source') == 'config' else backend.get('status')
                 state = (raw_state if isinstance(raw_state, str) and (
@@ -893,7 +898,8 @@ def _build_map(entries, probes, profiles):
                     reasons.append('No ONLINE member in this hostgroup.')
                 label = 'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?')
                 edge(pid, pid, destination, 'proxy_route', evidence, verified, state, label,
-                     ' '.join(reasons) if reasons else None)
+                     ' '.join(reasons) if reasons else None,
+                     target_key=(backend_host.lower(), backend_port))
         if probe.get('kind') == 'readyset':
             upstreams = list(probe.get('upstreams') or [])
             if not upstreams:

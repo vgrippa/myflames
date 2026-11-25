@@ -3302,12 +3302,13 @@ class _HeaderDeadlineReader(io.RawIOBase):
 #: server, a store or a job, so the plan wording would mislead there.
 _PLAN_PATHS = ("/api/analyze", "/api/render", "/api/report", "/api/compare")
 
-#: Error reporting only: persistent-session actions have their own write
-#: policy and review handling rather than the generic _WRITE_PATHS dispatch.
-#: They can still send SQL, including KILL QUERY while ending a session.
+#: Error reporting only: persistent-session actions and job/import cancel
+#: routes have their own handling rather than the generic _WRITE_PATHS dispatch.
+#: They can still send SQL, including KILL QUERY while ending a session or job.
 _SQL_OUTCOME_PATHS = _WRITE_PATHS + ("/api/table-data/apply", "/api/table-data/cancel", "/api/table-data/close",
                                      "/api/editor/rollback", "/api/editor/stop", "/api/editor/close",
-                                     "/api/editor/use")
+                                     "/api/editor/use", "/api/lifecycle/cancel", "/api/live/cancel",
+                                     "/api/import/csv/stop")
 
 
 def _unexpected_error_message(path):
@@ -3688,6 +3689,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         session = self.path == "/api/session/save"
         large = session or self.path in _SCHEMA_VERSION_LARGE
         payload = None
+        sending = False
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= (MAX_SESSION_BODY if large else MAX_BODY) or self.headers.get("Transfer-Encoding"):
@@ -3706,6 +3708,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 result = self._cancellable_read(payload)
             else:
                 result = api_response(self.path, payload, self.server)
+            sending = True
             self._send(200, result)
         except read_cancel.CancelledRead:
             # The caller has gone away. No response and no error/fallback read.
@@ -3720,6 +3723,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             self._send(409 if exc.code in ("busy", "identity_mismatch", "too_many_sessions") else 400,
                        {"error": str(exc), "code": exc.code})
         except Exception as exc:
+            if sending and isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                                            TimeoutError, socket.timeout)):
+                # The 200 response send already began: end quietly with no log
+                # and no second response on the closed or written socket.
+                self.close_connection = True
+                return
             # SSH failures (sftp.py) name their reason; other exceptions with a
             # reason attribute (UnicodeError, SSLError, URLError) are not codes.
             reason = getattr(exc, "reason", None) if isinstance(exc, ConnectorError) else None
@@ -3741,7 +3750,9 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 # uncertain, including malformed-field exception types.
                 _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
                 self._send(500, {"error": _unexpected_error_message(self.path)})
-            elif isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            elif isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                                  TimeoutError, socket.timeout)):
+                self.close_connection = True
                 return
             elif isinstance(exc, (TypeError, KeyError, AttributeError, RecursionError, OverflowError)):
                 # Handlers may detect malformed request fields by indexing
