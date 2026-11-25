@@ -3202,6 +3202,183 @@ class TestRedaction(unittest.TestCase):
                 self.assertNotIn('S3cr3t', clean, (label, clean))
                 self.assertIn('[redacted]', clean)
 
+    def test_r352_custom_delimiter_fails_closed_when_later_unit_is_unclosed_or_has_issues(self):
+        # A custom boundary is trusted only when every later unit is also
+        # issue-free and closed under both backslash readings.
+        later_unclosed = (
+            ("later unit unclosed under backslash escapes",
+             'DELIMITER $$\nINSERT INTO cfg SET report_password = "first"$$\n'
+             'SELECT "x\\"$$\n'
+             'mysql client exited 1: ERROR 1064 (42000) at line 3: You have an error '
+             'in your SQL syntax; check the manual that corresponds to your MariaDB '
+             'server version for the right syntax to use near \'")S3cr3t\\\'tail"\' at line 3'),
+            ("later unit unclosed single quote under backslash escapes",
+             "DELIMITER //\nset\n  s3_secret_key:=\n  ',first$$end'//\n"
+             "SELECT 'a\\'//\n"
+             "mysql client exited 1: ERROR 1064 (42000) at line 3: You have an error "
+             "in your SQL syntax; check the manual that corresponds to your MariaDB "
+             "server version for the right syntax to use near '\",S3cr3t ON tail\"' at line 3//\n"),
+            ("later unit unclosed under both readings",
+             "DELIMITER //\nSET GLOBAL s3_secret_key = 'first'//\nSELECT 'S3cr3t"),
+        )
+        for label, raw in later_unclosed:
+            with self.subTest(case=label):
+                self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+                clean = dbops.redact(raw)
+                self.assertNotIn('first', clean)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertIn('[redacted]', clean)
+        # Clean scripts with closed, issue-free units keep their custom boundaries.
+        clean_script = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = 'first'$$\nSELECT 'keep'$$"
+        self.assertTrue(dbops._secret_variable_boundaries(clean_script))
+        self.assertEqual(dbops.redact(clean_script),
+                         clean_script.replace('first', '[redacted]'))
+
+    def test_r352_custom_delimiter_tail_hides_urls_errors_and_escaped_keywords(self):
+        # Cut URL credentials without '@', balanced ERROR 1064 echoes without a
+        # credential keyword, and JSON/Python-repr escaped whitespace before
+        # keywords (\nIDENTIFIED, \ts3_secret_key) all keep the custom-delimiter
+        # tail hidden.
+        tails = (
+            ("cut table option URL",
+             "CREATE TABLE fed (a INT) ENGINE=FEDERATED CONNECTION='mysql://fed:S3cr3t"),
+            ("cut URL inside line comment",
+             "-- mysql://fed:S3cr3t"),
+            ("cut URL in PREPARE",
+             "PREPARE s FROM '-- https://:S3cr3t$$"),
+            ("balanced ERROR 1064 near without keyword",
+             "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax; "
+             "check the manual that corresponds to your MySQL server version for the "
+             "right syntax to use near ''S3cr3t'' at line 1$$"),
+            ("pyrepr newline before IDENTIFIED",
+             'ConnectorError("CREATE USER/**/\'app\'@\'%\' -- n\\nIDENTIFIED BY \'S3cr3t\'")$$'),
+            ("pyrepr crlf before IDENTIFIED",
+             "ConnectorError('CREATE USER\\n  app@localhost\\r\\nIDENTIFIED # h\\nby \"S3cr3t\"')$$"),
+            ("pyrepr tab before USING",
+             'ConnectorError("ALTER USER u IDENTIFIED VIA p\\tUSING \'S3cr3t\'")$$'),
+            ("pyrepr newline before REPLACE",
+             'ConnectorError("ALTER USER u IDENTIFIED BY RANDOM PASSWORD\\nREPLACE \'S3cr3t\'")$$'),
+            ("pyrepr newline before inventory name",
+             'ConnectorError("SET GLOBAL\\ns3_secret_key = \'S3cr3t\'")$$'),
+        )
+        for label, tail in tails:
+            with self.subTest(case=label):
+                raw = "DELIMITER $$\nSET GLOBAL report_password = 'first'$$\n" + tail
+                clean = dbops.redact(raw)
+                self.assertEqual(clean, "DELIMITER $$\nSET GLOBAL report_password = '[redacted]'")
+                self.assertNotIn('first', clean)
+                self.assertNotIn('S3cr3t', clean)
+
+    def test_r352_overlapping_mispaired_quotes_fail_closed(self):
+        # Overlapping credential spans whose quote delimiters disagree or steal
+        # a closing quote must fail closed instead of exposing the trailing tail.
+        cases = (
+            ("SET PASSWORD account with swallowed double quote before =",
+             "SELECT 1 ;\n--------------\nCREATE USER 'SET PASSWORD'@'%' Identified\r\n"
+             'BY ",first\' OR \'1\'=\'1S3cr3t"\n--------------\n\n'
+             "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax; "
+             "check the manual that corresponds to your MariaDB server version for "
+             "the right syntax to use near ''1'='1S3cr3t\"' at line 1"),
+            ("SET PASSWORD account with 3-way overlapping quotes",
+             "DELIMITER go\n--------------\nCREATE USER 'SET PASSWORD'@localhost IDENTIFIED\r\n"
+             'BY "S3cr3t\' OR \'1\'=\'1tail"\n--------------\n\n'
+             "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax; "
+             "check the manual that corresponds to your MariaDB server version for "
+             "the right syntax to use near '\"S3cr3t' OR '1'='1tail\"' at line 1 go"),
+            ("SET PASSWORD account overlapping commented REPLACE",
+             "ALTER USER 'SET PASSWORD'@localhost IDENTIFIED BY \"a' OR '1'='1\"/**/REPLACE/**/' S3cr3t';"),
+            ("SET PASSWORD TO RANDOM REPLACE with near 1064 echo",
+             'SET PASSWORD FOR app TO RANDOM REPLACE "a\' OR \'1\'=\'1S3cr3t"\n'
+             "ERROR 1064 (42000): You have an error in your SQL syntax; check the "
+             "manual that corresponds to your MySQL server version for the right "
+             "syntax to use near 'OR '1'='1S3cr3t\"' at line 1;"),
+            ("cut SET variable whose closing quote starts SET PASSWORD (double-quoted REPLACE)",
+             "Set\n  @@GLOBAL.WSREP_SST_AUTH\t=')a/*b;SET PASSWORD = ',c' /* c */ REPLACE \" S3cr3t\";\n"
+             "SET PASSWORD = ',c' /* c */ REPLACE \" S3cr3t\";"),
+            ("cut SET variable whose closing quote starts SET PASSWORD (single-quoted REPLACE)",
+             "SET @@GLOBAL.WSREP_SST_AUTH = ')a;SET PASSWORD = ',b' /* c */ REPLACE 'S3cr3t';"),
+            ("nested closing-quote theft inside multi-token SET variable",
+             "CREATE PROCEDURE p() BEGIN SET GLOBAL keyring_hashicorp_secret_id = 'cut;\n"
+             "SET PASSWORD = 'a'' -- b' # h\nREPLACE 'S3cr3t';\n"
+             "SET PASSWORD = 'a'' -- b' # h\nREPLACE 'S3cr3t';\nSELECT 1 /*!50000 , 2 */"),
+            ("prose apostrophe plus nested SET PASSWORD closing-quote theft",
+             "SET -- n\nfile_key_management_filekey ='a IDENTIFIED BY b'\n"
+             "It didn't work\nSELECT 'x' AS y\n--------------\n"
+             "SET PASSWORD =' S3cr3t'' -- tail'\n--------------\n\n"
+             "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax; "
+             "check the manual that corresponds to your MariaDB server version for "
+             "the right syntax to use near 'S3cr3t'' -- tail'' at line 1\n"),
+            ("collapsed semicolon lets SET PASSWORD account reach later assignment",
+             "DELIMITER $$\nALTER USER 'SET PASSWORD'@'%' IDENTIFIED WITH mysql_native_password\n"
+             "  AS 'cut$$\nERROR 1064 (42000) at line 1: You have an error in your SQL "
+             "syntax; check the manual that corresponds to your MySQL server version "
+             "for the right syntax to use near '='S3cr3t'' at line 1$$\n"),
+            ("prose apostrophe plus embedded double quote before hex inventory assignment",
+             "DELIMITER $$\nCouldn't apply: SET PASSWORD = 'a\\\\\"b' REPLACE ';c\\'d'$$\n"
+             "SET timestamp=1763892000;\n"
+             "INSERT INTO cfg SET report_password = _binary 0x533363723374;$$\n"),
+        )
+        for label, raw in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean, (label, clean))
+                self.assertNotIn('533363723374', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+        # Valid nested expressions without quote-parity conflicts keep later SQL intact.
+        for valid in (
+                "SET GLOBAL wsrep_sst_auth = CONCAT('a', PASSWORD('S3cr3t')); SELECT 1",
+                'SET GLOBAL wsrep_sst_auth = "SELECT PASSWORD(\'S3cr3t\')"; SELECT 1',
+                "SET GLOBAL wsrep_sst_auth = 'SELECT PASSWORD(''S3cr3t'')'; SELECT 1"):
+            with self.subTest(valid=valid):
+                clean = dbops.redact(valid)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertTrue(clean.endswith('; SELECT 1'), clean)
+
+    def test_r352_charset_introduced_hex_and_bit_literals_redacted(self):
+        literals = (
+            ("_binary 0x533363723374", "533363723374"),
+            ("_utf8mb4 0x533363723374", "533363723374"),
+            ("_utf8mb4 X'533363723374'", "533363723374"),
+            ("_binary x'533363723374'", "533363723374"),
+            ("_binary 0b01110111", "01110111"),
+            ("_binary B'01110111'", "01110111"),
+        )
+        for label, prefix, tail in (
+                ('identified_by', 'CREATE USER u IDENTIFIED BY ', ''),
+                ('set_password', 'SET PASSWORD = ', ''),
+                ('master_password', 'CHANGE MASTER TO MASTER_PASSWORD = ', ''),
+                ('report_password', 'INSERT INTO cfg SET report_password = ', ''),
+                ('random_replace', 'ALTER USER u IDENTIFIED BY RANDOM PASSWORD REPLACE ', '')):
+            for literal, secret in literals:
+                with self.subTest(clause=label, literal=literal):
+                    raw = prefix + literal + tail + '; SELECT 37'
+                    clean = dbops.redact(raw)
+                    self.assertNotIn(secret, clean)
+                    self.assertIn('[redacted]', clean)
+                    self.assertTrue(clean.endswith(tail + '; SELECT 37'), clean)
+        ordinary = "SELECT _binary 0x533363723374, _utf8mb4 X'533363723374'"
+        self.assertEqual(dbops.redact(ordinary), ordinary)
+
+    def test_r352_nested_overlap_redaction_stays_linear(self):
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "text = 'SET GLOBAL wsrep_sst_auth = CONCAT(' + \"PASSWORD('x'), \" * 8000 + \"'z'); SELECT 1\"\n"
+            "began = time.perf_counter()\n"
+            "clean = dbops.redact(text)\n"
+            "elapsed = time.perf_counter() - began\n"
+            "assert \"'x'\" not in clean and clean.endswith('; SELECT 1')\n"
+            "print(elapsed)\n")
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('Nested PASSWORD overlap check exceeded the 10 s deadline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        elapsed = float(result.stdout.strip())
+        print('R352_NESTED_OVERLAP_8K_TIMING elapsed=%.6fs' % elapsed, flush=True)
+        self.assertLess(elapsed, 1.0)
+
     def test_r352_replace_chain_100k_clauses_under_one_second(self):
         # Walking a REPLACE chain once keeps both scans linear even on a
         # 100,000-clause chain.
