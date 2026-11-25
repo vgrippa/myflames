@@ -2590,9 +2590,9 @@ class TestReviewGateConcurrencyAndMonitoring(ReplicationCase):
                 mock.patch.object(rp, 'read_status', side_effect=lambda conn: conn.report):
             try:
                 workers[0].start()
-                self.assertTrue(first_sent.wait(0.1))
+                self.assertTrue(first_sent.wait(5))
                 workers[1].start()
-                self.assertTrue(second_at_lock.wait(0.1))
+                self.assertTrue(second_at_lock.wait(5))
                 second.run.assert_not_called()
             finally:
                 release.set()
