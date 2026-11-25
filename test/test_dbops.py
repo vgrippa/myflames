@@ -39,6 +39,35 @@ class TempHome(unittest.TestCase):
         self.store = WorkspaceStore()
 
 
+def _legacy_client_named_command(sql, start, delimiter, across_lines=False, **unused):
+    """Frozen prefix lookup, independent of the lexer's landing-position cache."""
+    at, after_comment = start, False
+    while True:
+        while at < len(sql) and sql[at] in (dbops._CLIENT_SPACE if across_lines else " \t\r\f\v"):
+            at += 1
+        if across_lines and (sql.startswith("#", at) or (sql.startswith("--", at) and
+                (at + 2 == len(sql) or sql[at + 2] in dbops._CLIENT_SPACE))):
+            end = sql.find("\n", at)
+            if end < 0:
+                return None
+            at, after_comment = end + 1, True
+            continue
+        if not sql.startswith("/*", at):
+            break
+        end = sql.find("*/", at + 2)
+        if end < 0:
+            return None
+        at, after_comment = end + 2, True
+    command = dbops._NAMED_CLIENT_COMMAND.match(sql, at)
+    if command is None:
+        return None
+    name, end = command.group().upper(), command.end()
+    if name != "DELIMITER" and end < len(sql) and sql[end] not in dbops._CLIENT_SPACE and not (
+            delimiter is not None and sql.startswith(delimiter, end)):
+        return None
+    return at, name, after_comment
+
+
 def _legacy_split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False,
                      engine=None, server_version=None, unknown_execute=True, wsrep_on=None,
                      ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None,
@@ -206,6 +235,11 @@ def _splitter_comment_probe(size):
     return head + "/*!99999;" * ((size - len(head) - 3) // 9) + " */"
 
 
+def _splitter_client_comment_probe(repeats, statement='SELECT 1'):
+    return ('DELIMITER $$\n' + '$$/*! ' * repeats + ' */' +
+            '/* */' * (repeats * 20) + '\n' + statement + '$$\n')
+
+
 # The supplied T1 repro's mysqldump shape, including conditional comments,
 # session settings, table data and per-table trigger DELIMITER changes.
 _SPLITTER_DUMP_HEADER = """-- MySQL dump 10.13  Distrib 8.4.3, for Linux (x86_64)
@@ -270,6 +304,13 @@ class TestSplitterScaling(unittest.TestCase):
         corpus.extend((path.read_text(encoding='utf-8'), {})
                       for path in sorted((root / 'test/fixtures/dumps').glob('*.sql')))
         corpus.append((_splitter_dump(8), {}))
+        corpus.extend((_splitter_client_comment_probe(repeats), {}) for repeats in (1, 16, 250, 500))
+        # Shared suffixes must retain command issues, whitespace rules and
+        # EOF failures, including line comments in the cross-line lookup.
+        for suffix in ('charset$$', 'sandbox$$', 'DELIMITER //\nSELECT 1//',
+                       '# note\n-- note\ncharset$$', '--tail\ncharset$$',
+                       '\n\ncharset$$', '/* unterminated', '# unterminated', '-- unterminated'):
+            corpus.append(('DELIMITER $$\n' + '$$/*! ' * 4 + ' */' + '/* */' * 8 + suffix, {}))
         # Include nested/overlapping comments, issue positions discovered at
         # comment close, consumed prefixes, invalid commands and EOF ranges.
         fragments = (
@@ -317,12 +358,72 @@ class TestSplitterScaling(unittest.TestCase):
                 options = dict(fixture_mode, **mode)
                 with self.subTest(case=index, mode=options):
                     expected_prefixes, actual_prefixes = [], []
-                    expected = _legacy_split_statements(sql, discarded_prefixes=expected_prefixes, **options)
+                    # Keep both the splitter and its prefix lookahead frozen;
+                    # sharing the changed helper would conceal lexer drift.
+                    with mock.patch.object(dbops, '_client_named_command', _legacy_client_named_command):
+                        expected = _legacy_split_statements(sql, discarded_prefixes=expected_prefixes, **options)
                     actual = dbops.split_statements(sql, discarded_prefixes=actual_prefixes, **options)
                     self.assertEqual(actual, expected)
                     self.assertEqual(actual_prefixes, expected_prefixes)
                     comparisons += 1
         print('R352_SPLITTER_EQUIVALENCE cases=%d comparisons=%d' % (len(corpus), comparisons), flush=True)
+
+    def test_comment_landings_preserve_command_context(self):
+        for sql in ('/* */ charset//', '/* */\ncharset//', '/* */# note\ncharset//'):
+            cache = {}
+            for across_lines in (True, False, True):
+                for delimiter in ('//', ';', '//'):
+                    with self.subTest(sql=sql, across_lines=across_lines, delimiter=delimiter):
+                        expected = _legacy_client_named_command(sql, 0, delimiter, across_lines)
+                        self.assertEqual(dbops._client_named_command(
+                            sql, 0, delimiter, across_lines, _comment_skips=cache), expected)
+            # Reaching the command directly must not inherit evidence of a
+            # comment skipped by an earlier lookup from a different head.
+            at = sql.index('charset')
+            self.assertEqual(dbops._client_named_command(sql, at, '//', _comment_skips=cache),
+                             (at, 'CHARSET', False))
+
+    def test_client_comment_skip_scaling_and_redact_budget(self):
+        # G4: each delimiter inside one executable comment looks past the
+        # same long suffix. Time both the editor splitter and its redaction
+        # caller; generating text and starting the process are not timed.
+        code = (
+            "import json, statistics, sys, time\n"
+            "sys.path.insert(0, 'test')\n"
+            "from test_dbops import _splitter_client_comment_probe\n"
+            "from myflames import dbops\n"
+            "rows = []\n"
+            "for name in ('split_statements', 'redact'):\n"
+            "    statement = 'SELECT 1' if name == 'split_statements' else \"SET wsrep_sst_auth = 'g4-private'\"\n"
+            "    values = [_splitter_client_comment_probe(n, statement) for n in (250, 1000)]\n"
+            "    samples = [[], []]\n"
+            "    for repeat in range(3):\n"
+            "        for index in ((0, 1) if repeat % 2 == 0 else (1, 0)):\n"
+            "            began = time.perf_counter()\n"
+            "            result = getattr(dbops, name)(values[index])\n"
+            "            samples[index].append(time.perf_counter() - began)\n"
+            "            if name == 'redact':\n"
+            "                assert 'g4-private' not in result and '[redacted]' in result\n"
+            "            else:\n"
+            "                assert result[-1]['text'].endswith('SELECT 1')\n"
+            "    medians = [statistics.median(group) for group in samples]\n"
+            "    rows.append({'operation': name, 'characters': list(map(len, values)),\n"
+            "                 'medians': medians, 'growth': medians[1] / medians[0]})\n"
+            "print(json.dumps(rows))\n")
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                                    cwd=str(Path(__file__).resolve().parent.parent),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=25, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('G4 comment-prefix timings exceeded the 25 s deadline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for row in json.loads(result.stdout):
+            with self.subTest(operation=row['operation']):
+                print('R352_CLIENT_COMMENT_TIMING %s' % json.dumps(row), flush=True)
+                self.assertLess(row['growth'], 5)
+                if row['operation'] == 'redact':
+                    self.assertLess(row['medians'][1], 0.5)
 
     def test_custom_boundary_semicolon_budget_fails_closed(self):
         suffix = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'value-private'//\n"
@@ -733,6 +834,81 @@ class TestClassifyCache(unittest.TestCase):
         actual = dbops.classify(sql, **options)
         self.assertEqual(actual, expected)
 
+    def assertHelperCacheSeparates(self, helper, sql, first, second):
+        options = (first, second)
+        expected = [helper(sql, **reading) for reading in options]
+        self.assertNotEqual(expected[0], expected[1], 'probe must distinguish the readings')
+        # A wrong key can conceal either reading, depending on which comes
+        # first. Use a fresh shared cache for each ordering.
+        for order in ((0, 1), (1, 0)):
+            cache = {}
+            for index in order:
+                self.assertEqual(helper(sql, _cache=cache, **options[index]), expected[index])
+
+    def test_unclosed_delimiter_argument_keeps_client_family_refusal(self):
+        # Both scans can be identical while get_arg returns a different
+        # delimiter for MySQL and MariaDB. Reusing the first split must not
+        # turn the other client's malformed delimiter into a safe SELECT.
+        sql = "delimiter '$$\nSELECT 1"
+        uncached = dbops.classify(sql, _use_cache=False)
+        cached = dbops.classify(sql)
+        self.assertEqual(uncached['kind'], 'risky')
+        self.assertEqual(cached['kind'], 'risky')
+        self.assertEqual(cached, uncached)
+
+    def test_lexer_cache_separates_effective_options(self):
+        # Several options stay constant within classify, so even a large
+        # classify corpus cannot exercise their shared-cache key boundaries.
+        cases = (
+            ('backslash_escapes', "SELECT 'a\\'b'",
+             {'backslash_escapes': True}, {'backslash_escapes': False}),
+            ('engine', '/*M! SELECT 1 */', {'engine': 'mysql'}, {'engine': 'mariadb'}),
+            ('dollar_quotes', 'SELECT $tag$a;$tag$',
+             {'dollar_quotes': False}, {'dollar_quotes': True}),
+            ('client', 'SELECT 1;',
+             {'client': False, 'client_delimiter': ';'}, {'client': True, 'client_delimiter': ';'}),
+            ('client_delimiter', 'SELECT 1; SELECT 2$$',
+             {'client': True, 'client_delimiter': ';'}, {'client': True, 'client_delimiter': '$$'}),
+            ('ansi_quotes', 'SELECT "name"', {'ansi_quotes': False}, {'ansi_quotes': True}),
+            ('mssql', 'SELECT [name]', {'mssql': False}, {'mssql': True}),
+            ('client_engine', '/*M! SELECT 1 */',
+             {'client': True, 'client_engine': 'mysql'}, {'client': True, 'client_engine': 'mariadb'}),
+            ('version_id', '/*!80001 SELECT 1 */',
+             {'engine': 'mysql', 'server_version': '8.0.0', 'comment_dialect': 'mysql'},
+             {'engine': 'mysql', 'server_version': '8.0.2', 'comment_dialect': 'mysql'}),
+            ('unknown_execute', '/*!999999 SELECT 1 */',
+             {'unknown_execute': False}, {'unknown_execute': True}),
+            ('wsrep_on', '/*!99997 SET @x=1 */',
+             {'engine': 'mariadb', 'server_version': '11.4.13', 'wsrep_on': False},
+             {'engine': 'mariadb', 'server_version': '11.4.13', 'wsrep_on': True}),
+            ('comment_dialect', '/*!100000SELECT 1 */',
+             {'comment_dialect': 'mysql'}, {'comment_dialect': 'mariadb'}),
+        )
+        for field, sql, first, second in cases:
+            with self.subTest(field=field):
+                self.assertHelperCacheSeparates(dbops.lex_sql, sql, first, second)
+
+    def test_split_cache_separates_delimiters_and_scan_evidence(self):
+        cases = (
+            ('delimiter', 'SELECT 1', {'delimiter': ';'}, {'delimiter': '$$'}),
+            ('client_engine', "delimiter '$$\nSELECT 1",
+             {'client_engine': 'mysql'}, {'client_engine': 'mariadb'}),
+            ('framing_key', 'SELECT "name"',
+             {'client_engine': 'mariadb', 'client_ansi_quotes': False},
+             {'client_engine': 'mariadb', 'client_ansi_quotes': True}),
+            ('scan_key', 'SELECT "name"', {'ansi_quotes': False}, {'ansi_quotes': True}),
+        )
+        for field, sql, first, second in cases:
+            with self.subTest(field=field):
+                self.assertHelperCacheSeparates(dbops.split_statements, sql, first, second)
+
+    def test_client_readings_keep_separate_framing_maps(self):
+        # Backslash readings disagree about the quoted comment body and
+        # therefore which later DELIMITER lines frame the server scan.
+        sql = ('/*!999999 SELECT "a\\"b" */;\n'
+               "DELIMITER '$$'\nSELECT 'x;$$'$$\nDELIMITER ;\n")
+        self.assertCacheEquivalent(sql, {})
+
     def test_fixture_and_existing_input_equivalence(self):
         corpus = _classify_cache_corpus()
         modes = _classify_cache_modes()
@@ -842,6 +1018,14 @@ class TestClassifyCache(unittest.TestCase):
                 self.assertIsInstance(other, int)
                 self.assertNotIn(other, keys)
                 keys.add(other)
+
+        # Equal token counts do not imply equal token roles. In particular,
+        # a code span must never reuse a comment's cached safety evidence.
+        different = copy.deepcopy(scan)
+        kind, start, end = different['tokens'][0]
+        different['tokens'][0] = ('code', start, end)
+        self.assertNotEqual(kind, 'code')
+        self.assertNotIn(dbops._scan_cache_key(different, cache), keys)
 
     def test_shared_scan_keys_keep_distinct_sql_text(self):
         cache, keys, fragments, units = {}, [], [], []
@@ -1119,6 +1303,17 @@ class TestSelectFunctionSafety(unittest.TestCase):
 
 class TestClassify(unittest.TestCase):
     maxDiff = None
+
+    def test_parenthesized_set_is_unreadable_and_never_a_read(self):
+        for sql in ('(SET x=1)', '((SET x = 1))', 'EXPLAIN (SET x=1)',
+                    'EXPLAIN ANALYZE ((SET x=1))', 'SET1 x=1'):
+            for enabled in (False, True):
+                with self.subTest(sql=sql, cached=enabled):
+                    verdict = dbops.classify(sql, _use_cache=enabled)
+                    self.assertEqual((verdict['kind'], verdict['category']), ('risky', 'unknown'))
+                    self.assertIn('myflames could not read this SET statement.', verdict['reasons'])
+                    self.assertTrue(all(stmt['kind'] == 'risky' for stmt in verdict['statements']))
+                    self.assertEqual(dbops.decide(verdict, 'development', read_only=True)['action'], 'refuse')
 
     def test_native_explain_formats_are_reads_under_both_policies(self):
         statements = (

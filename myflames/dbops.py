@@ -475,6 +475,9 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
     n, pos, code_start = len(sql), 0, 0
     active, pending = None, False
     command_start = 0
+    # Unit heads inside executable comments can all look past the same
+    # trailing comments. Share their landing positions within this scan.
+    command_comment_skips = {} if client else None
 
     def token(kind, start, end):
         if code_start < start:
@@ -538,7 +541,8 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 # pending or open a quote. A DELIMITER consumed by our own
                 # splitter loses this issue only after the server reading
                 # proves that the discarded prefix contains no SQL.
-                command = _client_named_command(sql, pos, client_delimiter, across_lines=True)
+                command = _client_named_command(sql, pos, client_delimiter, across_lines=True,
+                                                _comment_skips=command_comment_skips)
                 if command is not None and command[2]:
                     issues.append((command[0], REASON_NAMED_CLIENT_COMMAND % command[1]))
             if client_delimiter is not None and line_start and not pending and active is None:
@@ -565,7 +569,8 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 # add_line, even when those bytes are executable SQL or
                 # contain quotes. Refuse instead of changing the reviewed
                 # text or trying to retain the command's discarded tail.
-                command = _client_named_command(sql, pos, client_delimiter)
+                command = _client_named_command(sql, pos, client_delimiter,
+                                                _comment_skips=command_comment_skips)
                 if command is not None:
                     at, name, after_comment = command
                     if not pending or after_comment:
@@ -842,7 +847,7 @@ _COMMENT_COMMAND_LINE = re.compile(
     r"nowarning|resetconnection|query_attributes|ssl_session_data_print|costs|\?)", re.I | re.ASCII)
 
 
-def _client_named_command(sql, start, delimiter, across_lines=False):
+def _client_named_command(sql, start, delimiter, across_lines=False, _comment_skips=None):
     """A command at a line/unit head, conservatively skipping block comments.
 
     mysql-8.4.0 client/mysql.cc:2453-2464,2577-2593 runs this lookup
@@ -853,22 +858,38 @@ def _client_named_command(sql, start, delimiter, across_lines=False):
     checks keep their bounded lookahead while a statement is pending.
     """
     at, after_comment = start, False
+    skipped = []
     while True:
+        # Cache only the raw comment-prefix landing, never the command:
+        # DELIMITER can change during a scan. Line-local and cross-line
+        # lookups must also keep separate entries. Every recorded prefix
+        # skips a comment, preserving after_comment on a cache hit.
+        key = (across_lines, at)
+        if _comment_skips is not None and key in _comment_skips:
+            at, after_comment = _comment_skips[key], True
+            break
         while at < len(sql) and sql[at] in (_CLIENT_SPACE if across_lines else " \t\r\f\v"):
             at += 1
         if across_lines and (sql.startswith("#", at) or (sql.startswith("--", at) and
                 (at + 2 == len(sql) or sql[at + 2] in _CLIENT_SPACE))):
+            skipped.append(key)
             end = sql.find("\n", at)
             if end < 0:
-                return None
+                at = len(sql)
+                break
             at, after_comment = end + 1, True
             continue
         if not sql.startswith("/*", at):
             break
+        skipped.append(key)
         end = sql.find("*/", at + 2)
         if end < 0:
-            return None
+            at = len(sql)
+            break
         at, after_comment = end + 2, True
+    if _comment_skips is not None:
+        for key in skipped:
+            _comment_skips[key] = at
     command = _NAMED_CLIENT_COMMAND.match(sql, at)
     if command is None:
         return None
@@ -1759,7 +1780,10 @@ def _set_statement_for(flat):
 
 
 def _set_checks(upper, idents):
-    rest = upper[re.match(r"\s*SET\b", upper).end():]
+    head = re.match(r"\s*SET\b", upper)
+    if head is None:
+        return _verdict("risky", "unknown", "myflames could not read this SET statement.")
+    rest = upper[head.end():]
     if re.match(r"\s*PASSWORD\b", rest):
         return _verdict("risky", "account", "SET PASSWORD changes an account password.")
     if re.match(r"\s*DEFAULT\s+ROLE\b", rest):
@@ -1855,6 +1879,10 @@ def _classify_code(upper, idents, key_columns, native_functions=None):
             if m.group(1).startswith("INTO"):
                 return _verdict("write", "session", "EXPLAIN ... INTO assigns the plan to a user variable.")
             rest = rest[m.end():]
+        if re.match(r"\s*\([\s(]*SET\b", rest):
+            # Keep an unreadable SET behind EXPLAIN on the same refusal
+            # path as a parenthesized SET at the statement head.
+            return _set_checks(rest, idents)
         if analyzed and rest.strip():
             inner = _classify_code(rest, idents, key_columns, native_functions)
             inner["reasons"] = ["EXPLAIN ANALYZE runs the statement."] + inner["reasons"]
