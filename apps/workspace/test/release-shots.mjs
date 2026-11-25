@@ -7,7 +7,9 @@
 // throwaway HOME and store. Every database read is answered from the fixtures
 // and mocks the suites already use (group-connections.mjs, cluster.mjs,
 // topology-place.mjs, topology-appearance.mjs, settings-page.mjs,
-// client-tools.mjs, editor-toolbar-layout.mjs, table-data.mjs); nothing is requested outside
+// client-tools.mjs, editor-toolbar-layout.mjs, table-data.mjs, plan-editor-layout.mjs,
+// update-check.mjs, health.mjs, config.mjs, schema-diagram.mjs and mermaid-export.mjs);
+// nothing is requested outside
 // 127.0.0.1. A view that cannot be reached fails the run (non-zero exit, the
 // view named) instead of saving an empty frame.
 //
@@ -182,6 +184,10 @@ const topologyReports = {
           engine: null, product: null, version: null }),
         topoNode("p-ic-5", { label: "db-1-router", host: "10.0.0.15", port: 6446, role: "primary",
           server_uuid: "11111111-1111-1111-1111-111111111111", duplicate_of: "p-ic-1" }),
+        // topology-place.mjs's offline route fixture, retaining its short
+        // hostgroup label and the longer reason only in the tooltip/list.
+        topoNode("proxy", { label: "ProxySQL", host: "10.0.0.16", port: 6032,
+          role: "proxy", product: "ProxySQL", version: "3.0.2" }),
         { id: topoPeerId, kind: "peer", profile_id: null, label: "10.0.0.77:3306", host: "10.0.0.77", port: 3306,
           server_uuid: null, seen_by: ["p-ic-2"], reason: "Not in this group" },
       ],
@@ -190,6 +196,9 @@ const topologyReports = {
         { from: "p-ic-1", to: "p-ic-3", kind: "replication", evidence: "server_uuid", verified: true, state: "running", label: "Replication" },
         { from: "p-ic-1", to: topoPeerId, kind: "replication", evidence: "endpoint", verified: false, state: null, label: "Replication" },
         { from: "p-ic-5", to: "p-ic-1", kind: "alias", evidence: "server_uuid", verified: false, state: null, label: "same server (alias)" },
+        { from: "proxy", to: "p-ic-1", kind: "proxy_route", evidence: "endpoint", verified: false,
+          state: "OFFLINE_HARD", label: "hostgroup 40",
+          reason: "ProxySQL has taken this backend out of traffic. No ONLINE member in this hostgroup." },
       ],
       clusters: [
         { id: GR_CLUSTER, kind: "group_replication", name: "cccccccc-cccc-cccc-cccc-cccccccccccc",
@@ -356,8 +365,8 @@ const until = async (fn, ...args) => {
 
 const manifest = [];
 /** Shoot the current page as *name* at 1440 and 720 px, light and dark. */
-async function shoot(name) {
-  const written = await layoutMatrix(page, out, name);
+async function shoot(name, options) {
+  const written = await layoutMatrix(page, out, name, options);
   for (const file of written) {
     const bytes = await fs.readFile(file);
     const parsed = path.basename(file, ".png").match(/^(.*)-(\d+)-(light|dark)$/);
@@ -370,7 +379,7 @@ async function shoot(name) {
 }
 
 /** Run *reach* and shoot *name*; a failure names the view and stops the run. */
-async function view(name, reach) {
+async function view(name, reach, options) {
   try {
     await reach();
   } catch (error) {
@@ -379,7 +388,7 @@ async function view(name, reach) {
     throw error;
   }
   await until(() => !document.querySelector(".spinner, [aria-busy=true]")).catch(() => {});
-  await shoot(name);
+  await shoot(name, options);
 }
 /** Set the Cluster read's answer and refresh like cluster.mjs's refreshTo:
  * fail unless exactly one new read arrived and the view settled. */
@@ -478,6 +487,11 @@ try {
     await until(() => !!document.querySelector('.topology-map-diagram button[data-node="peer:10.0.0.77:3306"]'));
     await until(() => !!document.querySelector('.topology-map-diagram .topology-map-edge[data-verified="true"]')
       && !!document.querySelector('.topology-map-diagram .topology-map-edge[data-verified="false"]'));
+    await until(() => {
+      const route = document.querySelector('.topology-map-edge[data-edge-kind="proxy_route"]');
+      return route?.classList.contains("tone-problem") && route.querySelector("title")?.textContent.includes("OFFLINE_HARD")
+        && /^hostgroup 40(?: · OFFLINE_HARD)?$/.test(route.querySelector("text")?.textContent.trim() || "");
+    });
   });
 
   // topology-members: the Members tab with roles, state, version, read-only
@@ -674,6 +688,164 @@ try {
     }, "Bob");
     await until(() => document.querySelector(".table-data-actions .primary")?.textContent.trim() === "Review 1 change");
   });
+
+  await view("visual-explain", async () => {
+    // plan-editor-layout.mjs imports this recorded JSON through the file picker.
+    await page.click('.main-nav button[data-place="home"]');
+    await page.click('button[aria-label="Import plan"]');
+    const file = await page.waitForSelector('input[aria-label="Choose JSON plan file"]');
+    await file.uploadFile(path.join(root, "test/mysql-explain-complex-join.json"));
+    await until(() => !document.querySelector(".import-dialog"));
+    await page.waitForSelector('.plan-canvas .plan-chart svg.wb-plan[data-wired="true"]', { visible: true });
+    await clickButton("Visual Explain", ".chart-views ");
+    const viewport = ".plan-canvas .plan-chart .wb-viewport";
+    const before = await page.$eval(viewport, (el) => el.getAttribute("viewBox"));
+    await page.click('.plan-canvas .chart-toolbar [data-action="in"]');
+    await until((selector, previous) => document.querySelector(selector)?.getAttribute("viewBox") !== previous, viewport, before);
+    await until(() => document.querySelector('.plan-canvas [data-action="reset"]')?.textContent.trim() === "125%");
+  });
+
+  await view("update-dialog", async () => {
+    // update-check.mjs's available-release reply and Download flow. Install
+    // controls are never used; checking only reads this in-memory reply.
+    const current = await page.$eval('meta[name="myflames-version"]', (el) => el.content);
+    // Stay newer than the release being captured, including a release build
+    // that has already been bumped to 3.5.2. No real release is advertised.
+    const [major, minor, patch] = current.split(".").map(Number);
+    const latest = `${major}.${minor}.${patch + 1}`;
+    const checked = new Date().toISOString();
+    extra["/api/app/update/check"] = ok({
+      schema_version: "app-update-1.0", current_version: current,
+      latest_version: latest, update_available: true,
+      release_title: `myflames ${latest}`, published_at: "", checked_at: checked,
+      release_notes: "## Release highlights\n\n- **Group connections** open a group as one connection, with `sql_mode` inline code.\n- A second bullet with <img src=x onerror=alert(1)> inside.\n\nA closing paragraph.",
+      html_url: "https://github.com/vgrippa/myflames/releases",
+      asset_name: null, asset_url: null, asset_size: null,
+      last_check: { checked_at: checked, outcome: "available", current_version: current, latest_version: latest, reason: null },
+    });
+    await page.click('button[aria-label="Settings"]');
+    await openSettingsSection("Updates and news");
+    await page.click(".settings-update-status .update-check-button");
+    await page.waitForSelector(".settings-update-status .update-check-download", { visible: true });
+    await page.click(".settings-update-status .update-check-download");
+    await page.waitForSelector("dialog.update-dialog[open] .update-notes-content", { visible: true });
+    await until(() => document.querySelectorAll(".update-notes-content li").length === 2
+      && !!document.querySelector(".update-notes-content strong")
+      && !!document.querySelector(".update-notes-content code"));
+    assert.equal(await page.$(".update-notes-content img"), null, "release-note HTML stays text");
+  });
+  await clickButton("Later", "dialog.update-dialog ");
+  await until(() => !document.querySelector("dialog.update-dialog"));
+  await page.keyboard.press("Escape");
+  await until(() => !document.querySelector(".settings-page"));
+
+  await view("health-watch", async () => {
+    // health.mjs's watch stays below the default capture threshold. No
+    // capture (and therefore no secondary database read) can be triggered.
+    extra["/api/live/watch"] = ok({
+      schema_version: "watch-1.0", engine: "mysql", server_version: "8.4.11",
+      read_at: "2026-10-27T14:02:31Z", threads_running: 4,
+      longest_statement: { id: 42, seconds: 2, user: "app", db: "shop" },
+      longest_lock_wait: null, errors: {}, notes: [], reason: null,
+    });
+    await h.server();
+    await h.view("health");
+    const healthView = '.server-view[data-view="health"]';
+    // The earlier Health frame belonged to the Group connection. Read the
+    // fixture again for the plain connection before starting the watch.
+    const before = h.state.other.filter((r) => r.path === "/api/live/health").length;
+    await h.refresh();
+    for (let i = 0; i < 100 && h.state.other.filter((r) => r.path === "/api/live/health").length === before; i++) await pause(50);
+    assert.ok(h.state.other.filter((r) => r.path === "/api/live/health").length > before, "Health refreshed for the connection in use");
+    await until((sel) => !document.querySelector(`${sel} .spinner, ${sel} .other-connection`), healthView);
+    await clickButton("Capture when…", `${healthView} `);
+    await page.waitForSelector(`${healthView} .capture-when-form`, { visible: true });
+    await page.select(`${healthView} select[aria-label="Check interval"]`, "30");
+    await clickButton("Start", `${healthView} .capture-when-form `);
+    await until(() => /Watching: checked [1-9]/.test(document.querySelector(".health-watch-line")?.textContent || ""));
+    await page.waitForSelector(`${healthView} .health-watch-line button`, { visible: true });
+  });
+  await clickButton("Stop", '.server-view[data-view="health"] .health-watch-line ');
+  await until(() => !document.querySelector(".health-watch-line"));
+
+  await view("server-popover", async () => {
+    // health.mjs's compact Locks Columns menu, portaled near the toolbar.
+    extra["/api/live/locks"] = ok(await load("locks-mysql-8.4.json"));
+    await page.setViewport({ width: 720, height: 600 });
+    await h.view("locks");
+    const button = '.server-view[data-view="locks"] button[aria-label="Columns of Transactions"]';
+    await page.waitForSelector(button, { visible: true });
+    await page.evaluate((selector) => {
+      const opener = document.querySelector(selector);
+      opener.scrollIntoView({ block: "center", behavior: "instant" });
+      window.scrollBy(0, Math.round(opener.getBoundingClientRect().top - innerHeight * 0.72));
+    }, button);
+    await page.click(button);
+    await page.waitForSelector('.popover[aria-label="Columns of Transactions"]', { visible: true });
+    assert.equal(await page.$eval('.popover[aria-label="Columns of Transactions"]', (el) => el.parentElement === document.body), true,
+      "Columns menu escapes the content stacking context");
+  }, { frame: '.popover[aria-label="Columns of Transactions"]' });
+  await page.keyboard.press("Escape");
+  await until(() => !document.querySelector('.popover[aria-label="Columns of Transactions"]'));
+  await page.setViewport({ width: 1440, height: 900 });
+
+  await view("parameters-set-value", async () => {
+    // config.mjs's recorded set catalog and unknown-member hint. The draft
+    // remains local: no planning or apply request is needed for this frame.
+    const config = await load("parameters-mysql.json");
+    extra["/api/live/config"] = ok(config);
+    await h.view("config");
+    const configView = '.server-view[data-view="config"]';
+    await page.waitForSelector(`${configView} [data-action="edit-parameters"]`, { visible: true });
+    await page.click(`${configView} [data-action="edit-parameters"]`);
+    await page.type(`${configView} input[aria-label="Filter parameters"]`, "sql_mode");
+    const input = `${configView} #parameter-value-sql_mode`;
+    await page.waitForSelector(`${input} .set-value-as-text`, { visible: true });
+    await page.click(`${input} .set-value-as-text`);
+    await page.waitForSelector(`${input}.variable-input`, { visible: true });
+    await page.click(`${input}.variable-input`, { count: 3 });
+    await page.keyboard.press("Backspace");
+    const members = config.parameters.items.find((p) => p.name === "sql_mode").values;
+    const value = [...members, "PORTAL_TEST_MEMBER"].join(",");
+    await page.type(`${input}.variable-input`, value);
+    await clickButton("Choose from list", `${configView} .set-value `);
+    await until((selector, expected) => document.querySelector(`${selector} .set-value-summary`)?.textContent === expected, input, value);
+    await page.click(`${input} .set-value-button`);
+    await page.waitForSelector(".set-value-panel .hint", { visible: true });
+    assert.match(await page.$eval(".set-value-panel .hint", (el) => el.textContent), /PORTAL_TEST_MEMBER/);
+    assert.equal(await page.$eval(".set-value-panel", (el) => el.parentElement === document.body), true, "members picker uses the body portal");
+  }, { frame: ".set-value-panel" });
+  await page.keyboard.press("Escape");
+  await until(() => !document.querySelector(".set-value-panel"));
+
+  await view("schema-diagram-label", async () => {
+    // schema-diagram.mjs's read envelope with mermaid-export.mjs's dollar
+    // identifiers. The local export endpoint only converts this model to
+    // Mermaid; it never connects to a database or requests a remote asset.
+    extra["/api/schema-diagram/read"] = ok({
+      schema_version: "schema-diagram-1.0", warnings: [],
+      tables: [
+        { id: "dollars", schema: "", name: "$$x$$", columns: [
+          { name: "$$column$$", data_type: "int", nullable: false, primary_key: true },
+        ], indexes: [{ name: "PRIMARY", columns: ["$$column$$"], unique: true, primary: true }] },
+        { id: "child", schema: "", name: "child", columns: [
+          { name: "parent_id", data_type: "int", nullable: true, primary_key: false },
+        ], indexes: [] },
+      ],
+      relationships: [{ id: "dollar-fk", name: "$$relationship$$", from_table: "child",
+        from_columns: ["parent_id"], to_table: "dollars", to_columns: ["$$column$$"] }],
+    });
+    await h.view("diagram");
+    await page.waitForSelector('select[aria-label="Database"] option[value="grid_lab"]');
+    await page.select('select[aria-label="Database"]', "grid_lab");
+    await clickButton("Load grid_lab", '.server-view[data-view="diagram"] ');
+    await page.waitForSelector(".diagram-table", { visible: true });
+    await clickButton("Mermaid", '.server-view[data-view="diagram"] ');
+    await page.waitForSelector(".diagram-mermaid-preview svg", { visible: true });
+    await until(() => ["$$x$$", "$$column$$", "$$relationship$$"]
+      .every((label) => document.querySelector(".diagram-mermaid-preview svg")?.textContent.includes(label)));
+    assert.equal(await page.$(".diagram-mermaid-preview .katex, .diagram-mermaid-preview math"), null, "dollar labels render as text");
+  }, { frame: ".diagram-mermaid-preview" });
 
   assert.deepEqual(h.errors, [], "page errors");
   assert.deepEqual(h.state.blocked, [], "requests outside the local server (blocked)");

@@ -122,8 +122,12 @@ class TestAdvisorDigestGoldens(unittest.TestCase):
     def test_mysql_plan_never_suggests_hash_join_switch(self):
         """Across every MySQL fixture, the digest must never include a
         rule that recommends the no-op hash_join switch."""
-        for path in sorted(glob.glob(os.path.join(
-                TEST_DIR, "fixtures", "explain-*.json"))):
+        mysql_fixtures = (
+            glob.glob(os.path.join(TEST_DIR, "fixtures", "explain-*.json"))
+            + glob.glob(os.path.join(
+                TEST_DIR, "fixtures", "mysql-9.7-hypergraph-*.json"))
+        )
+        for path in sorted(mysql_fixtures):
             analysis = _analysis_for(path)
             advise(analysis, schema={}, stats={}, variables=_MYSQL_STRESS_VARS)
             for f in analysis.get("environment_findings") or []:

@@ -41,6 +41,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue where **Readyset** cache export could let hiding one credential shift quote boundaries for another. Credentials are now found on the original definition under both quote modes: when quote-mode differences prevent safe redaction, or a definition's URL password holds a quote or backtick or breaks its token, the entire definition is replaced with `-- This definition was hidden because its credentials depend on the server's quote mode.`, while safely mergeable differences retain the redacted definition, commented out.
 - Fixed an issue where saving a connection could create a duplicate after a part of the app failed to load. The saved connection is now kept and the list refreshes even when readiness details fail to load.
 - Fixed an issue where saving a connection's settings again right after the connection list failed to refresh could erase its saved password. The retry now remembers the password state of the save it repeats.
+- Fixed an issue where opening **Run options** in the **Query editor** on a busy computer could move keyboard focus back to **Row limit** after you had already moved to another option.
 
 ### Security fixes
 
