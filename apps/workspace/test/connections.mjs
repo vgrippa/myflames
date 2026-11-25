@@ -452,3 +452,72 @@ try {
 } finally {
   await h.close();
 }
+
+// A retry after a failed connection-list refresh keeps the saved password:
+// the second save (settings only, no typed password) never asks to forget it.
+const retryControl = { failList: false };
+const retrySaves = [];
+const retry = await open('/api/unused-connection-chunk', 'connections-retry-password', {
+  '/api/profiles/save': (body, request) => {
+    retrySaves.push(body);
+    request.continue();
+    return null;
+  },
+  '/api/profiles/list': (body, request) => {
+    if (retryControl.failList) {
+      retryControl.failList = false;
+      request.respond({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Synthetic list failure' }) });
+      return null;
+    }
+    request.continue();
+    return null;
+  },
+});
+try {
+  const { page } = retry;
+  await page.locator('.connections .view-toolbar button ::-p-text(Add connection)').click();
+  await page.waitForSelector('#connection-form-title');
+  const name = await page.evaluateHandle(() => [...document.querySelectorAll('.connection-panel label.field')]
+    .find(label => label.firstChild?.textContent?.trim() === 'Connection name').querySelector('input'));
+  await name.click({ count: 3 });
+  await name.type('Retry keeps saved password');
+  const password = await page.$('.connection-panel input[type=password]');
+  await password.type('synthetic-retry-secret');
+  // The save succeeds but the list read right after it fails once.
+  retryControl.failList = true;
+  await page.locator('.connection-panel button ::-p-text(Save connection)').click();
+  await page.waitForSelector('.save-prompt');
+  const firstSave = page.waitForResponse(response => new URL(response.url()).pathname === '/api/profiles/save');
+  await page.locator('.save-prompt button ::-p-text(Save with password)').click();
+  const firstProfile = await (await firstSave).json();
+  assert.equal(firstProfile.has_saved_password, true, 'the first save stored the password');
+  await page.waitForFunction(() => /Synthetic list failure/.test(document.querySelector('.connection-panel [role=alert]')?.textContent || ''));
+  // The failed refresh keeps the new connection out of the rendered list, so
+  // the retry cannot read its password state from the list.
+  assert.equal(await page.$(connectionRow('Retry keeps saved password')), null, 'the failed refresh left the list stale');
+  // Settings only again: no typed password this time.
+  await password.click({ count: 3 });
+  await page.keyboard.press('Backspace');
+  assert.equal(await password.evaluate(e => e.value), '');
+  const secondSave = page.waitForResponse(response => new URL(response.url()).pathname === '/api/profiles/save');
+  await page.locator('.connection-panel button ::-p-text(Save connection)').click();
+  const secondProfile = await (await secondSave).json();
+  await page.waitForFunction(() => !document.querySelector('.connection-panel [aria-busy="true"]'));
+  assert.equal(retrySaves.length, 2);
+  assert.equal(retrySaves[0].remember_password, true);
+  assert.equal(retrySaves[1].id, firstProfile.id, 'the retry updates the same saved connection');
+  assert.equal(retrySaves[1].password, undefined, 'no password typed on the retry');
+  assert.notEqual(retrySaves[1].remember_password, false, 'the retry never asks to forget the saved password');
+  assert.equal(secondProfile.has_saved_password, true, 'the stored password survives the retry');
+  assert.match(await page.$eval('.connection-panel', el => el.textContent), /saved\. Password encrypted on this computer/);
+  // A successful refresh now shows the connection with its password intact
+  // (the full columns return once the form is closed).
+  await page.waitForSelector(connectionRow('Retry keeps saved password'));
+  await page.click('.connections .inspector-close');
+  await page.waitForSelector(`${connectionRow('Retry keeps saved password')} [data-col=password]`);
+  assert.equal(await page.$eval(`${connectionRow('Retry keeps saved password')} [data-col=password]`, el => el.textContent), 'Saved');
+  assert.deepEqual(retry.errors, []);
+  console.log('Connections retry after a failed list refresh: the saved password is kept.');
+} finally {
+  await retry.close();
+}

@@ -437,6 +437,10 @@ export function Connections({
   const [forgetting, setForgetting] = useState(false);
   // One save at a time (the ref answers before React re-renders).
   const savingRef = useRef(false);
+  // Each save's own answer about its password, by connection id: when the
+  // list read right after a save failed, the list can lack a just-saved
+  // connection, and a retry must not read its stored password as unsaved.
+  const savedPasswordById = useRef<Record<string, boolean>>({});
   // formGen changes when the form opens or closes; draftGen also when a field
   // changes. A save applies its answer only to the same form, a test only to
   // the same settings.
@@ -655,13 +659,17 @@ export function Connections({
     try {
       const target = profiles.find((p) => p.id === targetId);
       const storeTyped = withPassword && !!password;
-      const keepExisting = !storeTyped && !!target?.has_saved_password;
+      // A target missing from the list (the refresh right after its save
+      // failed) falls back to that save's own answer, so the retry keeps the
+      // stored password instead of asking to forget it.
+      const keepExisting = !storeTyped && !!(target ? target.has_saved_password : savedPasswordById.current[targetId]);
       const p = await api<Profile>("profiles/save", {
         id: targetId || undefined,
         value: settings,
         password: storeTyped ? password : undefined,
         remember_password: storeTyped || keepExisting,
       });
+      savedPasswordById.current[p.id] = !!p.has_saved_password;
       // The profile is durable now. Retain its id before another await, so
       // an optional module or list read failure cannot turn a retry into a
       // second create request.
@@ -762,6 +770,7 @@ export function Connections({
     setForgetting(true);
     try {
       await api("profiles/forget-password", { id });
+      savedPasswordById.current[id] = false;
       await refresh();
       setStatus("Saved password forgotten. Enter the password to connect.");
     } catch (e) {
