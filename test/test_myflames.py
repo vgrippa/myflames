@@ -40,7 +40,15 @@ GENERATED_FIXTURES = sorted(glob.glob(os.path.join(TEST_DIR, "fixtures", "explai
 # Generated MariaDB fixtures (may not exist until generate-mariadb-fixtures.sh is run)
 MARIADB_GENERATED_FIXTURES = sorted(glob.glob(os.path.join(TEST_DIR, "fixtures", "mariadb-*.json")))
 
-ALL_FIXTURES = BUILTIN_FIXTURES + MARIADB_BUILTIN_FIXTURES + GENERATED_FIXTURES + MARIADB_GENERATED_FIXTURES
+# Hand-recorded MySQL 9.7 hypergraph fixtures. Keep their distinct names so
+# the fixture drift checker does not treat them as generator-owned fixtures.
+HYPERGRAPH_FIXTURES = sorted(glob.glob(os.path.join(
+    TEST_DIR, "fixtures", "mysql-9.7-hypergraph-*.json")))
+
+ALL_FIXTURES = (
+    BUILTIN_FIXTURES + MARIADB_BUILTIN_FIXTURES + GENERATED_FIXTURES
+    + MARIADB_GENERATED_FIXTURES + HYPERGRAPH_FIXTURES
+)
 
 # ---------------------------------------------------------------------------
 # Import myflames (must be importable from repo root)
@@ -866,6 +874,19 @@ class TestOutputs(unittest.TestCase, metaclass=TestOutputsMeta):
     With 3 builtin fixtures × 4 renderers = 12 baseline tests;
     generated fixtures add more proportionally.
     """
+
+
+class TestFixtureInventory(unittest.TestCase):
+    """Keep hand-recorded hypergraph plans in shared fixture discovery."""
+
+    def test_all_hypergraph_fixtures_are_in_shared_discovery(self):
+        on_disk = sorted(glob.glob(os.path.join(
+            TEST_DIR, "fixtures", "mysql-9.7-hypergraph-*.json")))
+        discovered = [path for path in ALL_FIXTURES if os.path.basename(path).startswith(
+            "mysql-9.7-hypergraph-")]
+        self.assertGreaterEqual(len(on_disk), 10)
+        self.assertEqual(len(discovered), len(on_disk))
+        self.assertEqual(sorted(discovered), on_disk)
 
 
 # ---------------------------------------------------------------------------

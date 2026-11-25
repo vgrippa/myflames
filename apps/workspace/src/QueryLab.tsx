@@ -508,7 +508,13 @@ function EditorSplitButton({ action, label, open, onOpen, children }: {
         aria-controls={open ? id : undefined}
         onClick={() => {
           onOpen(!open);
-          if (!open) window.setTimeout(() => panel.current?.querySelector<HTMLElement>("input, textarea, summary, button")?.focus());
+          // Initial focus never overrides focus that moved inside the panel
+          // since it opened (a fast click or a test's focus before the timer).
+          if (!open) window.setTimeout(() => {
+            const el = panel.current;
+            if (!el || el.contains(document.activeElement)) return;
+            el.querySelector<HTMLElement>("input, textarea, summary, button")?.focus();
+          });
         }}>
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
       </button>
