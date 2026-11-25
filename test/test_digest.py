@@ -26,7 +26,7 @@ from myflames.output_compare_sidecar import build_compare_sidecar
 
 FIXTURE_DIR = os.path.join(TEST_DIR, "fixtures")
 # A non-trivial multi-table plan — the case where the digest wins big.
-COMPLEX_FIXTURE = os.path.join(FIXTURE_DIR, "explain-099-hypergraph-on-5t-avg-salary.json")
+COMPLEX_FIXTURE = os.path.join(FIXTURE_DIR, "mysql-9.7-hypergraph-on-5t-avg-salary.json")
 
 
 def _build_payload(path):

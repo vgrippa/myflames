@@ -1271,7 +1271,7 @@ async function step(out, name, fn) {
   await fs.mkdir(OUT, { recursive: true });
   const data = await buildData();
   log("route sizes (bytes):", JSON.stringify(data.sizes));
-  const planFile = path.resolve(opt("plan", path.join(root, "test/fixtures/explain-099-hypergraph-on-5t-avg-salary.json")));
+  const planFile = path.resolve(opt("plan", path.join(root, "test/fixtures/mysql-9.7-hypergraph-on-5t-avg-salary.json")));
   const bigPlanFile = path.join(OUT, "synthetic-plan-1000.json");
   await fs.writeFile(bigPlanFile, JSON.stringify(syntheticPlan(512)));
   const all = [];

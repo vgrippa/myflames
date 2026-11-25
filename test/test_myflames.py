@@ -2233,13 +2233,13 @@ class TestSQLAndIndexFeatures(unittest.TestCase):
 
 FIXTURES_DIR = os.path.join(TEST_DIR, "fixtures")
 
-_HG_ON_CTE = os.path.join(FIXTURES_DIR, "explain-097-hypergraph-on-cte-window-rank.json")
-_HG_OFF_CTE = os.path.join(FIXTURES_DIR, "explain-098-hypergraph-off-cte-window-rank.json")
-_HG_ON_5T = os.path.join(FIXTURES_DIR, "explain-099-hypergraph-on-5t-avg-salary.json")
-_HG_OFF_5T = os.path.join(FIXTURES_DIR, "explain-100-hypergraph-off-5t-avg-salary.json")
-_HG_ON_CORR = os.path.join(FIXTURES_DIR, "explain-101-hypergraph-on-correlated-subquery.json")
-_HG_ON_DEPT = os.path.join(FIXTURES_DIR, "explain-103-hypergraph-on-dept-summary.json")
-_HG_ON_RANGE = os.path.join(FIXTURES_DIR, "explain-105-hypergraph-on-5t-salary-range.json")
+_HG_ON_CTE = os.path.join(FIXTURES_DIR, "mysql-9.7-hypergraph-on-cte-window-rank.json")
+_HG_OFF_CTE = os.path.join(FIXTURES_DIR, "mysql-9.7-hypergraph-off-cte-window-rank.json")
+_HG_ON_5T = os.path.join(FIXTURES_DIR, "mysql-9.7-hypergraph-on-5t-avg-salary.json")
+_HG_OFF_5T = os.path.join(FIXTURES_DIR, "mysql-9.7-hypergraph-off-5t-avg-salary.json")
+_HG_ON_CORR = os.path.join(FIXTURES_DIR, "mysql-9.7-hypergraph-on-correlated-subquery.json")
+_HG_ON_DEPT = os.path.join(FIXTURES_DIR, "mysql-9.7-hypergraph-on-dept-summary.json")
+_HG_ON_RANGE = os.path.join(FIXTURES_DIR, "mysql-9.7-hypergraph-on-5t-salary-range.json")
 
 
 class TestMySQL97QueryPlanWrapper(unittest.TestCase):
@@ -2265,7 +2265,7 @@ class TestHypergraphFixtures(unittest.TestCase):
     """All MySQL 9.7 hypergraph fixtures must parse and render in all output types."""
 
     HG_FIXTURES = [
-        f for f in sorted(glob.glob(os.path.join(FIXTURES_DIR, "explain-*hypergraph*.json")))
+        f for f in sorted(glob.glob(os.path.join(FIXTURES_DIR, "mysql-9.7-hypergraph*.json")))
         if os.path.exists(f)
     ]
 
