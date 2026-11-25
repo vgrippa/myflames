@@ -2237,7 +2237,7 @@ assert elapsed < 1.0, '1 MB URL identifier scan took %.3f s' % elapsed
         code = code.replace("assert elapsed < 1.0", "assert elapsed < %s" % _budget(1.0))
         result = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                timeout=5, universal_newlines=True)
+                                timeout=_budget(5), universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_export_password_literals_use_both_backslash_readings(self):
@@ -3624,7 +3624,7 @@ assert time.monotonic() - started < 2.0
         code = code.replace("assert time.monotonic() - started < 2.0",
                             "assert time.monotonic() - started < %s" % _budget(2.0))
         result = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=_budget(5),
                                 universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

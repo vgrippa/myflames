@@ -430,9 +430,9 @@ class TestSplitterScaling(unittest.TestCase):
             result = subprocess.run([sys.executable, '-c', code],
                                     cwd=str(Path(__file__).resolve().parent.parent),
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    timeout=25, universal_newlines=True)
+                                    timeout=_budget(25), universal_newlines=True)
         except subprocess.TimeoutExpired:
-            self.fail('G4 comment-prefix timings exceeded the 25 s deadline')
+            self.fail('G4 comment-prefix timings exceeded the %s s deadline' % _budget(25))
         self.assertEqual(result.returncode, 0, result.stderr)
         for row in json.loads(result.stdout):
             with self.subTest(operation=row['operation']):
@@ -501,9 +501,9 @@ class TestSplitterScaling(unittest.TestCase):
                 try:
                     result = subprocess.run([sys.executable, '-c', code],
                         cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                        stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
                 except subprocess.TimeoutExpired:
-                    self.fail('2 MiB custom-delimiter comment probe exceeded the 5 s deadline')
+                    self.fail('2 MiB custom-delimiter comment probe exceeded the %s s deadline' % _budget(5))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('R352_CUSTOM_DELIMITER_2MIB_TIMING declaration=%s elapsed=%.6fs' %
@@ -568,9 +568,9 @@ class TestSplitterScaling(unittest.TestCase):
         try:
             result = subprocess.run([sys.executable, '-c', code],
                 cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=45, universal_newlines=True)
+                stderr=subprocess.PIPE, timeout=_budget(45), universal_newlines=True)
         except subprocess.TimeoutExpired:
-            self.fail('%s %s exceeded the 45 s deadline' % (operation, shape))
+            self.fail('%s %s exceeded the %s s deadline' % (operation, shape, _budget(45)))
         self.assertEqual(result.returncode, 0, result.stderr)
         measurement = json.loads(result.stdout)
         print('R352_SPLITTER_TIMING ' + json.dumps(measurement, sort_keys=True), flush=True)
@@ -2015,7 +2015,7 @@ class TestPrivileges(unittest.TestCase):
             "assert clean == ' '.join(['REQUIRE NONE'] * count)\n"
             "print(elapsed)\n")
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(float(result.stdout.strip()), _budget(1))
 
@@ -2030,7 +2030,7 @@ class TestPrivileges(unittest.TestCase):
             "assert clean == 'CREATE USER u', clean\n"
             "print(elapsed)\n")
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(float(result.stdout.strip()), _budget(1))
 
@@ -2735,9 +2735,9 @@ class TestRedaction(unittest.TestCase):
                     try:
                         result = subprocess.run([sys.executable, '-c', code],
                             cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                            stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
                     except subprocess.TimeoutExpired:
-                        self.fail('%s exceeded the 5 s subprocess deadline for %s' % (helper, shape))
+                        self.fail('%s exceeded the %s s subprocess deadline for %s' % (helper, _budget(5), shape))
                     self.assertEqual(result.returncode, 0, result.stderr)
                     elapsed = float(result.stdout.strip())
                     print('REDACTION_TIMING %s %s %.6fs' % (shape, helper, elapsed), flush=True)
@@ -2782,10 +2782,10 @@ class TestRedaction(unittest.TestCase):
                     try:
                         result = subprocess.run([sys.executable, '-c', code],
                             cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                            stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
                     except subprocess.TimeoutExpired:
-                        print('REDACTION_TIMING %s %s >5s' % (shape, helper), flush=True)
-                        self.fail('%s exceeded the 5 s subprocess deadline for %s' % (helper, shape))
+                        print('REDACTION_TIMING %s %s >%ss' % (shape, helper, _budget(5)), flush=True)
+                        self.fail('%s exceeded the %s s subprocess deadline for %s' % (helper, _budget(5), shape))
                     self.assertEqual(result.returncode, 0, result.stderr)
                     elapsed = float(result.stdout.strip())
                     print('REDACTION_TIMING %s %s %.6fs' % (shape, helper, elapsed), flush=True)
@@ -2820,9 +2820,9 @@ class TestRedaction(unittest.TestCase):
                 try:
                     result = subprocess.run([sys.executable, '-c', code],
                         cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, timeout=3, universal_newlines=True)
+                        stderr=subprocess.PIPE, timeout=_budget(3), universal_newlines=True)
                 except subprocess.TimeoutExpired:
-                    self.fail('SET PASSWORD %s exceeded the 3 s deadline for 400 KB' % shape)
+                    self.fail('SET PASSWORD %s exceeded the %s s deadline for 400 KB' % (shape, _budget(3)))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('R352_SET_PASSWORD_TIMING %s bytes=409600 elapsed=%.6fs' %
@@ -2932,7 +2932,7 @@ class TestRedaction(unittest.TestCase):
                     "print(elapsed)\n")
                 result = subprocess.run([sys.executable, '-c', code],
                     cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, timeout=20, universal_newlines=True)
+                    stderr=subprocess.PIPE, timeout=_budget(20), universal_newlines=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('REDACTION_TIMING %s redact %.6fs' % (shape, elapsed), flush=True)
@@ -2976,7 +2976,7 @@ class TestRedaction(unittest.TestCase):
             "assert clean == prefix + \"= '[redacted]'\"\n"
             "print(elapsed)\n")
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, universal_newlines=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=_budget(20), universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(float(result.stdout.strip()), _budget(12))
 
@@ -3037,7 +3037,7 @@ class TestRedaction(unittest.TestCase):
             "assert not list(dbops._URL_SECRET(value))\n"
             "print(time.monotonic() - began)\n")
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=_budget(10), universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(float(result.stdout.strip()), _budget(5))
 
@@ -3050,7 +3050,7 @@ class TestRedaction(unittest.TestCase):
             "assert not list(dbops._URL_SECRET(value, quoted=False))\n"
             "print(time.monotonic() - began)\n")
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=_budget(10), universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         elapsed = float(result.stdout.strip())
         print('URL_DIGIT_RUN_TIMING %.6fs' % elapsed, flush=True)
@@ -3235,7 +3235,7 @@ class TestRedaction(unittest.TestCase):
                     "print(elapsed)\n")
                 result = subprocess.run([sys.executable, '-c', code],
                     cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                    stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertLess(float(result.stdout.strip()), _budget(1))
 
@@ -3430,7 +3430,7 @@ class TestRedaction(unittest.TestCase):
                     "print(elapsed)\n")
                 result = subprocess.run([sys.executable, '-c', code],
                     cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                    stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('GATE65_TIMING %s %.6fs' % (shape, elapsed), flush=True)
@@ -4239,9 +4239,9 @@ class TestRedaction(unittest.TestCase):
         try:
             result = subprocess.run([sys.executable, '-c', code],
                 cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+                stderr=subprocess.PIPE, timeout=_budget(10), universal_newlines=True)
         except subprocess.TimeoutExpired:
-            self.fail('Nested PASSWORD overlap check exceeded the 10 s deadline')
+            self.fail('Nested PASSWORD overlap check exceeded the %s s deadline' % _budget(10))
         self.assertEqual(result.returncode, 0, result.stderr)
         elapsed = float(result.stdout.strip())
         print('R352_NESTED_OVERLAP_8K_TIMING elapsed=%.6fs' % elapsed, flush=True)
@@ -4290,9 +4290,9 @@ class TestRedaction(unittest.TestCase):
         try:
             result = subprocess.run([sys.executable, '-c', code],
                 cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=15, universal_newlines=True)
+                stderr=subprocess.PIPE, timeout=_budget(15), universal_newlines=True)
         except subprocess.TimeoutExpired:
-            self.fail('Linear redaction timing check exceeded the 15 s deadline')
+            self.fail('Linear redaction timing check exceeded the %s s deadline' % _budget(15))
         self.assertEqual(result.returncode, 0, result.stderr)
         for line in result.stdout.strip().splitlines():
             name, ms, ml, ratio = line.split()
@@ -4331,9 +4331,9 @@ class TestRedaction(unittest.TestCase):
         try:
             result = subprocess.run([sys.executable, '-c', code],
                 cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+                stderr=subprocess.PIPE, timeout=_budget(10), universal_newlines=True)
         except subprocess.TimeoutExpired:
-            self.fail('25,000/100,000-clause REPLACE chain exceeded the 10 s deadline')
+            self.fail('25,000/100,000-clause REPLACE chain exceeded the %s s deadline' % _budget(10))
         self.assertEqual(result.returncode, 0, result.stderr)
         elapsed_25k, elapsed_100k = (float(value) for value in result.stdout.strip().split())
         self.assertGreater(elapsed_25k, 0.0)
@@ -4370,9 +4370,9 @@ class TestRedaction(unittest.TestCase):
         try:
             result = subprocess.run([sys.executable, '-c', code],
                 cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
         except subprocess.TimeoutExpired:
-            self.fail('Nested INSERT aliases exceeded the 5 s deadline for 400 KB')
+            self.fail('Nested INSERT aliases exceeded the %s s deadline for 400 KB' % _budget(5))
         self.assertEqual(result.returncode, 0, result.stderr)
         elapsed = float(result.stdout.strip())
         print('R352_NESTED_ALIAS_TIMING bytes=409600 elapsed=%.6fs' % elapsed, flush=True)
@@ -4527,7 +4527,7 @@ class TestRedaction(unittest.TestCase):
                 result = subprocess.run(
                     [sys.executable, '-c', code],
                     cwd=str(Path(__file__).resolve().parent.parent),
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=_budget(10),
                     universal_newlines=True,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -4720,7 +4720,7 @@ class TestRedaction(unittest.TestCase):
                     "print(elapsed)\n")
                 result = subprocess.run([sys.executable, '-c', code],
                     cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                    stderr=subprocess.PIPE, timeout=_budget(5), universal_newlines=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('URL_AT_TIMING %s %.6fs' % (shape, elapsed), flush=True)
