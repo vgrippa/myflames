@@ -4,6 +4,8 @@ import io
 import json
 import os
 from pathlib import Path
+import random
+import re
 import signal
 import threading
 import time
@@ -12,12 +14,187 @@ from unittest.mock import MagicMock, patch
 
 from myflames.connector import ConnectorError, MySQLConnection
 from myflames import dbops
+from myflames import analysis_query, collectors, live
 from myflames.live import (LiveJob, LiveJobs, bind_query, capture_problem, connection_options,
                            measurement_summary, _sections, _status)
 from myflames.parser import parse_explain
 
 PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
 MARIA = (Path(__file__).parent / 'mariadb-explain-join.json').read_text(encoding="utf-8")
+
+
+# Frozen pre-linearization patterns. Do not derive these from the production
+# scanner: malformed SQL and mode-specific quote boundaries are the contract.
+_OLD_TOKEN = re.compile(
+    r"/\*.*?\*/|--(?=[ \t\n\r\f\v]|$)[^\r\n]*|\#[^\r\n]*|"
+    r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`(?:``|[^`])*`", re.S)
+_OLD_TOKEN_NO_BACKSLASH = re.compile(
+    r"/\*.*?\*/|--(?=[ \t\n\r\f\v]|$)[^\r\n]*|\#[^\r\n]*|"
+    r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`", re.S)
+_OLD_COLLECTOR_TOKEN = re.compile(
+    r"/\*.*?\*/|--(?=\s|$)[^\r\n]*|\#[^\r\n]*|"
+    r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`(?:``|[^`])*`", re.S)
+
+
+def _token_equivalence_corpus():
+    """Repeatable fragments with every length 0..400, plus captured fixtures."""
+    rng = random.Random(0x51A1C0DE)
+    fragments = ("/*", "*/", "/*!50000", "--", "--\x01", "#", "'", '"', "`",
+                 "\\", "''", '""', "``", ";", "\n", "\r", "\r\n", "\t", " ",
+                 "\f", "\v", "\x00", "\x1c", "\xa0", "é", "漢", "SELECT", "FROM", "x",
+                 "-", "/", "*")
+    for case in range(20000):
+        # Cycling lengths ensures empty and 400-character cases are present;
+        # fragment choices and truncation points come from the fixed seed.
+        length = case % 401
+        parts, size = [], 0
+        while size < length:
+            part = rng.choice(fragments)
+            parts.append(part)
+            size += len(part)
+        yield "random:%d" % case, ''.join(parts)[:length]
+
+    # A failed -- candidate can overlap the next valid -- comment.
+    for sql in ("---", "--- ", "----x---\n", "---\r'after'", "---\xa0'after'", "/*/", "/*/*/"):
+        yield 'overlap:%r' % sql, sql
+
+    # Greedy doubled quotes may backtrack to a closer before EOF. A failure
+    # of one opener must not suppress later successful openers of other kinds.
+    for quote in ("'", '"', "`"):
+        for count in (1, 2, 3, 4, 7, 20, 99):
+            for tail in ("", "x", "\\", "/*", " # 'closed'\n", " --\x01 \"closed\""):
+                yield "quotes:%r:%d:%r" % (quote, count, tail), quote * count + tail
+        for size in (1, 2, 7, 31):
+            for sql in (quote + ("\\" + quote) * size,
+                        quote * 3 + ("\\" + quote) * size,
+                        "/* " * size + quote + "x" + quote,
+                        quote + "/* " * size + "'ok'\n# done"):
+                yield "opener:%r" % sql, sql
+
+    root = Path(__file__).resolve().parent.parent
+    text_suffixes = {'.json', '.html', '.txt', '.sql', '.xml', '.log', '.py', '.tsx', '.mjs'}
+    paths = set()
+    for folder in (root / 'test/fixtures', root / 'apps/workspace/test/fixtures'):
+        paths.update(path for path in folder.rglob('*')
+                     if path.is_file() and path.suffix in text_suffixes)
+    paths.update(path for path in (root / 'test').iterdir()
+                 if path.is_file() and path.suffix in {'.json', '.sql', '.txt', '.log'})
+    for path in sorted(paths):
+        # Treat plan JSON as opaque text here; plan parsing remains parser.py's
+        # responsibility. This also covers non-SQL text arriving as a statement.
+        yield str(path.relative_to(root)), path.read_text(encoding='utf-8')
+
+    # Shared SQL fixtures also run decoded, so JSON escapes cannot alter the
+    # quote/backslash boundaries that their real consumers receive.
+    split = json.loads((root / 'apps/workspace/test/fixtures/sql-split.json').read_text(encoding='utf-8'))
+    for group in ('statements', 'cursors'):
+        for index, item in enumerate(split[group]):
+            sql = item['sql'].replace('|', '', 1) if group == 'cursors' else item['sql']
+            yield 'sql-split:%s:%d' % (group, index), sql
+    export = json.loads((root / 'apps/workspace/test/fixtures/readyset-export-caches.json').read_text(encoding='utf-8'))
+    yield 'readyset-export:sql', export['sql']
+    for index, cache in enumerate(export['caches']):
+        yield 'readyset-export:%d' % index, cache['statement']
+
+
+class TestTokenScannerEquivalence(unittest.TestCase):
+    @staticmethod
+    def _matches(pattern, sql, *bounds):
+        return [(match.span(), match.group(0)) for match in pattern.finditer(sql, *bounds)]
+
+    @staticmethod
+    def _mask(match):
+        token = match.group(0)
+        return token if token.startswith('`') else ' ' * len(token)
+
+    def test_original_regex_spans_and_substitutions(self):
+        scanners = ((_OLD_TOKEN, live.TOKEN),
+                    (_OLD_TOKEN_NO_BACKSLASH, live.TOKEN_NO_BACKSLASH),
+                    (_OLD_COLLECTOR_TOKEN, collectors._TOKENS))
+        for label, sql in _token_equivalence_corpus():
+            for old, new in scanners:
+                with self.subTest(case=label, pattern=old.pattern):
+                    self.assertEqual(self._matches(new, sql), self._matches(old, sql))
+                    self.assertEqual(new.sub(' ', sql), old.sub(' ', sql))
+                    self.assertEqual(new.sub(self._mask, sql), old.sub(self._mask, sql))
+            with self.subTest(case=label, consumer='collectors'):
+                self.assertEqual(collectors._strip_comments_and_literals(sql),
+                                 _OLD_COLLECTOR_TOKEN.sub(self._mask, sql))
+
+    def test_scan_bounds_counts_and_replacement_expansion(self):
+        statements = ("'a' /*b*/ `c``d` -- end\r\n\"e\" #tail", "/* 'x' --\x01 \"y\"",
+                      "'\\' AS x, '/* /*' FROM `t`", "--\xa0'quoted'\n'after'", "'''")
+        for old, new in ((_OLD_TOKEN, live.TOKEN),
+                         (_OLD_TOKEN_NO_BACKSLASH, live.TOKEN_NO_BACKSLASH),
+                         (_OLD_COLLECTOR_TOKEN, collectors._TOKENS)):
+            for sql in statements:
+                for start in (-1, 0, 1, len(sql) // 2, len(sql), len(sql) + 1):
+                    for end in (-1, 0, len(sql) // 2, len(sql), len(sql) + 1):
+                        with self.subTest(sql=sql, pattern=old.pattern, start=start, end=end):
+                            self.assertEqual(self._matches(new, sql, start, end),
+                                             self._matches(old, sql, start, end))
+                for count in (-1, 0, 1, 3):
+                    for replacement in (' ', r'[\g<0>]', self._mask):
+                        with self.subTest(sql=sql, pattern=old.pattern, count=count,
+                                          replacement=replacement):
+                            self.assertEqual(new.sub(replacement, sql, count=count),
+                                             old.sub(replacement, sql, count=count))
+
+    def test_interleaved_iterators_and_nested_substitutions_keep_local_state(self):
+        statements = ("/* 'one' `two` 'three'", "' /* done */ `safe` /* again */")
+        for old, new in ((_OLD_TOKEN, live.TOKEN),
+                         (_OLD_TOKEN_NO_BACKSLASH, live.TOKEN_NO_BACKSLASH),
+                         (_OLD_COLLECTOR_TOKEN, collectors._TOKENS)):
+            with self.subTest(pattern=old.pattern):
+                iterators = [new.finditer(sql) for sql in statements]
+                actual = [[], []]
+                # The first iterator has a dead /* opener, the second a
+                # dead quote. Neither may suppress the other's later tokens.
+                for index in (0, 1, 0, 1, 0, 1):
+                    match = next(iterators[index])
+                    actual[index].append((match.span(), match.group(0)))
+                self.assertEqual(actual, [self._matches(old, sql) for sql in statements])
+                for iterator in iterators:
+                    with self.assertRaises(StopIteration):
+                        next(iterator)
+
+                nested = "' `nested` /* unfinished"
+                outer = "'first' /* comment */ 'last' # end"
+
+                def replacement(match):
+                    # A callback can re-enter this same scanner and mark
+                    # opener kinds dead while the outer iterator is paused.
+                    self.assertEqual(new.sub(' ', nested), old.sub(' ', nested))
+                    return match.group(0).upper()
+
+                self.assertEqual(new.sub(replacement, outer),
+                                 old.sub(lambda match: match.group(0).upper(), outer))
+
+    def test_refusal_reasons_and_read_projections_match_old_scanners(self):
+        statements = [
+            "SELECT 1", "SELECT 'it''s', `a``b`, \"c\" FROM `t`", "SELECT SLEEP(1)",
+            "SELECT 1 --\x01" + "/* " * 31,
+            "SELECT '\\' AS a, '" + "/* " * 31 + "' FROM dual",
+            "SELECT 1 " + "/* " * 31, "SELECT " + '\\"' * 31,
+            "SELECT 1 --\xa0'not a comment'", "SELECT 'x\\'; DROP TABLE t; -- '",
+            "SELECT 'unterminated", "SELECT `unterminated", "SELECT 1 /*!50000 ; DROP TABLE t */",
+            "SELECT 1; SELECT 2", "SELECT /* 'comment' */ 1 # 'tail'",
+            "UPDATE t SET v='where' WHERE id=1", "DELETE FROM t WHERE id=1",
+            "INSERT INTO t SELECT id FROM source", "EXPLAIN FORMAT=JSON SELECT 1",
+        ]
+        for quote in ("'", '"', '`'):
+            statements.extend('SELECT ' + quote * count + ' FROM t' for count in range(1, 10))
+        for sql in statements:
+            current = (live._select_problem(sql), analysis_query.prepare(sql))
+            # Only substitute the historical token patterns. Classification,
+            # review policies and SQL safety checks still execute normally.
+            with patch.object(live, 'TOKEN', _OLD_TOKEN), \
+                    patch.object(live, 'TOKEN_NO_BACKSLASH', _OLD_TOKEN_NO_BACKSLASH), \
+                    patch.object(analysis_query, 'TOKEN', _OLD_TOKEN), \
+                    patch.object(analysis_query, 'TOKEN_NO_BACKSLASH', _OLD_TOKEN_NO_BACKSLASH):
+                old = (live._select_problem(sql), analysis_query.prepare(sql))
+            with self.subTest(sql=sql):
+                self.assertEqual(current, old)
 
 
 def payload(**extra):

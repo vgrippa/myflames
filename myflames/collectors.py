@@ -21,6 +21,74 @@ query.
 import re
 
 
+class _SQLTokenScanner:
+    """The SQL comment/string regexes' matches, without retrying dead openers.
+
+    This is deliberately limited to the six alternatives below, not a general
+    regex accelerator. A failed block comment has no remaining closer. A
+    failed quoted token consumed every later quote as an escape, so starting
+    at any of those quotes also fails. Stop searching for that opener after
+    its first failure. Successful tokens advance past their entire span. A
+    greedy quote match can also inspect a trailing suffix before backtracking
+    to its closing quote; that suffix can only fail on the next attempt of
+    the same kind. Each kind therefore scans it a constant number of times.
+    The original regex still chooses every match, including doubled quotes.
+
+    Keeping real Match objects preserves offsets and replacement callbacks.
+    Search state belongs to the iterator, so nested and concurrent scans do
+    not share failed-openers state.
+    """
+
+    _OPENERS = (r"/\*", r"--", r"#", "'", '"', "`")
+    _START = re.compile("|".join(_OPENERS))
+
+    def __init__(self, pattern):
+        self._regex = pattern
+        self.pattern = pattern.pattern
+        self.flags = pattern.flags
+
+    def finditer(self, text, pos=0, endpos=None):
+        end = len(text) if endpos is None else endpos
+        search, dead = self._START, set()
+        while True:
+            opener = search.search(text, pos, end)
+            if opener is None:
+                return
+            match = self._regex.match(text, opener.start(), end)
+            if match is not None:
+                yield match
+                pos = match.end()
+            else:
+                # A -- without the required following whitespace can fail
+                # anywhere; its next occurrence can still be a comment.
+                if opener.group() != "--":
+                    dead.add(re.escape(opener.group()))
+                    search = re.compile("|".join(p for p in self._OPENERS if p not in dead))
+                # In --- the second dash may start a valid -- comment.
+                pos = opener.start() + 1
+
+    def sub(self, repl, text, count=0):
+        if count < 0:
+            return text
+        parts, pos = [], 0
+        for index, match in enumerate(self.finditer(text), 1):
+            parts.append(text[pos:match.start()])
+            parts.append(repl(match) if callable(repl) else match.expand(repl))
+            pos = match.end()
+            if count and index == count:
+                break
+        parts.append(text[pos:])
+        return ''.join(parts)
+
+
+_TOKENS = _SQLTokenScanner(re.compile(
+    r"/\*.*?\*/|--(?=\s|$)[^\r\n]*|\#[^\r\n]*|"
+    r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|"
+    r"`(?:``|[^`])*`",
+    re.DOTALL,
+))
+
+
 # ---------------------------------------------------------------------------
 # Table name extraction
 # ---------------------------------------------------------------------------
@@ -36,18 +104,11 @@ def _strip_comments_and_literals(sql):
     a quote inside a comment does not start a string. Backtick identifiers
     are kept intact. MySQL requires whitespace after a -- comment marker.
     """
-    tokens = re.compile(
-        r"/\*.*?\*/|--(?=\s|$)[^\r\n]*|\#[^\r\n]*|"
-        r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|"
-        r"`(?:``|[^`])*`",
-        re.DOTALL,
-    )
-
     def _mask(match):
         token = match.group(0)
         return token if token.startswith("`") else " " * len(token)
 
-    return tokens.sub(_mask, sql)
+    return _TOKENS.sub(_mask, sql)
 
 
 def extract_table_references(sql, default_schema=None, limit=None):

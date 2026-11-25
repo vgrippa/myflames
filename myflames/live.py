@@ -15,7 +15,8 @@ import uuid
 
 from .connector import MySQLConnection, ConnectorError, client_environment, MAX_STDOUT_BYTES, MAX_STDERR_BYTES, _client_text
 from .connection_groups import ProfileReadError
-from .collectors import collect_schema, collect_stats, collect_stats_freshness, collect_session_variables, extract_table_names
+from .collectors import (_SQLTokenScanner, collect_schema, collect_stats, collect_stats_freshness,
+                         collect_session_variables, extract_table_names)
 from .parser import parse_explain
 from .server_info import parse_version_tuple, unsupported_version_note
 
@@ -56,11 +57,11 @@ def _stop_client(proc):
 #: comment and would split at a later ';'. The server lexer also treats "--"
 #: before another control character as a comment (sql_lex.cc), so such text
 #: is refused as ambiguous (DASH_CONTROL).
-TOKEN = re.compile(r"/\*.*?\*/|--(?=[ \t\n\r\f\v]|$)[^\r\n]*|\#[^\r\n]*|'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`(?:``|[^`])*`", re.S)
+TOKEN = _SQLTokenScanner(re.compile(r"/\*.*?\*/|--(?=[ \t\n\r\f\v]|$)[^\r\n]*|\#[^\r\n]*|'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`(?:``|[^`])*`", re.S))
 #: The same under sql_mode NO_BACKSLASH_ESCAPES, where a backslash is an
 #: ordinary character. "..." without backslash escapes is also how the server
 #: reads an ANSI_QUOTES identifier.
-TOKEN_NO_BACKSLASH = re.compile(r"/\*.*?\*/|--(?=[ \t\n\r\f\v]|$)[^\r\n]*|\#[^\r\n]*|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`", re.S)
+TOKEN_NO_BACKSLASH = _SQLTokenScanner(re.compile(r"/\*.*?\*/|--(?=[ \t\n\r\f\v]|$)[^\r\n]*|\#[^\r\n]*|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`", re.S))
 #: "--" before a control character that is not white space: the client reads
 #: code, the server a comment. Outside strings and comments it is refused.
 DASH_CONTROL = re.compile(r"--[\x00-\x08\x0e-\x1f\x7f]")
