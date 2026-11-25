@@ -3880,6 +3880,16 @@ class TestRedaction(unittest.TestCase):
                 self.assertEqual(clean, "DELIMITER $$\nSET GLOBAL report_password = '[redacted]'")
                 self.assertNotIn('first', clean)
                 self.assertNotIn('S3cr3t', clean)
+        # Escaped whitespace before ERROR (\n, \t, \r, \f, \v) in JSON/Python-repr
+        # echoes after a custom delimiter must also fail closed.
+        for esc in ('\\n', '\\t', '\\r', '\\f', '\\v'):
+            with self.subTest(escaped_error=esc):
+                raw = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'a'//\n"
+                       'ConnectorError("x' + esc +
+                       "ERROR 1064 (42000): near ''S3cr3t'' at line 1\")//\n")
+                clean = dbops.redact(raw)
+                self.assertEqual(clean, "DELIMITER //\nSET GLOBAL wsrep_sst_auth = '[redacted]'")
+                self.assertNotIn('S3cr3t', clean)
 
     def test_r352_overlapping_mispaired_quotes_fail_closed(self):
         # Overlapping credential spans whose quote delimiters disagree or steal
@@ -3946,6 +3956,73 @@ class TestRedaction(unittest.TestCase):
                 self.assertNotIn('S3cr3t', clean)
                 self.assertTrue(clean.endswith('; SELECT 1'), clean)
 
+    def test_r352_password_ended_values_preserve_valid_tails(self):
+        # Secret values ending in "password", "password=", or "identified by "
+        # must keep valid following SQL intact rather than failing closed on
+        # their own closing quote.
+        cases = (
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'app password';\n"
+             "GRANT SELECT ON shop.* TO 'app'@'%';\nSELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]';\n"
+             "GRANT SELECT ON shop.* TO 'app'@'%';\nSELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = 'sstuser:sst_password';\n"
+             "SELECT @@wsrep_cluster_status;",
+             "SET GLOBAL wsrep_sst_auth = '[redacted]';\n"
+             "SELECT @@wsrep_cluster_status;"),
+            ("UPDATE cfg SET report_password = 'my-password' WHERE id = 1;",
+             "UPDATE cfg SET report_password = '[redacted]' WHERE id = 1;"),
+            ("INSERT INTO cfg SET report_password = 'my-password' AS new "
+             "ON DUPLICATE KEY UPDATE n = new.n;",
+             "INSERT INTO cfg SET report_password = '[redacted]' AS new "
+             "ON DUPLICATE KEY UPDATE n = new.n;"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'dev-password'; "
+             "GRANT SELECT ON app.* TO 'app'@'%';",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; "
+             "GRANT SELECT ON app.* TO 'app'@'%';"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'admin.password'; SELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'ops/password'; SELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'my password='; SELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'use identified by '; SELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("CHANGE MASTER TO MASTER_PASSWORD = 'my-password'; SELECT 1;",
+             "CHANGE MASTER TO MASTER_PASSWORD = '[redacted]'; SELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = CONCAT('u:', 'my password='); SELECT 1;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]; SELECT 1;"),
+            ("-- lab setup\n"
+             "CREATE USER 'app'@'%' IDENTIFIED BY 'app password';\n"
+             "GRANT SELECT, INSERT ON shop.* TO 'app'@'%';\n"
+             "SET GLOBAL wsrep_sst_auth = 'sstuser:password';\n"
+             "CREATE TABLE shop.orders (id INT PRIMARY KEY, status VARCHAR(16));\n"
+             "INSERT INTO shop.orders VALUES (1, 'open');\n"
+             "SELECT COUNT(*) FROM shop.orders WHERE status = 'open';\n",
+             "-- lab setup\n"
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]';\n"
+             "GRANT SELECT, INSERT ON shop.* TO 'app'@'%';\n"
+             "SET GLOBAL wsrep_sst_auth = '[redacted]';\n"
+             "CREATE TABLE shop.orders (id INT PRIMARY KEY, status VARCHAR(16));\n"
+             "INSERT INTO shop.orders VALUES (1, 'open');\n"
+             "SELECT COUNT(*) FROM shop.orders WHERE status = 'open';\n"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw[:60]):
+                self.assertEqual(dbops.redact(raw), expected)
+
+    def test_r352_swallowed_quote_extension_updates_end_quote(self):
+        # Extending a swallowed quote must record the quote that produced the
+        # new end so a subsequent merged group re-extends the right delimiter.
+        cases = (
+            "CHANGE MASTER TO MASTER_PASSWORD = 'a IDENTIFIED BY \"b'c\" d IDENTIFIED BY \"e'f\" \"g\" SECRET'",
+            "PASSWORD('a IDENTIFIED BY \"b'c\" d IDENTIFIED BY \"e'f\" \"g\" SECRET')",
+        )
+        for raw in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn('SECRET', clean, clean)
+                self.assertIn('[redacted]', clean)
+
     def test_r352_charset_introduced_hex_and_bit_literals_redacted(self):
         literals = (
             ("_binary 0x533363723374", "533363723374"),
@@ -3990,6 +4067,56 @@ class TestRedaction(unittest.TestCase):
         elapsed = float(result.stdout.strip())
         print('R352_NESTED_OVERLAP_8K_TIMING elapsed=%.6fs' % elapsed, flush=True)
         self.assertLess(elapsed, 1.0)
+
+    def test_r352_tracker_introducer_and_absorption_stay_linear(self):
+        # Guard against quadratic tracker scans on hex/bit literals, quadratic
+        # introducer backtracking on repeated password_ words, and quadratic
+        # list-pop absorption when one swallowed-quote group absorbs many.
+        code = (
+            "import statistics, time\nfrom myflames import dbops\n"
+            "shapes = {\n"
+            "    'tracker_update_hex': (\n"
+            "        'UPDATE c SET s3_secret_key = PASSWORD 0x41 WHERE id = 1;\\n' * 1150,\n"
+            "        'UPDATE c SET s3_secret_key = PASSWORD 0x41 WHERE id = 1;\\n' * 4600),\n"
+            "    'tracker_identified_hex': (\n"
+            "        'SET wsrep_sst_auth = IDENTIFIED BY 0x41;\\n' * 465 + 'x' * 46500,\n"
+            "        'SET wsrep_sst_auth = IDENTIFIED BY 0x41;\\n' * 1860 + 'x' * 186000),\n"
+            "    'introducer_password_run': (\n"
+            "        'SELECT 1 /* ' + 'password_' * 7280 + ' */',\n"
+            "        'SELECT 1 /* ' + 'password_' * 29120 + ' */'),\n"
+            "    'absorption_pop': (\n"
+            "        \"IDENTIFIED BY ' PASSWORD(\\\"a'b\\\" \" + \"PASSWORD 'a';\" * 5000,\n"
+            "        \"IDENTIFIED BY ' PASSWORD(\\\"a'b\\\" \" + \"PASSWORD 'a';\" * 20000),\n"
+            "}\n"
+            "for name, (small, large) in shapes.items():\n"
+            "    s_times, l_times = [], []\n"
+            "    for _ in range(3):\n"
+            "        t0 = time.perf_counter(); out_s = dbops.redact(small); s_times.append(time.perf_counter() - t0)\n"
+            "        t0 = time.perf_counter(); out_l = dbops.redact(large); l_times.append(time.perf_counter() - t0)\n"
+            "    if name == 'introducer_password_run':\n"
+            "        assert out_s == small and out_l == large\n"
+            "    else:\n"
+            "        assert '[redacted]' in out_s and '[redacted]' in out_l\n"
+            "    ms, ml = statistics.median(s_times), statistics.median(l_times)\n"
+            "    ratio = ml / ms if ms else 0.0\n"
+            "    print('%s %.6f %.6f %.2f' % (name, ms, ml, ratio))\n"
+        )
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=15, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('Linear redaction timing check exceeded the 15 s deadline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for line in result.stdout.strip().splitlines():
+            name, ms, ml, ratio = line.split()
+            ms, ml, ratio = float(ms), float(ml), float(ratio)
+            print('R352_LINEAR_REDACT_TIMING %s 64k=%.6fs 256k=%.6fs ratio=%.2fx' %
+                  (name, ms, ml, ratio), flush=True)
+            self.assertLess(ms, 0.5, (name, ms))
+            self.assertLess(ml, 1.0, (name, ml))
+            if ms >= 0.01:
+                self.assertLess(ratio, 5.0, (name, ms, ml, ratio))
 
     def test_r352_replace_chain_100k_clauses_under_one_second(self):
         # Walking a REPLACE chain once keeps both scans linear even on a

@@ -3528,11 +3528,11 @@ _STRING_NO_BACKSLASH = r"""(?:'(?:''|[^'])*(?:'|\Z)|"(?:""|[^"])*(?:"|\Z))"""
 # even where that credential clause would reject their spelling on a server.
 # Escaped openers belong to dynamic SQL and need its enclosing-string end.
 _SECRET_VALUE = (
-    r"(?:(?:_[\w]+\s+)?0[xb][\w]+"
-    r"|(?:_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)?(?:" + _STRING + r"|\\['\"]))"
+    r"(?:(?:(?<![\w])_[\w]+\s+)?0[xb][\w]+"
+    r"|(?:(?<![\w])_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)?(?:" + _STRING + r"|\\['\"]))"
     r"(?:\s+COLLATE\s+(?:`[^`]*`|[\w]+))?")
 _SECRET_VALUE_OPENER = re.compile(
-    r"(?:_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)?(\\?)(['\"])", re.I)
+    r"(?:(?<![\w])_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)?(\\?)(['\"])", re.I)
 # A bounded inventory also protects quoted SQL and server echoes, where a
 # whole-statement lexer cannot know which quote belongs to the surrounding text.
 # Recognize each quoted component as well as a quoted dotted inventory name.
@@ -3707,7 +3707,7 @@ _ERROR_VALUE_OPEN = re.compile(r"(?<![A-Za-z0-9_])['\"`]")
 # error echo (such as ERROR 1064 near '...'), matching 3.5.1. Escaped
 # whitespace in JSON/Python-repr echoes (\nIDENTIFIED) also precedes keywords.
 _DELIMITER_TAIL_CREDENTIAL = re.compile(
-    r"(?:\b|(?<=\\[nrtfv]))(?:IDENTIFIED|USING|REPLACE)\b|PASSWORD|://|\bERROR\s+\d{3,5}\b|" +
+    r"(?:\b|(?<=\\[nrtfv]))(?:IDENTIFIED|USING|REPLACE)\b|PASSWORD|://|(?:\b|(?<=\\[nrtfv]))ERROR\s+\d{3,5}\b|" +
     "|".join(r"(?:\b|(?<=\\[nrtfv]))" + re.escape(name.split(".")[-1]) + r"\b"
              for name in sorted(_SECRET_VARIABLES)),
     re.I)
@@ -4019,6 +4019,144 @@ _QUOTE_CLOSE_NO_BACKSLASH = {
     "'": re.compile(r"(?:''|[^'])*(?:'|\Z)"),
     '"': re.compile(r'(?:""|[^"])*(?:"|\Z)'),
 }
+_TRACKER_SKIP = (
+    r"|`(?:``|[^`])*(?P<bt_end>`|\Z)"
+    r"|/\*(?!!|[mM]!)[\s\S]*?(?P<blk_end>\*/|\Z)"
+    r"|(?P<line>--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)")
+_TRACKER_CONTEXT = re.compile(_SECRET_LITERAL_CONTEXT_STRING + _TRACKER_SKIP)
+_TRACKER_CONTEXT_NO_BACKSLASH = re.compile(
+    _SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH + _TRACKER_SKIP)
+_TRACKER_CONT = {
+    'single_end': (re.compile(r"(?:''|\\[\s\S]|[^'\\])*(?P<single_end>'|\\?\Z)"),
+                   re.compile(r"(?:''|[^'])*(?P<single_end>'|\Z)")),
+    'double_end': (re.compile(r'(?:""|\\[\s\S]|[^"\\])*(?P<double_end>"|\\?\Z)'),
+                   re.compile(r'(?:""|[^"])*(?P<double_end>"|\Z)')),
+    'bt_end': (re.compile(r"(?:``|[^`])*(?P<bt_end>`|\Z)"),
+               re.compile(r"(?:``|[^`])*(?P<bt_end>`|\Z)")),
+    'blk_end': (re.compile(r"[\s\S]*?(?P<blk_end>\*/|\Z)"),
+                re.compile(r"[\s\S]*?(?P<blk_end>\*/|\Z)")),
+    'line': (re.compile(r"(?P<line>[^\r\n]*)"),
+             re.compile(r"(?P<line>[^\r\n]*)")),
+}
+# 3.5.1 sequential redaction stage order:
+# 0: _redact_set_password_all, 1: _redact_secret_variables,
+# 2..8: _SECRET_PATTERNS[0..6] (_REPLACE_FOLLOW matches run at stage 8).
+_REPLACE_STAGE = 8
+# Valid SQL continuation immediately after the closing quote of a balanced
+# literal (used to distinguish a real literal terminator from a cut literal
+# that stole the opening quote of a following secret).
+_VALID_AFTER_LITERAL = re.compile(
+    r"[ \t\r\n]*(?:;|,|\)|\b(?:WHERE|ORDER|LIMIT|ON|AS|FOR|AND|OR|REQUIRE|WITH|"
+    r"REPLACE|RETAIN|PASSWORD|ACCOUNT|COMMENT|ATTRIBUTE|FAILED_LOGIN_ATTEMPTS|"
+    r"DEFAULT|RETURNING|USING|COLLATE|END)\b|/\*|--(?=\s|\Z)|#|\Z)",
+    re.I)
+
+
+def _classify_tracker_token(text, text_len, s_start, s_end, grp, end_tok, limit):
+    if grp in ('single_end', 'double_end'):
+        quote = text[s_start]
+        if end_tok == quote:
+            if s_end == limit and limit < text_len and text[limit] == quote:
+                return '', grp, limit - 1
+            return quote, None, s_end
+        if s_end == limit and limit < text_len:
+            return '', grp, (limit - 1 if end_tok == '\\' else limit)
+        return '', None, s_end
+    if grp == 'bt_end':
+        if end_tok == '`':
+            if s_end == limit and limit < text_len and text[limit] == '`':
+                return '', grp, limit - 1
+            return '', None, s_end
+        if s_end == limit and limit < text_len:
+            return '', grp, limit
+        return '', None, s_end
+    if grp == 'blk_end':
+        if end_tok == '*/':
+            return '', None, s_end
+        if s_end == limit and limit < text_len:
+            return '', grp, (limit - 1 if limit - s_start > 2 and text[limit - 1] == '*' else limit)
+        return '', None, s_end
+    if s_end == limit and limit < text_len and text[limit] not in '\r\n':
+        return '', grp, limit
+    return '', None, s_end
+
+
+def _advance_tracker(tracker, text, text_len, start, limit):
+    """Advance a bounded per-group context tracker through *start* within *limit*."""
+    pat, is_bs, s_start, s_end, s_quote, trunc_grp, trunc_pos = tracker
+    if trunc_grp is not None and s_end <= start:
+        cont_pat = _TRACKER_CONT[trunc_grp][0 if is_bs else 1]
+        token = cont_pat.match(text, trunc_pos, limit)
+        s_end = token.end()
+        s_quote, trunc_grp, trunc_pos = _classify_tracker_token(
+            text, text_len, s_start, s_end, trunc_grp, token.group(trunc_grp), limit)
+    while s_end <= start:
+        token = pat.search(text, s_end, limit)
+        if token is None:
+            s_start = s_end = limit
+            s_quote = ''
+            trunc_grp = None
+            break
+        s_start, s_end = token.start(), token.end()
+        grp = token.lastgroup
+        if s_end == limit and limit < text_len:
+            if (grp == 'blk_end' and s_end - s_start <= 3 and
+                    (text.startswith('/*!', s_start) or
+                     text.startswith('/*m!', s_start) or
+                     text.startswith('/*M!', s_start))):
+                s_end = s_start + 2
+                s_quote = ''
+                trunc_grp = None
+                continue
+            if (grp == 'line' and text.startswith('--', s_start) and
+                    s_end - s_start == 2 and not text[limit].isspace()):
+                s_end = s_start + 2
+                s_quote = ''
+                trunc_grp = None
+                continue
+        s_quote, trunc_grp, trunc_pos = _classify_tracker_token(
+            text, text_len, s_start, s_end, grp, token.group(grp), limit)
+    tracker[2] = s_start
+    tracker[3] = s_end
+    tracker[4] = s_quote
+    tracker[5] = trunc_grp
+    tracker[6] = trunc_pos
+    return s_start, s_end, s_quote
+
+
+def _balanced_strings(text, backslash_escapes):
+    """Return closed top-level string index if all strings in *text* are closed."""
+    pat = _TRACKER_CONTEXT if backslash_escapes else _TRACKER_CONTEXT_NO_BACKSLASH
+    closed = set()
+    outer_starts = []
+    outer_spans = []
+    for token in pat.finditer(text):
+        grp = token.lastgroup
+        if grp in ('single_end', 'double_end'):
+            start, end = token.start(), token.end()
+            quote = text[start]
+            if token.group(grp) != quote:
+                return None
+            closed.add((start, end))
+            outer_starts.append(start)
+            outer_spans.append((start, end, quote))
+    return closed, outer_starts, outer_spans
+
+
+def _is_balanced_span(balance, start, end, quote):
+    """Return 1 for a closed top-level string, 2 if nested inside one (and at its
+    closing boundary when end == o_end - 1), else 0."""
+    if balance is None:
+        return 0
+    closed, outer_starts, outer_spans = balance
+    if (start, end) in closed:
+        return 1
+    at = bisect.bisect_right(outer_starts, start) - 1
+    if at >= 0:
+        o_start, o_end, o_quote = outer_spans[at]
+        if o_start < start and end < o_end and o_quote != quote:
+            return 2 if end == o_end - 1 else 1
+    return 0
 
 
 def _extend_swallowed_quote(text, pos, quote, has_backslash):
@@ -4032,104 +4170,190 @@ def _extend_swallowed_quote(text, pos, quote, has_backslash):
 def _redact_spans_pass(text, spans):
     """Replace ordered spans, failing closed on mis-paired overlapping quotes.
 
-    Returns ``(redacted_text, structural)``, where *structural* is True when a
-    replacement merged non-identical overlapping spans or removed a semicolon,
-    so a caller can run one bounded re-scan on the resulting quote/statement
-    structure without sacrificing linear time on normal SQL.
+    Returns ``(redacted_text, any_overlap, removed_semi)``, where *any_overlap*
+    is True when a replacement merged non-identical overlapping spans or failed
+    closed to EOF, so a caller can run one bounded re-scan on the resulting
+    quote/statement structure without sacrificing linear time on normal SQL.
     """
     has_backslash = '\\' in text
     text_len = len(text)
-    # Each group: [start, end, quote, end_quote, swallowed_quotes, overlapped, fail_eof]
+    # Each group: [start, end, quote, end_quote, swallowed_quotes_or_None, overlapped, fail_eof]
     groups = []
+    last_end = -1
     trackers = None
-    for start, end, quote in spans:
-        if groups and start < groups[-1][1]:
+    g_first_stage = 0
+    g_first_end = 0
+    g_first_bs = True
+    g_stages = None
+    g_bs_stages = None
+    any_swallowed = False
+    any_fail_eof = False
+    balance_cache = {}
+    for start, end, quote, tag in spans:
+        stage = tag >> 1
+        bs_mode = bool(tag & 1)
+        if start < last_end:
             group = groups[-1]
             old_start, old_end, old_quote, end_quote, swallowed, _, fail_eof = group
-            if start != old_start or end != old_end:
-                group[5] = True
+            if g_stages is None:
+                g_stages = {g_first_stage: g_first_end}
+                g_bs_stages = {g_first_stage: g_first_end} if g_first_bs else {}
             if start > old_start:
-                if not fail_eof and quote in ("'", '"'):
+                if not fail_eof and quote in ("'", '"') and text[start] == quote:
                     if trackers is None:
-                        modes = ((_SECRET_LITERAL_CONTEXT, _SECRET_LITERAL_CONTEXT_NO_BACKSLASH)
-                                 if has_backslash else (_SECRET_LITERAL_CONTEXT,))
-                        trackers = [[pat, old_start, old_start, ''] for pat in modes]
+                        modes = ((_TRACKER_CONTEXT, True), (_TRACKER_CONTEXT_NO_BACKSLASH, False)) if has_backslash else ((_TRACKER_CONTEXT, True),)
+                        trackers = [[pat, is_bs, old_start, old_start, '', None, old_start]
+                                    for pat, is_bs in modes]
+                    closing_starts = []
+                    all_closing = True
+                    any_closing = False
                     for tracker in trackers:
-                        pat, s_start, s_end, s_quote = tracker
-                        while s_end <= start:
-                            token = pat.search(text, s_end)
-                            if token is None:
-                                s_start = s_end = text_len
-                                s_quote = ''
-                                break
-                            s_start, s_end = token.start(), token.end()
-                            s_quote = (text[s_start]
-                                       if token.lastgroup in ('single_end', 'double_end') else '')
-                        tracker[1], tracker[2], tracker[3] = s_start, s_end, s_quote
-                        # A later overlapping span starting right on an earlier
-                        # string's closing quote proves quote-parity breakage:
-                        # fail closed through the end of text.
-                        if (s_quote == quote and s_start < start
-                                and start == s_end - 1 and text[start] == quote):
+                        s_start, s_end, s_quote = _advance_tracker(
+                            tracker, text, text_len, start, old_end)
+                        if s_quote == quote and s_start < start and start == s_end - 1:
+                            any_closing = True
+                            closing_starts.append(s_start)
+                        else:
+                            all_closing = False
+                            closing_starts.append(None)
+                    if any_closing:
+                        earlier_stage = min(s for s, e in g_stages.items() if e > start)
+                        earlier_bs_stage = (
+                            min((s for s, e in g_bs_stages.items() if e > start), default=None)
+                            if has_backslash else earlier_stage)
+                        if stage < earlier_stage or (
+                                earlier_bs_stage is not None and stage < earlier_bs_stage):
                             group[6] = True
-                            break
+                            any_fail_eof = True
+                        elif all_closing and earlier_bs_stage is not None and not (
+                                earlier_stage == 0 and stage == 0) and not (
+                                earlier_stage == 0 and stage == 5) and (
+                                closing_starts[0] == old_start
+                                or (earlier_bs_stage == 1 and start < old_end - 1)):
+                            if True not in balance_cache:
+                                balance_cache[True] = _balanced_strings(text, True)
+                            bal_kind = _is_balanced_span(
+                                balance_cache[True], closing_starts[0], start + 1, quote)
+                            if not bal_kind and has_backslash:
+                                if False not in balance_cache:
+                                    balance_cache[False] = _balanced_strings(text, False)
+                                bal_kind = _is_balanced_span(
+                                    balance_cache[False], closing_starts[1], start + 1, quote)
+                            if bal_kind and (
+                                    bal_kind == 2
+                                    or _VALID_AFTER_LITERAL.match(text, start + 1) is not None):
+                                # A later (or equal) 3.5.1 stage starting on the real
+                                # closing quote of a balanced plain literal followed by
+                                # valid SQL continuation was already removed before that
+                                # stage ran in 3.5.1: drop it so valid SQL stays intact.
+                                continue
+                if start != old_start or end != old_end:
+                    group[5] = True
                 if end > old_end:
                     # The later span swallowed the earlier span's closing quote.
                     if end_quote in ("'", '"'):
+                        if (not fail_eof and quote in ("'", '"') and quote != end_quote
+                                and text[start] == quote):
+                            earlier_stage = min(s for s, e in g_stages.items() if e > start)
+                            earlier_bs_stage = (
+                                min((s for s, e in g_bs_stages.items() if e > start), default=None)
+                                if has_backslash else earlier_stage)
+                            if stage < earlier_stage or (
+                                    earlier_bs_stage is not None and stage < earlier_bs_stage):
+                                group[6] = True
+                                any_fail_eof = True
+                        if swallowed is None:
+                            swallowed = group[4] = set()
                         swallowed.add(end_quote)
+                        any_swallowed = True
                     group[1] = end
                     group[3] = quote
-            elif end > old_end:
-                group[1] = end
-                group[3] = quote
-            if start == old_start:
+                    last_end = end
+            else:
+                if start != old_start or end != old_end:
+                    group[5] = True
+                if end > old_end:
+                    group[1] = end
+                    group[3] = quote
+                    last_end = end
                 # An enclosing-string interpretation can omit a quote that the
                 # standalone-literal interpretation would otherwise insert.
                 group[2] = min(old_quote, quote)
+            if end > g_stages.get(stage, -1):
+                g_stages[stage] = end
+            if bs_mode and end > g_bs_stages.get(stage, -1):
+                g_bs_stages[stage] = end
             continue
-        groups.append([start, end, quote, quote, set(), False, False])
+        groups.append([start, end, quote, quote, None, False, False])
+        last_end = end
         trackers = None
+        g_first_stage = stage
+        g_first_end = end
+        g_first_bs = bs_mode
+        g_stages = None
+        g_bs_stages = None
 
-    index = 0
-    while index < len(groups):
-        group = groups[index]
-        if group[6]:
-            group[1] = text_len
-            del groups[index + 1:]
-            break
-        if group[4]:
-            pending_quotes = list(group[4])
-            group[4].clear()
-            new_end = group[1]
-            for quote in pending_quotes:
-                if quote in ("'", '"'):
-                    new_end = max(new_end, _extend_swallowed_quote(
-                        text, group[1], quote, has_backslash))
-            if new_end > group[1]:
-                group[1] = new_end
-                group[5] = True
-                while index + 1 < len(groups) and groups[index + 1][0] < group[1]:
-                    nxt = groups.pop(index + 1)
-                    if nxt[6]:
-                        group[6] = True
-                    if nxt[1] > group[1]:
-                        if group[3] in ("'", '"'):
-                            group[4].add(group[3])
-                        group[1] = nxt[1]
-                        group[3] = nxt[3]
-                    group[4].update(nxt[4])
-                    group[5] = True
-                continue
-        index += 1
+    if any_swallowed or any_fail_eof:
+        merged = []
+        read_idx = 0
+        num_groups = len(groups)
+        while read_idx < num_groups:
+            group = groups[read_idx]
+            read_idx += 1
+            while True:
+                if group[6]:
+                    group[1] = text_len
+                    read_idx = num_groups
+                    break
+                if group[4]:
+                    pending_quotes = list(group[4])
+                    group[4].clear()
+                    extended = []
+                    new_end = group[1]
+                    new_quote = group[3]
+                    for quote in pending_quotes:
+                        if quote in ("'", '"'):
+                            cand = _extend_swallowed_quote(
+                                text, group[1], quote, has_backslash)
+                            extended.append((quote, cand))
+                            if cand > new_end:
+                                new_end = cand
+                                new_quote = quote
+                    if new_end > group[1]:
+                        group[1] = new_end
+                        group[3] = new_quote
+                        group[5] = True
+                        if new_end < text_len:
+                            for quote, cand in extended:
+                                if cand < new_end:
+                                    group[4].add(quote)
+                        while read_idx < num_groups and groups[read_idx][0] < group[1]:
+                            nxt = groups[read_idx]
+                            read_idx += 1
+                            if nxt[6]:
+                                group[6] = True
+                            if nxt[1] > group[1]:
+                                if group[3] in ("'", '"'):
+                                    group[4].add(group[3])
+                                group[1] = nxt[1]
+                                group[3] = nxt[3]
+                            if nxt[4]:
+                                group[4].update(nxt[4])
+                            group[5] = True
+                        continue
+                break
+            merged.append(group)
+        groups = merged
 
     parts, kept, any_overlap, removed_semi = [], 0, False, False
+    has_semi = ';' in text
     for start, end, quote, _, _, overlapped, fail_eof in groups:
         if start < kept:
             kept = max(kept, end)
             continue
         if overlapped or fail_eof:
             any_overlap = True
-        if not removed_semi and ';' in text[start:end]:
+        if has_semi and not removed_semi and ';' in text[start:end]:
             removed_semi = True
         parts.extend((text[kept:start], quote, REDACTED, quote))
         kept = end
@@ -4138,7 +4362,7 @@ def _redact_spans_pass(text, spans):
 
 def _redact_spans(text, spans):
     """Replace ordered spans, hiding the union before changing any offsets."""
-    return _redact_spans_pass(text, spans)[0]
+    return _redact_spans_pass(text, ((s, e, q, 1) for s, e, q in spans))[0]
 
 
 def _redact_secret_variables(text):
@@ -4212,7 +4436,7 @@ def _secret_literal_contexts(text, backslash_escapes=True):
             yield inner
 
 
-def _secret_literal_spans(text, pattern, backslash_escapes=True):
+def _secret_literal_spans(text, pattern, backslash_escapes=True, stage=None):
     """Extend ambiguous dynamic values through their original enclosing string.
 
     Ordered scans preserve the diagnostic fallback's entire hidden span.
@@ -4230,6 +4454,9 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
     pattern_search = pattern.search
     follow_match = follow_pattern.match
     text_len = len(text)
+    bs_bit = 1 if backslash_escapes else 0
+    base_tag = None if stage is None else ((stage << 1) | bs_bit)
+    forced_tag = (_REPLACE_STAGE << 1) | bs_bit
     cursor, forced = 0, None
     while cursor < text_len:
         was_forced = forced is not None
@@ -4272,7 +4499,10 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
             # An escaped opener without a known enclosing string has no
             # trustworthy end. Never leave its trailing value visible.
             end = text_len
-        found.append((start, end, quote))
+        if base_tag is None:
+            found.append((start, end, quote))
+        else:
+            found.append((start, end, quote, forced_tag if was_forced else base_tag))
         if end < text_len and match.end() not in followed:
             # Capture a following REPLACE literal in the original text before
             # merged spans from another quote reading can cover its keyword,
@@ -4291,21 +4521,21 @@ def _secret_literal_spans(text, pattern, backslash_escapes=True):
     return iter(found)
 
 
-def _secret_literal_readings(text, pattern):
+def _secret_literal_readings(text, pattern, stage=None):
     """Credential spans under both modes, before either reading changes text.
 
     This also applies to account/replication patterns, preserving the enclosing
     literal boundary for doubled and backslash-escaped dynamic SQL values.
     """
-    spans = _secret_literal_spans(text, pattern)
+    spans = _secret_literal_spans(text, pattern, True, stage)
     if '\\' in text:
         spans = heapq.merge(spans, _secret_literal_spans(
-            text, _SECRET_PATTERNS_NO_BACKSLASH[pattern], False))
+            text, _SECRET_PATTERNS_NO_BACKSLASH[pattern], False, stage))
     return spans
 
 
 def _redact_secret_variable_literals(text, pattern):
-    return _redact_spans(text, _secret_literal_readings(text, pattern))
+    return _redact_spans_pass(text, _secret_literal_readings(text, pattern, _REPLACE_STAGE))[0]
 
 
 def _redact_variable_errors(text):
@@ -4465,34 +4695,39 @@ def _redact_credential_pass(text, allow_custom_boundaries=True, semicolon_only=F
     """Run credential scans on *text* and apply their merged union once."""
     folded = text.lower() if text.isascii() else None
     inventory = _may_have_secret_variables(text)
+    has_backslash = '\\' in text
     scans = []
     if '=' in text and (folded is None or 'password' in folded and 'set' in folded):
         spans = heapq.merge(_set_password_lexical_spans(text),
                             _set_password_separator_spans(text),
                             _set_password_keyword_spans(text))
-        scans.append((start, end, text[start]) for start, end in spans)
-        scans.append(_secret_literal_readings(text, _SET_PASSWORD_LEGACY_LITERAL))
+        scans.append((start, end, text[start], 1) for start, end in spans)
+        scans.append(_secret_literal_readings(text, _SET_PASSWORD_LEGACY_LITERAL, 5))
     if inventory:
-        scans.append(_secret_variable_spans(text, True, allow_custom_boundaries))
-        if '\\' in text:
-            scans.append(_secret_variable_spans(text, False, allow_custom_boundaries))
-    for pattern, keyword in zip(_SECRET_PATTERNS, _SECRET_PATTERN_KEYWORDS):
+        scans.append((start, end, quote, 3)
+                     for start, end, quote in _secret_variable_spans(text, True, allow_custom_boundaries))
+        if has_backslash:
+            scans.append((start, end, quote, 2)
+                         for start, end, quote in _secret_variable_spans(text, False, allow_custom_boundaries))
+    for index, (pattern, keyword) in enumerate(zip(_SECRET_PATTERNS, _SECRET_PATTERN_KEYWORDS)):
         if semicolon_only and pattern is not _SECRET_PATTERNS[3]:
             continue
+        stage = 2 + index
         if pattern is _SECRET_VARIABLE_LITERAL:
             if inventory:
-                scans.append(_secret_literal_readings(text, pattern))
+                scans.append(_secret_literal_readings(text, pattern, stage))
             continue
         if folded is not None and keyword is not None and keyword not in folded:
             continue
         if pattern is _SECRET_PATTERNS[3] and '=' not in text:
             continue
-        scans.append(_secret_literal_readings(text, pattern))
+        scans.append(_secret_literal_readings(text, pattern, stage))
     # Every scan uses the original quote boundaries, so one replacement
     # cannot hide a later pattern or shorten its other SQL-mode reading.
     if not scans:
         return text, False, False
-    return _redact_spans_pass(text, heapq.merge(*scans))
+    merged = scans[0] if len(scans) == 1 else heapq.merge(*scans)
+    return _redact_spans_pass(text, merged)
 
 
 def redact(text, password=None, quoted=True):
