@@ -4,7 +4,7 @@
 // recordings (server-fixtures.py).
 import assert from "node:assert/strict";
 import path from "node:path";
-import { load, open, pause } from "./perf-harness.mjs";
+import { load, open, pause, portalScreenshots } from "./perf-harness.mjs";
 
 const mysql = await load("errorlog-mysql-8.4.json");
 const maria = await load("errorlog-mariadb-11.4-file.json");
@@ -134,6 +134,27 @@ try {
   });
   await page.click(`${view} .errorlog-export button`);
   await page.waitForSelector(".errorlog-export-formats button");
+  const exportLook = await page.$eval('.popover[aria-label="Export error log"]', panel => ({
+    portaled: panel.parentElement === document.body,
+    hook: panel.classList.contains('errorlog-export-panel'),
+    minWidth: getComputedStyle(panel).minWidth,
+    formats: getComputedStyle(panel.querySelector('.errorlog-export-formats')).display,
+  }));
+  assert.deepEqual(exportLook, { portaled: true, hook: true, minWidth: '220px', formats: 'flex' },
+    'Error log export keeps its panel width and format layout after portaling');
+  // The stale-report class dims the section that used to contain the menu.
+  // Change that presentation state while open, using the actual view CSS.
+  await page.$eval(view, surface => surface.classList.add('is-other-connection'));
+  await page.waitForFunction(() => {
+    const style = getComputedStyle(document.querySelector('.errorlog-export-panel'));
+    return style.opacity === '0.55' && style.filter === 'grayscale(1)';
+  });
+  await page.$eval(view, surface => surface.classList.remove('is-other-connection'));
+  await page.waitForFunction(() => {
+    const style = getComputedStyle(document.querySelector('.errorlog-export-panel'));
+    return style.opacity === '1' && style.filter === 'none';
+  });
+  await portalScreenshots(page, 'errorlog-export', `${view} .errorlog-export > button`, '.popover[aria-label="Export error log"]');
   // CSV
   await page.click('.errorlog-export-formats button:nth-child(1)');
   await page.waitForFunction(() => window.errorLogExports.length >= 1);

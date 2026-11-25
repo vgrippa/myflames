@@ -14,7 +14,7 @@ import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
 // rediscovery of a running job after a reload, and 390 px.
 import assert from "node:assert/strict";
 import path from "node:path";
-import { assertPrivilege as assertPrivilegeState, privilegeAnswer, load, open, pause } from "./perf-harness.mjs";
+import { assertPrivilege as assertPrivilegeState, privilegeAnswer, load, open, pause, portalScreenshots } from "./perf-harness.mjs";
 
 
 // Retain the shared semantic/focus checks, then check the touch-visible feedback.
@@ -344,19 +344,25 @@ try {
   assert.match(await text(`${view} .ops-dump .form-row-control > .hint`), /Choose at least one database\./);
   await captureSheet("dump-form");
   await page.click(`${view} #ops-dump-schemas`);
-  await page.waitForSelector(`${view} .perf-picker-panel`);
-  await page.locator(`${view} .perf-picker-option ::-p-text(mftab)`).click();
-  await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
+  await page.waitForSelector(`#ops-dump-schemas-panel`);
+  assert.deepEqual(await page.$eval('#ops-dump-schemas-panel', panel => {
+    const style = getComputedStyle(panel);
+    const input = getComputedStyle(panel.querySelector('input[type=search]'));
+    return [style.gridColumnStart, style.gridColumnEnd, input.maxWidth, input.fontSize];
+  }), ['1', '-1', '220px', '12px'], 'database picker keeps its form and toolbar-field styles in the portal');
+  await portalScreenshots(page, 'server-databases', `${view} #ops-dump-schemas`, '.schema-picker-panel');
+  await page.locator(`#ops-dump-schemas-panel .perf-picker-option ::-p-text(mftab)`).click();
+  await page.locator(`#ops-dump-schemas-panel .perf-picker-option ::-p-text(mfother)`).click();
   assert.equal(await text(`${view} #ops-dump-schemas`), "All user databases", "every user database chosen reads as all");
   assert.doesNotMatch(await text(`${view} .ops-dump .form-row-control > .hint`), /Choose at least one database/);
   // A system database on top of every user database is a plain selection, not
   // "All user databases" (the label means exactly the user set).
-  await page.locator(`${view} .perf-picker-foot label ::-p-text(Show system databases)`).click();
-  await page.locator(`${view} .perf-picker-option ::-p-text(mysql)`).click();
+  await page.locator(`#ops-dump-schemas-panel .perf-picker-foot label ::-p-text(Show system databases)`).click();
+  await page.locator(`#ops-dump-schemas-panel .perf-picker-option ::-p-text(mysql)`).click();
   assert.equal(await text(`${view} #ops-dump-schemas`), "3 databases", "a system database on top of every user database reads as a count");
-  await page.locator(`${view} .perf-picker-option ::-p-text(mysql)`).click();
+  await page.locator(`#ops-dump-schemas-panel .perf-picker-option ::-p-text(mysql)`).click();
   assert.equal(await text(`${view} #ops-dump-schemas`), "All user databases", "back to exactly the user set");
-  await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
+  await page.locator(`#ops-dump-schemas-panel .perf-picker-option ::-p-text(mfother)`).click();
   await page.keyboard.press("Escape");
   assert.equal(await text(`${view} #ops-dump-schemas`), "mftab");
   await field("Output folder", "/Users/dba/maintenance/busy");

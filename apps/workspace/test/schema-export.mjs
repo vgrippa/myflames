@@ -261,6 +261,8 @@ try {
   await page.waitForSelector(trigger);
   await page.$eval(trigger, (b) => { b.scrollIntoView({ block: "nearest", inline: "nearest" }); b.focus(); b.click(); });
   await page.waitForSelector(".row-action-menu [role=menuitem]");
+  assert.equal(await page.$eval('.row-action-menu', menu => menu.closest('.popover').parentElement === document.body), true,
+    'Table structure is opened through a portaled row menu');
   assert.equal(await page.$eval(".row-action-menu [role=menuitem]", (e) => e.textContent.trim()), "Table structure",
     "Table structure leads the row menu");
   await page.$eval(".row-action-menu [role=menuitem]", (e) => { e.focus(); e.click(); });

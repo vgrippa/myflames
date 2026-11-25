@@ -9,7 +9,7 @@ import {
 } from "./api";
 import { Icon } from "./components";
 import { ConnectionTypeBand } from "./Connections";
-import { Checkbox, useFocusScope } from "./kit";
+import { actionOpener, Checkbox, useFocusScope } from "./kit";
 
 const COMMON_DATA_TYPES = [
   "VARCHAR(255)",
@@ -35,17 +35,6 @@ const COMMON_DATA_TYPES = [
 
 /** A name in backticks, with any backtick doubled. */
 const bt = (name: string) => "`" + name.replace(/`/g, "``") + "`";
-
-/** Where focus returns when the sheet closes: the control that opened it, or
- * the button of the menu it was chosen from (that menu closes with the choice).
- * Null lets the focus scope use whatever holds focus once the sheet opens. */
-function openerOf(): HTMLElement | null {
-  const active = document.activeElement;
-  if (!(active instanceof HTMLElement) || active === document.body) return null;
-  const menu = active.closest<HTMLElement>('[role="menu"]');
-  if (!menu) return active;
-  return menu.parentElement?.querySelector<HTMLElement>(':scope > [aria-haspopup="menu"][aria-expanded="true"]') ?? null;
-}
 
 /** The modal sheet both dialogs share, built like ConfirmSheet: a title, a
  * body that scrolls, and Cancel plus the action always in view (the 720x520
@@ -79,7 +68,7 @@ function AlterSheet({
   const cancel = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const leadId = useId();
-  const [opener] = useState(openerOf);
+  const [opener] = useState(actionOpener);
   useFocusScope(dialog, {
     open: true,
     onClose,

@@ -15,7 +15,16 @@ indexes.available=false; // Inventory must not depend on Performance Schema usag
 const h=await open('/api/live/tables','table-pagination',{'/api/live/schemas':{status:200,body:catalog},'/api/live/indexes':{status:200,body:indexes}});
 const {page,state}=h;
 // Export is the shared pull-down (kit ExportMenu): open it, then choose a format.
-const exportAs=async(wrap,format)=>{await page.click(`${wrap} button.export-button`);const item=`${wrap} [role=menuitem][data-format="${format}"]`;await page.waitForSelector(item);await page.click(item);};
+// The menu may live in a portal on document.body, so find it through the
+// opener's aria-controls (the pattern kit's actionOpener uses).
+const exportAs=async(wrap,format)=>{
+  await page.click(`${wrap} button.export-button`);
+  const panel=await (await page.waitForFunction(s=>document.querySelector(`${s} button.export-button`)?.getAttribute('aria-controls')||'',{},wrap)).jsonValue();
+  assert.ok(panel,'export menu opens');
+  const item=`[id="${panel}"] [role=menuitem][data-format="${format}"]`;
+  await page.waitForSelector(item);
+  await page.click(item);
+};
 state.fallback={status:200,body:tables};
 try {
  await h.server(); await h.view('tables'); await h.refresh();

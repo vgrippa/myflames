@@ -473,6 +473,11 @@ try {
   assert.equal(JSON.stringify(body).includes("password"), false, "no credentials in an export");
   await page.locator(".result-export button ::-p-text(Export)").click();
   await page.waitForSelector(".popover .export-binary");
+  assert.deepEqual(await page.$$eval('.result-export-panel fieldset', fields => fields.map(field => {
+    const style = getComputedStyle(field);
+    return [style.borderTopWidth, style.borderTopStyle, style.paddingTop, style.paddingRight, style.marginTop];
+  })), [['1px', 'solid', '8px', '12px', '8px'], ['1px', 'solid', '8px', '12px', '8px']],
+    'result export fieldsets keep their panel-scoped border and spacing');
   await page.locator(".popover label ::-p-text(Treat data as binary)").click();
   // The SQL INSERT target starts as the one table the statement read; it stays editable.
   assert.deepEqual(await page.$$eval(".popover .export-sql input", (els) => els.map((e) => e.value)), ["orders", "shop"]);

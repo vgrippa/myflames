@@ -164,8 +164,11 @@
   border-color: var(--accent-line);
 }
 .popover {
+  /* Inline nested panels already share their parent's compositing. */
+  --popover-context-opacity: 1;
   position: fixed;
   z-index: 40;
+  opacity: var(--popover-context-opacity, 1);
   max-height: 60vh;
   overflow: auto;
   padding: var(--space-3);
@@ -2392,7 +2395,7 @@ details[open]:not([class]) > summary:not([class]):not(:has(> svg))::before {
     transform: translateY(4px);
   }
   to {
-    opacity: 1;
+    opacity: var(--popover-context-opacity, 1);
     transform: translateY(0);
   }
 }

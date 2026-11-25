@@ -205,6 +205,9 @@ try {
   }, columnsButton);
   await page.click(columnsButton);
   await page.waitForSelector('.popover[aria-label="Columns of Transactions"]', { visible: true });
+  await page.waitForFunction(() => document.querySelector('.popover[aria-label="Columns of Transactions"]')?.contains(document.activeElement));
+  assert.equal(await page.$eval('.popover[aria-label="Columns of Transactions"]', panel => panel.parentElement === document.body), true,
+    'the content Columns popover uses the body portal at 720 px');
   const toolbarOf = '.server-layout.is-compact .server-view[data-view="locks"] > .view-toolbar';
   const probe = await page.evaluate((bar) => {
     const pop = document.querySelector('.popover[aria-label="Columns of Transactions"]');
@@ -222,6 +225,8 @@ try {
   assert.ok(probe.inside, `the Columns menu paints above the sticky toolbar where they overlap (hit: ${probe.hit})`);
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector('.popover[aria-label="Columns of Transactions"]'));
+  assert.equal(await page.$eval(columnsButton, button => button === document.activeElement), true,
+    'Escape from the portaled Columns menu returns focus to its opener');
   await page.click('.server-view[data-view="locks"] .server-back');
   await page.waitForSelector('.server-layout.show-list #server-nav-health', { visible: true });
   await page.$eval('#server-nav-health', (e) => e.click());

@@ -293,7 +293,9 @@ export function SchemaPicker({
         <Popover
           label="Choose databases"
           className="perf-picker-popover"
+          panelClassName="schema-picker-panel"
           buttonClassName="perf-picker-button"
+          disabled={disabled}
           buttonTitle="Choose databases"
           trigger={
             <>

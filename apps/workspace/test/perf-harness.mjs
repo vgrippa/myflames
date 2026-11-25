@@ -61,6 +61,54 @@ export async function closeBrowser(browser, { forceMs = 15000 } = {}) {
 
 export const load = async (name) => JSON.parse(await fs.readFile(path.join(fixtures, name), "utf8"));
 export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Review the three portal regression surfaces in both appearances and at the
+ * minimum desktop width. Reopen after each layout settles so the screenshot
+ * records the visible opener and panel together, then restore the test state. */
+export async function portalScreenshots(page, name, opener, panel) {
+  const directory = path.join(root, "local", "portal");
+  await fs.mkdir(directory, { recursive: true });
+  const viewport = page.viewport();
+  const before = await page.evaluate(() => ({ theme: document.documentElement.getAttribute("data-theme"), x: scrollX, y: scrollY }));
+  const close = async () => {
+    if (!(await page.$(panel))) return;
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(panel, { hidden: true });
+  };
+  const reopen = async () => {
+    await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place)")]
+      .filter(place => !place.closest("[hidden]") && place.offsetParent !== null)
+      .every(place => place.querySelector(".server-layout")?.classList.contains("is-compact") === (place.clientWidth < 720)));
+    await page.waitForSelector(opener, { visible: true });
+    await page.$eval(opener, button => button.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+    await page.click(opener);
+    await page.waitForSelector(panel, { visible: true });
+    await page.$eval(panel, surface => Promise.allSettled(surface.getAnimations().map(animation => animation.finished)));
+    await page.waitForFunction(selector => {
+      const surface = document.querySelector(selector);
+      const rect = surface.getBoundingClientRect();
+      return getComputedStyle(surface).visibility === "visible" && rect.top >= 0 && rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+    }, {}, panel);
+  };
+  try {
+    for (const theme of ["light", "dark"]) for (const width of [1440, 720]) {
+      await close();
+      await page.evaluate(value => document.documentElement.dataset.theme = value, theme);
+      await page.setViewport({ width, height: width === 1440 ? 900 : 600 });
+      await reopen();
+      await page.screenshot({ path: path.join(directory, `${name}-${width}-${theme}.png`) });
+    }
+  } finally {
+    await close();
+    await page.evaluate(theme => {
+      if (theme === null) document.documentElement.removeAttribute("data-theme");
+      else document.documentElement.setAttribute("data-theme", theme);
+    }, before.theme);
+    await page.setViewport(viewport);
+    await reopen();
+    await page.evaluate(({ x, y }) => window.scrollTo(x, y), before);
+  }
+}
 /** Extra Chromium launch flags for sandboxes that refuse the defaults
  * (MYFLAMES_BROWSER_ARGS="--no-sandbox"); empty in a normal environment. */
 export const browserArgs = (process.env.MYFLAMES_BROWSER_ARGS || "").split(" ").filter(Boolean);

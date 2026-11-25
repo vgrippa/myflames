@@ -110,10 +110,15 @@
   cursor: pointer;
 }
 .set-value-button:disabled { opacity: 0.6; cursor: default; }
-.set-value-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The Popover anchor must give up width like .set-value does: without
+ * min-width 0 a long staged value keeps it at content width, overflowing the
+ * cell and sliding the button under the Discard control, which then takes
+ * the click meant for the picker. */
+.set-value > .set-value-popover { flex: 1 1 auto; min-width: 0; }
+.set-value-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .set-value-members { display: grid; gap: var(--space-1); }
 .set-value-member { display: flex; align-items: center; gap: var(--space-2); font-family: var(--font-mono); font-size: var(--text-sm); cursor: pointer; }
-.set-value-popover .hint { margin: var(--space-2) 0 0; }
+.set-value-panel .hint { margin: var(--space-2) 0 0; }
 .variable-label {
   display: block;
   margin-bottom: var(--space-1);

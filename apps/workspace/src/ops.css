@@ -28,7 +28,6 @@
   border: 0;
 }
 .ops-form details,
-.ops-form .perf-picker-panel,
 .ops-form .ops-warning,
 .ops-form .ops-target,
 .ops-form > fieldset > .checkbox,
@@ -365,7 +364,7 @@
 .ops-preflight-result h3 { font-size: inherit; margin-block: var(--space-3); }
 .ops-preflight-result td { white-space: normal; overflow-wrap: anywhere; }
 .ops-preflight-result .text-button { white-space: normal; text-align: left; }
-.ops-invalid input, .ops-invalid .perf-picker-button { outline: 2px solid var(--danger); outline-offset: 2px; }
+.ops-invalid input, .dump-table-invalid input, .ops-invalid .perf-picker-button { outline: 2px solid var(--danger); outline-offset: 2px; }
 .ops-tool-loading { padding-block: var(--space-3); color: var(--ink-muted); }
 
 .ops-task-fields, .ops-folder-check { display: contents; }

@@ -164,8 +164,8 @@ try {
  await page.select('select[aria-label="Scope"]','schemas');
  assert.equal(catalogReads().length,0,'no table read before a database is chosen');
  await page.click(`${view} #ops-dump-schemas`);
- await page.waitForSelector(`${view} .perf-picker-panel`);
- await page.locator(`${view} .perf-picker-option ::-p-text(mftab)`).click();
+ await page.waitForSelector(`#ops-dump-schemas-panel`);
+ await page.locator(`#ops-dump-schemas-panel .perf-picker-option ::-p-text(mftab)`).click();
  await page.keyboard.press('Escape');
  await page.waitForSelector(`${view} [data-dump-tables="mftab"] #ops-dump-tables`);
  assert.equal(await field(),'/tmp/manual-backup','database changes preserve an explicitly typed output folder');
@@ -217,6 +217,15 @@ try {
  assert.match(await h.text('.ops-preflight-result'),/Start dump is blocked by 2 failed checks: Tables, Free space/);
  assert.equal(await page.$$eval('.ops-preflight-result tbody tr',es=>es.length),2);
  assert.equal(await page.$eval('[data-dump-tables]',e=>e.getAttribute('aria-invalid')),'true');
+ await page.click(`${view} [data-dump-tables] .perf-picker-button`);
+ await page.waitForSelector('.dump-table-invalid input[type=checkbox]');
+ assert.deepEqual(await page.$eval('.dump-table-invalid input[type=checkbox]', input => {
+  const style=getComputedStyle(input);
+  return [style.outlineWidth,style.outlineStyle,style.outlineOffset,
+   style.outlineColor===getComputedStyle(document.querySelector('.ops-invalid .perf-picker-button')).outlineColor];
+ }),['2px','solid','2px',true],'missing-table picker inputs retain their validation outline after portaling');
+ await page.keyboard.press('Escape');
+ await page.waitForFunction(()=>!document.querySelector('.dump-table-panel'));
  assert.equal(await page.$('dialog.ops-confirm[open]'),null);
  assert.match(await h.text('.ops-preflight-result details summary'),/1 check passed/);
  await h.button('Choose another folder…','.ops-preflight-result ');
@@ -289,8 +298,8 @@ try {
  reloadWithout=null;
  // Two databases: no table list; the chosen tables are dropped.
  await page.click(`${view} #ops-dump-schemas`);
- await page.waitForSelector(`${view} .perf-picker-panel`);
- await page.locator(`${view} .perf-picker-option ::-p-text(mfother)`).click();
+ await page.waitForSelector(`#ops-dump-schemas-panel`);
+ await page.locator(`#ops-dump-schemas-panel .perf-picker-option ::-p-text(mfother)`).click();
  await page.keyboard.press('Escape');
  await page.waitForFunction(v=>!document.querySelector(`${v} [data-dump-tables]`),{},view);
  assert.match(await h.text(`${view} .ops-dump .form-row-control > .hint`),/Choose one database to pick its tables/);

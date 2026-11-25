@@ -427,6 +427,8 @@ try {
   await page.waitForSelector(trigger);
   await page.$eval(trigger, (b) => { b.scrollIntoView({ block: "nearest", inline: "nearest" }); b.focus(); b.click(); });
   await page.waitForSelector(".row-action-menu [role=menuitem]");
+  assert.equal(await page.$eval('.row-action-menu', menu => menu.closest('.popover').parentElement === document.body), true,
+    "the row menu escapes the view's stacking context");
   await page.$$eval(".row-action-menu [role=menuitem]", (items) => {
     const add = items.find((i) => /^Add column/.test((i.textContent || "").trim()));
     add.focus(); add.click();
@@ -436,6 +438,18 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
   assert.equal(await page.$eval(trigger, (b) => b === document.activeElement), true, "focus returns to the row's ⋯ button");
+  await page.click(trigger);
+  await page.waitForSelector('.row-action-menu [role=menuitem]');
+  await page.$$eval('.row-action-menu [role=menuitem]', items => {
+    const remove = items.find(item => /^Remove column/.test(item.textContent.trim()));
+    remove.focus(); remove.click();
+  });
+  await page.waitForSelector(`${sheet} .col-info-card`);
+  assert.equal((await sheetState()).title, 'Remove column from mftab.no_key');
+  await page.locator(`${sheet} button ::-p-text(Cancel)`).click();
+  await page.waitForFunction(selector => !document.querySelector(selector), {}, sheet);
+  assert.equal(await page.$eval(trigger, button => button === document.activeElement), true,
+    'Cancel returns focus from Remove column to the portaled row menu opener');
   await h.select(`${view} tr[data-table="mftab.no_key"]`);
 
   await page.locator(".view-inspector button ::-p-text(Indexes)").click();

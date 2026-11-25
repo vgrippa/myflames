@@ -8,7 +8,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api, download, type Connection } from "./api";
 import { connectionLabel } from "./binding";
-import { ActionStatus, Segmented, copyToClipboard, useAction, useFocusScope } from "./kit";
+import { actionOpener, ActionStatus, Segmented, copyToClipboard, useAction, useFocusScope } from "./kit";
 import "./table-structure.css";
 
 export type TableStructureColumn = {
@@ -65,16 +65,6 @@ export type TableStructure = {
 export const readTableStructure = (connection: Connection, schema: string, table: string, signal?: AbortSignal) =>
   api<TableStructure>("live/table-structure", { connection, schema, table }, signal);
 
-/** Where focus returns when a sheet closes: the control that opened it, or
- * the ⋯ button of the menu it was chosen from. */
-function openerOf(): HTMLElement | null {
-  const active = document.activeElement;
-  if (!(active instanceof HTMLElement) || active === document.body) return null;
-  const menu = active.closest<HTMLElement>('[role="menu"]');
-  if (!menu) return active;
-  return menu.parentElement?.querySelector<HTMLElement>(':scope > [aria-haspopup="menu"][aria-expanded="true"]') ?? null;
-}
-
 /** A modal sheet for reading and taking away text (Table structure, Export
  * as SQL): a title, a body that scrolls, then one row of actions that never
  * leaves the window, Close first. Escape and Close return focus to the opener. */
@@ -94,7 +84,7 @@ export function TextSheet({ eyebrow, title, lead, className = "", status, action
   const close = useRef<HTMLButtonElement>(null);
   const titleId = useId();
   const leadId = useId();
-  const [opener] = useState(openerOf);
+  const [opener] = useState(actionOpener);
   useFocusScope(dialog, { open: true, onClose, initialFocus: () => close.current, returnFocus: () => opener });
   return createPortal(
     <dialog ref={dialog} className={`confirm-sheet text-sheet ${className}`.trim()} role="dialog" tabIndex={-1}
