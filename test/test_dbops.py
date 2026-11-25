@@ -489,11 +489,13 @@ class TestSplitterScaling(unittest.TestCase):
                 self.assertLess(elapsed, 1.0)
 
     def test_custom_boundary_text_budget_fails_closed(self):
-        # At the exact size limit the normal proof is still attempted.
+        # At the exact size limit the normal proof is still attempted when a
+        # real DELIMITER command line declares a custom delimiter.
         # Mock only this guard check to avoid making the test lex 2 Mi of
         # padding four times; the over-limit abuse case uses real redaction.
         limit = 2 * 1024 * 1024
-        raw = '/* delimiter */' + ' ' * (limit - len('/* delimiter */'))
+        head = 'DELIMITER //\n'
+        raw = head + ' ' * (limit - len(head))
         with mock.patch.object(dbops, 'split_statements', return_value=[]) as splitter:
             self.assertEqual(dbops._secret_variable_boundaries(raw), [])
         self.assertEqual(splitter.call_args_list,
@@ -4047,6 +4049,141 @@ class TestRedaction(unittest.TestCase):
                     self.assertTrue(clean.endswith(tail + '; SELECT 37'), clean)
         ordinary = "SELECT _binary 0x533363723374, _utf8mb4 X'533363723374'"
         self.assertEqual(dbops.redact(ordinary), ordinary)
+
+    def test_r352_followup_pass_closes_parity_and_removed_equals(self):
+        # A first-pass replacement that removes an odd quote or '=' must trigger
+        # the bounded follow-up pass so later SET PASSWORD and multi-token
+        # secret variable assignments are redacted.
+        cases = (
+            ("parity flip before multi-token secret variable",
+             "It didn't work:\nSET PASSWORD FOR app = \"o'brien\";\nwhy can't I\n"
+             "SET GLOBAL wsrep_sst_auth = CONCAT('root:', 'S3cr3t');"),
+            ("removed '=' inside IDENTIFIED BY unblocks SET PASSWORD",
+             "SET PASSWORD FOR `u IDENTIFIED BY 'a=1b' = 'S3cr3t'"),
+            ("removed '=' inside PASSWORD() unblocks SET PASSWORD",
+             "SET PASSWORD FOR `u PASSWORD('a=1') = 'S3cr3t'"),
+            ("broken DELIMITER quote parity after Pass 1 fails closed",
+             "DELIMITER $$\nIt didn't work: SET PASSWORD = \"o'brien\" \"$$\n"
+             "why can't I SET GLOBAL wsrep_sst_auth = CONCAT('root:', 'S3cr3t')'$$"),
+        )
+        for label, raw in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+        # Valid INSERT ... SET ... AS new stays intact even when an earlier
+        # literal triggers the follow-up pass.
+        valid_combo = (
+            'SET PASSWORD FOR app = "o\'brien";\n'
+            "INSERT INTO t SET wsrep_sst_auth = CONCAT('a', 'S3cr3t') AS new "
+            "ON DUPLICATE KEY UPDATE c = new.c;"
+        )
+        clean_combo = dbops.redact(valid_combo)
+        self.assertNotIn("o'brien", clean_combo)
+        self.assertNotIn('S3cr3t', clean_combo)
+        self.assertIn('AS new ON DUPLICATE KEY UPDATE c = new.c;', clean_combo)
+
+    def test_r352_set_password_comment_preceded_introduced_and_hex_values(self):
+        # Commented SET PASSWORD with apostrophes plus a later introduced/hex
+        # credential must not let the first match skip a real SET PASSWORD value.
+        cases = (
+            ("N'..' after commented SET PASSWORD",
+             "-- SET PASSWORD doesn't work on 5.5\n"
+             "SET PASSWORD FOR app = N'S3cr3t';\n"
+             "-- replication user's turn\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = _binary 0x41424344;",
+             "S3cr3t"),
+            ("_utf8mb4'..' after commented SET PASSWORD",
+             "-- SET PASSWORD doesn't work on 5.5\n"
+             "SET PASSWORD FOR app = _utf8mb4'S3cr3t';\n"
+             "-- replication user's turn\n"
+             "SET PASSWORD FOR repl = _utf8mb4 X'41424344';",
+             "S3cr3t"),
+            ("0x hex after commented SET PASSWORD",
+             "-- SET PASSWORD doesn't work on 5.5\n"
+             "SET PASSWORD FOR app = 0x533363723374;\n"
+             "-- replication user's turn\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = _binary 0x41424344;",
+             "533363723374"),
+            ("plain later credential control",
+             "-- SET PASSWORD doesn't work on 5.5\n"
+             "SET PASSWORD FOR app = N'S3cr3t';\n"
+             "-- replication user's turn\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = 'x';",
+             "S3cr3t"),
+        )
+        for label, raw, secret in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn(secret, clean, (label, clean))
+                self.assertNotIn('41424344', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+        # Account-part guard prevents reading '=x\'' inside a literal as a hex
+        # introducer and keeps a later secret variable hidden.
+        guarded = (
+            '{"sql": "\'SET PASSWORD\'SELECT "it\'s"IDENTIFIED BY PASSWORD  '
+            "'Zq219254z=x'RANDOM PASSWORD REPLACE ';Zq219255z'SET NAMES utf8mb4, "
+            "GLOBAL report_password=FROM_BASE64('S3cr3t' COLLATE utf8mb4_bin)"
+        )
+        clean_guarded = dbops.redact(guarded)
+        self.assertNotIn('S3cr3t', clean_guarded, clean_guarded)
+        self.assertNotIn('Zq219254z', clean_guarded, clean_guarded)
+        self.assertNotIn('Zq219255z', clean_guarded, clean_guarded)
+        # Quoted account containing '=' must not treat b' as a bit introducer.
+        acct_eq = "SET PASSWORD FOR 'a=b'@'%' = N'S3cr3t'; SELECT 1;"
+        clean_acct_eq = dbops.redact(acct_eq)
+        self.assertNotIn('S3cr3t', clean_acct_eq)
+        self.assertTrue(clean_acct_eq.endswith('; SELECT 1;'), clean_acct_eq)
+        # Introduced hex literal in SET PASSWORD keeps stage 5 so an overlapping
+        # earlier-stage PASSWORD(...) span still fails closed through EOF.
+        overlap_hex = (
+            "SET PASSWORD FOR `u`@`h`= X'5a7134373734337a''PASSWORD('-- SET PASSWORD = '=Zq47744z'"
+            "SET s3_secret_key=UNHEX('S3cr3t)"
+        )
+        clean_overlap_hex = dbops.redact(overlap_hex)
+        self.assertNotIn('S3cr3t', clean_overlap_hex, clean_overlap_hex)
+        self.assertNotIn('5a7134373734337a', clean_overlap_hex, clean_overlap_hex)
+
+    def test_r352_custom_delimiter_prefix_before_bad_tail_hides_glued_set(self):
+        # Clean custom boundaries before the first bad/unclosed unit still
+        # separate glued statements like 1$$SET while failing closed on any
+        # secret value that reaches a boundary.
+        cases = (
+            ("glued $$SET with unclosed tail (short)",
+             "DELIMITER $$\nSELECT 1$$SET GLOBAL wsrep_sst_auth = CONCAT('root:', 'S3cr3t')$$\nSELECT 'oops"),
+            ("glued $$SET with FOR UPDATE and unclosed tail",
+             "DELIMITER $$\nSELECT 1$$SET GLOBAL wsrep_sst_auth = CONCAT('root:', 'S3cr3t')$$\n"
+             "SELECT 2 FOR UPDATE$$\nSELECT 'oops$$\n"),
+            ("escaped newline before IDENTIFIED and later client command",
+             "DELIMITER $$\nSET GLOBAL report_password = 'first'$$\nSELECT 1 FOR UPDATE$$\n"
+             'ConnectorError("ALTER USER u\\nIDENTIFIED BY \'S3cr3t\'")$$\n\\! echo done\n'),
+            ("continuation comma after SET before bad tail still fails closed",
+             "DELIMITER $$\nSET @x = 1$$\n, wsrep_sst_auth = CONCAT('root:', 'S3cr3t')$$\nSELECT 'oops"),
+        )
+        for label, raw in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+
+    def test_r352_secret_variable_boundaries_skips_splitting_without_delimiter_command(self):
+        # The word 'delimiter' inside a comment, string, or reset-to-semicolon
+        # command must not invoke split_statements.
+        no_split_cases = (
+            "-- delimiter\nSET wsrep_sst_auth = 'S3cr3t';",
+            "/* delimiter */\nSET wsrep_sst_auth = 'S3cr3t';",
+            "SELECT 'delimiter'; SET wsrep_sst_auth = 'S3cr3t';",
+            "DELIMITER ;\nSET wsrep_sst_auth = 'S3cr3t';",
+            "-- delimiter\n" + ";/*! " * 1000 + " */" + "/* */" * 20000 + "\nSET wsrep_sst_auth = 'S3cr3t';",
+        )
+        for raw in no_split_cases:
+            with self.subTest(raw=raw[:40]):
+                with mock.patch.object(dbops, 'split_statements',
+                                       side_effect=AssertionError('needless split_statements')):
+                    self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+                    clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertIn("'[redacted]'", clean)
 
     def test_r352_nested_overlap_redaction_stays_linear(self):
         code = (
