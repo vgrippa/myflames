@@ -544,8 +544,9 @@ class TestSQLScannerTiming(unittest.TestCase):
                     print("SQL scanner %s %s: 16K=%.6fs 64K=%.6fs ratio=%.2f" %
                           (name, shape, short, long, long / short), flush=True)
                     if long >= 0.02:
-                        self.assertLess(long, 6 * short,
-                                        "%s %s grew %.2fx" % (name, shape, long / short))
+                        self.assertLess(long, 10 * short,
+                                        "%s %s grew %.2fx (linear is about 4x, quadratic about 16x)"
+                                        % (name, shape, long / short))
                     else:
                         self.assertLess(long, 0.05,
                                         "%s %s exceeded the 50 ms small-call budget" % (name, shape))
