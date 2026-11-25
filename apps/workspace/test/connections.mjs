@@ -521,3 +521,85 @@ try {
 } finally {
   await retry.close();
 }
+
+// The same retry over a stale list entry: the connection is still in the list
+// (the refresh right after its first save failed), shown without a saved
+// password. The first save's own answer must win over that stale entry, so a
+// settings-only retry never asks the store to forget the just-saved password.
+const staleControl = { failList: false };
+const staleSaves = [];
+const stale = await open('/api/unused-connection-chunk', 'connections-retry-stale-entry', {
+  '/api/profiles/save': (body, request) => {
+    staleSaves.push(body);
+    request.continue();
+    return null;
+  },
+  '/api/profiles/list': (body, request) => {
+    if (staleControl.failList) {
+      staleControl.failList = false;
+      request.respond({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Synthetic list failure' }) });
+      return null;
+    }
+    request.continue();
+    return null;
+  },
+}, {
+  seed: `from myflames.workspace_store import WorkspaceStore
+import json,sys
+s=WorkspaceStore(sys.argv[1])
+p=s.save('profile', dict(name='Existing keeps saved password',host='db11.example',port=3306,user='dba',database='shop',ssl_mode='REQUIRED',type='production'), password=None, remember=False)
+print(json.dumps(dict(id=p['id'],name=p['name'])))`,
+});
+try {
+  const { page, seeded } = stale;
+  // Edit the existing saved connection, which has no saved password yet.
+  await page.waitForSelector(connectionRow(seeded.name));
+  await connectionAction(page, seeded.name, 'Edit');
+  await page.waitForSelector('#connection-form-title');
+  // Opening the form focuses the Connection name field on a timer; wait for
+  // it so the typed password cannot land in the name field.
+  await page.waitForFunction(() => {
+    const label = [...document.querySelectorAll('.connection-panel label.field')]
+      .find(l => l.firstChild?.textContent?.trim() === 'Connection name');
+    return !!label && label.querySelector('input') === document.activeElement;
+  });
+  const password = await page.$('.connection-panel input[type=password]');
+  await password.type('synthetic-stale-secret');
+  assert.equal(await password.evaluate(e => e.value), 'synthetic-stale-secret', 'the password field received the typed password');
+  // The save with the password succeeds but the list read right after it
+  // fails once: the list keeps this connection with has_saved_password false.
+  staleControl.failList = true;
+  await page.locator('.connection-panel button ::-p-text(Save connection)').click();
+  await page.waitForSelector('.save-prompt');
+  const firstSave = page.waitForResponse(response => new URL(response.url()).pathname === '/api/profiles/save');
+  await page.locator('.save-prompt button ::-p-text(Save with password)').click();
+  const firstProfile = await (await firstSave).json();
+  assert.equal(firstProfile.id, seeded.id, 'the existing connection is updated, not duplicated');
+  assert.equal(firstProfile.has_saved_password, true, 'the first save stored the password');
+  await page.waitForFunction(() => /Synthetic list failure/.test(document.querySelector('.connection-panel [role=alert]')?.textContent || ''));
+  // The stale list entry still holds the connection; the retry reads the first
+  // save's own answer instead.
+  assert.equal((await page.$$(connectionRow(seeded.name))).length, 1, 'the stale list still shows the connection');
+  // Settings only again: no typed password this time.
+  await password.click({ count: 3 });
+  await page.keyboard.press('Backspace');
+  assert.equal(await password.evaluate(e => e.value), '');
+  const secondSave = page.waitForResponse(response => new URL(response.url()).pathname === '/api/profiles/save');
+  await page.locator('.connection-panel button ::-p-text(Save connection)').click();
+  const secondProfile = await (await secondSave).json();
+  await page.waitForFunction(() => !document.querySelector('.connection-panel [aria-busy="true"]'));
+  assert.equal(staleSaves.length, 2);
+  assert.equal(staleSaves[0].remember_password, true);
+  assert.equal(staleSaves[1].id, seeded.id, 'the retry updates the same saved connection');
+  assert.equal(staleSaves[1].password, undefined, 'no password typed on the retry');
+  assert.notEqual(staleSaves[1].remember_password, false, 'the stale list entry never turns the retry into a forget');
+  assert.equal(secondProfile.has_saved_password, true, 'the stored password survives the retry');
+  // The refresh after the retry succeeded: the Password column reads Saved.
+  await page.click('.connections .inspector-close');
+  await page.waitForSelector(`${connectionRow(seeded.name)} [data-col=password]`);
+  assert.equal(await page.$eval(`${connectionRow(seeded.name)} [data-col=password]`, el => el.textContent), 'Saved');
+  assert.deepEqual(stale.errors, []);
+  console.log('Connections retry over a stale list entry: the saved password is kept.');
+} finally {
+  await stale.close();
+}

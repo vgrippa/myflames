@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import tempfile
 import threading
 import time
@@ -465,6 +466,46 @@ class TestWorkspaceAPI(unittest.TestCase):
             self.assertEqual(body, {'error': ui._unexpected_error_message('/api/editor/run')})
             self.assertIn('TypeError', log.getvalue())
             self.assertNotIn(secret, log.getvalue())
+
+    def test_body_read_disconnect_on_sql_outcome_path_is_quiet(self):
+        from myflames import ui
+        orig_send = ui.WorkspaceHandler._send
+        # socket.timeout is an alias of TimeoutError on newer Python; keep one of each.
+        error_types = tuple(dict.fromkeys((BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                                           TimeoutError, socket.timeout)))
+        for error_type in error_types:
+            with self.subTest(error_type=error_type.__name__):
+                sends = []
+
+                def spy_send(handler, status, body, *args, **kwargs):
+                    sends.append(status)
+                    return orig_send(handler, status, body, *args, **kwargs)
+
+                log = io.StringIO()
+                # The client goes away while its body is read: payload stays
+                # None, api_response never runs, nothing was sent to any server.
+                with patch.object(ui.WorkspaceHandler, '_read_body',
+                                  side_effect=error_type('client gone mid-body')), \
+                        patch.object(ui.WorkspaceHandler, '_send', new=spy_send), \
+                        patch.object(ui.sys, 'stderr', log), \
+                        patch.object(ui, 'api_response',
+                                     side_effect=AssertionError('api_response must not run')):
+                    with self.assertRaises((http.client.HTTPException, OSError)):
+                        self.request('/api/editor/run', {'connection': {'host': 'db.example'}})
+                self.assertEqual(sends, [], 'no response is sent on the dead socket')
+                self.assertEqual(log.getvalue(), '')
+
+    def test_error_inside_api_response_on_lifecycle_cancel_keeps_500(self):
+        from myflames import ui
+        log = io.StringIO()
+        with patch.object(ui, 'api_response', side_effect=RuntimeError('post-cancel read-back bug')), \
+                patch.object(ui.sys, 'stderr', log):
+            status, body, _ = self.request('/api/lifecycle/cancel',
+                                           {'id': 'job-1', 'connection': {'host': 'db.example'}})
+        self.assertEqual(status, 500)
+        self.assertEqual(body, {'error': ui._unexpected_error_message('/api/lifecycle/cancel')})
+        self.assertIn('outcome is unknown', body['error'])
+        self.assertIn('RuntimeError', log.getvalue())
 
     def test_investigation_save_update_list_and_delete(self):
         value = {'schema_version': 'investigation-1.0', 'name': 'Before index',

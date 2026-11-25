@@ -438,9 +438,17 @@ export function Connections({
   // One save at a time (the ref answers before React re-renders).
   const savingRef = useRef(false);
   // Each save's own answer about its password, by connection id: when the
-  // list read right after a save failed, the list can lack a just-saved
-  // connection, and a retry must not read its stored password as unsaved.
+  // list read right after a save failed, the list can hold a stale entry (or
+  // lack a just-saved connection), and a retry must not read its stored
+  // password as unsaved. A successful list read is newer and clears the
+  // entries it covers (in saveProfile and in the profiles effect below).
   const savedPasswordById = useRef<Record<string, boolean>>({});
+  // A newer list replaces each kept save answer it covers. A failed read
+  // keeps the list's identity (savedConnections.ts), so this effect does not
+  // run and the answers stay.
+  useEffect(() => {
+    for (const p of profiles) delete savedPasswordById.current[p.id];
+  }, [profiles]);
   // formGen changes when the form opens or closes; draftGen also when a field
   // changes. A save applies its answer only to the same form, a test only to
   // the same settings.
@@ -659,10 +667,13 @@ export function Connections({
     try {
       const target = profiles.find((p) => p.id === targetId);
       const storeTyped = withPassword && !!password;
-      // A target missing from the list (the refresh right after its save
-      // failed) falls back to that save's own answer, so the retry keeps the
-      // stored password instead of asking to forget it.
-      const keepExisting = !storeTyped && !!(target ? target.has_saved_password : savedPasswordById.current[targetId]);
+      // The most recent successful save's own answer wins over the list until
+      // a newer list read succeeds: a stale entry (the refresh right after
+      // that save failed, so the list still shows the password as unsaved, or
+      // lacks a just-saved connection) must not turn a settings-only retry
+      // into forgetting the stored password.
+      const answered = Object.prototype.hasOwnProperty.call(savedPasswordById.current, targetId);
+      const keepExisting = !storeTyped && !!(answered ? savedPasswordById.current[targetId] : target?.has_saved_password);
       const p = await api<Profile>("profiles/save", {
         id: targetId || undefined,
         value: settings,
@@ -677,7 +688,10 @@ export function Connections({
         setEditingId(p.id);
         setDevFor(settings.type === "development" ? developmentFor(settings) : null);
       }
-      await refresh();
+      // A successful list read supersedes the kept save answers it names,
+      // even when its content is unchanged (the list then keeps its identity
+      // and the profiles effect above does not run).
+      for (const item of await refresh()) delete savedPasswordById.current[item.id];
       try {
         (await import("./readiness")).copyReadiness(formConnection, { ...settings, profile_id: p.id });
       } catch {

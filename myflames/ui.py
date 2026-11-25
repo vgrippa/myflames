@@ -3723,10 +3723,12 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             self._send(409 if exc.code in ("busy", "identity_mismatch", "too_many_sessions") else 400,
                        {"error": str(exc), "code": exc.code})
         except Exception as exc:
-            if sending and isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
-                                            TimeoutError, socket.timeout)):
-                # The 200 response send already began: end quietly with no log
-                # and no second response on the closed or written socket.
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                                TimeoutError, socket.timeout)) and (sending or payload is None):
+                # The 200 response send already began, or the client went away
+                # while its request body was being read (payload is None, so
+                # api_response never ran and no SQL was sent): end quietly with
+                # no log and no response on the closed or written socket.
                 self.close_connection = True
                 return
             # SSH failures (sftp.py) name their reason; other exceptions with a
