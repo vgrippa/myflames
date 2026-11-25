@@ -1922,11 +1922,14 @@ class TestExplainAndExportCaches(ReadysetBase):
                         conn.password = password
                         conn.definition = "CREATE CACHE c FROM SELECT " + wrapper % url + ";"
                         result = readyset.export_caches(conn)
-                        for text in (result["sql"], result["caches"][0]["statement"]):
+                        statement = result["caches"][0]["statement"]
+                        for text in (result["sql"], statement):
                             self.assertNotIn("credential-start", text)
                             self.assertNotIn("credential-tail", text)
-                            self.assertIn(dbops.REDACTED, text)
-                        self.assertTrue(result["caches"][0]["statement"].startswith("-- "))
+                        self.assertIn(dbops.REDACTED, result["sql"])
+                        self.assertTrue(dbops.REDACTED in statement or
+                                        statement == readyset._EXPORT_AMBIGUOUS_COMMENT)
+                        self.assertTrue(statement.startswith("-- "))
                         self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
                         self.assertEqual(conn.writes, [])
 
@@ -2266,12 +2269,18 @@ assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
         # A string ending in a backslash closes only without backslash
         # escapes. The escapes reading keeps the URL inside a complete
         # backticked identifier, while the NO_BACKSLASH_ESCAPES reading puts
-        # it in a string literal: the URL union hides the password.
-        for token, expected in (
-                ("'`mysql://u:s3cr3t@h`';", "'`mysql://u:[redacted]@h`';"),
-                ("', `mysql://u:s3cr3t@h`';", "', `mysql://u:[redacted]@h`';"),
-                ("'`mysql://u:s3cr3t@h`, 'b';", "'`mysql://u:[redacted]@h`, 'b';"),
-                ("'mysql://u:@h';", "'mysql://u:[redacted]@h';"),
+        # it in a string literal: the URL union hides the password, and
+        # _redact_export_sql fails closed when the URL overlaps an identifier
+        # in either reading.
+        for token, expected, export_expected in (
+                ("'`mysql://u:s3cr3t@h`';", "'`mysql://u:[redacted]@h`';",
+                 readyset._EXPORT_AMBIGUOUS_COMMENT),
+                ("', `mysql://u:s3cr3t@h`';", "', `mysql://u:[redacted]@h`';",
+                 readyset._EXPORT_AMBIGUOUS_COMMENT),
+                ("'`mysql://u:s3cr3t@h`, 'b';", "'`mysql://u:[redacted]@h`, 'b';",
+                 readyset._EXPORT_AMBIGUOUS_COMMENT),
+                ("'mysql://u:@h';", "'mysql://u:[redacted]@h';",
+                 "SELECT 'a\\', 'mysql://u:[redacted]@h';"),
         ):
             with self.subTest(token=token):
                 sql = "SELECT 'a\\', " + token
@@ -2280,16 +2289,14 @@ assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
                 self.assertEqual(output, "SELECT 'a\\', " + expected)
                 output, changed = readyset._redact_export_sql(sql)
                 self.assertTrue(changed)
-                self.assertEqual(output, "SELECT 'a\\', " + expected)
+                self.assertEqual(output, export_expected)
                 self.assertNotIn("s3cr3t", output)
-        # End to end through export_caches: URL union preserves the definition
-        # structure with the secret replaced and comments it out as redacted.
+        # End to end through export_caches: a URL inside a backticked
+        # identifier in one reading and a string in the other fails closed.
         conn = FakeCacheExport()
         conn.definition = "CREATE CACHE c FROM SELECT 'a\\', '`mysql://u:s3cr3t@h`';"
         result = readyset.export_caches(conn)
-        self.assertEqual(
-            result["caches"][0]["statement"],
-            "-- CREATE CACHE c FROM SELECT 'a\\', '`mysql://u:[redacted]@h`';")
+        self.assertEqual(result["caches"][0]["statement"], readyset._EXPORT_AMBIGUOUS_COMMENT)
         self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
         self.assertNotIn("s3cr3t", json.dumps(result))
         self.assertEqual(conn.writes, [])
@@ -2413,7 +2420,7 @@ assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
             ("SELECT 'pw SET PASSWORD' = 'TOPSECRET'", "pw", None),
             ("SELECT 'mysql://u:SET PASSWORD@h' = 'TOPSECRET'", None,
              "SELECT 'mysql://u:[redacted]@h' = '[redacted]'"),
-            ("SELECT 'pw mysql://u:'TOPSECRET@h", "pw", "SELECT '[redacted]'@h"),
+            ("SELECT 'pw mysql://u:'TOPSECRET@h", "pw", readyset._EXPORT_AMBIGUOUS_COMMENT),
             ("SELECT 'pw IDENTIFIED BY '0x544f50534543524554", "pw", "SELECT '[redacted]'"),
             ("SELECT '[redacted]''[redacted]', 'mysql://u:TOPSECRET@h'", None,
              "SELECT '[redacted]''[redacted]', 'mysql://u:[redacted]@h'"),
@@ -2526,6 +2533,107 @@ assert elapsed < 0.75, '1 MB URL identifier scan took %.3f s' % elapsed
             self.assertNotIn("IDENTIFIED BY 'x'", output)
             self.assertIn("`other`", output)
             self.assertNotEqual(output, readyset._EXPORT_AMBIGUOUS_COMMENT)
+
+    def test_export_url_password_crossing_token_boundary_fails_closed(self):
+        # A URL password containing a quote, backtick or code statement
+        # separator that crosses a token boundary or overlaps an identifier
+        # must fail closed even when both backslash readings agree.
+        fail_closed_cases = (
+            ("CREATE CACHE FROM SELECT * FROM t WHERE mysql://u:p1`x@h "
+             "AND IDENTIFIED BY 'SECRET_CRED' AND c = 'SECRET_PW`'",
+             "SECRET_PW", ("SECRET_CRED", "SECRET_PW", "p1")),
+            ("CREATE CACHE FROM SELECT * FROM t WHERE mysql://u:p1'x@h "
+             "AND c = 'SECRET_PW' AND d = 'ok'",
+             "SECRET_PW", ("SECRET_PW", "p1")),
+            ('CREATE CACHE FROM SELECT * FROM t WHERE mysql://u:p1"x@h '
+             'AND c = "SECRET_PW" AND d = "ok"',
+             "SECRET_PW", ("SECRET_PW", "p1")),
+            ("CREATE CACHE FROM SELECT * FROM t WHERE u = 'mysql://u:p1'x@h' "
+             "AND c = 'SECRET_PW' AND d = 'ok'",
+             "SECRET_PW", ("SECRET_PW", "p1")),
+            ("CREATE CACHE FROM SELECT * FROM t WHERE SET PASSWORD mysql://u:p;x@h = 'SECRET_CRED'",
+             "SECRET_PW", ("SECRET_CRED",)),
+            ("CREATE CACHE FROM SELECT * FROM t WHERE SET PASSWORD mysql://u:p=x@h = 'SECRET_CRED'",
+             "SECRET_PW", ("SECRET_CRED",)),
+            ("CREATE CACHE FROM SELECT * FROM t WHERE SET wsrep_sst_auth = 'a' mysql://u:p,x@h = 'SECRET_CRED'",
+             "SECRET_PW", ("SECRET_CRED",)),
+        )
+        for sql, password, secrets in fail_closed_cases:
+            with self.subTest(sql=sql):
+                output, changed = readyset._redact_export_sql(sql, password)
+                self.assertEqual((output, changed), (readyset._EXPORT_AMBIGUOUS_COMMENT, True))
+                for secret in secrets:
+                    self.assertNotIn(secret, output)
+                conn = FakeCacheExport()
+                conn.password = password
+                conn.definition = sql + ";"
+                result = readyset.export_caches(conn)
+                self.assertEqual(result["caches"][0]["statement"], readyset._EXPORT_AMBIGUOUS_COMMENT)
+                self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+                dumped = json.dumps(result)
+                for secret in secrets:
+                    self.assertNotIn(secret, dumped)
+                self.assertEqual(conn.writes, [])
+
+        # Valid quoted and comment URLs stay inside one closed token and keep
+        # their inline redacted export.
+        preserved_cases = (
+            ("CREATE CACHE FROM SELECT * FROM t WHERE u = 'mysql://u:p''w@h'",
+             "SECRET_PW",
+             "CREATE CACHE FROM SELECT * FROM t WHERE u = 'mysql://u:[redacted]@h'"),
+            ('CREATE CACHE FROM SELECT * FROM t WHERE u = "mysql://u:p""w@h"',
+             "SECRET_PW",
+             'CREATE CACHE FROM SELECT * FROM t WHERE u = "mysql://u:[redacted]@h"'),
+            ("CREATE CACHE FROM SELECT * FROM t WHERE /* mysql://u:p'w@h */ c = 'SECRET_PW'",
+             "SECRET_PW",
+             "CREATE CACHE FROM SELECT * FROM t WHERE /* mysql://u:[redacted]@h */ c = '[redacted]'"),
+        )
+        for sql, password, expected in preserved_cases:
+            with self.subTest(preserved=sql):
+                self.assertEqual(readyset._redact_export_sql(sql, password), (expected, True))
+                conn = FakeCacheExport()
+                conn.password = password
+                conn.definition = sql + ";"
+                result = readyset.export_caches(conn)
+                self.assertEqual(result["caches"][0]["statement"], "-- " + expected + ";")
+                self.assertIn(readyset._EXPORT_REDACTED_COMMENT, result["sql"])
+                self.assertNotIn(readyset._EXPORT_AMBIGUOUS_COMMENT, result["sql"])
+                self.assertNotIn("p''w", json.dumps(result))
+                self.assertNotIn("SECRET_PW", json.dumps(result))
+                self.assertEqual(conn.writes, [])
+
+    def test_export_url_redaction_scales_linearly_to_1mb(self):
+        # 256 KB and 1 MB definitions with many URLs must scale linearly
+        # (under 5x per 4x input size) and keep their redacted export.
+        header = "CREATE CACHE FROM SELECT * FROM t WHERE "
+        readyset._redact_export_sql(header + "u = 'mysql://u:p''w@h/db' AND 1 = 1", "PW")
+        workloads = (
+            ("quoted_urls", "u = 'mysql://u:p''w@h/db' AND "),
+            ("bare_urls", "mysql://u:pw-1/2@h/db AND "),
+            ("backslash_idents_urls",
+             "`col` = 1 AND `mysql://u:id@h` = 2 AND d = 'a\\\\b' AND u = 'mysql://u:pw@h/db' AND "),
+        )
+        for label, unit in workloads:
+            with self.subTest(label=label):
+                timings = {}
+                for target in (256 * 1024, 1024 * 1024):
+                    sql = header + unit * ((target // len(unit)) + 1) + "1 = 1"
+                    self.assertGreaterEqual(len(sql), target)
+                    started = time.perf_counter()
+                    output, changed = readyset._redact_export_sql(sql, "PW")
+                    elapsed = time.perf_counter() - started
+                    self.assertTrue(changed)
+                    self.assertNotEqual(output, readyset._EXPORT_AMBIGUOUS_COMMENT)
+                    self.assertNotIn("p''w@h", output)
+                    self.assertNotIn("pw-1/2@h", output)
+                    self.assertNotIn("pw@h", output)
+                    timings[target] = elapsed
+                ratio = timings[1024 * 1024] / max(timings[256 * 1024], 0.05)
+                self.assertLess(
+                    ratio, 5.0,
+                    "%s did not scale linearly: 256 KB=%.3fs, 1 MB=%.3fs (%.2fx)" % (
+                        label, timings[256 * 1024], timings[1024 * 1024], ratio),
+                )
 
     def test_export_redaction_password_matches_redaction_marker(self):
         # An existing marker counts as a credential only in a credential form

@@ -1323,6 +1323,9 @@ _EXPORT_REDACTED_TOKEN = re.compile(
     re.escape(dbops.REDACTED) + r")\"|" + re.escape(dbops.REDACTED)
 )
 _EXPORT_URL_UNSAFE_CHARS = frozenset("\\'\"`/*-#\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+_EXPORT_URL_CODE_UNSAFE = re.compile(
+    r"[\\'\"`#\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029;=,]|/\*|\*/|--"
+)
 
 
 def _export_url_spans(sql, backslash_escapes=True, prefixes=None, scan=None):
@@ -1795,6 +1798,65 @@ def _check_export_second_reading(sql, ident_spans1, result1, check_marker=False,
     return False, False
 
 
+def _export_url_spans_safe(sql, url_spans, scan, ident_spans):
+    """True when every URL span stays strictly inside one safe token of *scan*.
+
+    A span is safe only when it never overlaps a closed backticked identifier in
+    *ident_spans* and lies strictly inside one closed string or comment token,
+    or strictly inside one code token free of quote, comment, newline, backslash
+    and statement-separator syntax.
+    """
+    if not url_spans:
+        return True
+    if ident_spans:
+        ident_idx = 0
+        ident_count = len(ident_spans)
+        for start, end in url_spans:
+            while ident_idx < ident_count and ident_spans[ident_idx][1] <= start:
+                ident_idx += 1
+            if ident_idx < ident_count:
+                ident_start = ident_spans[ident_idx][0]
+                if ident_start < end or (start == end and ident_start <= start):
+                    return False
+    tokens = scan["tokens"]
+    token_count = len(tokens)
+    unclosed = set(scan["unclosed"])
+    token_idx = 0
+    for start, end in url_spans:
+        while token_idx < token_count and tokens[token_idx][2] <= start:
+            token_idx += 1
+        if token_idx >= token_count:
+            return False
+        kind, tok_start, tok_end = tokens[token_idx]
+        if start < tok_start or end > tok_end:
+            return False
+        if kind == "string":
+            if (tok_start, tok_end) in unclosed or start <= tok_start or end >= tok_end - 1:
+                return False
+        elif kind == "comment":
+            if (tok_start, tok_end) in unclosed:
+                return False
+            if sql.startswith("/*", tok_start):
+                if start < tok_start + 2 or end >= tok_end - 2:
+                    return False
+            elif sql.startswith("--", tok_start):
+                if start < tok_start + 2 or end >= tok_end:
+                    return False
+            elif sql.startswith("#", tok_start):
+                if start < tok_start + 1 or end >= tok_end:
+                    return False
+            else:
+                return False
+        elif kind == "code":
+            if start <= tok_start or end >= tok_end:
+                return False
+            if _EXPORT_URL_CODE_UNSAFE.search(sql, start, end) is not None:
+                return False
+        else:
+            return False
+    return True
+
+
 def _redact_export_sql(sql, password=None):
     """Redact credential syntax and password-bearing literals or comments.
 
@@ -1804,9 +1866,9 @@ def _redact_export_sql(sql, password=None):
     URL credential spans and masked ``dbops.redact`` credential spans are all
     evaluated on the original definition under both backslash readings before
     any substitution can alter quote parity or erase credential keywords. When
-    the two readings disagree on credentials (or on URL spans alongside a
-    literal-password edit or unsafe URL bytes), the definition fails closed to
-    a single comment line.
+    the two readings disagree on credentials, or any URL span crosses a token
+    boundary, overlaps an identifier, or holds unsafe syntax in code, the
+    definition fails closed to a single comment line.
     """
     raw_sql = sql
     has_backslash = "\\" in raw_sql
@@ -1825,15 +1887,20 @@ def _redact_export_sql(sql, password=None):
     url_disagree = url_spans1 != url_spans2
     url_spans = _merge_export_url_spans(url_spans1, url_spans2 if has_backslash else None)
 
+    ident_spans1 = _export_identifier_spans(raw_sql, True, scan=scan1)
+    ident_spans2 = _export_identifier_spans(raw_sql, False, scan=scan2) if has_backslash else ident_spans1
+
+    if url_spans:
+        if (not _export_url_spans_safe(raw_sql, url_spans, scan1, ident_spans1) or
+                (has_backslash and not _export_url_spans_safe(raw_sql, url_spans, scan2, ident_spans2))):
+            return _EXPORT_AMBIGUOUS_COMMENT, True
+
     if url_disagree:
         if lit_spans or dbops.REDACTED in raw_sql:
             return _EXPORT_AMBIGUOUS_COMMENT, True
         for start, end in url_spans:
             if any(ch in _EXPORT_URL_UNSAFE_CHARS for ch in raw_sql[start:end]):
                 return _EXPORT_AMBIGUOUS_COMMENT, True
-
-    ident_spans1 = _export_identifier_spans(raw_sql, True, scan=scan1)
-    ident_spans2 = _export_identifier_spans(raw_sql, False, scan=scan2) if has_backslash else ident_spans1
 
     masked1, identifiers1 = _mask_export_identifiers(raw_sql, ident_spans1)
     updated1 = dbops.redact(masked1)
