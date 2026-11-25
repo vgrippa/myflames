@@ -442,11 +442,12 @@ try {
   assert.equal(await page.$$eval('.connection-row [data-col=name] strong', els =>
     els.filter(el => el.textContent === 'Saved despite readiness failure').length), 1);
   await page.$eval('.connections-live', el => el.scrollIntoView({ block: 'center' }));
-  await page.screenshot({ path: path.join(root, 'local/r352-b1/connection-readiness-failed.png') });
+  await fs.mkdir(directory, { recursive: true });
+  await page.screenshot({ path: path.join(directory, 'connection-readiness-failed.png') });
   await page.click('.connections .inspector-close');
   await page.waitForSelector(connectionRow('Saved despite readiness failure'), { visible: true });
   assert.equal((await page.$$(connectionRow('Saved despite readiness failure'))).length, 1);
-  await page.screenshot({ path: path.join(root, 'local/r352-b1/connection-saved-once.png') });
+  await page.screenshot({ path: path.join(directory, 'connection-saved-once.png') });
   assert.deepEqual(h.errors, []);
   console.log('Connections readiness chunk failure: saved once, retry updates the same profile.');
 } finally {

@@ -123,7 +123,7 @@ if (html) {
   // 451,196 bytes after moving the Client tools dialog, the accounts API,
   // the SQL highlighter, the Server-view shared components, the command
   // palette, the sample plan text, the update-check controls and the
-  // connection-readiness module behind lazy chunks (r352-b1), down from
+  // connection-readiness module behind lazy chunks (3.5.2), down from
   // 499,503. Home, the connections manager and the shell stay eager. The
   // budget is the new size plus about 5% of headroom for release work.
   // A place or view belongs in a lazy chunk.

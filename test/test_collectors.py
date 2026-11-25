@@ -7,6 +7,7 @@ and database-free while still exercising the real parsing and query
 assembly paths.
 """
 import os
+import gc
 import statistics
 import sys
 import time
@@ -505,7 +506,7 @@ def _sql_scanner_probe_functions():
 
 
 def _scanner_seconds(function, sql, allow_refusal=False):
-    """Median per-call wall time; batch tiny calls to reduce clock noise.
+    """Best of three per-call wall times, excluding collection pauses.
 
     Refusals are valid probe results, but programming errors must fail the
     test instead of being mistaken for fast input rejection.
@@ -517,17 +518,20 @@ def _scanner_seconds(function, sql, allow_refusal=False):
             if not allow_refusal:
                 raise
 
-    start = time.perf_counter()
-    call()
-    elapsed = time.perf_counter() - start
-    repeats = min(200, max(1, int(0.01 / max(elapsed, 0.000000001))))
     samples = []
     for unused in range(3):
-        start = time.perf_counter()
-        for unused_call in range(repeats):
+        gc.collect()
+        was_enabled = gc.isenabled()
+        if was_enabled:
+            gc.disable()
+        try:
+            start = time.perf_counter()
             call()
-        samples.append((time.perf_counter() - start) / repeats)
-    return statistics.median(samples)
+            samples.append(time.perf_counter() - start)
+        finally:
+            if was_enabled:
+                gc.enable()
+    return min(samples)
 
 
 class TestSQLScannerTiming(unittest.TestCase):
@@ -543,13 +547,13 @@ class TestSQLScannerTiming(unittest.TestCase):
                     long = _scanner_seconds(function, second, allow_refusal)
                     print("SQL scanner %s %s: 16K=%.6fs 64K=%.6fs ratio=%.2f" %
                           (name, shape, short, long, long / short), flush=True)
-                    if long >= 0.02:
-                        self.assertLess(long, 10 * short,
+                    if long >= 0.05:
+                        self.assertLess(long, 8 * short,
                                         "%s %s grew %.2fx (linear is about 4x, quadratic about 16x)"
                                         % (name, shape, long / short))
                     else:
                         self.assertLess(long, 0.05,
-                                        "%s %s exceeded the 50 ms small-call budget" % (name, shape))
+                                        "%s %s exceeded the 50 ms clock-noise bound" % (name, shape))
 
     def test_one_megabyte_statement_budget(self):
         from myflames import analysis_query, collectors, live

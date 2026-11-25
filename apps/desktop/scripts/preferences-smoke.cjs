@@ -231,7 +231,7 @@ async function drag(page, selector, dx, dy) {
 async function resizeSidebar(page, width, reset = false) {
   const before = await page.$eval(SIDEBAR, node => Number(node.getAttribute('aria-valuenow')));
   await savePreference(page, 'sidebar_width', width, () => reset
-    ? page.click(SIDEBAR, { clickCount: 2 }) : drag(page, SIDEBAR, width - before, 0));
+    ? page.click(SIDEBAR, { count: 2 }) : drag(page, SIDEBAR, width - before, 0));
   await assertWidth(page, width);
 }
 
