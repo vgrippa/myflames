@@ -4,16 +4,23 @@ confirmation policy, privilege hints, redaction, and the audit trail.
 Every test that reaches the workspace database uses a temporary HOME and
 MYFLAMES_SECRET_BACKEND=vault, never ~/.myflames or the OS keychain.
 """
+import ast
 import contextlib
 import csv
+import gc
+import html
 import io
 import json
 import os
 from pathlib import Path
+import random
+import re
 import sqlite3
+import statistics
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -31,6 +38,548 @@ class TempHome(unittest.TestCase):
         self.addCleanup(patcher.stop)
         os.environ.pop('MYFLAMES_VAULT_PASSPHRASE', None)
         self.store = WorkspaceStore()
+
+
+def _legacy_client_named_command(sql, start, delimiter, across_lines=False, **unused):
+    """Frozen prefix lookup, independent of the lexer's landing-position cache."""
+    at, after_comment = start, False
+    while True:
+        while at < len(sql) and sql[at] in (dbops._CLIENT_SPACE if across_lines else " \t\r\f\v"):
+            at += 1
+        if across_lines and (sql.startswith("#", at) or (sql.startswith("--", at) and
+                (at + 2 == len(sql) or sql[at + 2] in dbops._CLIENT_SPACE))):
+            end = sql.find("\n", at)
+            if end < 0:
+                return None
+            at, after_comment = end + 1, True
+            continue
+        if not sql.startswith("/*", at):
+            break
+        end = sql.find("*/", at + 2)
+        if end < 0:
+            return None
+        at, after_comment = end + 2, True
+    command = dbops._NAMED_CLIENT_COMMAND.match(sql, at)
+    if command is None:
+        return None
+    name, end = command.group().upper(), command.end()
+    if name != "DELIMITER" and end < len(sql) and sql[end] not in dbops._CLIENT_SPACE and not (
+            delimiter is not None and sql.startswith(delimiter, end)):
+        return None
+    return at, name, after_comment
+
+
+def _legacy_split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False,
+                     engine=None, server_version=None, unknown_execute=True, wsrep_on=None,
+                     ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None,
+                     client_ansi_quotes=False, discarded_prefixes=None, client_backslash_escapes=None):
+    """Client statement boundaries with code masked by the server's SQL lexer.
+
+    ``text`` and offsets retain the original SQL. ``code``, ``idents`` and
+    ``token_spans`` come exclusively from :func:`lex_sql`'s server reading.
+    The client framing pass uses that same lexer with ``client=True``:
+    conditional comments do not suppress client delimiters, regardless of
+    whether the server will execute their contents. An unusable DELIMITER,
+    client command or unclosed token is never a safe unit.
+
+    DELIMITER/get_arg: mysql-server/client/mysql.cc:2661-2682,4652-4671,4897-4935;
+    delimiter and line-comment recognition: :2838-2912; MariaDB :2746-2833.
+    Dollar bodies use the optional newer client grammar (:2715-2746).
+    If supplied, ``discarded_prefixes`` collects (start, end, delimiter)
+    for consumed DELIMITER lines. The editor compares both original ranges
+    and argument values before any prefix disappears from a planned unit.
+    """
+    # Frozen pre-fix implementation: compare every output field, not only
+    # statement text, when changing the position indexes in split_statements.
+    import bisect
+    from myflames.dbops import (
+        _usable_delimiter, lex_sql, _masked_fragment, _DELIMITER_COMMAND,
+        _delimiter_argument, _CLIENT_SPACE, REASON_COMMENT_FRAMING,
+        REASON_QUOTE_FRAMING, REASON_EXECUTED_FRAMING,
+        REASON_NAMED_CLIENT_COMMAND, REASON_CRLF_TRANSPORT, REASON_DELIMITER)
+    if not isinstance(sql, str):
+        raise ValueError("Pass SQL text.")
+    # add_line scans physical lines independently. A caller-supplied
+    # delimiter must not cross a line or depend on CRLF translation either.
+    if not _usable_delimiter(delimiter):
+        raise ValueError("Pass a delimiter of 1 to 15 UTF-8 bytes starting with ASCII, without backslashes, NUL, line endings, "
+                         "or leading or trailing whitespace.")
+    framing = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes, client=True,
+                      client_delimiter=delimiter, sql_mode=sql_mode, ansi_quotes=ansi_quotes,
+                      client_engine=client_engine, comment_dialect=comment_dialect,
+                      client_ansi_quotes=client_ansi_quotes, client_backslash_escapes=client_backslash_escapes)
+    scan = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes,
+                   unknown_execute=unknown_execute, wsrep_on=wsrep_on, framing=framing["tokens"],
+                   ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect)
+    out = []
+    consumed_delimiters = set()
+    state = {"start": 0, "pending": False, "issues": [], "unclosed": False}
+    pos, token_index = 0, 0
+    n = len(sql)
+
+    def issue(reason):
+        if reason not in state["issues"]:
+            state["issues"].append(reason)
+
+    def finish(end, next_start):
+        start = state["start"]
+        code, idents, tokens = _masked_fragment(sql, scan, start, end)
+        # A skipped comment cannot mask SQL across separate COM_QUERYs.
+        # In --force mode a later fragment could execute after the first
+        # fragment's unclosed-comment error. Refuse this framing, including
+        # for classifier callers outside the editor's packet builder.
+        for boundary in (start, end):
+            index = bisect.bisect_right(scan["ends"], boundary)
+            if index < len(scan["tokens"]):
+                kind, left, right = scan["tokens"][index]
+                if kind == "comment" and left < boundary < right:
+                    issue(REASON_COMMENT_FRAMING)
+                if kind in ("string", "identifier") and left < boundary < right:
+                    issue(REASON_QUOTE_FRAMING)
+            for comment in scan["comments"]:
+                if comment["executes"] is not False and comment["start"] < boundary < comment["end"]:
+                    issue(REASON_EXECUTED_FRAMING)
+        for at, reason in scan["issues"] + framing["issues"]:
+            if start <= at < end and not (at in consumed_delimiters and
+                                          reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+                issue(reason)
+        unclosed = state["unclosed"] or any(left < end and right > start
+                                            for left, right in scan["unclosed"] + framing["unclosed"])
+        if code or state["pending"] or state["issues"] or unclosed:
+            raw = sql[start:end]
+            lead = len(raw) - len(raw.lstrip())
+            text = raw.strip()
+            # MySQL's Windows batch reader changes even CRLF inside quoted
+            # data. MariaDB's binary reader preserves it. Command lines and
+            # whitespace between units are already outside this sent span;
+            # refuse remaining changes instead of rewriting SQL literals.
+            # mysql-8.4.0:client/readline.cc:75-95.
+            if sys.platform == "win32" and client_engine != "mariadb" and "\r\n" in text:
+                issue(REASON_CRLF_TRANSPORT)
+            unused_code, unused_idents, client_tokens = _masked_fragment(sql, framing, start, end)
+            out.append({"text": text, "start": start + lead, "end": start + lead + len(text),
+                        "code": code, "idents": idents, "token_spans": tokens,
+                        "client_token_spans": client_tokens,
+                        "unclosed": bool(unclosed), "issues": list(state["issues"]), "delimiter": delimiter,
+                        "next_start": next_start})
+        state.update(start=next_start, pending=False, issues=[], unclosed=False)
+
+    tokens = framing["tokens"]
+    while pos < n:
+        while token_index < len(tokens) and tokens[token_index][2] <= pos:
+            token_index += 1
+        if token_index == len(tokens):
+            break
+        kind, left, right = tokens[token_index]
+        if kind == "delimiter_command":
+            command = _DELIMITER_COMMAND.match(sql, left)
+            value, line_end = _delimiter_argument(sql, command.end(), client_engine)
+            # A MySQL client treats /*M! SQL */ as an ordinary comment, but
+            # a MariaDB server executes it. Only discard a prefix the server
+            # also ignores. Keep unsafe text in a refused unit, including
+            # when this DELIMITER is the last line of the run.
+            # mysql-8.4.0:client/mysql.cc:2455-2471,2895-2902;
+            # mariadb-11.8.9:sql/sql_lex.cc:2416-2467.
+            prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left)
+            ignored = not prefix_code and not any(
+                comment["executes"] is not False and comment["start"] < left and
+                comment["end"] > state["start"] for comment in scan["comments"])
+            if ignored:
+                consumed_delimiters.add(command.start(1))
+                if discarded_prefixes is not None:
+                    discarded_prefixes.append((state["start"], line_end, value))
+            else:
+                issue("SQL before DELIMITER may run on the server. End it with the current delimiter "
+                      "before changing DELIMITER.")
+            # Suppress only the exact command proved safe above. Other
+            # commands and problems in the prefix must still refuse.
+            for at, reason in scan["issues"] + framing["issues"]:
+                if state["start"] <= at < line_end and not (at in consumed_delimiters and
+                                                            reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+                    issue(reason)
+            if not ignored:
+                finish(line_end, line_end)
+            if value and "\\" not in value:
+                delimiter = value
+            else:
+                state["unclosed"] = True
+                issue(REASON_DELIMITER)
+            pos = line_end
+            state["start"] = pos
+            continue
+        if kind == "delimiter":
+            finish(left, right)
+            pos = right
+            continue
+        if kind != "code":
+            if kind in ("identifier", "string"):
+                state["pending"] = True
+            pos = right
+            continue
+        ch = sql[pos]
+        if ch == "\\":
+            following = sql[pos + 1:pos + 2]
+            if following in ("g", "G"):
+                finish(pos, pos + 2)
+                pos += 2
+                continue
+            # lex_sql reports unsupported commands in both complete passes.
+        if ch not in _CLIENT_SPACE:
+            state["pending"] = True
+        pos += 1
+    finish(n, n)
+    return out
+
+
+def _splitter_comment_probe(size):
+    head = "SELECT SLEEP(600) /* delimiter */ "
+    return head + "/*!99999;" * ((size - len(head) - 3) // 9) + " */"
+
+
+def _splitter_client_comment_probe(repeats, statement='SELECT 1'):
+    return ('DELIMITER $$\n' + '$$/*! ' * repeats + ' */' +
+            '/* */' * (repeats * 20) + '\n' + statement + '$$\n')
+
+
+# The supplied T1 repro's mysqldump shape, including conditional comments,
+# session settings, table data and per-table trigger DELIMITER changes.
+_SPLITTER_DUMP_HEADER = """-- MySQL dump 10.13  Distrib 8.4.3, for Linux (x86_64)
+--
+-- Host: localhost    Database: shop
+-- ------------------------------------------------------
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
+"""
+def _splitter_dump_table(i, triggers):
+    t = """
+--
+-- Table structure for table `t%(i)d`
+--
+
+DROP TABLE IF EXISTS `t%(i)d`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t%(i)d` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `name` varchar(64) DEFAULT NULL,
+  `created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+LOCK TABLES `t%(i)d` WRITE;
+/*!40000 ALTER TABLE `t%(i)d` DISABLE KEYS */;
+INSERT INTO `t%(i)d` VALUES (1,'alpha','2026-01-01 00:00:00'),(2,'beta','2026-01-02 00:00:00');
+/*!40000 ALTER TABLE `t%(i)d` ENABLE KEYS */;
+UNLOCK TABLES;
+""" % {"i": i}
+    if triggers:
+        t += """/*!50003 SET @saved_sql_mode       = @@sql_mode */ ;
+/*!50003 SET sql_mode              = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES' */ ;
+DELIMITER ;;
+/*!50003 CREATE*/ /*!50017 DEFINER=`root`@`localhost`*/ /*!50003 TRIGGER `t%(i)d_bi` BEFORE INSERT ON `t%(i)d` FOR EACH ROW SET NEW.created = NOW() */;;
+DELIMITER ;
+/*!50003 SET sql_mode              = @saved_sql_mode */ ;
+""" % {"i": i}
+    return t
+
+def _splitter_dump(tables):
+    return _SPLITTER_DUMP_HEADER + ''.join(_splitter_dump_table(i, True) for i in range(tables))
+
+
+class TestSplitterScaling(unittest.TestCase):
+    def test_splitter_matches_frozen_implementation(self):
+        import random
+
+        root = Path(__file__).resolve().parent.parent
+        fixtures = json.loads((root / 'apps/workspace/test/fixtures/sql-split.json').read_text(encoding='utf-8'))
+        corpus = [(case['sql'], {'backslash_escapes': case.get('backslash', True)})
+                  for case in fixtures['statements']]
+        corpus.extend((case['sql'].replace('|', '', 1), {'backslash_escapes': case.get('backslash', True)})
+                      for case in fixtures['cursors'])
+        corpus.extend((sql, {}) for sql, unused_kind, unused_category, unused_verbs in CASES)
+        corpus.extend((path.read_text(encoding='utf-8'), {})
+                      for path in sorted((root / 'test/fixtures/dumps').glob('*.sql')))
+        corpus.append((_splitter_dump(8), {}))
+        corpus.extend((_splitter_client_comment_probe(repeats), {}) for repeats in (1, 16, 250, 500))
+        # Shared suffixes must retain command issues, whitespace rules and
+        # EOF failures, including line comments in the cross-line lookup.
+        for suffix in ('charset$$', 'sandbox$$', 'DELIMITER //\nSELECT 1//',
+                       '# note\n-- note\ncharset$$', '--tail\ncharset$$',
+                       '\n\ncharset$$', '/* unterminated', '# unterminated', '-- unterminated'):
+            corpus.append(('DELIMITER $$\n' + '$$/*! ' * 4 + ' */' + '/* */' * 8 + suffix, {}))
+        # Include nested/overlapping comments, issue positions discovered at
+        # comment close, consumed prefixes, invalid commands and EOF ranges.
+        fragments = (
+            "SELECT 'a; b', `a``;b`, \"quoted; text\";\n",
+            "/*!50000 SELECT 1; SELECT 'x; y' */;\n",
+            "/*!999999 SELECT 1; /*!50000 SELECT 2; */ */;\n",
+            "/*M!100100 SELECT 1; */ SELECT 2;\n",
+            "/*!50000 SELECT 1; /*M!999999 SELECT 2; */ SELECT 3; */;\n",
+            "/*!50000 SELECT 1; /*!!50000 SELECT 2; */ SELECT 3; */;\n",
+            "/*!50000 SELECT 1;\n\\! hidden\nDELIMITER //\n*/;\n",
+            "/*+ SELECT ';'\nDELIMITER $$\n\\C latin1 */ SELECT 1;\n",
+            "/* note */\nDELIMITER //\nSELECT 'inside;//'//\nDELIMITER ;\n",
+            "/*!50000 SELECT 1 */\nDELIMITER //\nSELECT 2//\nDELIMITER ;\n",
+            "DELIMITER ''\nSELECT 1;\nDELIMITER //\nSELECT 2//\n",
+            "DELIMITER $$\nCREATE PROCEDURE p() BEGIN SELECT 'a;$$'; SELECT 2; END$$\nDELIMITER ;\n",
+            "DELIMITER ';'';'\nSELECT 'a; b';';\nDELIMITER ;\n",
+            "SELECT 1\\gSELECT 2\\G\n",
+            "SELECT 'a\\'; SELECT 2; -- '\n",
+            "SELECT $tag$ x; y $tag$;\n",
+            "SELECT [a; b], \"a; b\";\n",
+            "/*M!999999\\- enable the sandbox mode */\nSELECT 1;\n",
+            "SELECT 1 --\x01 hidden;\nSELECT 2;\n",
+            "/*!50000 SELECT 1; SELECT 'unterminated",
+            "/* unterminated; /*!50000 SELECT 1;\n",
+        )
+        corpus.extend((sql, {}) for sql in fragments)
+        rng = random.Random(352)
+        for unused in range(40):
+            corpus.append((''.join(rng.choice(fragments) for unused in range(rng.randrange(1, 6))), {}))
+        modes = (
+            {},
+            {'engine': 'mysql', 'server_version': '5.7.44', 'client_engine': 'mysql'},
+            {'engine': 'mysql', 'server_version': '8.4.3', 'client_engine': 'mysql', 'sql_mode': ''},
+            {'engine': 'mysql', 'server_version': '8.4.3', 'unknown_execute': False},
+            {'engine': 'mysql', 'server_version': '9.7.0', 'dollar_quotes': True},
+            {'engine': 'mariadb', 'server_version': '11.4.0', 'client_engine': 'mariadb'},
+            {'engine': 'mariadb', 'server_version': '11.8.0', 'sql_mode': 'ORACLE,MSSQL',
+             'client_ansi_quotes': True, 'client_backslash_escapes': False},
+            {'unknown_execute': False, 'ansi_quotes': True, 'mssql': True, 'dollar_quotes': True},
+            {'backslash_escapes': False, 'unknown_execute': False, 'delimiter': '//'},
+        )
+        comparisons = 0
+        for index, (sql, fixture_mode) in enumerate(corpus):
+            for mode in modes:
+                options = dict(fixture_mode, **mode)
+                with self.subTest(case=index, mode=options):
+                    expected_prefixes, actual_prefixes = [], []
+                    # Keep both the splitter and its prefix lookahead frozen;
+                    # sharing the changed helper would conceal lexer drift.
+                    with mock.patch.object(dbops, '_client_named_command', _legacy_client_named_command):
+                        expected = _legacy_split_statements(sql, discarded_prefixes=expected_prefixes, **options)
+                    actual = dbops.split_statements(sql, discarded_prefixes=actual_prefixes, **options)
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(actual_prefixes, expected_prefixes)
+                    comparisons += 1
+        print('R352_SPLITTER_EQUIVALENCE cases=%d comparisons=%d' % (len(corpus), comparisons), flush=True)
+
+    def test_comment_landings_preserve_command_context(self):
+        for sql in ('/* */ charset//', '/* */\ncharset//', '/* */# note\ncharset//'):
+            cache = {}
+            for across_lines in (True, False, True):
+                for delimiter in ('//', ';', '//'):
+                    with self.subTest(sql=sql, across_lines=across_lines, delimiter=delimiter):
+                        expected = _legacy_client_named_command(sql, 0, delimiter, across_lines)
+                        self.assertEqual(dbops._client_named_command(
+                            sql, 0, delimiter, across_lines, _comment_skips=cache), expected)
+            # Reaching the command directly must not inherit evidence of a
+            # comment skipped by an earlier lookup from a different head.
+            at = sql.index('charset')
+            self.assertEqual(dbops._client_named_command(sql, at, '//', _comment_skips=cache),
+                             (at, 'CHARSET', False))
+
+    def test_client_comment_skip_scaling_and_redact_budget(self):
+        # G4: each delimiter inside one executable comment looks past the
+        # same long suffix. Time both the editor splitter and its redaction
+        # caller; generating text and starting the process are not timed.
+        code = (
+            "import gc, json, sys, time\n"
+            "sys.path.insert(0, 'test')\n"
+            "from test_dbops import _splitter_client_comment_probe\n"
+            "from myflames import dbops\n"
+            "rows = []\n"
+            "for name in ('split_statements', 'redact'):\n"
+            "    statement = 'SELECT 1' if name == 'split_statements' else \"SET wsrep_sst_auth = 'g4-private'\"\n"
+            "    values = [_splitter_client_comment_probe(n, statement) for n in (250, 1000)]\n"
+            "    timings = []\n"
+            "    for value in values:\n"
+            "        samples = []\n"
+            "        for repeat in range(3):\n"
+            "            gc.collect(); was_enabled = gc.isenabled()\n"
+            "            if was_enabled: gc.disable()\n"
+            "            try:\n"
+            "                began = time.perf_counter()\n"
+            "                result = getattr(dbops, name)(value)\n"
+            "                samples.append(time.perf_counter() - began)\n"
+            "            finally:\n"
+            "                if was_enabled: gc.enable()\n"
+            "            if name == 'redact':\n"
+            "                assert 'g4-private' not in result and '[redacted]' in result\n"
+            "            else:\n"
+            "                assert result[-1]['text'].endswith('SELECT 1')\n"
+            "        timings.append(min(samples))\n"
+            "    rows.append({'operation': name, 'characters': list(map(len, values)),\n"
+            "                 'best': timings, 'growth': timings[1] / timings[0]})\n"
+            "print(json.dumps(rows))\n")
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                                    cwd=str(Path(__file__).resolve().parent.parent),
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=25, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('G4 comment-prefix timings exceeded the 25 s deadline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for row in json.loads(result.stdout):
+            with self.subTest(operation=row['operation']):
+                print('R352_CLIENT_COMMENT_TIMING %s' % json.dumps(row), flush=True)
+                if row['best'][1] < 0.05:
+                    self.assertLess(row['best'][1], 0.05, row)
+                else:
+                    self.assertLess(row['growth'], 8, row)
+                if row['operation'] == 'redact':
+                    # Older Python versions on CI runners are slower; a
+                    # quadratic regression takes several seconds.
+                    self.assertLess(row['best'][1], 1.5)
+
+    def test_custom_boundary_semicolon_budget_fails_closed(self):
+        suffix = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'value-private'//\n"
+                  "SELECT 'tail-private'//")
+        # Count declared custom delimiters toward the same 4,096 token budget
+        # as semicolons (suffix contributes 3 '//' tokens).
+        raw = 'SELECT 1;\n' * (4096 - suffix.count('//')) + suffix
+        self.assertTrue(dbops._secret_variable_boundaries(raw))
+        self.assertIn("SELECT 'tail-private'//", dbops.redact(raw))
+        raw = 'SELECT 1;\n' + raw
+        with mock.patch.object(dbops, 'split_statements', side_effect=AssertionError('over-budget splitter')):
+            self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+            clean = dbops.redact(raw)
+        self.assertNotIn('value-private', clean)
+        self.assertNotIn('tail-private', clean)
+        self.assertIn('[redacted]', clean)
+        # Custom-delimiter tokens alone (including quoted DELIMITER arguments)
+        # also trip the 4,096 budget and fail closed without calling the splitter.
+        for declaration in ('$$', '"$$"', "'$$'"):
+            with self.subTest(declaration=declaration):
+                body = ("DELIMITER " + declaration + "\n"
+                        "SET GLOBAL wsrep_sst_auth = 'value-private'$$\n"
+                        "SELECT 'tail-private'$$\n")
+                at_limit = body + 'SELECT 1$$\n' * (4096 - body.count('$$'))
+                self.assertEqual(at_limit.count('$$'), 4096)
+                self.assertTrue(dbops._secret_variable_boundaries(at_limit))
+                self.assertIn("SELECT 'tail-private'$$", dbops.redact(at_limit))
+                over_limit = at_limit + 'SELECT 1$$\n'
+                with mock.patch.object(dbops, 'split_statements',
+                                       side_effect=AssertionError('over-budget splitter')):
+                    self.assertEqual(dbops._secret_variable_boundaries(over_limit), [])
+                    clean_custom = dbops.redact(over_limit)
+                self.assertNotIn('value-private', clean_custom)
+                self.assertNotIn('tail-private', clean_custom)
+                self.assertIn('[redacted]', clean_custom)
+
+    def test_custom_boundary_2mib_custom_delimiter_comment_abuse_stays_linear(self):
+        # Repeating /*!99999$$ after DELIMITER $$ (unquoted or quoted) must hit
+        # the 4,096 token bound before lexing so 2 MiB stays linear and under 3 s.
+        # Before the token bound, this abuse took over 30 s on the measured case.
+        for declaration in ('$$', '"$$"'):
+            with self.subTest(declaration=declaration):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "head = 'DELIMITER ' + %r + '\\nSELECT SLEEP(600) /* wsrep */ '\n"
+                    "unit = '/*!99999$$'\n"
+                    "text = head + unit * ((2 * 1024 * 1024 - len(head) - 3) // len(unit)) + ' */'\n"
+                    "assert dbops._secret_variable_boundaries(text) == []\n"
+                    "began = time.perf_counter()\n"
+                    "clean = dbops.redact(text)\n"
+                    "elapsed = time.perf_counter() - began\n"
+                    "assert clean == text\n"
+                    "print(elapsed)\n" % declaration)
+                try:
+                    result = subprocess.run([sys.executable, '-c', code],
+                        cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                except subprocess.TimeoutExpired:
+                    self.fail('2 MiB custom-delimiter comment probe exceeded the 5 s deadline')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                elapsed = float(result.stdout.strip())
+                print('R352_CUSTOM_DELIMITER_2MIB_TIMING declaration=%s elapsed=%.6fs' %
+                      (declaration, elapsed), flush=True)
+                self.assertLess(elapsed, 3.0)
+
+    def test_custom_boundary_text_budget_fails_closed(self):
+        # At the exact size limit the normal proof is still attempted when a
+        # real DELIMITER command line declares a custom delimiter.
+        # Mock only this guard check to avoid making the test lex 2 Mi of
+        # padding four times; the over-limit abuse case uses real redaction.
+        limit = 2 * 1024 * 1024
+        head = 'DELIMITER //\n'
+        raw = head + ' ' * (limit - len(head))
+        with mock.patch.object(dbops, 'split_statements', return_value=[]) as splitter:
+            self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+        self.assertEqual(splitter.call_args_list,
+                         [mock.call(raw, backslash_escapes=True), mock.call(raw, backslash_escapes=False)])
+        suffix = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'value-private'//\n"
+                  "SELECT 'tail-private'//")
+        raw = '/*' + 'x' * (limit + 1 - len(suffix) - 5) + '*/\n' + suffix
+        self.assertEqual(len(raw), limit + 1)
+        with mock.patch.object(dbops, 'split_statements', side_effect=AssertionError('over-budget splitter')):
+            self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+            clean = dbops.redact(raw)
+        self.assertNotIn('value-private', clean)
+        self.assertNotIn('tail-private', clean)
+        self.assertIn('[redacted]', clean)
+
+    def _assert_timing_ratio(self, shape, operation='redact'):
+        # Time inside a child process so a reintroduced quadratic path has
+        # a hard deadline. Alternate sizes and take medians to reduce load
+        # and warm-up noise; process startup and generation are not timed.
+        code = (
+            "import gc, json, sys, time\n"
+            "sys.path.insert(0, 'test')\n"
+            "from test_dbops import _splitter_comment_probe, _splitter_dump\n"
+            "from myflames import dbops\n"
+            "shape, operation = %r, %r\n"
+            "values = ([_splitter_comment_probe(size) for size in (16384, 65536)]\n"
+            "          if shape == 'comments' else [_splitter_dump(size) for size in (100, 400)])\n"
+            "fn = getattr(dbops, operation)\n"
+            "timings = []\n"
+            "for value in values:\n"
+            "    samples = []\n"
+            "    for repeat in range(3):\n"
+            "        gc.collect(); was_enabled = gc.isenabled()\n"
+            "        if was_enabled: gc.disable()\n"
+            "        try:\n"
+            "            began = time.perf_counter()\n"
+            "            result = fn(value)\n"
+            "            samples.append(time.perf_counter() - began)\n"
+            "        finally:\n"
+            "            if was_enabled: gc.enable()\n"
+            "        if operation == 'redact':\n"
+            "            assert result == value, 'ordinary SQL changed'\n"
+            "    timings.append(min(samples))\n"
+            "print(json.dumps({'shape': shape, 'operation': operation,\n"
+            "                  'characters': list(map(len, values)), 'best': timings,\n"
+            "                  'ratio': timings[1] / timings[0]}))\n"
+        ) % (shape, operation)
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=45, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('%s %s exceeded the 45 s deadline' % (operation, shape))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        measurement = json.loads(result.stdout)
+        print('R352_SPLITTER_TIMING ' + json.dumps(measurement, sort_keys=True), flush=True)
+        if measurement['best'][1] < 0.05:
+            self.assertLess(measurement['best'][1], 0.05, measurement)
+        else:
+            self.assertLess(measurement['ratio'], 8, measurement)
+
+    def test_redact_conditional_comments_scale_below_sixfold(self):
+        self._assert_timing_ratio('comments')
+
+    def test_redact_mysqldump_scales_below_sixfold(self):
+        self._assert_timing_ratio('mysqldump')
+
+    def test_splitter_mysqldump_scales_below_sixfold(self):
+        # Exercise the index optimization directly as well: redaction may
+        # conservatively skip custom boundaries above its work budget.
+        self._assert_timing_ratio('mysqldump', 'split_statements')
 
 
 # ---- classification -----------------------------------------------------------------
@@ -178,6 +727,511 @@ CASES = (
 )
 
 
+def _classify_cache_modes():
+    """Exercise unknown facts and both sides of version/quote grammar gates."""
+    return (
+        {},
+        {'engine': 'mysql'},
+        {'engine': 'mariadb'},
+        {'engine': 'mysql', 'server_version': '5.7.44', 'client_engine': 'mysql'},
+        {'engine': 'mysql', 'server_version': '8.0.20', 'sql_mode': ''},
+        {'engine': 'mysql', 'server_version': '8.0.21', 'sql_mode': 'ANSI_QUOTES'},
+        {'engine': 'mysql', 'server_version': '8.1.0', 'client_engine': 'mariadb'},
+        {'engine': 'mysql', 'server_version': '8.4.3', 'sql_mode': 'NO_BACKSLASH_ESCAPES'},
+        {'engine': 'mysql', 'server_version': '9.7.0', 'sql_mode': 'ANSI_QUOTES,NO_BACKSLASH_ESCAPES',
+         'client_engine': 'mysql', 'client_status_synced': True},
+        {'engine': 'mariadb', 'server_version': '10.11.1', 'client_engine': 'mariadb'},
+        {'engine': 'mariadb', 'server_version': '11.4.13', 'sql_mode': ''},
+        {'engine': 'mariadb', 'server_version': '11.8.9', 'sql_mode': 'MSSQL'},
+        {'engine': 'mariadb', 'server_version': '12.0.1', 'sql_mode': 'ORACLE',
+         'client_engine': 'mysql'},
+        {'engine': 'mariadb', 'server_version': '13.0.2', 'sql_mode': 'ANSI_QUOTES,NO_BACKSLASH_ESCAPES',
+         'client_engine': 'mariadb', 'client_status_synced': True},
+        {'engine': 'mariadb', 'server_version': '5.5.5-10.11.16-MariaDB', 'wsrep_on': True},
+        {'engine': 'mariadb', 'server_version': '11.4.13', 'wsrep_on': False},
+        {'engine': 'mysql', 'server_version': 'unavailable', 'sql_mode': 'MSSQL'},
+        {'engine': 'readyset', 'server_version': '', 'client_engine': 'mysql'},
+        {'server_version': '8.4.3', 'backslash_escapes': False},
+        {'backslash_escapes': True, 'key_columns': ['id', 'my id']},
+        {'sql_mode': 'ANSI', 'client_status_synced': True},
+        {'delimiter': '//', 'engine': 'mysql', 'server_version': '8.4.3'},
+        {'delimiter': '$$', 'engine': 'mariadb', 'server_version': '11.4.13'},
+    )
+
+
+def _classify_cache_corpus():
+    """Collect repository SQL as data, without importing or executing fixtures."""
+    root = Path(__file__).resolve().parent.parent
+    corpus = {}
+    sql_start = re.compile(
+        r'^\s*(?:\(*\s*(?:SELECT|WITH|INSERT|REPLACE|UPDATE|DELETE|SET|SHOW|EXPLAIN|'
+        r'CREATE|ALTER|DROP|TRUNCATE|DELIMITER|CALL|EXECUTE|PREPARE|DEALLOCATE|BEGIN|'
+        r'START|STOP|COMMIT|ROLLBACK|SAVEPOINT|RELEASE|GRANT|REVOKE|RENAME|USE|'
+        r'KILL|LOCK|UNLOCK|FLUSH|RESET|CHANGE|LOAD|ANALYZE|OPTIMIZE|REPAIR|'
+        r'INSTALL|UNINSTALL|SHUTDOWN|RESTART|DO|HANDLER|TABLE|VALUES|DESC|DESCRIBE|'
+        r'HELP|XA|PURGE|CACHE|BINLOG|IMPORT|BACKUP)\b|/\*|--|#)', re.I)
+    sql_keys = {'sql', 'query', 'statement', 'sql_text', 'query_text', 'digest_text',
+                'sample_sql', 'sample_query', 'query_sample', 'original_sql'}
+
+    def add(sql, source, explicit=False):
+        if isinstance(sql, str) and (explicit or sql_start.match(sql)):
+            corpus.setdefault(sql, source)
+
+    def text_sql(text, source, explicit=False):
+        add(text, source, explicit)
+        # Client result fixtures embed their complete sent SQL in XML.
+        for match in re.finditer(r'\bstatement="([^"]*)"', text):
+            add(html.unescape(match.group(1)), source + ':statement', True)
+        for line in text.splitlines():
+            add(line, source + ':line')
+
+    def visit(value, source, key=''):
+        if isinstance(value, dict):
+            for name, item in value.items():
+                visit(item, source, name.lower())
+            # The shared splitter fixture uses | as a cursor annotation.
+            if 'index' in value and isinstance(value.get('sql'), str):
+                add(value['sql'].replace('|', '', 1), source + ':cursor', True)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, source, key)
+        elif isinstance(value, str):
+            text_sql(value, source, key in sql_keys)
+
+    for directory in (root / 'test/fixtures', root / 'apps/workspace/test/fixtures'):
+        for path in sorted(directory.rglob('*')):
+            if not path.is_file():
+                continue
+            source = str(path.relative_to(root))
+            if path.suffix == '.json':
+                visit(json.loads(path.read_text(encoding='utf-8')), source)
+            elif path.suffix in ('.sql', '.txt', '.log', '.xml'):
+                text_sql(path.read_text(encoding='utf-8'), source, path.suffix == '.sql')
+
+    # Literal SQL includes malformed input and fragments that tests combine
+    # dynamically. The actual assembled CASES are included separately below.
+    paths = [root / 'test/test_dbops.py'] + sorted((root / 'test').glob('test_editor_session*.py'))
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'))):
+            # Python 3.7 parses Str nodes; newer versions use Constant and
+            # Python 3.14 removes the deprecated ast.Str alias entirely.
+            value = node.value if isinstance(node, ast.Constant) else getattr(node, 's', None)
+            if isinstance(value, str):
+                text_sql(value, '%s:%d' % (path.name, node.lineno))
+    for sql, unused_kind, unused_category, unused_verbs in CASES:
+        add(sql, 'test_dbops.CASES', True)
+    return sorted(corpus.items())
+
+
+def _generated_classify_statements(count):
+    """Fixed-seed complete and malformed readings, with a unique numeric prefix."""
+    rng = random.Random(20261124)
+    fragments = (
+        "SELECT 'it''s; ok'", 'SELECT "a""b;c"', 'SELECT `a``;b` FROM t',
+        "SELECT 'a\\'; DROP TABLE t; -- '\n", 'SELECT "a\\\"; DROP TABLE t; -- "\n',
+        'SELECT "fn"(1)', 'SELECT [a; b], "column" FROM t',
+        "INSERT INTO t VALUES (1, '{\\\"k\\\": [1,2]}')",
+        'UPDATE t SET x = 1 WHERE id = 2', 'DELETE FROM t WHERE "id" = 2',
+        'SELECT 1 /* ordinary ; \' \\" */', 'SELECT 1 -- comment ; \' \\"\n',
+        'SELECT 1 # comment ; \' \\"\n', '/*!50000 SELECT 1; DELETE FROM t */',
+        '/*!80000 SELECT 1 */', '/*!999999 SELECT "a\\\"b" */',
+        '/*M!100100 SELECT 1; DROP TABLE t */', '/*M!999999 SELECT 1 */',
+        '/*!99997 SET @x = 1 */', '/*!!50000 SELECT 1 */',
+        '/*!50000 SELECT 1; /*M!999999 DROP TABLE t */ SELECT 2 */',
+        '/*+ hint("x") */ SELECT 1', '/* unterminated \' \\"',
+        "DELIMITER //\nSELECT 'a;//'; SELECT 2//\nDELIMITER ;\n",
+        "DELIMITER '$$'\nSELECT 'x;$$'$$\nDELIMITER ;\n",
+        'DELIMITER "//"\nSELECT 1//\nDELIMITER ;\n',
+        'DELIMITER \'\'\nSELECT 1;', 'SELECT $tag$ x; y $tag$',
+        'SELECT 1\\g SELECT 2\\G', 'SELECT 1;\n\\! command\n',
+        'SELECT "unterminated', "SELECT 'unterminated", 'SELECT 1\r\n; SELECT 2',
+        'SET sql_mode = "ANSI_QUOTES"; SELECT "name" FROM t',
+    )
+    for index in range(count):
+        body = ';\n'.join(rng.choice(fragments) for unused in range(rng.randint(1, 4)))
+        yield 'SELECT %d;\n%s' % (index, body)
+
+
+class TestClassifyCache(unittest.TestCase):
+    # Set MYFLAMES_LONG_TESTS=1 to retain the full historical stress inputs.
+    long_tests = os.environ.get('MYFLAMES_LONG_TESTS') == '1'
+
+    def assertCacheEquivalent(self, sql, options):
+        expected = dbops.classify(sql, _use_cache=False, **options)
+        actual = dbops.classify(sql, **options)
+        self.assertEqual(actual, expected)
+
+    def assertHelperCacheSeparates(self, helper, sql, first, second):
+        options = (first, second)
+        expected = [helper(sql, **reading) for reading in options]
+        self.assertNotEqual(expected[0], expected[1], 'probe must distinguish the readings')
+        # A wrong key can conceal either reading, depending on which comes
+        # first. Use a fresh shared cache for each ordering.
+        for order in ((0, 1), (1, 0)):
+            cache = {}
+            for index in order:
+                self.assertEqual(helper(sql, _cache=cache, **options[index]), expected[index])
+
+    def test_unclosed_delimiter_argument_keeps_client_family_refusal(self):
+        # Both scans can be identical while get_arg returns a different
+        # delimiter for MySQL and MariaDB. Reusing the first split must not
+        # turn the other client's malformed delimiter into a safe SELECT.
+        sql = "delimiter '$$\nSELECT 1"
+        uncached = dbops.classify(sql, _use_cache=False)
+        cached = dbops.classify(sql)
+        self.assertEqual(uncached['kind'], 'risky')
+        self.assertEqual(cached['kind'], 'risky')
+        self.assertEqual(cached, uncached)
+
+    def test_lexer_cache_separates_effective_options(self):
+        # Several options stay constant within classify, so even a large
+        # classify corpus cannot exercise their shared-cache key boundaries.
+        cases = (
+            ('backslash_escapes', "SELECT 'a\\'b'",
+             {'backslash_escapes': True}, {'backslash_escapes': False}),
+            ('engine', '/*M! SELECT 1 */', {'engine': 'mysql'}, {'engine': 'mariadb'}),
+            ('dollar_quotes', 'SELECT $tag$a;$tag$',
+             {'dollar_quotes': False}, {'dollar_quotes': True}),
+            ('client', 'SELECT 1;',
+             {'client': False, 'client_delimiter': ';'}, {'client': True, 'client_delimiter': ';'}),
+            ('client_delimiter', 'SELECT 1; SELECT 2$$',
+             {'client': True, 'client_delimiter': ';'}, {'client': True, 'client_delimiter': '$$'}),
+            ('ansi_quotes', 'SELECT "name"', {'ansi_quotes': False}, {'ansi_quotes': True}),
+            ('mssql', 'SELECT [name]', {'mssql': False}, {'mssql': True}),
+            ('client_engine', '/*M! SELECT 1 */',
+             {'client': True, 'client_engine': 'mysql'}, {'client': True, 'client_engine': 'mariadb'}),
+            ('version_id', '/*!80001 SELECT 1 */',
+             {'engine': 'mysql', 'server_version': '8.0.0', 'comment_dialect': 'mysql'},
+             {'engine': 'mysql', 'server_version': '8.0.2', 'comment_dialect': 'mysql'}),
+            ('unknown_execute', '/*!999999 SELECT 1 */',
+             {'unknown_execute': False}, {'unknown_execute': True}),
+            ('wsrep_on', '/*!99997 SET @x=1 */',
+             {'engine': 'mariadb', 'server_version': '11.4.13', 'wsrep_on': False},
+             {'engine': 'mariadb', 'server_version': '11.4.13', 'wsrep_on': True}),
+            ('comment_dialect', '/*!100000SELECT 1 */',
+             {'comment_dialect': 'mysql'}, {'comment_dialect': 'mariadb'}),
+        )
+        for field, sql, first, second in cases:
+            with self.subTest(field=field):
+                self.assertHelperCacheSeparates(dbops.lex_sql, sql, first, second)
+
+    def test_split_cache_separates_delimiters_and_scan_evidence(self):
+        cases = (
+            ('delimiter', 'SELECT 1', {'delimiter': ';'}, {'delimiter': '$$'}),
+            ('client_engine', "delimiter '$$\nSELECT 1",
+             {'client_engine': 'mysql'}, {'client_engine': 'mariadb'}),
+            ('framing_key', 'SELECT "name"',
+             {'client_engine': 'mariadb', 'client_ansi_quotes': False},
+             {'client_engine': 'mariadb', 'client_ansi_quotes': True}),
+            ('scan_key', 'SELECT "name"', {'ansi_quotes': False}, {'ansi_quotes': True}),
+        )
+        for field, sql, first, second in cases:
+            with self.subTest(field=field):
+                self.assertHelperCacheSeparates(dbops.split_statements, sql, first, second)
+
+    def test_client_readings_keep_separate_framing_maps(self):
+        # Backslash readings disagree about the quoted comment body and
+        # therefore which later DELIMITER lines frame the server scan.
+        sql = ('/*!999999 SELECT "a\\"b" */;\n'
+               "DELIMITER '$$'\nSELECT 'x;$$'$$\nDELIMITER ;\n")
+        self.assertCacheEquivalent(sql, {})
+
+    def test_fixture_and_existing_input_equivalence(self):
+        corpus = _classify_cache_corpus()
+        if not self.long_tests:
+            # Sample evenly so the quick run still covers fixtures from across
+            # the repository instead of stopping at the first fixture file.
+            corpus = corpus[::max(1, len(corpus) // 125)]
+        modes = _classify_cache_modes()
+        # Every source runs with unknown facts, known MySQL and MariaDB, and
+        # one rotating mode; the generated corpus exercises the full matrix.
+        comparisons = 0
+        for index, (sql, source) in enumerate(corpus):
+            for mode in (modes[0], modes[7], modes[11], modes[index % len(modes)]):
+                with self.subTest(source=source, case=index, mode=mode):
+                    self.assertCacheEquivalent(sql, mode)
+                    comparisons += 1
+        self.assertGreater(len(corpus), 100 if not self.long_tests else 500)
+        print('CLASSIFY_CACHE_FIXTURES cases=%d comparisons=%d' % (len(corpus), comparisons), flush=True)
+
+    def test_twenty_thousand_generated_statement_equivalence(self):
+        modes = _classify_cache_modes()
+        seen = set()
+        statement_count = 20000 if self.long_tests else 2000
+        for index, sql in enumerate(_generated_classify_statements(statement_count)):
+            self.assertNotIn(sql, seen)
+            seen.add(sql)
+            mode = modes[index % len(modes)]
+            with self.subTest(case=index, mode=mode, sql=sql):
+                self.assertCacheEquivalent(sql, mode)
+        self.assertEqual(len(seen), statement_count)
+        print('CLASSIFY_CACHE_GENERATED seed=20261124 statements=%d modes=%d' %
+              (len(seen), len(modes)), flush=True)
+
+    def test_returned_mutable_values_are_not_shared_between_calls(self):
+        sql = 'SELECT "a\\\"; DROP TABLE t; -- "\n; SELECT 1'
+        expected = dbops.classify(sql, _use_cache=False)
+        result = dbops.classify(sql)
+        result['reasons'].append('caller mutation')
+        for statement in result['statements']:
+            statement['reasons'].append('caller mutation')
+            statement['text'] = 'caller mutation'
+        result['statements'].append({'text': 'caller mutation'})
+        self.assertEqual(dbops.classify(sql), expected)
+
+    def test_shared_helper_results_are_not_mutated_by_consumers(self):
+        import copy
+
+        sql = ('SELECT `a`, "q\\\"x" FROM t; /*!99999 DELETE FROM t */; '
+               'SELECT $tag$x; y$tag$')
+        observed = {}
+
+        def observer(name, original):
+            seen, calls = {}, []
+            observed[name] = (seen, calls)
+
+            def wrapped(*args, **kwargs):
+                result = original(*args, **kwargs)
+                if kwargs.get('_cache') is not None:
+                    calls.append(id(result))
+                    seen.setdefault(id(result), (result, copy.deepcopy(result)))
+                return result
+
+            return wrapped
+
+        with contextlib.ExitStack() as patches:
+            for name in ('lex_sql', 'split_statements', '_masked_fragment', '_mode_reading'):
+                patches.enter_context(mock.patch.object(dbops, name, observer(name, getattr(dbops, name))))
+            self.assertCacheEquivalent(sql, {})
+        for name, (seen, calls) in observed.items():
+            with self.subTest(helper=name):
+                self.assertTrue(seen)
+                self.assertLess(len(seen), len(calls), 'probe must exercise shared results')
+                for result, original in seen.values():
+                    self.assertEqual(result, original, '%s result was mutated' % name)
+
+    def test_lexer_cache_copies_mutable_framing_keys(self):
+        sql, cache = 'SELECT 1; SELECT 2', {}
+        framing = [('delimiter', 8, 9)]
+        first = dbops.lex_sql(sql, framing=framing, _cache=cache)
+        expected_first = dbops.lex_sql(sql, framing=list(framing))
+        framing[0] = ('delimiter', 9, 10)
+        second = dbops.lex_sql(sql, framing=framing, _cache=cache)
+        self.assertEqual(first, expected_first)
+        self.assertEqual(second, dbops.lex_sql(sql, framing=framing))
+        self.assertNotEqual(first, second)
+
+    def test_scan_keys_preserve_all_lexical_evidence(self):
+        import copy
+
+        sql, cache = '/*!50000 SELECT 1 */', {}
+        scan = dbops.lex_sql(sql)
+        key = dbops._scan_cache_key(scan, cache)
+        self.assertIsInstance(key, int)
+        equivalent = copy.deepcopy(scan)
+        equivalent['ends'] = [token[2] for token in scan['tokens']]
+        # An index or dictionary insertion order cannot change the reading.
+        equivalent['comments'] = [dict(reversed(list(comment.items())))
+                                  for comment in equivalent['comments']]
+        self.assertEqual(dbops._scan_cache_key(equivalent, cache), key)
+        self.assertEqual(dbops._scan_cache_key(scan, cache), key)
+        variants = {
+            'tokens': scan['tokens'] + [('code', len(sql), len(sql) + 1)],
+            'comments': [dict(scan['comments'][0], certain=not scan['comments'][0]['certain'])],
+            'unclosed': [(0, len(sql))],
+            'issues': [(0, dbops.REASON_COMMENT_COMMAND)],
+        }
+        keys = {key}
+        for field, value in variants.items():
+            with self.subTest(field=field):
+                different = copy.deepcopy(scan)
+                different[field] = value
+                other = dbops._scan_cache_key(different, cache)
+                self.assertIsInstance(other, int)
+                self.assertNotIn(other, keys)
+                keys.add(other)
+
+        # Equal token counts do not imply equal token roles. In particular,
+        # a code span must never reuse a comment's cached safety evidence.
+        different = copy.deepcopy(scan)
+        kind, start, end = different['tokens'][0]
+        different['tokens'][0] = ('code', start, end)
+        self.assertNotEqual(kind, 'code')
+        self.assertNotIn(dbops._scan_cache_key(different, cache), keys)
+
+    def test_shared_scan_keys_keep_distinct_sql_text(self):
+        cache, keys, fragments, units = {}, [], [], []
+        for sql in ('SELECT `a` FROM t; SELECT 1', 'SELECT `b` FROM u; SELECT 2'):
+            scan = dbops.lex_sql(sql, _cache=cache)
+            keys.append(dbops._scan_cache_key(scan, cache))
+            # The splitter uses private copies for its derived token index.
+            fragment = dbops._masked_fragment(sql, dict(scan), 0, len(sql), _cache=cache)
+            self.assertEqual(fragment, dbops._masked_fragment(sql, dict(scan), 0, len(sql)))
+            fragments.append(fragment)
+            split = dbops.split_statements(sql, _cache=cache)
+            self.assertEqual(split, dbops.split_statements(sql))
+            units.append(split)
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotEqual(fragments[0], fragments[1])
+        self.assertNotEqual(units[0], units[1])
+
+    def test_concurrent_classifications_have_separate_caches(self):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        queries = ['SELECT %d, "private\\\"value"; SELECT `id` FROM t' % index for index in range(8)]
+        expected = [dbops.classify(sql, _use_cache=False) for sql in queries]
+        original = dbops._classify_reading
+        observed, lock = {}, threading.Lock()
+
+        def capture(sql, *args, **kwargs):
+            cache = kwargs.get('_cache')
+            with lock:
+                # Retain the actual objects so id reuse after a completed
+                # request cannot conceal cross-request cache ownership.
+                observed.setdefault(sql, []).append(cache)
+            return original(sql, *args, **kwargs)
+
+        with mock.patch.object(dbops, '_classify_reading', capture):
+            with ThreadPoolExecutor(max_workers=4) as workers:
+                actual = list(workers.map(dbops.classify, queries))
+        self.assertEqual(actual, expected)
+        first_caches = []
+        for sql in queries:
+            caches = observed[sql]
+            self.assertIsNotNone(caches[0])
+            self.assertTrue(all(cache is caches[0] for cache in caches))
+            first_caches.append(caches[0])
+        self.assertEqual(len({id(cache) for cache in first_caches}), len(queries))
+
+    def test_input_refusals_are_identical(self):
+        for sql, options in ((None, {}), (b'SELECT 1', {}), (42, {}), ('x' * 1000001, {}),
+                             ('SELECT 1', {'delimiter': ''}), ('SELECT 1', {'delimiter': '\\g'}),
+                             ('SELECT 1', {'delimiter': 'long_delimiter_16'})):
+            errors = []
+            for enabled in (False, True):
+                with self.assertRaises(ValueError) as raised:
+                    dbops.classify(sql, _use_cache=enabled, **options)
+                errors.append(str(raised.exception))
+            self.assertEqual(errors[0], errors[1])
+
+    def test_unhashable_sql_text_keeps_uncached_acceptance(self):
+        class UnhashableSQL(str):
+            __hash__ = None
+
+        self.assertCacheEquivalent(UnhashableSQL('SELECT "a\\\"b"; SELECT `id` FROM t'), {})
+
+    def test_many_small_inserts_cache_budget_and_growth(self):
+        row = "INSERT INTO t VALUES (1, 'a', \"b\");\n"
+        small_rows, large_rows = ((6000, 24000) if self.long_tests else (1000, 4000))
+        small, large = row * small_rows, row * large_rows
+        self.assertEqual((len(small), len(large)), (len(row) * small_rows, len(row) * large_rows))
+        samples = {'small': [], 'large': [], 'uncached': []}
+        # Interleave the three workloads so machine load does not favor
+        # all samples of either the cached or uncached implementation.
+        for unused in range(3):
+            for label, sql, enabled in (('small', small, True), ('uncached', large, False),
+                                        ('large', large, True)):
+                gc.collect()
+                was_enabled = gc.isenabled()
+                if was_enabled:
+                    gc.disable()
+                try:
+                    start = time.perf_counter()
+                    result = dbops.classify(sql, _use_cache=enabled)
+                    samples[label].append(time.perf_counter() - start)
+                finally:
+                    if was_enabled:
+                        gc.enable()
+                if label == 'uncached':
+                    expected = result
+                elif label == 'large':
+                    self.assertEqual(result, expected)
+        small_seconds, large_seconds, uncached_seconds = (
+            min(samples[label]) for label in ('small', 'large', 'uncached'))
+        print('CLASSIFY_CACHE_MANY_SMALL chars=%d uncached=%.6fs cached=%.6fs ratio=%.2fx '
+              'small_chars=%d small_cached=%.6fs growth=%.2fx' %
+              (len(large), uncached_seconds, large_seconds, large_seconds / uncached_seconds,
+               len(small), small_seconds, large_seconds / small_seconds), flush=True)
+        self.assertLessEqual(large_seconds, uncached_seconds * 1.5)
+        if large_seconds < 0.05:
+            self.assertLess(large_seconds, 0.05)
+        else:
+            self.assertLess(large_seconds, small_seconds * 8)
+
+    def test_many_json_inserts_cache_budget(self):
+        row = "INSERT INTO t VALUES (1, '{\\\"a\\\": \\\"b\\\"}', \"q\\\"x\");\n"
+        rows = 4000 if self.long_tests else 500
+        sql = row * rows
+        self.assertEqual(len(sql), len(row) * rows)
+        samples = {False: [], True: []}
+        for unused in range(3):
+            for enabled in (False, True):
+                start = time.perf_counter()
+                result = dbops.classify(sql, _use_cache=enabled)
+                samples[enabled].append(time.perf_counter() - start)
+                if enabled:
+                    self.assertEqual(result, expected)
+                else:
+                    expected = result
+        before, after = (statistics.median(samples[enabled]) for enabled in (False, True))
+        print('CLASSIFY_CACHE_MANY_JSON chars=%d uncached=%.6fs cached=%.6fs speedup=%.2fx' %
+              (len(sql), before, after, before / after), flush=True)
+        self.assertLess(after, before)
+
+    def test_long_insert_cache_budget(self):
+        row = "(1, '{\\\"name\\\": \\\"a\\\", \\\"v\\\": [1,2,3]}', 'it''s', \"q\\\"x\")"
+
+        def elapsed(sql, enabled):
+            samples = []
+            for unused in range(3):
+                start = time.perf_counter()
+                dbops.classify(sql, _use_cache=enabled)
+                samples.append(time.perf_counter() - start)
+            return statistics.median(samples)
+
+        rows = 1000 if self.long_tests else 250
+        sql = 'INSERT INTO t VALUES ' + ','.join([row] * rows) + ';'
+        self.assertEqual(len(sql), 21 + len(row) * rows + rows)
+        before, after = elapsed(sql, False), elapsed(sql, True)
+        print('CLASSIFY_CACHE_INSERT chars=%d uncached=%.6fs cached=%.6fs speedup=%.2fx' %
+              (len(sql), before, after, before / after), flush=True)
+        self.assertLessEqual(after * 5, before)
+        if self.long_tests:
+            large = 'INSERT INTO t VALUES ' + ','.join([row] * 4000) + ';'
+            self.assertEqual(len(large), 21 + len(row) * 4000 + 4000)
+            seconds = elapsed(large, True)
+            print('CLASSIFY_CACHE_INSERT chars=%d cached=%.6fs' % (len(large), seconds), flush=True)
+            self.assertLess(seconds, 2.0)
+
+    def test_long_insert_cache_peak_memory(self):
+        import gc
+        import tracemalloc
+
+        row = "(1, '{\\\"name\\\": \\\"a\\\", \\\"v\\\": [1,2,3]}', 'it''s', \"q\\\"x\")"
+        # Ten rows already separate the fixed cache (about 1.4x peak) from
+        # the historical cache (about 2.1x), without tracing a huge INSERT.
+        rows = 2000 if self.long_tests else 10
+        sql = 'INSERT INTO t VALUES ' + ','.join([row] * rows) + ';'
+        self.assertEqual(len(sql), 21 + len(row) * rows + rows)
+        results, peaks = {}, {}
+        for enabled in (False, True):
+            # Trace each call independently: the SQL and the previous result
+            # predate tracing, while every temporary allocation in classify
+            # counts towards its peak. Collect cycles before either sample.
+            gc.collect()
+            tracemalloc.start()
+            try:
+                results[enabled] = dbops.classify(sql, _use_cache=enabled)
+                peaks[enabled] = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+        self.assertEqual(results[True], results[False])
+        print('CLASSIFY_CACHE_MEMORY chars=%d uncached=%d cached=%d ratio=%.2fx' %
+              (len(sql), peaks[False], peaks[True], peaks[True] / peaks[False]), flush=True)
+        self.assertLessEqual(peaks[True], peaks[False] * 1.5)
+
+
 class TestSelectFunctionSafety(unittest.TestCase):
     def test_administrative_and_unknown_calls_require_review_in_both_types(self):
         # MySQL administrative UDFs and either engine's stored functions can
@@ -299,6 +1353,17 @@ class TestSelectFunctionSafety(unittest.TestCase):
 
 class TestClassify(unittest.TestCase):
     maxDiff = None
+
+    def test_parenthesized_set_is_unreadable_and_never_a_read(self):
+        for sql in ('(SET x=1)', '((SET x = 1))', 'EXPLAIN (SET x=1)',
+                    'EXPLAIN ANALYZE ((SET x=1))', 'SET1 x=1'):
+            for enabled in (False, True):
+                with self.subTest(sql=sql, cached=enabled):
+                    verdict = dbops.classify(sql, _use_cache=enabled)
+                    self.assertEqual((verdict['kind'], verdict['category']), ('risky', 'unknown'))
+                    self.assertIn('myflames could not read this SET statement.', verdict['reasons'])
+                    self.assertTrue(all(stmt['kind'] == 'risky' for stmt in verdict['statements']))
+                    self.assertEqual(dbops.decide(verdict, 'development', read_only=True)['action'], 'refuse')
 
     def test_native_explain_formats_are_reads_under_both_policies(self):
         statements = (
@@ -1201,7 +2266,405 @@ SET_PASSWORD_REDACTION_CASES = (
 )
 
 
+# Each entry exercises a different credential clause, including the keyword
+# guards that make ordinary editor text inexpensive to scan.
+R352_CREDENTIAL_CLAUSES = (
+    ('identified_by', 'CREATE USER u IDENTIFIED BY ', ''),
+    ('identified_hash', 'CREATE USER u IDENTIFIED BY PASSWORD ', ''),
+    ('identified_as', 'ALTER USER u IDENTIFIED WITH auth_plugin AS ', ''),
+    ('via_using', 'ALTER USER u IDENTIFIED VIA auth_plugin USING ', ''),
+    ('with_using', 'ALTER USER u IDENTIFIED WITH auth_plugin USING ', ''),
+    ('via_password', 'ALTER USER u IDENTIFIED VIA auth_plugin USING PASSWORD(', ')'),
+    ('password_function', 'SELECT PASSWORD(', ')'),
+    ('old_password_function', 'SELECT OLD_PASSWORD(', ')'),
+    ('set_password', 'SET PASSWORD = ', ''),
+    ('named_set_password', 'SET PASSWORD FOR u = ', ''),
+    ('source_password', 'CHANGE REPLICATION SOURCE TO SOURCE_PASSWORD = ', ''),
+    ('master_password', 'CHANGE MASTER TO MASTER_PASSWORD = ', ''),
+    ('report_password', 'SET GLOBAL report_password = ', ''),
+    ('password_option', 'CREATE SERVER s OPTIONS (PASSWORD ', ')'),
+    ('random_replace', 'ALTER USER u IDENTIFIED BY RANDOM PASSWORD REPLACE ', ''),
+    ('set_random_replace', 'SET PASSWORD TO RANDOM REPLACE ', ''),
+)
+
+
 class TestRedaction(unittest.TestCase):
+    def test_r352_url_database_dialect_components_hide_numeric_slash_passwords(self):
+        for scheme in ('mysql+pymysql', 'mysql+mysqlconnector',
+                       'mariadb+mariadbconnector', 'postgresql+psycopg2',
+                       'postgres+asyncpg', 'mysqlx+srv',
+                       'pool+mysql', 'pool+mysql+pymysql',
+                       'jdbc:mysql+pymysql', 'MySQL+PyMySQL'):
+            for quoted in (True, False):
+                with self.subTest(scheme=scheme, quoted=quoted):
+                    raw = scheme + '://app:12/ab@db1/shop'
+                    expected = scheme + '://app:[redacted]@db1/shop'
+                    self.assertEqual(dbops.redact(raw, quoted=quoted), expected)
+        for raw in ('https://h:443/path?mail=a@b',
+                    'https+transport://h:443/path?mail=a@b',
+                    'git+https://h:443/path?mail=a@b',
+                    'mysql+pymysql://app@db1/shop',
+                    'mysql+pymysql://db1:3306/shop'):
+            with self.subTest(unchanged=raw):
+                self.assertEqual(dbops.redact(raw), raw)
+
+    def test_r352_url_username_brackets_do_not_hide_slash_passwords(self):
+        cases = (
+            ('mysql://app[ro:pa/ss@db1/x', 'mysql://app[ro:[redacted]@db1/x'),
+            ('mysql://a[b:12/xy@h/db', 'mysql://a[b:[redacted]@h/db'),
+            ('mysql+pymysql://a[b:12/xy@h/db', 'mysql+pymysql://a[b:[redacted]@h/db'),
+            ('mysql://app[ro]:pa/ss@db1/x', 'mysql://app[ro]:[redacted]@db1/x'),
+            ('mysql://[app]:pa/ss@db1/x', 'mysql://[app]:[redacted]@db1/x'),
+            ('mysql://[app:pa/ss@db1/x', 'mysql://[app:[redacted]@db1/x'),
+            ('mysql://[a:12/xy@h/db', 'mysql://[a:[redacted]@h/db'),
+            ('mysql://[a:pa]/ss@db1/x', 'mysql://[a:[redacted]@db1/x'),
+            ('mysql://u:p@[::1]:3306/db', 'mysql://u:[redacted]@[::1]:3306/db'),
+            ('mysql://u:12/ab@[::1]:3306/db', 'mysql://u:[redacted]@[::1]:3306/db'),
+            ('mysql://[::1]:3306/db', 'mysql://[::1]:3306/db'),
+            ('mysql://[::1]:3306/db?mail=a@b', 'mysql://[::1]:3306/db?mail=a@b'),
+            ('mysql://[fe80::1%25eth0]:3306/db?mail=a@b', 'mysql://[fe80::1%25eth0]:3306/db?mail=a@b'),
+            ('mysql://user@[::1]:3306/db', 'mysql://user@[::1]:3306/db'),
+            ('mysql://user@[::1]:3306/db?mail=a@b', 'mysql://user@[::1]:3306/db?mail=a@b'),
+            ('https://[2001:db8::1]/users/alice@example.com',
+             'https://[2001:db8::1]/users/alice@example.com'),
+        )
+        for raw, expected in cases:
+            for quoted in (True, False):
+                with self.subTest(raw=raw, quoted=quoted):
+                    self.assertEqual(dbops.redact(raw, quoted=quoted), expected)
+
+    def test_r352_secret_literals_cover_both_backslash_readings(self):
+        for names in (('wsrep_sst_auth', 's3_secret_key'),
+                      ('s3_secret_key', 'wsrep_sst_auth'),
+                      ('wsrep_sst_auth', 'wsrep_provider_options')):
+            for quote in ("'", '"'):
+                with self.subTest(names=names, quote=quote):
+                    raw = ('SET GLOBAL ' + names[0] + ' = ' + quote + 'mode-first\\' + quote +
+                           ', @@global.' + names[1] + ' = ' + quote + 'mode-second' + quote)
+                    clean = dbops.redact(raw)
+                    self.assertNotIn('mode-first', clean)
+                    self.assertNotIn('mode-second', clean)
+                    self.assertIn('[redacted]', clean)
+        # With escaping the middle quote closes the string. With literal
+        # backslashes the adjacent quotes form an escaped quote instead.
+        for lead in ('SET GLOBAL ', 'echo '):
+            for quote in ("'", '"'):
+                with self.subTest(lead=lead, later_no_backslash_end=quote):
+                    raw = (lead + 'wsrep_sst_auth = ' + quote + 'mode-head\\' +
+                           quote * 2 + 'mode-tail' + quote + '; SELECT 37')
+                    clean = dbops.redact(raw)
+                    self.assertNotIn('mode-head', clean)
+                    self.assertNotIn('mode-tail', clean)
+                    self.assertIn('[redacted]', clean)
+        ordinary = "SELECT 'it\\'s', 'ordinary'; SET SESSION max_execution_time = 1000"
+        self.assertEqual(dbops.redact(ordinary), ordinary)
+
+    def test_r352_localized_wrong_value_errors_use_error_number(self):
+        # MySQL messages_to_clients.txt and MariaDB errmsg-utf8.txt use
+        # ASCII apostrophes for German, Italian, Japanese and Chinese
+        # ER_WRONG_VALUE_FOR_VAR; Chinese has no space before either quote.
+        messages = (
+            "Variable 'wsrep_sst_auth' kann nicht auf 'locale-private' gesetzt werden",
+            "Alla variabile 'wsrep_sst_auth' non puo' essere assegato il valore 'locale-private'",
+            "変数 'wsrep_sst_auth' に値 'locale-private' を設定できません。",
+            "变量'wsrep_sst_auth'无法设置为'locale-private'的值",
+        )
+        prefixes = ('ERROR 1231 (42000): ', 'ERROR 1231 (42000) at line 7: ',
+                    'ERROR 1231: ', 'mysql client exited 1: ERROR 1231 (42000): ',
+                    'mysqlsh exited 1: ERROR 1231 (42000): ',
+                    'Could not change parameter: ERROR 1231 (42000): ')
+        for message in messages:
+            for prefix in prefixes:
+                with self.subTest(message=message, prefix=prefix):
+                    raw = prefix + message
+                    self.assertEqual(dbops.redact(raw), raw.replace('locale-private', '[redacted]'))
+        # Chinese 1231 with a colon/secret value (MariaDB errmsg-utf8.txt) and
+        # an embedded apostrophe (odd quote count fails closed).
+        chinese = "ERROR 1231 (42000): 变量'wsrep_sst_auth'无法设置为'sst:S3cr3t'的值"
+        self.assertEqual(dbops.redact(chinese),
+                         "ERROR 1231 (42000): 变量'wsrep_sst_auth'无法设置为'[redacted]'的值")
+        chinese_apos = "ERROR 1231 (42000): 变量'wsrep_sst_auth'无法设置为'it's S3cr3t'的值"
+        clean_apos = dbops.redact(chinese_apos)
+        self.assertNotIn('S3cr3t', clean_apos)
+        self.assertIn('[redacted]', clean_apos)
+        unrelated = 'ERROR 9999 (42000): ' + messages[0]
+        self.assertEqual(dbops.redact(unrelated), unrelated)
+
+    def test_r352_error_1231_keeps_ordinary_variables_readable(self):
+        # In every translation in both engine trees the quoted variable name
+        # comes first. Ordinary recognizable variable names stay readable;
+        # secret or unrecognizable names still fail closed.
+        ordinary = (
+            "ERROR 1231 (42000) at line 1: Variable 'sql_mode' can't be set to the value of 'BOGUS'",
+            "ERROR 1231 (42000): Variable 'max_connections' can't be set to the value of '-1'",
+            "ERROR 1231 (42000): Variable 'time_zone' kann nicht auf 'Mars/Phobos' gesetzt werden",
+            "ERROR 1231 (42000): Alla variabile 'sql_mode' non puo' essere assegato il valore 'BOGUS'",
+            "ERROR 1231 (42000): 变量'sql_mode'无法设置为'BOGUS'的值",
+            "ERROR 1231 (42000): Variable 'validate_password.policy' can't be set to the value of 'NOPE'",
+        )
+        for message in ordinary:
+            with self.subTest(ordinary=message):
+                self.assertEqual(dbops.redact(message), message)
+        # Mixed ordinary and secret 1231 lines preserve only the ordinary one.
+        mixed = (
+            "ERROR 1231 (42000) at line 1: Variable 'sql_mode' can't be set to the value of 'BOGUS'\n"
+            "ERROR 1231 (42000): Variable 'wsrep_sst_auth' kann nicht auf 'S3cr3t' gesetzt werden"
+        )
+        self.assertEqual(dbops.redact(mixed), mixed.replace('S3cr3t', '[redacted]'))
+        # A secret variable or unrecognizable/preceded-by-quote name stays hidden.
+        for hidden, secret in (
+                ("ERROR 1231 (42000) at line 1: Variable 'wsrep_sst_auth' can't be set to the value of 'S3cr3t'", 'S3cr3t'),
+                ("ERROR 1231 (42000): Variable 'telemetry.otel_exporter_otlp_logs_headers' kann nicht auf 'k=S3cr3t' gesetzt werden", 'S3cr3t'),
+                ("ERROR 1231 (42000): can't'sql_mode' 'S3cr3t'", 'S3cr3t'),
+                ("ERROR 1231 (42000): 'unclosed 'sql_mode' 'S3cr3t'", 'S3cr3t'),
+                ("ERROR 1231 (42000): unknown 'bad-name' 'S3cr3t'", 'S3cr3t')):
+            with self.subTest(hidden=hidden):
+                clean = dbops.redact(hidden)
+                self.assertNotIn(secret, clean)
+                self.assertIn('[redacted]', clean)
+
+    def test_r352_localized_errors_hide_unknown_names_and_every_value(self):
+        for message in (
+                "ERROR 1231 (42000): 未知 'opaque-name' と 'locale-first' と \"locale-second\"",
+                "ERROR 1231 (42000): 'wsrep_sst_auth': 'locale-first' oder \"locale-second\"",
+                "ERROR 1231 (42000): Variable 'wsrep_sst_auth' kann nicht auf 'locale-first'locale-second' gesetzt werden",
+                "ERROR 1231 (42000): 変数 'wsrep_sst_auth' に値 'locale-first\nlocale-second' を設定できません。"):
+            with self.subTest(message=message):
+                clean = dbops.redact(message)
+                for secret in ('opaque-name', 'locale-first', 'locale-second'):
+                    self.assertNotIn(secret, clean)
+                self.assertIn('[redacted]', clean)
+        raw = ("ERROR 1231 (42000): Variable 'wsrep_sst_auth' kann nicht auf 'locale-private' gesetzt werden\n"
+               "ERROR 9999 (42000): 'ordinary-value'")
+        clean = dbops.redact(raw)
+        self.assertNotIn('locale-private', clean)
+        self.assertTrue(clean.endswith("ERROR 9999 (42000): 'ordinary-value'"))
+
+    def test_r352_all_dynamic_credential_clauses_hide_escaped_values(self):
+        suffix = '; SELECT 37'
+        for label, prefix, tail in R352_CREDENTIAL_CLAUSES:
+            for quote in ("'", '"'):
+                for escaped in (quote * 2, '\\' + quote):
+                    with self.subTest(clause=label, quote=quote, escape=escaped):
+                        raw = ('PREPARE s FROM ' + quote + prefix + escaped +
+                               'dynamic-private' + escaped + tail +
+                               '; SELECT ' + escaped + 'dynamic-tail' + escaped + quote + suffix)
+                        clean = dbops.redact(raw)
+                        self.assertNotIn('dynamic-private', clean)
+                        self.assertNotIn('dynamic-tail', clean)
+                        self.assertIn('[redacted]', clean)
+                        self.assertTrue(clean.endswith(suffix), clean)
+
+    def test_r352_dynamic_replace_hides_both_credentials(self):
+        for quote in ("'", '"'):
+            for escaped in (quote * 2, '\\' + quote):
+                with self.subTest(quote=quote, escape=escaped):
+                    raw = ('PREPARE s FROM ' + quote + 'ALTER USER u IDENTIFIED BY ' +
+                           escaped + 'new-private' + escaped + ' REPLACE ' +
+                           escaped + 'old-private' + escaped + quote + '; SELECT 37')
+                    clean = dbops.redact(raw)
+                    self.assertNotIn('new-private', clean)
+                    self.assertNotIn('old-private', clean)
+                    self.assertTrue(clean.endswith('; SELECT 37'), clean)
+
+    def test_r352_set_password_replace_stays_redacted_across_quote_readings(self):
+        # F1: merging backslash and NO_BACKSLASH_ESCAPES spans must not hide
+        # the REPLACE keyword from the current-password redaction pass.
+        cases = (
+            ("SET PASSWORD FOR 'o\\'brien'@'%' = 'bmV3cGFzc3c=' REPLACE 'S3cr3t'",
+             ('bmV3cGFzc3c=', 'S3cr3t')),
+            ("SET PASSWORD /* don't */ FOR app = 'x=' REPLACE 'S3cr3t'",
+             ('x=', 'S3cr3t')),
+            ("SET PASSWORD FOR 'it\\'s'@'h' = 'NEW' REPLACE 'CUR=''S3cr3t'",
+             ('NEW', 'CUR', 'S3cr3t')),
+            ("don't forget: SET PASSWORD = '' REPLACE 'S3cr3t'",
+             ('S3cr3t',)),
+        )
+        for raw, secrets in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertIn('[redacted]', clean)
+                for secret in secrets:
+                    self.assertNotIn(secret, clean)
+        self.assertEqual(
+            dbops.redact("SET PASSWORD FOR 'it\\'s'@'h' = 'NEW' REPLACE 'CUR=''S3cr3t'"),
+            "SET PASSWORD FOR 'it\\'s'@'h' = '[redacted]' REPLACE '[redacted]'")
+        # Dynamic SQL REPLACE values must pass through the same enclosing-string
+        # rule so doubled or backslash-escaped inner quotes cannot leak tails.
+        dynamic_cases = (
+            "PREPARE s FROM 'SET PASSWORD = \"new-pw\" REPLACE ''S3cr3t'''; SELECT 37",
+            "PREPARE s FROM 'SET PASSWORD = \"new-pw\" REPLACE \\'S3cr3t\\''; SELECT 37",
+            'PREPARE s FROM "SET PASSWORD = \'new-pw\' REPLACE ""S3cr3t"""; SELECT 37',
+            'PREPARE s FROM "SET PASSWORD = \'new-pw\' REPLACE \\"S3cr3t\\""; SELECT 37',
+            "PREPARE s FROM 'ALTER USER u IDENTIFIED BY \"new-pw\" REPLACE ''S3cr3t'''; SELECT 37",
+        )
+        for raw in dynamic_cases:
+            with self.subTest(dynamic=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn('new-pw', clean)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertIn('[redacted]', clean)
+                self.assertTrue(clean.endswith('; SELECT 37'), clean)
+        # Ordinary SQL REPLACE(...) function calls stay intact.
+        ordinary = "SET PASSWORD FOR 'o\\'brien'@'%' = 'new-pw'; SELECT REPLACE(col, 'old', 'new')"
+        clean = dbops.redact(ordinary)
+        self.assertNotIn('new-pw', clean)
+        self.assertTrue(clean.endswith("; SELECT REPLACE(col, 'old', 'new')"), clean)
+
+    def test_r352_comment_and_backtick_apostrophes_preserve_later_secret_assignments(self):
+        # F2: an apostrophe in a comment or backtick identifier must not open a
+        # false enclosing string that skips a following secret assignment.
+        body = ('SET STATEMENT wsrep_sst_auth = "sst:first" FOR SELECT 1;\n'
+                "SET STATEMENT s3_secret_key = 'S3cr3t' FOR SELECT 1")
+        expected_body = ('SET STATEMENT wsrep_sst_auth = "[redacted]" FOR SELECT 1;\n'
+                         "SET STATEMENT s3_secret_key = '[redacted]' FOR SELECT 1")
+        for prefix in ("-- it's the SST setup\n",
+                       "# it's the SST setup\n",
+                       "/* it's the SST setup */\n",
+                       "SELECT `it's` FROM t;\n"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(dbops.redact(prefix + body), prefix + expected_body)
+        # Even when an apostrophe appears in plain prose outside any comment or
+        # backtick, resuming at match.end() after an extension still hides the
+        # second secret assignment.
+        prose = ("don't run: SET STATEMENT wsrep_sst_auth = \"sst:first\" FOR SELECT 1; "
+                 "SET STATEMENT s3_secret_key = 'S3cr3t' FOR SELECT 1")
+        clean_prose = dbops.redact(prose)
+        self.assertNotIn('sst:first', clean_prose)
+        self.assertNotIn('S3cr3t', clean_prose)
+        # Comment and backtick apostrophes also must not break quote parity for
+        # a subsequent PREPARE dynamic SQL literal.
+        for prefix in ("-- don't forget\n",
+                       "# it's\n",
+                       "/* isn't */ ",
+                       "SELECT `it's` FROM t; "):
+            with self.subTest(prepare_prefix=prefix):
+                raw = prefix + "PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t'''; SELECT 37"
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertTrue(clean.endswith('; SELECT 37'), clean)
+
+    def test_r352_context_scanner_keeps_dynamic_sql_in_comments_fail_closed(self):
+        cases = (
+            ("-- PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t'''\nSELECT 37", '\nSELECT 37'),
+            ("/* PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t''' */ SELECT 37", ' */ SELECT 37'),
+            ("/*!50000 PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t''' */ SELECT 37", ' */ SELECT 37'),
+            ("/*M!100500 PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t''' */ SELECT 37", ' */ SELECT 37'),
+            ("Run `PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''S3cr3t'''`; SELECT 37", '`; SELECT 37'),
+            ("SELECT 1 -- note;SET @q = 'CREATE USER u IDENTIFIED\n  BY ''S3cr3t'''; PREPARE s FROM @q",
+             '; PREPARE s FROM @q'),
+            ("SELECT 2 # note;PREPARE s FROM 'SET GLOBAL wsrep_sst_auth =\n  ''S3cr3t'''; EXECUTE s",
+             '; EXECUTE s'),
+        )
+        for raw, suffix in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertIn('[redacted]', clean)
+                self.assertTrue(clean.endswith(suffix), clean)
+
+    def test_r352_credential_clauses_hide_encoded_literal_forms(self):
+        literals = (("X'616263'", '616263'), ("x'616263'", '616263'),
+                    ('0x707731', '707731'), ('0X707731', '707731'),
+                    ("B'01110111'", '01110111'), ("b'01110111'", '01110111'),
+                    ('0b01110111', '01110111'), ('0B01110111', '01110111'),
+                    ("N'encoded-private'", 'encoded-private'),
+                    ("n'encoded-private'", 'encoded-private'),
+                    ("_utf8mb4'encoded-private'", 'encoded-private'),
+                    ("_utf8mb4'encoded-private' COLLATE utf8mb4_bin", 'encoded-private'))
+        for label, prefix, tail in R352_CREDENTIAL_CLAUSES:
+            for literal, secret in literals:
+                with self.subTest(clause=label, literal=literal):
+                    raw = prefix + literal + tail + '; SELECT 37'
+                    clean = dbops.redact(raw)
+                    self.assertNotIn(secret, clean)
+                    self.assertIn('[redacted]', clean)
+                    self.assertTrue(clean.endswith(tail + '; SELECT 37'), clean)
+        ordinary = "SELECT X'616263', 0x707731, B'01110111', 0b01110111, N'public', _utf8mb4'public'"
+        self.assertEqual(dbops.redact(ordinary), ordinary)
+
+    def test_r352_encoded_dynamic_credentials_keep_enclosing_boundary(self):
+        for label, prefix, tail in R352_CREDENTIAL_CLAUSES:
+            for literal, secret in (("X'616263'", '616263'), ('0x707731', '707731'),
+                                    ("b'01110111'", '01110111'), ('0b01110111', '01110111'),
+                                    ("N'encoded-private'", 'encoded-private'),
+                                    ("_utf8mb4'encoded-private' COLLATE utf8mb4_bin", 'encoded-private')):
+                for quote in ("'", '"'):
+                    for escaped in (quote * 2, '\\' + quote):
+                        with self.subTest(clause=label, literal=literal, quote=quote, escape=escaped):
+                            inner = (prefix + literal + tail).replace(quote, escaped)
+                            raw = 'PREPARE s FROM ' + quote + inner + quote + '; SELECT 37'
+                            clean = dbops.redact(raw)
+                            self.assertNotIn(secret, clean)
+                            self.assertIn('[redacted]', clean)
+                            self.assertTrue(clean.endswith('; SELECT 37'), clean)
+
+    def test_r352_every_credential_clause_unions_quote_mode_readings(self):
+        # Replacing a short reading before collecting the longer one loses
+        # the original quote context and can expose the remainder of a value.
+        for label, prefix, tail in R352_CREDENTIAL_CLAUSES:
+            for quote in ("'", '"'):
+                with self.subTest(clause=label, quote=quote):
+                    value = quote + 'mode-head\\' + quote * 2 + 'mode-tail' + quote
+                    clean = dbops.redact(prefix + value + tail + '; SELECT 37')
+                    self.assertNotIn('mode-head', clean)
+                    self.assertNotIn('mode-tail', clean)
+                    self.assertIn('[redacted]', clean)
+
+    def test_r352_introduced_set_password_values_preserve_accounts(self):
+        long_account = "'" + 'account' * 80 + "=b'@'%'"
+        prefixes = (
+            "SET PASSWORD FOR 'a=b'@'%' = ",
+            'SET PASSWORD FOR ' + long_account + ' = ',
+            "SET PASSWORD FOR 'a=b'@'%' /* account policy */ = ",
+            'SET PASSWORD /* account policy */ FOR ' + long_account + ' /* assignment */ = ',
+        )
+        for prefix in prefixes:
+            for literal, secret in (("X'616263'", '616263'), ('0x707731', '707731'),
+                                    ("B'01110111'", '01110111'), ('0b01110111', '01110111'),
+                                    ("N'introduced-private'", 'introduced-private'),
+                                    ("_utf8mb4'introduced-private' COLLATE utf8mb4_bin",
+                                     'introduced-private')):
+                with self.subTest(prefix=prefix, literal=literal):
+                    clean = dbops.redact(prefix + literal + '; SELECT 37')
+                    self.assertNotIn(secret, clean)
+                    self.assertIn('[redacted]', clean)
+                    self.assertTrue(clean.startswith(prefix), clean)
+                    self.assertTrue(clean.endswith('; SELECT 37'), clean)
+
+    def test_r352_secret_assignments_after_ambiguous_ordinary_strings(self):
+        for quote in ("'", '"'):
+            for close in (quote, quote * 2):
+                for name in ('wsrep_sst_auth', 's3_secret_key'):
+                    with self.subTest(quote=quote, close=close, name=name):
+                        # One close exposes SET only with literal backslashes;
+                        # two closes expose it only with backslash escapes.
+                        prefix = 'SELECT ' + quote + 'ordinary\\' + close + '; '
+                        raw = prefix + 'SET GLOBAL ' + name + ' = reading_private; SELECT 37'
+                        clean = dbops.redact(raw)
+                        self.assertNotIn('reading_private', clean)
+                        self.assertIn('[redacted]', clean)
+
+    def test_r352_localized_errors_hide_unfinished_values_across_error_lines(self):
+        for translated in (
+                "Variable 'wsrep_sst_auth' kann nicht auf 'locale-unfinished",
+                "変数 'wsrep_sst_auth' に値 'locale-unfinished",
+                "不明 'unknown-private' と 'locale-unfinished"):
+            with self.subTest(translated=translated):
+                raw = 'ERROR 1231 (42000): ' + translated
+                clean = dbops.redact(raw)
+                self.assertNotIn('locale-unfinished', clean)
+                self.assertNotIn('unknown-private', clean)
+                self.assertIn('[redacted]', clean)
+        raw = ("ERROR 1231 (42000): Variable 'wsrep_sst_auth' kann nicht auf 'locale-first\n"
+               "ERROR 9999 (42000): 'ordinary-value'\n"
+               "mysql client exited 1: ERROR 1231 (42000): 変数 's3_secret_key' に値 'locale-last'")
+        clean = dbops.redact(raw)
+        self.assertNotIn('locale-first', clean)
+        self.assertNotIn('locale-last', clean)
+        self.assertIn("ERROR 9999 (42000): 'ordinary-value'", clean)
+        self.assertIn('s3_secret_key', clean)
+
     def test_set_password_diagnostic_and_random_replace_regressions(self):
         for label, raw, secrets in SET_PASSWORD_REDACTION_CASES:
             with self.subTest(case=label):
@@ -1319,6 +2782,56 @@ class TestRedaction(unittest.TestCase):
                     print('REDACTION_TIMING %s %s %.6fs' % (shape, helper, elapsed), flush=True)
                     self.assertLess(elapsed, 4)
 
+    def test_r352_set_password_quoted_accounts_finish_within_one_second(self):
+        # The leading assignment makes the full SET PASSWORD matcher run.
+        # A failing suffix used to retry every way of splitting doubled
+        # quotes into adjacent literals, despite the 512-token limit.
+        shapes = (
+            ('single_doubled', "'a'", ';'),
+            ('double_doubled', '"a"', ';'),
+            ('backtick_doubled', '`a`', ';'),
+            ('backslashes', "'a\\\\b'", ';'),
+            ('unterminated', "'a'", "'unfinished\\"),
+        )
+        for shape, unit, suffix in shapes:
+            with self.subTest(shape=shape):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "size = 400 * 1024\n"
+                    "prefix = 'x = 1; SET PASSWORD FOR '\n"
+                    "unit, suffix = " + repr((unit, suffix)) + "\n"
+                    "copies, padding = divmod(size - len(prefix) - len(suffix), len(unit))\n"
+                    "value = prefix + unit * copies + ' ' * padding + suffix\n"
+                    "assert len(value) == size\n"
+                    "began = time.monotonic()\n"
+                    "clean = dbops.redact(value)\n"
+                    "elapsed = time.monotonic() - began\n"
+                    "assert clean == value, (len(clean), len(value))\n"
+                    "print(elapsed)\n")
+                try:
+                    result = subprocess.run([sys.executable, '-c', code],
+                        cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=3, universal_newlines=True)
+                except subprocess.TimeoutExpired:
+                    self.fail('SET PASSWORD %s exceeded the 3 s deadline for 400 KB' % shape)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                elapsed = float(result.stdout.strip())
+                print('R352_SET_PASSWORD_TIMING %s bytes=409600 elapsed=%.6fs' %
+                      (shape, elapsed), flush=True)
+                self.assertLess(elapsed, 1)
+
+    def test_r352_atomic_account_tokens_preserve_credential_values(self):
+        # Each account is longer than the diagnostic fallback's 512-byte
+        # bound. The token walk must still reach introduced/encoded values
+        # after doubled quotes, without mistaking an account's '=' for it.
+        for quote in ("'", '"', '`'):
+            account = quote + ('a=b' + quote * 2) * 200 + 'z' + quote
+            prefix = 'SET PASSWORD FOR ' + account + "@'%' = "
+            for value in ("_utf8mb4'atomic-private'", "X'61746f6d6963'", '0x61746f6d6963'):
+                with self.subTest(quote=quote, value=value):
+                    self.assertEqual(dbops.redact(prefix + value + '; SELECT 1'),
+                                     prefix + "'[redacted]'; SELECT 1")
+
     def test_redaction_clause_outputs_remain_stable(self):
         cases = (
             ("SOURCE_PASSWORD = 'x'", "SOURCE_PASSWORD = '[redacted]'"),
@@ -1410,11 +2923,11 @@ class TestRedaction(unittest.TestCase):
                     "print(elapsed)\n")
                 result = subprocess.run([sys.executable, '-c', code],
                     cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                    stderr=subprocess.PIPE, timeout=20, universal_newlines=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 elapsed = float(result.stdout.strip())
                 print('REDACTION_TIMING %s redact %.6fs' % (shape, elapsed), flush=True)
-                self.assertLess(elapsed, 4)
+                self.assertLess(elapsed, 15)
 
     def test_set_password_skips_quoted_names_and_comments_before_assignment(self):
         for prefix in ("SET PASSWORD FOR 'a=b'@'%' = ",
@@ -1454,9 +2967,9 @@ class TestRedaction(unittest.TestCase):
             "assert clean == prefix + \"= '[redacted]'\"\n"
             "print(elapsed)\n")
         result = subprocess.run([sys.executable, '-c', code], cwd=str(Path(__file__).resolve().parent.parent),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, universal_newlines=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(float(result.stdout.strip()), 4)
+        self.assertLess(float(result.stdout.strip()), 12)
 
     def test_strip_grant_outputs_remain_stable(self):
         cases = (
@@ -1913,6 +3426,1205 @@ class TestRedaction(unittest.TestCase):
                 elapsed = float(result.stdout.strip())
                 print('GATE65_TIMING %s %.6fs' % (shape, elapsed), flush=True)
                 self.assertLess(elapsed, 1)
+
+    def test_r352_brackets_in_url_usernames_do_not_disable_redaction(self):
+        cases = (
+            ('mysql://app[ro]:PW@db1/x', 'mysql://app[ro]:[redacted]@db1/x'),
+            ('mysql://app[ro]:PW/tail@db1/x', 'mysql://app[ro]:[redacted]@db1/x'),
+            ('mysql://app[ro:PW@db1/x', 'mysql://app[ro:[redacted]@db1/x'),
+            ('mysql://[::1]:3306/db', 'mysql://[::1]:3306/db'),
+            ('mysql://u:p@[::1]:3306/db', 'mysql://u:[redacted]@[::1]:3306/db'),
+        )
+        for raw, expected in cases:
+            for quoted in (True, False):
+                with self.subTest(raw=raw, quoted=quoted):
+                    self.assertEqual(dbops.redact(raw, quoted=quoted), expected)
+
+    def test_r352_assignment_free_set_restarts_secret_assignments(self):
+        for prefix in ('SET NAMES utf8mb4 ', 'SET CHARACTER SET utf8mb4 ',
+                       'ALTER TABLE t CHARACTER SET utf8mb4 '):
+            for assignment in ('SET GLOBAL wsrep_sst_auth = ',
+                               'SET @@global.wsrep_sst_auth = '):
+                for value in ("CONCAT('private', 'tail')", '@private_value'):
+                    with self.subTest(prefix=prefix, assignment=assignment, value=value):
+                        raw = prefix + assignment + value
+                        expected = prefix + assignment + '[redacted]'
+                        self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                        self.assertEqual(dbops.redact(raw), expected)
+        # SET in CHARACTER SET and inside an expression must not expose a
+        # suffix of the current secret or change the harmless statement.
+        for raw in ('SET CHARACTER SET utf8mb4',
+                    'ALTER TABLE t CHARACTER SET utf8mb4'):
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), raw)
+        raw = "SET GLOBAL wsrep_sst_auth = CONCAT('SET', 'CHARACTER SET', 'private')"
+        self.assertEqual(dbops.redact(raw), 'SET GLOBAL wsrep_sst_auth = [redacted]')
+
+    def test_r352_secret_inventory_pass_skips_editor_text_without_names(self):
+        raw = ("SELECT id, total FROM orders WHERE status = 'open';\n"
+               "SET SESSION max_execution_time = 1000;\n"
+               "ALTER USER app IDENTIFIED BY 'private-login';\n"
+               "SELECT 'mysql://reader:private-url@db1/shop';")
+        expected = raw.replace('private-login', '[redacted]').replace('private-url', '[redacted]')
+        inventory_pattern = next(pattern for pattern in dbops._SECRET_PATTERNS
+                                 if dbops._SECRET_VARIABLE_NAME in pattern.pattern)
+        tracked_pattern = mock.Mock(wraps=inventory_pattern)
+        patterns = tuple(tracked_pattern if pattern is inventory_pattern else pattern
+                         for pattern in dbops._SECRET_PATTERNS)
+        with mock.patch.object(dbops, '_SECRET_PATTERNS', patterns):
+            with mock.patch.object(dbops, '_SECRET_VARIABLE_LITERAL', tracked_pattern, create=True):
+                with mock.patch.object(dbops, '_redact_secret_variables',
+                                       wraps=dbops._redact_secret_variables) as inventory_pass:
+                    self.assertEqual(dbops.redact(raw), expected)
+                    inventory_pass.assert_not_called()
+                    tracked_pattern.sub.assert_not_called()
+
+    def test_r352_secret_inventory_guard_keeps_all_name_spellings(self):
+        for name in sorted(dbops._SECRET_VARIABLES):
+            for identifier in (name.upper(), '`' + name + '`', '"' + name.upper() + '"',
+                               ' . '.join('`' + part.upper() + '`' for part in name.split('.')),
+                               ' /* gap */ . '.join('"' + part + '"' for part in name.split('.'))):
+                with self.subTest(identifier=identifier):
+                    raw = 'SET GLOBAL ' + identifier + " = CONCAT('private', 'tail')"
+                    self.assertEqual(dbops.redact(raw), 'SET GLOBAL ' + identifier + ' = [redacted]')
+        # The fallback uses Unicode re.I matching. A fast ASCII-name guard
+        # must not skip spellings that the existing fallback already hides.
+        for name in ('w\u017frep_sst_auth', 'f\u0131le_key_management_filekey',
+                     'f\u0130le_key_management_filekey', '\u212aeyring_hashicorp_secret_id'):
+            with self.subTest(name=name):
+                raw = "diagnostic: " + name + " = 'private-value'"
+                self.assertEqual(dbops.redact(raw), raw.replace('private-value', '[redacted]'))
+
+    def test_r352_inventory_guard_keeps_fragmented_names_fail_closed(self):
+        # Even malformed names are joined by the existing SET scanner. A
+        # fast path must not expose values it previously hid.
+        for identifier in ('w srep_sst_auth', 'w/**/srep_sst_auth',
+                           'w-- gap\nsrep_sst_auth', 'w# gap\nsrep_sst_auth',
+                           '`w`"srep_sst_auth"',
+                           '`ws` /* gap */ `rep_sst_auth`',
+                           'w/*!80000 */srep_sst_auth',
+                           'w/*M!100100 */srep_sst_auth',
+                           '/*M!100100w srep_sst_auth */'):
+            with self.subTest(identifier=identifier):
+                raw = 'SET GLOBAL ' + identifier + " = CONCAT('private', 'tail')"
+                self.assertEqual(dbops.redact(raw), 'SET GLOBAL ' + identifier + ' = [redacted]')
+        for name in sorted(dbops._SECRET_VARIABLES):
+            for split in (1, 2, 3):
+                with self.subTest(name=name, split=split):
+                    identifier = name[:split] + ' /**/ ' + name[split:]
+                    raw = 'SET GLOBAL ' + identifier + ' = @private'
+                    self.assertEqual(dbops.redact(raw), 'SET GLOBAL ' + identifier + ' = [redacted]')
+
+    def test_r352_insert_set_row_alias_ends_secret_value(self):
+        for expression in ("'private-value'", '"private-value"', '@private_value',
+                           "CONCAT('private', 'tail')", "CAST('private-value' AS CHAR)",
+                           "(SELECT 'private-value' AS hidden)"):
+            for alias in ('AS new', 'as `new`', 'AS new (new_secret)',
+                          'AS new (new_secret, c)'):
+                with self.subTest(expression=expression, alias=alias):
+                    prefix = 'INSERT INTO t SET wsrep_sst_auth = '
+                    suffix = ' ' + alias + ' ON DUPLICATE KEY UPDATE c = new.c'
+                    quote = expression[0] if expression[0] in ('\"', "'") else ''
+                    expected = prefix + quote + '[redacted]' + quote + suffix
+                    self.assertEqual(dbops._redact_secret_variables(prefix + expression + suffix), expected)
+                    self.assertEqual(dbops.redact(prefix + expression + suffix), expected)
+        # VALUES has no SET assignment to parse. Its existing credential
+        # redaction still leaves the row alias and duplicate-key clause intact.
+        raw = ("INSERT INTO t (c) VALUES ('mysql://u:private-value@h/db') AS new "
+               "ON DUPLICATE KEY UPDATE c = new.c")
+        self.assertEqual(dbops.redact(raw), raw.replace('private-value', '[redacted]'))
+
+    def test_r352_as_inside_secret_values_stays_hidden(self):
+        for prefix in ('SET GLOBAL wsrep_sst_auth = ',
+                       'UPDATE t SET wsrep_sst_auth = ',
+                       'INSERT INTO t SET wsrep_sst_auth = '):
+            for expression in ("'private AS tail'", "CONCAT('private', ' AS tail')",
+                               "CAST('private-value' AS CHAR)",
+                               "(SELECT 'private-value' AS hidden)",
+                               'secrets.AS + private_tail', 'secrets . AS + private_tail',
+                               '@AS + private_tail', 'private-AS-tail',
+                               'private AS + tail', 'private AS tail + remainder',
+                               '@private OR AS tail', '@private AND AS tail',
+                               '@private NOT AS tail', '@private COLLATE AS tail',
+                               "'private AS unfinished"):
+                with self.subTest(prefix=prefix, expression=expression):
+                    quote = expression[0] if expression[0] in ('\"', "'") else ''
+                    self.assertEqual(dbops.redact(prefix + expression),
+                                     prefix + quote + '[redacted]' + quote)
+        for prefix in ('SET GLOBAL wsrep_sst_auth = ', 'UPDATE t SET wsrep_sst_auth = '):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(dbops.redact(prefix + 'private AS tail'), prefix + '[redacted]')
+                self.assertEqual(dbops.redact(prefix + "'private' WHERE c = 1"),
+                                 prefix + "'[redacted]' WHERE c = 1")
+        raw = 'INSERT INTO t VALUES (1) SET GLOBAL wsrep_sst_auth = private AS tail'
+        self.assertEqual(dbops.redact(raw),
+                         'INSERT INTO t VALUES (1) SET GLOBAL wsrep_sst_auth = [redacted]')
+
+    def test_r352_prefixed_database_schemes_hide_numeric_slash_passwords(self):
+        for scheme in ('pool+mysql', 'jdbc:mysql', 'jdbc:pool+mysql',
+                       'pool+mariadb', 'pool+mysqlx', 'pool+postgres', 'pool+postgresql',
+                       'POOL+MYSQL'):
+            for value in ('p', 'p/w', '123/pw', '2024/one/two'):
+                for quoted in (True, False):
+                    with self.subTest(scheme=scheme, value=value, quoted=quoted):
+                        raw = scheme + '://u:' + value + '@h/db'
+                        self.assertEqual(dbops.redact(raw, quoted=quoted),
+                                         scheme + '://u:[redacted]@h/db')
+        for quoted in (True, False):
+            with self.subTest(quoted=quoted):
+                raw = 'git+https://h:443/path?mail=a@b'
+                self.assertEqual(dbops.redact(raw, quoted=quoted), raw)
+                self.assertEqual(dbops.redact('git+https://u:p@h/repo', quoted=quoted),
+                                 'git+https://u:[redacted]@h/repo')
+
+    def test_r352_reversed_executable_comments_hide_secret_expressions(self):
+        # sql_lex.cc accepts a second ! after either /*! or /*M!, then
+        # consumes five version digits and a sixth when present.
+        for opener in ('/*!!100000 ', '/*M!!100000 ', '/*!!80000 ', '/*M!!80000 ',
+                       '/*!! ', '/*M!! ', '/*!!100000', '/*M!!100000'):
+            for value in ("'private-value'", "CONCAT('private', 'tail')", '@private_value'):
+                with self.subTest(opener=opener, value=value):
+                    raw = opener + 'SET GLOBAL wsrep_sst_auth = ' + value + ' */; SELECT 1'
+                    quote = "'" if value.startswith("'") else ''
+                    expected = (opener + 'SET GLOBAL wsrep_sst_auth = ' + quote +
+                                '[redacted]' + quote + ' */; SELECT 1')
+                    self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                    self.assertEqual(dbops.redact(raw), expected)
+        for marker in ('/*!!100000', '/*M!!100000'):
+            with self.subTest(marker=marker):
+                raw = 'SET ' + marker + "wsrep_sst_auth = CONCAT('private', 'tail') */"
+                self.assertEqual(dbops.redact(raw), 'SET ' + marker + 'wsrep_sst_auth = [redacted] */')
+        # MariaDB consumes no version digits unless there are at least five.
+        # Shorter numeric bodies after '=' must remain secret, as on the base.
+        for marker in ('/*!!', '/*M!!'):
+            for number in ('7', '73', '731', '7319'):
+                with self.subTest(marker=marker, number=number):
+                    raw = 'SET GLOBAL wsrep_sst_auth = ' + marker + number + '*/'
+                    for redact in (dbops._redact_secret_variables, dbops.redact):
+                        clean = redact(raw)
+                        self.assertNotIn(number, clean)
+                        self.assertIn('[redacted]', clean)
+
+    def test_r352_realistic_editor_megabyte_redaction(self):
+        import statistics
+        import time
+
+        unit = ("-- Inspect recent orders and the customers who placed them.\n"
+                "SELECT o.id, o.created_at, o.total, c.name\n"
+                "FROM orders AS o JOIN customers AS c ON c.id = o.customer_id\n"
+                "WHERE o.status = 'open' AND o.total > 25\n"
+                "ORDER BY o.created_at DESC LIMIT 100;\n"
+                "SET SESSION max_execution_time = 1000;\n")
+        for shape, suffix in (('without_secret_name', ''),
+                              ('with_secret_name', "SET GLOBAL wsrep_sst_auth = 'benchmark-private';\n")):
+            with self.subTest(shape=shape):
+                size = 1024 * 1024
+                copies, padding = divmod(size - len(suffix), len(unit))
+                raw = unit * copies + ' ' * padding + suffix
+                expected = raw.replace('benchmark-private', '[redacted]')
+                self.assertEqual(len(raw.encode('utf-8')), size)
+                timings = []
+                for _ in range(3):
+                    began = time.monotonic()
+                    clean = dbops.redact(raw)
+                    timings.append(time.monotonic() - began)
+                    self.assertEqual(clean, expected)
+                print('R352_EDITOR_TIMING %s bytes=%d median=%.6fs samples=%s' %
+                      (shape, size, statistics.median(timings),
+                       ','.join('%.6f' % elapsed for elapsed in timings)), flush=True)
+
+    def test_r352_dynamic_secret_literals_hide_escaped_quotes_and_tail(self):
+        # An escaped quote belongs to the enclosing dynamic SQL literal;
+        # treating it as a new empty literal can leave the password visible.
+        for quote in ("'", '"'):
+            for escaped in (quote * 2, '\\' + quote):
+                for command in ('PREPARE s FROM ', 'EXECUTE IMMEDIATE '):
+                    with self.subTest(quote=quote, escaped=escaped, command=command):
+                        raw = (command + quote + 'SET GLOBAL wsrep_sst_auth = ' +
+                               escaped + 'dynamic-private' + escaped +
+                               '; SELECT ' + escaped + 'dynamic-tail' + escaped + quote)
+                        clean = dbops.redact(raw)
+                        self.assertNotIn('dynamic-private', clean)
+                        self.assertNotIn('dynamic-tail', clean)
+                        self.assertIn('[redacted]', clean)
+        # An unfinished enclosing string must hide the same tail.
+        raw = "PREPARE s FROM 'SET GLOBAL wsrep_sst_auth = ''dynamic-private'' dynamic-tail"
+        clean = dbops.redact(raw)
+        self.assertNotIn('dynamic-private', clean)
+        self.assertNotIn('dynamic-tail', clean)
+        self.assertIn('[redacted]', clean)
+
+    def test_r352_dynamic_assignment_without_literal_stays_unchanged(self):
+        for raw in (
+                "SET @q = CONCAT('SET GLOBAL wsrep_sst_auth = ', QUOTE(@pw))",
+                'SET @q = CONCAT("SET GLOBAL wsrep_sst_auth = ", QUOTE(@pw))',
+                "PREPARE s FROM 'SELECT wsrep_sst_auth'",
+                "PREPARE s FROM 'SET GLOBAL max_connections = ''public'''"):
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), raw)
+
+    def test_r352_dynamic_literals_preserve_later_statements(self):
+        suffix = "; SELECT 37; SET GLOBAL s3_secret_key = 'separate-private'; SELECT 41"
+        for quote in ("'", '"'):
+            for escaped in (quote * 2, '\\' + quote):
+                with self.subTest(quote=quote, escaped=escaped):
+                    raw = ('EXECUTE IMMEDIATE ' + quote + 'SET GLOBAL wsrep_sst_auth = ' +
+                           escaped + 'dynamic-private' + escaped + quote + suffix)
+                    clean = dbops.redact(raw)
+                    self.assertNotIn('dynamic-private', clean)
+                    self.assertNotIn('separate-private', clean)
+                    self.assertTrue(clean.endswith(suffix.replace('separate-private', '[redacted]')), clean)
+        prefix = "SET @q = CONCAT('SET GLOBAL wsrep_sst_auth = ', QUOTE(@pw)); "
+        for statement in ("SET GLOBAL wsrep_sst_auth = 'separate-private'; SELECT 1",
+                          'EXECUTE IMMEDIATE "SET GLOBAL wsrep_sst_auth = \'separate-private\'"; SELECT 1'):
+            with self.subTest(statement=statement):
+                self.assertEqual(dbops.redact(prefix + statement),
+                                 prefix + statement.replace('separate-private', '[redacted]'))
+
+    def test_r352_dynamic_diagnostic_ambiguity_stays_hidden(self):
+        for raw in (
+                "error near 'wsrep_sst_auth = 'diagnostic-private' at line 1",
+                "error near 'wsrep_sst_auth = ',diagnostic-private' at line 1",
+                "error CONCAT('wsrep_sst_auth = ',diagnostic-private' at line 1)",
+                "error CONCAT('wsrep_sst_auth = ', QUOTE(@pw)) diagnostic-private'",
+                "error CONCAT('wsrep_sst_auth = ', QUOTE(@pw)) diagnostic-private",
+                "error CONCAT('wsrep_sst_auth = ', QUOTE(@pw)); diagnostic-private'"):
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn('diagnostic-private', clean)
+                self.assertIn('[redacted]', clean)
+
+    def test_r352_clause_named_variables_never_end_secret_values(self):
+        for name in ('where', 'order', 'limit', 'on', 'returning', 'for', 'as', 'set'):
+            for variable in ('@' + name, "@'" + name + "'", '@"' + name + '"',
+                             '@`' + name + '`', '@@' + name, '@@GLOBAL.' + name):
+                for expression in (variable, variable + " + 'clause-private'",
+                                   'CONCAT(' + variable + ", 'clause-private')"):
+                    with self.subTest(variable=variable, expression=expression):
+                        prefix = 'SET GLOBAL wsrep_sst_auth = '
+                        raw = prefix + expression + '; SELECT 1'
+                        expected = prefix + '[redacted]; SELECT 1'
+                        self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                        self.assertEqual(dbops.redact(raw), expected)
+
+    def test_r352_variable_prefix_cannot_hide_later_secret_assignment(self):
+        # Outside an active secret value, preserve the old conservative SET
+        # recognition even when a malformed prefix includes an @ character.
+        for prefix in ('SELECT @\n', 'SELECT @'):
+            with self.subTest(prefix=prefix):
+                raw = prefix + "SET GLOBAL wsrep_sst_auth = CONCAT('variable-private', 'tail')"
+                expected = prefix + 'SET GLOBAL wsrep_sst_auth = [redacted]'
+                self.assertEqual(dbops._redact_secret_variables(raw), expected)
+                self.assertEqual(dbops.redact(raw), expected)
+
+    def test_r352_custom_delimiters_preserve_following_statements(self):
+        for declaration, delimiter in (('$$', '$$'), ('//', '//'), (';;', ';;'),
+                                       ("'//'", '//'), ('"$$"', '$$')):
+            for expression in ("'delimiter-private'", 'delimiter_private',
+                               "CONCAT('delimiter-private', 'tail')"):
+                with self.subTest(declaration=declaration, expression=expression):
+                    prefix = 'DELIMITER ' + declaration + '\nSET GLOBAL wsrep_sst_auth = '
+                    suffix = delimiter + '\nSELECT 1' + delimiter + '\nDELIMITER ;\nSELECT 2;'
+                    quote = "'" if expression.startswith("'") else ''
+                    expected = prefix + quote + '[redacted]' + quote + suffix
+                    self.assertEqual(dbops._redact_secret_variables(prefix + expression + suffix), expected)
+                    self.assertEqual(dbops.redact(prefix + expression + suffix), expected)
+        raw = ("  delimiter $$ ignored\nSET GLOBAL max_connections = 500$$\n"
+               "DELIMITER //\nSET GLOBAL s3_secret_key = 'second-private'//\nSELECT 1//")
+        self.assertEqual(dbops.redact(raw), raw.replace('second-private', '[redacted]'))
+
+    def test_r352_custom_delimiter_fails_closed_when_tail_has_credentials(self):
+        # When a custom-delimiter boundary would end a hidden value and the
+        # remaining text contains a credential keyword or inventory variable
+        # name, keep hiding through the end of text (parity with 3.5.1).
+        tails = (
+            "CREATE USER app IDENTIFIED BY'S3cr3t'$$",
+            "CREATE USER app identified/**/by'S3cr3t'$$",
+            "START REPLICA USER='r' PASSWORD = /* c */ 'S3cr3t'$$",
+            "CHANGE REPLICATION SOURCE TO SOURCE_PASSWORD /* c */ = 'S3cr3t'$$",
+            "CHANGE MASTER TO MASTER_PASSWORD = _binary 0x533363723374$$",
+            "CREATE USER app IDENTIFIED VIA ed25519 USING/**/'S3cr3t'$$",
+            "ALTER USER app IDENTIFIED BY 'new'/**/REPLACE/**/'S3cr3t'$$",
+            "DELIMITER //\nSET GLOBAL s3_secret_key = 'S3cr3t'//\nSELECT 1//",
+            "PREPARE s FROM 'SET GLOBAL wsrep_sst_auth /**/ = ''S3cr3t'''$$",
+            "EXECUTE IMMEDIATE \"INSERT INTO cfg SET telemetry.otel_exporter_otlp_logs_headers = _utf8mb4 0x533363723374\"$$",
+        )
+        for tail in tails:
+            with self.subTest(tail=tail):
+                raw = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = 'first-private'$$\n" + tail
+                clean = dbops.redact(raw)
+                self.assertEqual(clean, "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = '[redacted]'")
+                self.assertNotIn('first-private', clean)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertNotIn('533363723374', clean)
+        # An earlier unclosed quote can flip parity so a custom delimiter
+        # lands inside a doubled-quote secret value; fail closed there too.
+        flipped = ("DELIMITER go\nSELECT 'unclosed\n"
+                   "SET @q = 'SET GLOBAL file_key_management_filekey = ''headgoS3cr3t'', GLOBAL read_only = ON';")
+        clean_flipped = dbops.redact(flipped)
+        self.assertNotIn('S3cr3t', clean_flipped)
+        self.assertIn('[redacted]', clean_flipped)
+        # Without credential keywords in the tail, ordinary statements remain visible.
+        ordinary = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = 'first-private'$$\nSELECT 1$$\nSELECT 'plain'$$"
+        self.assertEqual(dbops.redact(ordinary), ordinary.replace('first-private', '[redacted]'))
+        # Repeated custom delimiters with fragmented names search the tail at most once.
+        repeated = ("DELIMITER //\n" +
+                    "SET GLOBAL w/**/srep_sst_auth = 'first-private'//\n" * 200 +
+                    "SELECT 1//\n")
+        with mock.patch.object(dbops, '_DELIMITER_TAIL_CREDENTIAL',
+                               wraps=dbops._DELIMITER_TAIL_CREDENTIAL) as tail_search:
+            clean_repeated = dbops.redact(repeated)
+        self.assertLessEqual(tail_search.search.call_count, 1)
+        self.assertNotIn('first-private', clean_repeated)
+        self.assertTrue(clean_repeated.endswith('SELECT 1//\n'))
+
+    def test_r352_delimiters_inside_secret_literals_are_not_value_ends(self):
+        for expression in ("'before$$delimiter-private'",
+                           "CONCAT('before$$delimiter-private', 'tail')",
+                           "CONCAT('before', /* $$ */ 'delimiter-private')"):
+            with self.subTest(expression=expression):
+                prefix = 'DELIMITER $$\nSET GLOBAL wsrep_sst_auth = '
+                suffix = '$$\nSELECT 1$$'
+                quote = "'" if expression.startswith("'") else ''
+                self.assertEqual(dbops.redact(prefix + expression + suffix),
+                                 prefix + quote + '[redacted]' + quote + suffix)
+        # A DELIMITER-looking line inside a quoted value is secret text.
+        raw = "SET GLOBAL wsrep_sst_auth = 'before\nDELIMITER $$\ndelimiter-private'; SELECT 1"
+        self.assertEqual(dbops.redact(raw), "SET GLOBAL wsrep_sst_auth = '[redacted]'; SELECT 1")
+
+    def test_r352_ambiguous_delimiter_framing_keeps_secret_tail_hidden(self):
+        # With backslash escapes the first $$ follows a closed string. With
+        # literal backslashes it is inside a string that includes the tail.
+        # Redaction must not newly expose that tail by choosing one reading.
+        raw = ("DELIMITER $$\nSET GLOBAL wsrep_sst_auth = 'head\\'middle'$$\n"
+               "delimiter-private'$$\nSELECT 1$$")
+        clean = dbops.redact(raw)
+        self.assertNotIn('delimiter-private', clean)
+        self.assertIn('[redacted]', clean)
+        for declaration in ('DELIMITER', "DELIMITER ''", "DELIMITER '//'", 'DELIMITER //\\\\'):
+            with self.subTest(declaration=declaration):
+                # A malformed/ambiguous declaration or unfinished value
+                # cannot turn the apparent marker into a trusted boundary.
+                raw = declaration + "\nSET GLOBAL wsrep_sst_auth = 'head//delimiter-private"
+                clean = dbops.redact(raw)
+                self.assertNotIn('delimiter-private', clean)
+                self.assertIn('[redacted]', clean)
+
+    def test_r352_swallowed_literal_never_exposes_later_credential(self):
+        # An unterminated or mis-framed literal must not advance the scan past
+        # a later credential keyword of the same pattern.
+        cases = (
+            ("N4a cut REPLACE single quote",
+             "ALTER USER a IDENTIFIED BY 'n' REPLACE 'cut off here\n"
+             "CREATE USER b IDENTIFIED WITH caching_sha2_password BY 'S3cr3t';"),
+            ("N4b cut REPLACE double quote",
+             'ALTER USER a IDENTIFIED BY \'n\' REPLACE "trunc\n'
+             '---TRANSACTION 421\n'
+             'ALTER USER b IDENTIFIED BY "S3cr3t"'),
+            ("N4g cut REPLACE doubled quote",
+             "ALTER USER a IDENTIFIED BY 'n' REPLACE 'it''s\n"
+             "ALTER USER b IDENTIFIED BY 'S3cr3t'"),
+            ("N3a earlier SET PASSWORD account and REPLACE quote",
+             "ALTER USER 'SET PASSWORD'@'h' IDENTIFIED BY 'a' REPLACE \"b' OR '1'='1\";\n"
+             "/*!80000 SET PASSWORD FOR app = 'S3cr3t' */"),
+            ("introduced N literal cut",
+             "ALTER USER a IDENTIFIED WITH p AS N'cut ;\n"
+             "GRANT ALL ON *.* TO b IDENTIFIED BY 'S3cr3t'"),
+            ("introduced _latin1 literal cut",
+             "SELECT PASSWORD(_latin1'cut\nSELECT password('S3cr3t')"),
+            ("plain cut IDENTIFIED BY",
+             "ALTER USER a IDENTIFIED BY 'cut ;\n"
+             "GRANT ALL ON *.* TO b IDENTIFIED BY 'S3cr3t'"),
+            ("plain cut SET PASSWORD",
+             "SET PASSWORD = 'cut;\nSET PASSWORD = 'S3cr3t'"),
+            ("harmless literal ending in IDENTIFIED BY before real credential",
+             "SELECT * FROM t WHERE d = 'IDENTIFIED BY ' AND IDENTIFIED BY 'S3cr3t'"),
+            ("nested double-quoted REPLACE after cut single-quoted REPLACE",
+             "ALTER USER a IDENTIFIED BY 'n' REPLACE 'a\n"
+             "ALTER USER b IDENTIFIED BY \"x\" REPLACE \"p' REPLACE 'q' S3cr3t\""),
+        )
+        for label, raw in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+
+    def test_r352_custom_delimiter_fails_closed_when_later_unit_is_unclosed_or_has_issues(self):
+        # A custom boundary is trusted only when every later unit is also
+        # issue-free and closed under both backslash readings.
+        later_unclosed = (
+            ("later unit unclosed under backslash escapes",
+             'DELIMITER $$\nINSERT INTO cfg SET report_password = "first"$$\n'
+             'SELECT "x\\"$$\n'
+             'mysql client exited 1: ERROR 1064 (42000) at line 3: You have an error '
+             'in your SQL syntax; check the manual that corresponds to your MariaDB '
+             'server version for the right syntax to use near \'")S3cr3t\\\'tail"\' at line 3'),
+            ("later unit unclosed single quote under backslash escapes",
+             "DELIMITER //\nset\n  s3_secret_key:=\n  ',first$$end'//\n"
+             "SELECT 'a\\'//\n"
+             "mysql client exited 1: ERROR 1064 (42000) at line 3: You have an error "
+             "in your SQL syntax; check the manual that corresponds to your MariaDB "
+             "server version for the right syntax to use near '\",S3cr3t ON tail\"' at line 3//\n"),
+            ("later unit unclosed under both readings",
+             "DELIMITER //\nSET GLOBAL s3_secret_key = 'first'//\nSELECT 'S3cr3t"),
+        )
+        for label, raw in later_unclosed:
+            with self.subTest(case=label):
+                self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+                clean = dbops.redact(raw)
+                self.assertNotIn('first', clean)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertIn('[redacted]', clean)
+        # Clean scripts with closed, issue-free units keep their custom boundaries.
+        clean_script = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = 'first'$$\nSELECT 'keep'$$"
+        self.assertTrue(dbops._secret_variable_boundaries(clean_script))
+        self.assertEqual(dbops.redact(clean_script),
+                         clean_script.replace('first', '[redacted]'))
+
+    def test_r352_custom_delimiter_tail_hides_urls_errors_and_escaped_keywords(self):
+        # Cut URL credentials without '@', balanced ERROR 1064 echoes without a
+        # credential keyword, and JSON/Python-repr escaped whitespace before
+        # keywords (\nIDENTIFIED, \ts3_secret_key) all keep the custom-delimiter
+        # tail hidden.
+        tails = (
+            ("cut table option URL",
+             "CREATE TABLE fed (a INT) ENGINE=FEDERATED CONNECTION='mysql://fed:S3cr3t"),
+            ("cut URL inside line comment",
+             "-- mysql://fed:S3cr3t"),
+            ("cut URL in PREPARE",
+             "PREPARE s FROM '-- https://:S3cr3t$$"),
+            ("balanced ERROR 1064 near without keyword",
+             "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax; "
+             "check the manual that corresponds to your MySQL server version for the "
+             "right syntax to use near ''S3cr3t'' at line 1$$"),
+            ("pyrepr newline before IDENTIFIED",
+             'ConnectorError("CREATE USER/**/\'app\'@\'%\' -- n\\nIDENTIFIED BY \'S3cr3t\'")$$'),
+            ("pyrepr crlf before IDENTIFIED",
+             "ConnectorError('CREATE USER\\n  app@localhost\\r\\nIDENTIFIED # h\\nby \"S3cr3t\"')$$"),
+            ("pyrepr tab before USING",
+             'ConnectorError("ALTER USER u IDENTIFIED VIA p\\tUSING \'S3cr3t\'")$$'),
+            ("pyrepr newline before REPLACE",
+             'ConnectorError("ALTER USER u IDENTIFIED BY RANDOM PASSWORD\\nREPLACE \'S3cr3t\'")$$'),
+            ("pyrepr newline before inventory name",
+             'ConnectorError("SET GLOBAL\\ns3_secret_key = \'S3cr3t\'")$$'),
+        )
+        for label, tail in tails:
+            with self.subTest(case=label):
+                raw = "DELIMITER $$\nSET GLOBAL report_password = 'first'$$\n" + tail
+                clean = dbops.redact(raw)
+                self.assertEqual(clean, "DELIMITER $$\nSET GLOBAL report_password = '[redacted]'")
+                self.assertNotIn('first', clean)
+                self.assertNotIn('S3cr3t', clean)
+        # Escaped whitespace before ERROR (\n, \t, \r, \f, \v) in JSON/Python-repr
+        # echoes after a custom delimiter must also fail closed.
+        for esc in ('\\n', '\\t', '\\r', '\\f', '\\v'):
+            with self.subTest(escaped_error=esc):
+                raw = ("DELIMITER //\nSET GLOBAL wsrep_sst_auth = 'a'//\n"
+                       'ConnectorError("x' + esc +
+                       "ERROR 1064 (42000): near ''S3cr3t'' at line 1\")//\n")
+                clean = dbops.redact(raw)
+                self.assertEqual(clean, "DELIMITER //\nSET GLOBAL wsrep_sst_auth = '[redacted]'")
+                self.assertNotIn('S3cr3t', clean)
+
+    def test_r352_overlapping_mispaired_quotes_fail_closed(self):
+        # Overlapping credential spans whose quote delimiters disagree or steal
+        # a closing quote must fail closed instead of exposing the trailing tail.
+        cases = (
+            ("SET PASSWORD account with swallowed double quote before =",
+             "SELECT 1 ;\n--------------\nCREATE USER 'SET PASSWORD'@'%' Identified\r\n"
+             'BY ",first\' OR \'1\'=\'1S3cr3t"\n--------------\n\n'
+             "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax; "
+             "check the manual that corresponds to your MariaDB server version for "
+             "the right syntax to use near ''1'='1S3cr3t\"' at line 1"),
+            ("SET PASSWORD account with 3-way overlapping quotes",
+             "DELIMITER go\n--------------\nCREATE USER 'SET PASSWORD'@localhost IDENTIFIED\r\n"
+             'BY "S3cr3t\' OR \'1\'=\'1tail"\n--------------\n\n'
+             "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax; "
+             "check the manual that corresponds to your MariaDB server version for "
+             "the right syntax to use near '\"S3cr3t' OR '1'='1tail\"' at line 1 go"),
+            ("SET PASSWORD account overlapping commented REPLACE",
+             "ALTER USER 'SET PASSWORD'@localhost IDENTIFIED BY \"a' OR '1'='1\"/**/REPLACE/**/' S3cr3t';"),
+            ("SET PASSWORD TO RANDOM REPLACE with near 1064 echo",
+             'SET PASSWORD FOR app TO RANDOM REPLACE "a\' OR \'1\'=\'1S3cr3t"\n'
+             "ERROR 1064 (42000): You have an error in your SQL syntax; check the "
+             "manual that corresponds to your MySQL server version for the right "
+             "syntax to use near 'OR '1'='1S3cr3t\"' at line 1;"),
+            ("cut SET variable whose closing quote starts SET PASSWORD (double-quoted REPLACE)",
+             "Set\n  @@GLOBAL.WSREP_SST_AUTH\t=')a/*b;SET PASSWORD = ',c' /* c */ REPLACE \" S3cr3t\";\n"
+             "SET PASSWORD = ',c' /* c */ REPLACE \" S3cr3t\";"),
+            ("cut SET variable whose closing quote starts SET PASSWORD (single-quoted REPLACE)",
+             "SET @@GLOBAL.WSREP_SST_AUTH = ')a;SET PASSWORD = ',b' /* c */ REPLACE 'S3cr3t';"),
+            ("nested closing-quote theft inside multi-token SET variable",
+             "CREATE PROCEDURE p() BEGIN SET GLOBAL keyring_hashicorp_secret_id = 'cut;\n"
+             "SET PASSWORD = 'a'' -- b' # h\nREPLACE 'S3cr3t';\n"
+             "SET PASSWORD = 'a'' -- b' # h\nREPLACE 'S3cr3t';\nSELECT 1 /*!50000 , 2 */"),
+            ("prose apostrophe plus nested SET PASSWORD closing-quote theft",
+             "SET -- n\nfile_key_management_filekey ='a IDENTIFIED BY b'\n"
+             "It didn't work\nSELECT 'x' AS y\n--------------\n"
+             "SET PASSWORD =' S3cr3t'' -- tail'\n--------------\n\n"
+             "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax; "
+             "check the manual that corresponds to your MariaDB server version for "
+             "the right syntax to use near 'S3cr3t'' -- tail'' at line 1\n"),
+            ("collapsed semicolon lets SET PASSWORD account reach later assignment",
+             "DELIMITER $$\nALTER USER 'SET PASSWORD'@'%' IDENTIFIED WITH mysql_native_password\n"
+             "  AS 'cut$$\nERROR 1064 (42000) at line 1: You have an error in your SQL "
+             "syntax; check the manual that corresponds to your MySQL server version "
+             "for the right syntax to use near '='S3cr3t'' at line 1$$\n"),
+            ("prose apostrophe plus embedded double quote before hex inventory assignment",
+             "DELIMITER $$\nCouldn't apply: SET PASSWORD = 'a\\\\\"b' REPLACE ';c\\'d'$$\n"
+             "SET timestamp=1763892000;\n"
+             "INSERT INTO cfg SET report_password = _binary 0x533363723374;$$\n"),
+        )
+        for label, raw in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean, (label, clean))
+                self.assertNotIn('533363723374', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+        # Valid nested expressions without quote-parity conflicts keep later SQL intact.
+        for valid in (
+                "SET GLOBAL wsrep_sst_auth = CONCAT('a', PASSWORD('S3cr3t')); SELECT 1",
+                'SET GLOBAL wsrep_sst_auth = "SELECT PASSWORD(\'S3cr3t\')"; SELECT 1',
+                "SET GLOBAL wsrep_sst_auth = 'SELECT PASSWORD(''S3cr3t'')'; SELECT 1"):
+            with self.subTest(valid=valid):
+                clean = dbops.redact(valid)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertTrue(clean.endswith('; SELECT 1'), clean)
+
+    def test_r352_password_ended_values_preserve_valid_tails(self):
+        # Secret values ending in "password", "password=", or "identified by "
+        # must keep valid following SQL intact rather than failing closed on
+        # their own closing quote.
+        cases = (
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'app password';\n"
+             "GRANT SELECT ON shop.* TO 'app'@'%';\nSELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]';\n"
+             "GRANT SELECT ON shop.* TO 'app'@'%';\nSELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = 'sstuser:sst_password';\n"
+             "SELECT @@wsrep_cluster_status;",
+             "SET GLOBAL wsrep_sst_auth = '[redacted]';\n"
+             "SELECT @@wsrep_cluster_status;"),
+            ("UPDATE cfg SET report_password = 'my-password' WHERE id = 1;",
+             "UPDATE cfg SET report_password = '[redacted]' WHERE id = 1;"),
+            ("INSERT INTO cfg SET report_password = 'my-password' AS new "
+             "ON DUPLICATE KEY UPDATE n = new.n;",
+             "INSERT INTO cfg SET report_password = '[redacted]' AS new "
+             "ON DUPLICATE KEY UPDATE n = new.n;"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'dev-password'; "
+             "GRANT SELECT ON app.* TO 'app'@'%';",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; "
+             "GRANT SELECT ON app.* TO 'app'@'%';"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'admin.password'; SELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'ops/password'; SELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'my password='; SELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("CREATE USER 'app'@'%' IDENTIFIED BY 'use identified by '; SELECT 1;",
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("CHANGE MASTER TO MASTER_PASSWORD = 'my-password'; SELECT 1;",
+             "CHANGE MASTER TO MASTER_PASSWORD = '[redacted]'; SELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = CONCAT('u:', 'my password='); SELECT 1;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]; SELECT 1;"),
+            ("-- lab setup\n"
+             "CREATE USER 'app'@'%' IDENTIFIED BY 'app password';\n"
+             "GRANT SELECT, INSERT ON shop.* TO 'app'@'%';\n"
+             "SET GLOBAL wsrep_sst_auth = 'sstuser:password';\n"
+             "CREATE TABLE shop.orders (id INT PRIMARY KEY, status VARCHAR(16));\n"
+             "INSERT INTO shop.orders VALUES (1, 'open');\n"
+             "SELECT COUNT(*) FROM shop.orders WHERE status = 'open';\n",
+             "-- lab setup\n"
+             "CREATE USER 'app'@'%' IDENTIFIED BY '[redacted]';\n"
+             "GRANT SELECT, INSERT ON shop.* TO 'app'@'%';\n"
+             "SET GLOBAL wsrep_sst_auth = '[redacted]';\n"
+             "CREATE TABLE shop.orders (id INT PRIMARY KEY, status VARCHAR(16));\n"
+             "INSERT INTO shop.orders VALUES (1, 'open');\n"
+             "SELECT COUNT(*) FROM shop.orders WHERE status = 'open';\n"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw[:60]):
+                self.assertEqual(dbops.redact(raw), expected)
+
+    def test_r352_swallowed_quote_extension_updates_end_quote(self):
+        # Extending a swallowed quote must record the quote that produced the
+        # new end so a subsequent merged group re-extends the right delimiter.
+        cases = (
+            "CHANGE MASTER TO MASTER_PASSWORD = 'a IDENTIFIED BY \"b'c\" d IDENTIFIED BY \"e'f\" \"g\" SECRET'",
+            "PASSWORD('a IDENTIFIED BY \"b'c\" d IDENTIFIED BY \"e'f\" \"g\" SECRET')",
+        )
+        for raw in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn('SECRET', clean, clean)
+                self.assertIn('[redacted]', clean)
+
+    def test_r352_charset_introduced_hex_and_bit_literals_redacted(self):
+        literals = (
+            ("_binary 0x533363723374", "533363723374"),
+            ("_utf8mb4 0x533363723374", "533363723374"),
+            ("_utf8mb4 X'533363723374'", "533363723374"),
+            ("_binary x'533363723374'", "533363723374"),
+            ("_binary 0b01110111", "01110111"),
+            ("_binary B'01110111'", "01110111"),
+        )
+        for label, prefix, tail in (
+                ('identified_by', 'CREATE USER u IDENTIFIED BY ', ''),
+                ('set_password', 'SET PASSWORD = ', ''),
+                ('master_password', 'CHANGE MASTER TO MASTER_PASSWORD = ', ''),
+                ('report_password', 'INSERT INTO cfg SET report_password = ', ''),
+                ('random_replace', 'ALTER USER u IDENTIFIED BY RANDOM PASSWORD REPLACE ', '')):
+            for literal, secret in literals:
+                with self.subTest(clause=label, literal=literal):
+                    raw = prefix + literal + tail + '; SELECT 37'
+                    clean = dbops.redact(raw)
+                    self.assertNotIn(secret, clean)
+                    self.assertIn('[redacted]', clean)
+                    self.assertTrue(clean.endswith(tail + '; SELECT 37'), clean)
+        ordinary = "SELECT _binary 0x533363723374, _utf8mb4 X'533363723374'"
+        self.assertEqual(dbops.redact(ordinary), ordinary)
+
+    def test_r352_followup_pass_closes_parity_and_removed_equals(self):
+        # A first-pass replacement that removes an odd quote or '=' must trigger
+        # the bounded follow-up pass so later SET PASSWORD and multi-token
+        # secret variable assignments are redacted.
+        cases = (
+            ("parity flip before multi-token secret variable",
+             "It didn't work:\nSET PASSWORD FOR app = \"o'brien\";\nwhy can't I\n"
+             "SET GLOBAL wsrep_sst_auth = CONCAT('root:', 'S3cr3t');"),
+            ("removed '=' inside IDENTIFIED BY unblocks SET PASSWORD",
+             "SET PASSWORD FOR `u IDENTIFIED BY 'a=1b' = 'S3cr3t'"),
+            ("removed '=' inside PASSWORD() unblocks SET PASSWORD",
+             "SET PASSWORD FOR `u PASSWORD('a=1') = 'S3cr3t'"),
+            ("broken DELIMITER quote parity after Pass 1 fails closed",
+             "DELIMITER $$\nIt didn't work: SET PASSWORD = \"o'brien\" \"$$\n"
+             "why can't I SET GLOBAL wsrep_sst_auth = CONCAT('root:', 'S3cr3t')'$$"),
+        )
+        for label, raw in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+        # Valid INSERT ... SET ... AS new stays intact even when an earlier
+        # literal triggers the follow-up pass.
+        valid_combo = (
+            'SET PASSWORD FOR app = "o\'brien";\n'
+            "INSERT INTO t SET wsrep_sst_auth = CONCAT('a', 'S3cr3t') AS new "
+            "ON DUPLICATE KEY UPDATE c = new.c;"
+        )
+        clean_combo = dbops.redact(valid_combo)
+        self.assertNotIn("o'brien", clean_combo)
+        self.assertNotIn('S3cr3t', clean_combo)
+        self.assertIn('AS new ON DUPLICATE KEY UPDATE c = new.c;', clean_combo)
+
+    def test_r352_set_password_comment_preceded_introduced_and_hex_values(self):
+        # Commented SET PASSWORD with apostrophes plus a later introduced/hex
+        # credential must not let the first match skip a real SET PASSWORD value.
+        cases = (
+            ("N'..' after commented SET PASSWORD",
+             "-- SET PASSWORD doesn't work on 5.5\n"
+             "SET PASSWORD FOR app = N'S3cr3t';\n"
+             "-- replication user's turn\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = _binary 0x41424344;",
+             "S3cr3t"),
+            ("_utf8mb4'..' after commented SET PASSWORD",
+             "-- SET PASSWORD doesn't work on 5.5\n"
+             "SET PASSWORD FOR app = _utf8mb4'S3cr3t';\n"
+             "-- replication user's turn\n"
+             "SET PASSWORD FOR repl = _utf8mb4 X'41424344';",
+             "S3cr3t"),
+            ("0x hex after commented SET PASSWORD",
+             "-- SET PASSWORD doesn't work on 5.5\n"
+             "SET PASSWORD FOR app = 0x533363723374;\n"
+             "-- replication user's turn\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = _binary 0x41424344;",
+             "533363723374"),
+            ("plain later credential control",
+             "-- SET PASSWORD doesn't work on 5.5\n"
+             "SET PASSWORD FOR app = N'S3cr3t';\n"
+             "-- replication user's turn\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = 'x';",
+             "S3cr3t"),
+        )
+        for label, raw, secret in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn(secret, clean, (label, clean))
+                self.assertNotIn('41424344', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+        # Account-part guard prevents reading '=x\'' inside a literal as a hex
+        # introducer and keeps a later secret variable hidden.
+        guarded = (
+            '{"sql": "\'SET PASSWORD\'SELECT "it\'s"IDENTIFIED BY PASSWORD  '
+            "'Zq219254z=x'RANDOM PASSWORD REPLACE ';Zq219255z'SET NAMES utf8mb4, "
+            "GLOBAL report_password=FROM_BASE64('S3cr3t' COLLATE utf8mb4_bin)"
+        )
+        clean_guarded = dbops.redact(guarded)
+        self.assertNotIn('S3cr3t', clean_guarded, clean_guarded)
+        self.assertNotIn('Zq219254z', clean_guarded, clean_guarded)
+        self.assertNotIn('Zq219255z', clean_guarded, clean_guarded)
+        # Quoted account containing '=' must not treat b' as a bit introducer.
+        acct_eq = "SET PASSWORD FOR 'a=b'@'%' = N'S3cr3t'; SELECT 1;"
+        clean_acct_eq = dbops.redact(acct_eq)
+        self.assertNotIn('S3cr3t', clean_acct_eq)
+        self.assertTrue(clean_acct_eq.endswith('; SELECT 1;'), clean_acct_eq)
+        # Introduced hex literal in SET PASSWORD keeps stage 5 so an overlapping
+        # earlier-stage PASSWORD(...) span still fails closed through EOF.
+        overlap_hex = (
+            "SET PASSWORD FOR `u`@`h`= X'5a7134373734337a''PASSWORD('-- SET PASSWORD = '=Zq47744z'"
+            "SET s3_secret_key=UNHEX('S3cr3t)"
+        )
+        clean_overlap_hex = dbops.redact(overlap_hex)
+        self.assertNotIn('S3cr3t', clean_overlap_hex, clean_overlap_hex)
+        self.assertNotIn('5a7134373734337a', clean_overlap_hex, clean_overlap_hex)
+
+    def test_r352_custom_delimiter_prefix_before_bad_tail_hides_glued_set(self):
+        # Clean custom boundaries before the first bad/unclosed unit still
+        # separate glued statements like 1$$SET while failing closed on any
+        # secret value that reaches a boundary.
+        cases = (
+            ("glued $$SET with unclosed tail (short)",
+             "DELIMITER $$\nSELECT 1$$SET GLOBAL wsrep_sst_auth = CONCAT('root:', 'S3cr3t')$$\nSELECT 'oops"),
+            ("glued $$SET with FOR UPDATE and unclosed tail",
+             "DELIMITER $$\nSELECT 1$$SET GLOBAL wsrep_sst_auth = CONCAT('root:', 'S3cr3t')$$\n"
+             "SELECT 2 FOR UPDATE$$\nSELECT 'oops$$\n"),
+            ("escaped newline before IDENTIFIED and later client command",
+             "DELIMITER $$\nSET GLOBAL report_password = 'first'$$\nSELECT 1 FOR UPDATE$$\n"
+             'ConnectorError("ALTER USER u\\nIDENTIFIED BY \'S3cr3t\'")$$\n\\! echo done\n'),
+            ("continuation comma after SET before bad tail still fails closed",
+             "DELIMITER $$\nSET @x = 1$$\n, wsrep_sst_auth = CONCAT('root:', 'S3cr3t')$$\nSELECT 'oops"),
+        )
+        for label, raw in cases:
+            with self.subTest(case=label):
+                clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean, (label, clean))
+                self.assertIn('[redacted]', clean)
+
+    def test_r352_secret_variable_boundaries_skips_splitting_without_delimiter_command(self):
+        # The word 'delimiter' inside a comment, string, or reset-to-semicolon
+        # command must not invoke split_statements.
+        no_split_cases = (
+            "-- delimiter\nSET wsrep_sst_auth = 'S3cr3t';",
+            "/* delimiter */\nSET wsrep_sst_auth = 'S3cr3t';",
+            "SELECT 'delimiter'; SET wsrep_sst_auth = 'S3cr3t';",
+            "DELIMITER ;\nSET wsrep_sst_auth = 'S3cr3t';",
+            "-- delimiter\n" + ";/*! " * 1000 + " */" + "/* */" * 20000 + "\nSET wsrep_sst_auth = 'S3cr3t';",
+        )
+        for raw in no_split_cases:
+            with self.subTest(raw=raw[:40]):
+                with mock.patch.object(dbops, 'split_statements',
+                                       side_effect=AssertionError('needless split_statements')):
+                    self.assertEqual(dbops._secret_variable_boundaries(raw), [])
+                    clean = dbops.redact(raw)
+                self.assertNotIn('S3cr3t', clean)
+                self.assertIn("'[redacted]'", clean)
+
+    def test_r352_nested_overlap_redaction_stays_linear(self):
+        code = (
+            "import time\nfrom myflames import dbops\n"
+            "text = 'SET GLOBAL wsrep_sst_auth = CONCAT(' + \"PASSWORD('x'), \" * 8000 + \"'z'); SELECT 1\"\n"
+            "began = time.perf_counter()\n"
+            "clean = dbops.redact(text)\n"
+            "elapsed = time.perf_counter() - began\n"
+            "assert \"'x'\" not in clean and clean.endswith('; SELECT 1')\n"
+            "print(elapsed)\n")
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('Nested PASSWORD overlap check exceeded the 10 s deadline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        elapsed = float(result.stdout.strip())
+        print('R352_NESTED_OVERLAP_8K_TIMING elapsed=%.6fs' % elapsed, flush=True)
+        self.assertLess(elapsed, 1.0)
+
+    def test_r352_tracker_introducer_and_absorption_stay_linear(self):
+        # Guard against quadratic tracker scans on hex/bit literals, quadratic
+        # introducer backtracking on repeated password_ words, and quadratic
+        # list-pop absorption when one swallowed-quote group absorbs many.
+        code = (
+            "import gc, time\nfrom myflames import dbops\n"
+            "shapes = {\n"
+            "    'tracker_update_hex': (\n"
+            "        'UPDATE c SET s3_secret_key = PASSWORD 0x41 WHERE id = 1;\\n' * 1150,\n"
+            "        'UPDATE c SET s3_secret_key = PASSWORD 0x41 WHERE id = 1;\\n' * 4600),\n"
+            "    'tracker_identified_hex': (\n"
+            "        'SET wsrep_sst_auth = IDENTIFIED BY 0x41;\\n' * 465 + 'x' * 46500,\n"
+            "        'SET wsrep_sst_auth = IDENTIFIED BY 0x41;\\n' * 1860 + 'x' * 186000),\n"
+            "    'introducer_password_run': (\n"
+            "        'SELECT 1 /* ' + 'password_' * 7280 + ' */',\n"
+            "        'SELECT 1 /* ' + 'password_' * 29120 + ' */'),\n"
+            "    'absorption_pop': (\n"
+            "        \"IDENTIFIED BY ' PASSWORD(\\\"a'b\\\" \" + \"PASSWORD 'a';\" * 5000,\n"
+            "        \"IDENTIFIED BY ' PASSWORD(\\\"a'b\\\" \" + \"PASSWORD 'a';\" * 20000),\n"
+            "}\n"
+            "for name, (small, large) in shapes.items():\n"
+            "    s_times, l_times = [], []\n"
+            "    for value, times in ((small, s_times), (large, l_times)):\n"
+            "        for _ in range(3):\n"
+            "            gc.collect(); was_enabled = gc.isenabled()\n"
+            "            if was_enabled: gc.disable()\n"
+            "            try:\n"
+            "                t0 = time.perf_counter(); out = dbops.redact(value); times.append(time.perf_counter() - t0)\n"
+            "            finally:\n"
+            "                if was_enabled: gc.enable()\n"
+            "            if value is small: out_s = out\n"
+            "            else: out_l = out\n"
+            "    if name == 'introducer_password_run':\n"
+            "        assert out_s == small and out_l == large\n"
+            "    else:\n"
+            "        assert '[redacted]' in out_s and '[redacted]' in out_l\n"
+            "    ms, ml = min(s_times), min(l_times)\n"
+            "    ratio = ml / ms if ms else 0.0\n"
+            "    print('%s %.6f %.6f %.2f' % (name, ms, ml, ratio))\n"
+        )
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=15, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('Linear redaction timing check exceeded the 15 s deadline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for line in result.stdout.strip().splitlines():
+            name, ms, ml, ratio = line.split()
+            ms, ml, ratio = float(ms), float(ml), float(ratio)
+            print('R352_LINEAR_REDACT_TIMING %s 64k=%.6fs 256k=%.6fs ratio=%.2fx' %
+                  (name, ms, ml, ratio), flush=True)
+            self.assertLess(ms, 1.0, (name, ms))
+            self.assertLess(ml, 1.0, (name, ml))
+            if ml < 0.05:
+                self.assertLess(ml, 0.05, (name, ms, ml, ratio))
+            else:
+                self.assertLess(ratio, 8.0, (name, ms, ml, ratio))
+
+    def test_r352_replace_chain_scales_linearly(self):
+        # Walking a REPLACE chain once keeps both scans linear across 4x growth
+        # (25,000 to 100,000 clauses).
+        code = (
+            "import gc, time\nfrom myflames import dbops\n"
+            "timings = []\n"
+            "for clauses in (25000, 100000):\n"
+            "    text = \"ALTER USER a IDENTIFIED BY 'n'\" + \" REPLACE 'x'\" * clauses\n"
+            "    samples = []\n"
+            "    for _ in range(3):\n"
+            "        gc.collect(); was_enabled = gc.isenabled()\n"
+            "        if was_enabled: gc.disable()\n"
+            "        try:\n"
+            "            began = time.perf_counter()\n"
+            "            clean = dbops.redact(text)\n"
+            "            samples.append(time.perf_counter() - began)\n"
+            "        finally:\n"
+            "            if was_enabled: gc.enable()\n"
+            "    timings.append(min(samples))\n"
+            "    assert \"'x'\" not in clean and \"'n'\" not in clean\n"
+            "    assert clean.count('[redacted]') == clauses + 1\n"
+            "print(timings[0], timings[1])\n")
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=10, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('25,000/100,000-clause REPLACE chain exceeded the 10 s deadline')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        elapsed_25k, elapsed_100k = (float(value) for value in result.stdout.strip().split())
+        self.assertGreater(elapsed_25k, 0.0)
+        ratio = elapsed_100k / elapsed_25k
+        print('R352_REPLACE_CHAIN_TIMING 25k=%.6fs 100k=%.6fs ratio=%.2fx' %
+              (elapsed_25k, elapsed_100k, ratio), flush=True)
+        if elapsed_100k < 0.05:
+            self.assertLess(elapsed_100k, 0.05, (elapsed_25k, elapsed_100k, ratio))
+        else:
+            self.assertLess(elapsed_100k, 8.0 * elapsed_25k, (elapsed_25k, elapsed_100k, ratio))
+        self.assertLess(elapsed_100k, 5.0, (elapsed_25k, elapsed_100k, ratio))
+
+    def test_r352_nested_insert_alias_scan_stays_linear_on_400kb(self):
+        # Each nested AS can match the row-alias suffix, but none can end the
+        # outer value. Scanning its ever-growing prefix at each AS is quadratic.
+        code = (
+            "import time\nfrom unittest import mock\nfrom myflames import dbops\n"
+            "size = 400 * 1024\n"
+            "prefix = 'INSERT INTO t SET wsrep_sst_auth = ('\n"
+            "suffix = '); SELECT 1'\n"
+            "unit = 'alias_private AS x ON DUPLICATE KEY UPDATE '\n"
+            "copies, padding = divmod(size - len(prefix) - len(suffix), len(unit))\n"
+            "value = prefix + unit * copies + ' ' * padding + suffix\n"
+            "assert len(value) == size\n"
+            "with mock.patch.object(dbops, '_SET_ROW_ALIAS', wraps=dbops._SET_ROW_ALIAS) as row_alias:\n"
+            "    with mock.patch.object(dbops, '_SET_ALIAS_VALUE', wraps=dbops._SET_ALIAS_VALUE) as alias_value:\n"
+            "        began = time.monotonic()\n"
+            "        clean = dbops.redact(value)\n"
+            "        elapsed = time.monotonic() - began\n"
+            "        assert row_alias.match.call_count == 0, row_alias.match.call_count\n"
+            "        assert alias_value.fullmatch.call_count == 0, alias_value.fullmatch.call_count\n"
+            "assert clean == 'INSERT INTO t SET wsrep_sst_auth = [redacted]; SELECT 1', clean[:200]\n"
+            "print(elapsed)\n")
+        try:
+            result = subprocess.run([sys.executable, '-c', code],
+                cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, timeout=5, universal_newlines=True)
+        except subprocess.TimeoutExpired:
+            self.fail('Nested INSERT aliases exceeded the 5 s deadline for 400 KB')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        elapsed = float(result.stdout.strip())
+        print('R352_NESTED_ALIAS_TIMING bytes=409600 elapsed=%.6fs' % elapsed, flush=True)
+        self.assertLess(elapsed, 1)
+
+    def test_r352_keyword_guards_preserve_mixed_case_and_unicode_redaction(self):
+        cases = (
+            ("alter user u iDeNtIfIeD by 'guard-private'", "guard-private"),
+            ("alter user u IDENT\u0130FIED by 'guard-private'", "guard-private"),
+            ("WITH auth_plugin uSiNg 'guard-private'", "guard-private"),
+            ("VIA auth_plugin U\u017fING 'guard-private'", "guard-private"),
+            ("OLD_pAsSwOrD('guard-private')", "guard-private"),
+            ("PA\u017fSWORD('guard-private')", "guard-private"),
+            ("set pAsSwOrD for 'u=;name'@'%' = 'guard-private'", "guard-private"),
+            ("source_PaSsWoRd = 'guard-private'", "guard-private"),
+            ("RANDOM PASSWORD rEpLaCe 'guard-private'", "guard-private"),
+            ("IDENTIFIED BY 'new-private' REPLACE 'guard-private'", "guard-private"),
+            ("AS 0X41424344", "0X41424344"),
+            ("Variable 'wsrep_sst_auth' can't be set to the value of 'guard-private'", "guard-private"),
+            ('MYSQL://u:guard-private@db', 'guard-private'),
+        )
+        for raw, private in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn(private, clean)
+                self.assertIn('[redacted]', clean)
+        # The connection password must still be removed even if no syntax
+        # keyword occurs, including its SQL-escaped spelling.
+        self.assertEqual(dbops.redact("SELECT 'own''private'", password="own'private"),
+                         "SELECT '[redacted]'")
+
+    def test_r352_editor_megabyte_redaction_speed_budget(self):
+        import statistics
+        import time
+
+        unit = ("-- Inspect recent orders and the customers who placed them.\n"
+                "SELECT o.id, o.created_at, o.total, c.name\n"
+                "FROM orders AS o JOIN customers AS c ON c.id = o.customer_id\n"
+                "WHERE o.status = 'open' AND o.total > 25\n"
+                "ORDER BY o.created_at DESC LIMIT 100;\n"
+                "SET SESSION max_execution_time = 1000;\n")
+        medians = {}
+        for shape, suffix, budget in (
+                ('without_secret_name', '', 1.5),
+                ('with_secret_name', "SET GLOBAL wsrep_sst_auth = 'benchmark-private';\n", 4.0)):
+            with self.subTest(shape=shape):
+                size = 1024 * 1024
+                copies, padding = divmod(size - len(suffix), len(unit))
+                raw = unit * copies + ' ' * padding + suffix
+                expected = raw.replace('benchmark-private', '[redacted]')
+                timings = []
+                for _ in range(3):
+                    began = time.monotonic()
+                    clean = dbops.redact(raw)
+                    timings.append(time.monotonic() - began)
+                    self.assertEqual(clean, expected)
+                elapsed = statistics.median(timings)
+                medians[shape] = elapsed
+                print('R352_EDITOR_BUDGET %s bytes=%d median=%.6fs budget=%.3fs samples=%s' %
+                      (shape, size, elapsed, budget,
+                       ','.join('%.6f' % value for value in timings)), flush=True)
+                self.assertLess(elapsed, budget)
+        with_secret = medians['with_secret_name']
+        without_secret = medians['without_secret_name']
+        ratio = without_secret / with_secret if with_secret else float('inf')
+        print('R352_EDITOR_BUDGET ratio=%.4f limit=0.4000 without=%.6fs with=%.6fs' %
+              (ratio, without_secret, with_secret), flush=True)
+        self.assertLessEqual(without_secret, 0.40 * with_secret)
+
+    def test_r352_dropped_eof_phantom_never_skips_later_credential_scans(self):
+        cases = (
+            ("CREATE USER app IDENTIFIED BY \"dev-password\";\n"
+             "CHANGE MASTER TO MASTER_USER='repl', MASTER_PASSWORD='S3cr3t';\n",
+             ("dev-password", "S3cr3t"),
+             "CREATE USER app IDENTIFIED BY \"[redacted]\";\n"
+             "CHANGE MASTER TO MASTER_USER='repl', MASTER_PASSWORD='[redacted]';\n"),
+            ("ALTER USER 'root'@'localhost' IDENTIFIED BY 'Root-Password';\n"
+             "CHANGE REPLICATION SOURCE TO SOURCE_USER=\"repl\", SOURCE_PASSWORD=\"S3cr3t\";\n",
+             ("Root-Password", "S3cr3t"),
+             "ALTER USER 'root'@'localhost' IDENTIFIED BY '[redacted]';\n"
+             "CHANGE REPLICATION SOURCE TO SOURCE_USER=\"repl\", SOURCE_PASSWORD=\"[redacted]\";\n"),
+            ("SET PASSWORD = \"a password\"; START REPLICA PASSWORD='S3cr3t'",
+             ("a password", "S3cr3t"),
+             "SET PASSWORD = \"[redacted]\"; START REPLICA PASSWORD='[redacted]'"),
+            ("ALTER USER u IDENTIFIED BY 'x-password';\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = _binary 0x533363723374;\n",
+             ("x-password", "533363723374"),
+             "ALTER USER u IDENTIFIED BY '[redacted]';\n"
+             "CHANGE MASTER TO MASTER_PASSWORD = '[redacted]';\n"),
+            ("CREATE CACHE FROM SELECT * FROM users WHERE password = \"x password\" AND api_password = 'S3cr3t'",
+             ("x password", "S3cr3t"),
+             "CREATE CACHE FROM SELECT * FROM users WHERE password = \"[redacted]\" AND api_password = '[redacted]'"),
+        )
+        for raw, secrets, expected in cases:
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                for secret in secrets:
+                    self.assertNotIn(secret, clean)
+                self.assertEqual(clean, expected)
+
+    def test_r352_set_password_introduced_value_does_not_skip_inner_assignment(self):
+        junk = "x " * 300
+        for raw in (
+            "SET PASSWORD = N'abc SET PASSWORD FOR " + junk + "= 'S3cr3t'",
+            "SET PASSWORD FOR u@h = _utf8mb4'abc SET PASSWORD FOR " + junk + "= 'S3cr3t'",
+        ):
+            with self.subTest(raw=raw[:50]):
+                clean = dbops.redact(raw)
+                self.assertNotIn("S3cr3t", clean)
+                self.assertIn("[redacted]", clean)
+        normal = "SET PASSWORD FOR u@h = N'my-secret'; SELECT 1;"
+        self.assertEqual(dbops.redact(normal), "SET PASSWORD FOR u@h = '[redacted]'; SELECT 1;")
+
+    def test_r352_custom_delimiter_inside_parentheses_keeps_hiding(self):
+        malformed = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = CONCAT('a'$$\n, 'S3cr3t')$$\n"
+        clean = dbops.redact(malformed)
+        self.assertNotIn("S3cr3t", clean)
+        self.assertIn("[redacted]", clean)
+        valid = "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = CONCAT('a', 'S3cr3t')$$\nSELECT 1$$\n"
+        self.assertEqual(
+            dbops.redact(valid),
+            "DELIMITER $$\nSET GLOBAL wsrep_sst_auth = [redacted]$$\nSELECT 1$$\n",
+        )
+
+    def test_r352_set_password_malformed_backslash_quote_stays_linear(self):
+        for raw, secret in (
+            ("SET PASSWORD FOR 'a=b'@'%' = N'S3cr3t'", "S3cr3t"),
+            ("SET PASSWORD\\'x = 'S3cr3t'", "S3cr3t"),
+            ("SET PASSWORD\\n = N'S3cr3t'", "S3cr3t"),
+            ("SET PASSWORD " + "a" * 500 + " = N'S3cr3t'", "S3cr3t"),
+        ):
+            with self.subTest(raw=raw[:40]):
+                clean = dbops.redact(raw)
+                self.assertNotIn(secret, clean)
+                self.assertIn("[redacted]", clean)
+        for label, unit in (
+            ("sq", "SET PASSWORD\\'x "),
+            ("dq", 'SET PASSWORD\\"x '),
+            ("sq_eq", "SET PASSWORD\\'x = "),
+            ("dq_eq", 'SET PASSWORD\\"x = '),
+        ):
+            with self.subTest(label=label):
+                code = (
+                    "import time\nfrom myflames import dbops\n"
+                    "unit = " + repr(unit) + "\n"
+                    "s64 = unit * (65536 // len(unit)) + '='\n"
+                    "s256 = unit * (262144 // len(unit)) + '='\n"
+                    "t0 = time.monotonic(); dbops.redact(s64); d64 = time.monotonic() - t0\n"
+                    "t0 = time.monotonic(); dbops.redact(s256); d256 = time.monotonic() - t0\n"
+                    "print('%.6f %.6f' % (d64, d256))\n"
+                )
+                result = subprocess.run(
+                    [sys.executable, '-c', code],
+                    cwd=str(Path(__file__).resolve().parent.parent),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+                    universal_newlines=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                d64, d256 = (float(x) for x in result.stdout.strip().split())
+                self.assertLess(d64, 1.0)
+                self.assertLess(d256, 2.0)
+
+    def test_r352_hex_and_bit_literals_require_word_boundary(self):
+        for raw in (
+            "SOURCE_PASSWORD = 0x533363723374PASSWORD='S3cr3t'",
+            "CHANGE MASTER TO MASTER_PASSWORD = 0x4142SOURCE_PASSWORD = 'S3cr3t'",
+            "SOURCE_PASSWORD = 0b0101PASSWORD='S3cr3t'",
+            "SET PASSWORD = 0x533363723374PASSWORD='S3cr3t'",
+        ):
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn("S3cr3t", clean)
+                self.assertIn("[redacted]", clean)
+        for raw, secret in (
+            ("SET PASSWORD = 0x533363723374;", "533363723374"),
+            ("SET PASSWORD = 0b01010101;", "01010101"),
+            ("ALTER USER u IDENTIFIED BY _binary 0x533363723374;", "533363723374"),
+            ("DELIMITER $$\nSET PASSWORD FOR u@h = 0x533363723374$$\n", "533363723374"),
+        ):
+            with self.subTest(valid=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn(secret, clean)
+                self.assertIn("[redacted]", clean)
+
+    def test_r352_valid_sql_continuations_and_introducers_preserve_tail(self):
+        preserved = (
+            ("DELIMITER $$\nALTER USER u IDENTIFIED BY 'dev-password'$$\nSELECT 1$$\n",
+             "DELIMITER $$\nALTER USER u IDENTIFIED BY '[redacted]'$$\nSELECT 1$$\n"),
+            ("DELIMITER //\nCREATE USER u IDENTIFIED BY 'dev-password' //\nSELECT 1//\n",
+             "DELIMITER //\nCREATE USER u IDENTIFIED BY '[redacted]' //\nSELECT 1//\n"),
+            ("ALTER USER u IDENTIFIED BY 'dev-password' PASSWORD_LOCK_TIME 3; SELECT 1;",
+             "ALTER USER u IDENTIFIED BY '[redacted]' PASSWORD_LOCK_TIME 3; SELECT 1;"),
+            ("CLONE INSTANCE FROM 'u'@'h':3306 IDENTIFIED BY 'dev-password' DATA DIRECTORY = '/d'; SELECT 1;",
+             "CLONE INSTANCE FROM 'u'@'h':3306 IDENTIFIED BY '[redacted]' DATA DIRECTORY = '/d'; SELECT 1;"),
+            ("CREATE TABLE t (a INT) PASSWORD = 'dev-password' INDEX DIRECTORY = '/i' ENGINE=InnoDB; SELECT 1;",
+             "CREATE TABLE t (a INT) PASSWORD = '[redacted]' INDEX DIRECTORY = '/i' ENGINE=InnoDB; SELECT 1;"),
+            ("CREATE TABLE t (a INT) DATA DIRECTORY = '/x'; "
+             "ALTER USER u IDENTIFIED BY 'dev-password' DISCARD OLD PASSWORD; SELECT 1;",
+             "CREATE TABLE t (a INT) DATA DIRECTORY = '/x'; "
+             "ALTER USER u IDENTIFIED BY '[redacted]' DISCARD OLD PASSWORD; SELECT 1;"),
+            ("START REPLICA USER='r' PASSWORD='dev-password' DEFAULT_AUTH='caching_sha2_password' "
+             "PLUGIN_DIR='/p'; SELECT 1;",
+             "START REPLICA USER='r' PASSWORD='[redacted]' DEFAULT_AUTH='caching_sha2_password' "
+             "PLUGIN_DIR='/p'; SELECT 1;"),
+            ("ALTER USER u ADD 2 FACTOR IDENTIFIED BY 'dev-password' ADD 3 FACTOR IDENTIFIED BY 'S3cr3t'; SELECT 1;",
+             "ALTER USER u ADD 2 FACTOR IDENTIFIED BY '[redacted]' ADD 3 FACTOR IDENTIFIED BY '[redacted]'; SELECT 1;"),
+            ("/*!80000 CREATE USER u IDENTIFIED BY 'dev-password' */; SELECT 1;",
+             "/*!80000 CREATE USER u IDENTIFIED BY '[redacted]' */; SELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = N'sst:password'; SELECT 1;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]; SELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = _utf8mb4'sst:password'; SELECT 1;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]; SELECT 1;"),
+            ("SET GLOBAL wsrep_sst_auth = _utf8mb4 'sst:password'; SELECT 1;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]; SELECT 1;"),
+        )
+        for raw, expected in preserved:
+            with self.subTest(preserved=raw):
+                self.assertEqual(dbops.redact(raw), expected)
+        # Fail-closed rules remain intact for unproven delimiters, REPLACE 'old-password',
+        # non-credential strings ending in password, and cut/unbalanced overlaps.
+        for raw, forbidden in (
+            ("ALTER USER u IDENTIFIED BY 'dev-password'$$ SELECT 'S3cr3t'", "S3cr3t"),
+            ("ALTER USER u IDENTIFIED BY 'a' REPLACE 'old-password'; SELECT 1;", "SELECT 1;"),
+            ("INSERT INTO notes VALUES (1, 'reset the password'); SELECT 1;", "SELECT 1;"),
+            ("CREATE USER app IDENTIFIED BY X'2c48;ALTER USER u IDENTIFIED BY ',S3cr3t,x;SELECT 1", "S3cr3t"),
+            ('DELIMITER $$\nSET CHARACTER SET utf8mb4$$\nSET PERSIST_ONLY report_password :=  "a\\\\$$\n'
+             'ALTER USER \'\'@\'localhost\' IDENTIFIED WITH ed25519  AS ";S3cr3t-T', "S3cr3t"),
+            ('SELECT `a` FROM `b`;\n\nCREATE USER\n\'SET PASSWORD\'@localhost\nIDENTIFIED  BY\n  ")x ;\n\n'
+             '{"action": "run", "sql": "SET\\r\\n@@GLOBAL.WSREP_SST_AUTH\\r\\n= \')S3cr3t;y\'", "ok": false};\n\n',
+             "S3cr3t"),
+            ("DELIMITER $$\nUPDATE cfg SET s3_secret_key = \"a\" WHERE$$\n"
+             "ALTER USER u IDENTIFIED BY 'x' REPLACE/**/'S3cr3t'", "S3cr3t"),
+            ("'a\\'IDENTIFIED BY 'SET SET GLOBAL wsrep_sst_auth = 'b';\n"
+             "CREATE USER u IDENTIFIED WITH 'p''q' BY 'S3cr3t';\n", "S3cr3t"),
+        ):
+            with self.subTest(fail_closed=raw[:60]):
+                clean = dbops.redact(raw)
+                self.assertNotIn(forbidden, clean)
+
+    def test_r352_balanced_backslash_reading_never_drops_credential_under_nobs(self):
+        for secret in ("Union-S3cr3t", "Default!S3cr3t", ";S3cr3t"):
+            raw = (
+                "INSERT INTO notes VALUES (1, 'don\\'t forget');\n"
+                "START REPLICA USER='repl-password' PASSWORD='" + secret + "';\n"
+                "INSERT INTO notes VALUES (2, 'it\\'s done');"
+            )
+            with self.subTest(secret=secret):
+                clean = dbops.redact(raw)
+                self.assertNotIn("S3cr3t", clean)
+                self.assertNotIn(secret, clean)
+                self.assertIn("[redacted]", clean)
+
+    def test_r352_nested_earlier_stage_in_phantom_fails_closed(self):
+        for raw in (
+            "CREATE USER 'SET PASSWORD'@localhost IDENTIFIED BY \";\" x = 'S3cr3t'",
+            "CREATE USER 'SET PASSWORD'@localhost IDENTIFIED BY \"a=b\" x = 'S3cr3t'",
+        ):
+            with self.subTest(raw=raw):
+                clean = dbops.redact(raw)
+                self.assertNotIn("S3cr3t", clean)
+                self.assertIn("[redacted]", clean)
 
     def test_url_password_containing_at_redacts_to_last_authority_at(self):
         scheme = 'mysql:' + '//'

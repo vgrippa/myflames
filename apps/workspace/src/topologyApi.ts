@@ -157,6 +157,9 @@ export type MapEdge = {
   verified: boolean;
   state: string | null;
   label: string;
+  /** Why a ProxySQL route is in its state; the drawn label stays short and
+   * the link list and tooltip carry this instead. */
+  reason?: string;
 };
 
 export type MapCluster = {

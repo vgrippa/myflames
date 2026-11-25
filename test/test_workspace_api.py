@@ -1,10 +1,14 @@
 """Authenticated workspace persistence and capture routes over real HTTP."""
 import http.client
+import io
 import json
 import os
 from pathlib import Path
+import socket
 import tempfile
 import threading
+import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -34,14 +38,15 @@ class TestWorkspaceAPI(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=5)
 
-    def request(self, path, payload=None, headers=None, method='POST'):
+    def request(self, path, payload=None, headers=None, method='POST', raw_body=None):
         conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
         default = {'Content-Type': 'application/json', 'X-Myflames-Token': self.server.token,
                     'Origin': self.server.origin,
                     'Cookie': self.server.cookie_name + '=' + self.server.session_secret}
         default.update(headers or {})
         try:
-            conn.request(method, path, json.dumps(payload or {}) if method == 'POST' else None, default)
+            body = raw_body if raw_body is not None else json.dumps(payload or {}) if method == 'POST' else None
+            conn.request(method, path, body, default)
             response = conn.getresponse()
             raw = response.read()
             body = json.loads(raw) if response.getheader('Content-Type').startswith('application/json') else raw
@@ -59,6 +64,448 @@ class TestWorkspaceAPI(unittest.TestCase):
                 self.assertEqual(set(body['secret_store']) - {'error'}, {'backend', 'label', 'available'})
             self.assertEqual(headers['Cache-Control'], 'no-store')
         self.assertFalse(self.path.exists())
+
+    def test_request_shape_errors_are_logged_redacted_400s(self):
+        from myflames import ui
+        secret = 'request-password-for-redaction'
+        for error_type in (TypeError, KeyError, AttributeError, RecursionError, OverflowError):
+            with self.subTest(error_type=error_type.__name__):
+                log = io.StringIO()
+                with patch.object(ui, 'api_response', side_effect=error_type('bug with ' + secret)), \
+                        patch.object(ui.sys, 'stderr', log):
+                    status, body, unused = self.request('/api/profiles/list',
+                        {'connection': {'password': secret}})
+                self.assertEqual(status, 400)
+                self.assertEqual(body, {'error': ui._unexpected_error_message('/api/profiles/list')})
+                self.assertIn('unexpected error in POST /api/profiles/list', log.getvalue())
+                self.assertIn(error_type.__name__, log.getvalue())
+                self.assertIn('[redacted]', log.getvalue())
+                self.assertNotIn(secret, log.getvalue())
+                self.assertNotIn(secret, json.dumps(body))
+
+    def test_other_backend_errors_remain_logged_redacted_500s(self):
+        from myflames import ui
+        secret = 'unexpected-request-password'
+        log = io.StringIO()
+        with patch.object(ui, 'api_response', side_effect=RuntimeError(secret)), \
+                patch.object(ui.sys, 'stderr', log):
+            status, body, unused = self.request('/api/profiles/list',
+                {'connection': {'password': secret}})
+        self.assertEqual(status, 500)
+        self.assertEqual(body, {'error': ui._unexpected_error_message('/api/profiles/list')})
+        self.assertIn('RuntimeError', log.getvalue())
+        self.assertIn('[redacted]', log.getvalue())
+        self.assertNotIn(secret, log.getvalue())
+        self.assertNotIn(secret, json.dumps(body))
+
+    def test_write_internal_errors_after_send_are_logged_redacted_500s(self):
+        from myflames import ui
+        secret = 'write-readback-redaction-secret'
+        # Exercise every SQL-sending route, including reviewed actions, kill,
+        # editor, lifecycle and topology changes. A read-back bug cannot prove
+        # that the statement which preceded it was refused.
+        paths = ui._WRITE_PATHS + ('/api/table-data/apply', '/api/table-data/cancel', '/api/table-data/close',
+                                  '/api/editor/rollback', '/api/editor/stop', '/api/editor/close', '/api/editor/use',
+                                  '/api/lifecycle/cancel', '/api/live/cancel', '/api/import/csv/stop')
+        self.assertEqual(set(paths), set(ui._SQL_OUTCOME_PATHS))
+        for path in paths:
+            for error_type in (TypeError, KeyError, AttributeError, RecursionError,
+                               OverflowError, RuntimeError, OSError):
+                with self.subTest(path=path, error_type=error_type.__name__):
+                    sent = []
+                    def execute_then_read_back(*args):
+                        sent.append(path)
+                        raise error_type('read-back failed with ' + secret)
+                    log = io.StringIO()
+                    with patch.object(ui, 'api_response', side_effect=execute_then_read_back), \
+                            patch.object(ui.sys, 'stderr', log):
+                        status, body, unused = self.request(path, {'connection': {'password': secret}})
+                    self.assertEqual(sent, [path])
+                    self.assertEqual(status, 500)
+                    self.assertEqual(body, {'error': ui._unexpected_error_message(path)})
+                    self.assertIn('outcome is unknown', body['error'])
+                    self.assertIn(error_type.__name__, log.getvalue())
+                    self.assertIn('[redacted]', log.getvalue())
+                    self.assertNotIn(secret, log.getvalue())
+                    self.assertNotIn(secret, json.dumps(body))
+
+    def test_reviewed_executor_readback_error_after_transport_send_is_500(self):
+        from myflames import reviewed_writes, ui
+        secret = 'reviewed-readback-redaction-secret'
+        sent = []
+        transport = types.SimpleNamespace(run_write=lambda sql, **kwargs: sent.append(sql))
+        plan = {'action': 'servers_load', 'statements': ['LOAD MYSQL SERVERS TO RUNTIME;'],
+                'expect': {'engine': 'proxysql'}}
+
+        def read_back():
+            self.assertTrue(sent, 'the transport has already sent SQL')
+            raise KeyError(secret)
+
+        def handle(*args):
+            return reviewed_writes.execute(transport, plan, lambda: plan, 'proxysql-action-1.0',
+                                           read_after=read_back)
+
+        log = io.StringIO()
+        with patch.object(ui, 'api_response', side_effect=handle), patch.object(ui.sys, 'stderr', log):
+            status, body, unused = self.request('/api/live/proxysql/action',
+                {'connection': {'password': secret}})
+        self.assertEqual(sent, plan['statements'])
+        self.assertEqual(status, 500)
+        self.assertIn('outcome is unknown', body['error'])
+        self.assertIn('KeyError', log.getvalue())
+        self.assertNotIn(secret, log.getvalue())
+        self.assertNotIn(secret, json.dumps(body))
+
+    def test_read_with_malformed_field_keeps_logged_400(self):
+        from myflames import ui
+        log = io.StringIO()
+        with patch.object(ui.sys, 'stderr', log):
+            status, body, unused = self.request('/api/report/export',
+                {'report': {'schema_version': 'report-1.0'}, 'format': 'text'})
+        self.assertEqual(status, 400)
+        self.assertIn('error', body)
+        self.assertIn('KeyError', log.getvalue())
+    def test_handler_error_log_redacts_sql_and_url_credentials(self):
+        from myflames import ui
+        messages = (
+            "ALTER USER app IDENTIFIED BY 'secret1'",
+            'failed to read mysql://app:secret2@db.example/schema',
+            "IDENTIFIED BY 'secret1'; mysql://app:secret2@db.example/schema",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                log = io.StringIO()
+                with patch.object(ui, 'api_response', side_effect=KeyError(message)), \
+                        patch.object(ui.sys, 'stderr', log):
+                    status, body, unused = self.request('/api/profiles/list')
+                self.assertIn(status, (400, 500))
+                self.assertEqual(body, {'error': ui._unexpected_error_message('/api/profiles/list')})
+                logged = log.getvalue()
+                self.assertIn('KeyError', logged)
+                self.assertIn('[redacted]', logged)
+                for secret in ('secret1', 'secret2'):
+                    self.assertNotIn(secret, logged)
+                    self.assertNotIn(secret, json.dumps(body))
+
+    def test_handler_error_traceback_is_bounded_after_redaction(self):
+        from myflames import ui
+        messages = (
+            "IDENTIFIED BY 'secret1'; " + 'x' * (128 * 1024),
+            # The credential begins before the cap and ends well beyond it.
+            # Truncating first would leave an open literal with secret bytes.
+            'x' * 62000 + " IDENTIFIED BY '" + 'boundary-secret' * 1000 + "'",
+        )
+        for message in messages:
+            with self.subTest(length=len(message)):
+                log = io.StringIO()
+                with patch.object(ui, 'api_response', side_effect=KeyError(message)), \
+                        patch.object(ui.sys, 'stderr', log):
+                    unused, body, unused_headers = self.request('/api/profiles/list')
+                logged = log.getvalue()
+                self.assertTrue('secret1' not in logged and 'boundary-secret' not in logged,
+                                'the complete secret must be redacted before truncating the log')
+                self.assertIn('[redacted]', logged)
+                self.assertLessEqual(len(logged), 64 * 1024 + 128)
+
+    def test_incomplete_report_and_wrong_plan_field_types_are_400s(self):
+        from myflames import ui
+        cases = (
+            ('/api/report/export', {'report': {'schema_version': 'report-1.0'}, 'format': 'text'}),
+            ('/api/report/export', {'report': {'schema_version': 'report-1.0', 'summary': {}},
+                                    'format': 'text'}),
+            ('/api/analyze', {'plan': json.dumps({'operation': 'Table scan on t',
+                                                'actual_last_row_ms': 1,
+                                                'actual_loops': {'invalid': 1}})}),
+        )
+        for path, payload in cases:
+            with self.subTest(path=path, payload=payload), patch.object(ui.sys, 'stderr', io.StringIO()):
+                status, body, unused = self.request(path, payload)
+                self.assertEqual(status, 400)
+                if path == '/api/report/export':
+                    self.assertEqual(body, {'error': ui._unexpected_error_message(path)})
+                else:
+                    # The parser already validates numeric plan fields and
+                    # keeps its useful ValueError message at this boundary.
+                    self.assertIn('actual_loops', body['error'])
+
+    def test_malformed_and_overdeep_request_json_stay_400(self):
+        from myflames import ui
+        for raw in ('{"broken":', '[' * 1000):
+            with self.subTest(raw_length=len(raw)):
+                log = io.StringIO()
+                with patch.object(ui, 'api_response') as endpoint, patch.object(ui.sys, 'stderr', log):
+                    status, body, unused = self.request('/api/profiles/list', raw_body=raw)
+                self.assertEqual(status, 400)
+                self.assertIn('error', body)
+                endpoint.assert_not_called()
+                self.assertEqual(log.getvalue(), '')
+
+        loads = json.loads
+        def decode(raw):
+            if raw == '{"deep":true}':
+                raise RecursionError('decoder stack exhausted')
+            return loads(raw)
+
+        with patch.object(ui.json, 'loads', side_effect=decode), patch.object(ui, 'api_response') as endpoint:
+            status, body, unused = self.request('/api/profiles/list', raw_body='{"deep":true}')
+        self.assertEqual(status, 400)
+        self.assertIn('too deeply nested', body['error'])
+        endpoint.assert_not_called()
+
+    def test_overdeep_plan_text_stays_a_validation_400(self):
+        plan = ('{"operation":"Filter","inputs":[' * 1000 +
+                '{"operation":"Table scan on t"}' + ']}' * 1000)
+        status, body, unused = self.request('/api/analyze', {'plan': plan})
+        self.assertEqual(status, 400)
+        self.assertIn('maximum 80 levels', body['error'])
+
+    def test_lifecycle_add_prunes_all_owners_without_jobs_polling(self):
+        from myflames import ui
+        for number in range(60):
+            job = types.SimpleNamespace(id='finished-%d' % number, state='done', thread=None,
+                created=time.monotonic(), start=lambda: None, snapshot=lambda: {}, close=lambda: None)
+            ui._lifecycle_add(self.server, job, 'target',
+                {'host': 'host-%d' % (number % 6), 'port': 3306, 'user': 'app'})
+            self.assertLessEqual(len(self.server.lifecycle_owners), self.server.lifecycle.KEEP)
+        self.assertEqual(set(self.server.lifecycle_owners), set(self.server.lifecycle.jobs))
+        self.assertEqual(len(self.server.lifecycle_owners), self.server.lifecycle.KEEP)
+
+    def test_client_settings_internal_key_error_reaches_logged_400(self):
+        from myflames import client_tools, lifecycle, ui
+        secret = 'client-settings-redaction-secret'
+        discovered = {'installations': [], 'shells': [], 'skipped': []}
+        log = io.StringIO()
+        with patch.object(client_tools, 'discover_choices', return_value=discovered), \
+                patch.object(client_tools, 'choice_keys', return_value=(
+                    {'mysql': None, 'mariadb': None}, {'mysql': None, 'mariadb': None})), \
+                patch.object(lifecycle, '_connect'), \
+                patch.object(lifecycle, 'read_server', side_effect=KeyError(secret)), \
+                patch.object(ui.sys, 'stderr', log):
+            status, body, unused = self.request('/api/client/tools',
+                {'connection': {'host': 'db', 'port': 3306, 'user': 'app', 'password': secret}})
+        self.assertEqual(status, 400)
+        self.assertEqual(body, {'error': ui._unexpected_error_message('/api/client/tools')})
+        self.assertIn('KeyError', log.getvalue())
+        self.assertIn('[redacted]', log.getvalue())
+        self.assertNotIn(secret, log.getvalue())
+        self.assertNotIn('server-read', json.dumps(body))
+
+    def test_group_probe_and_topology_member_internal_errors_mark_only_that_member_failed(self):
+        from myflames import topology_group, ui
+        from myflames.workspace_store import ENDPOINT_FIELDS
+        secret = 'saved-group-redaction-secret'
+        first_uuid = '11111111-1111-4111-8111-111111111111'
+        for name in ('first', 'second'):
+            self.server.store.save('profile',
+                {'name': name, 'host': name + '.example', 'port': 3306, 'user': 'app'},
+                name, password=secret if name == 'second' else 'first-member-password', remember=True)
+        self.server.store.save_connection_group('G', ['first', 'second'])
+        active = self.server.store.get('profile', 'first')
+        connection = dict({key: active.get(key) for key in ENDPOINT_FIELDS},
+                          profile_id='first', group_name='G')
+
+        def fake_identity(_conn, member, read_position=True):
+            if member['profile_id'] == 'second':
+                raise KeyError(secret)
+            member.update(engine='mysql', product='MySQL', version='8.0.36',
+                          role='primary', state='ONLINE', server_uuid=first_uuid)
+            return {}, 'first member read'
+
+        for path, payload, fault in (
+                ('/api/connect', {'group_name': 'G', 'active_member_profile_id': 'first',
+                                 'probe_members': True},
+                 patch.object(ui, '_member_live_facts', side_effect=[
+                     {'server_uuid': first_uuid, 'role': 'PRIMARY', 'state': 'ONLINE'},
+                     KeyError(secret)])),
+                ('/api/live/topology', {'connection': connection, 'section': 'members'},
+                 patch.object(topology_group, '_identity', side_effect=fake_identity))):
+            with self.subTest(path=path):
+                log = io.StringIO()
+                with fault, patch.object(ui, '_connection_test_report', return_value={}), \
+                        patch.object(ui.sys, 'stderr', log):
+                    status, body, unused = self.request(path, payload)
+                self.assertEqual(status, 200)
+                if path == '/api/connect':
+                    members = {m['profile_id']: m for m in body['group_connection']['members']}
+                    self.assertTrue(members['first']['reachable'])
+                    self.assertEqual(members['first']['server_uuid'], first_uuid)
+                    self.assertFalse(members['second']['reachable'])
+                    self.assertIsNone(members['second']['server_uuid'])
+                else:
+                    members = {m['profile_id']: m for m in body['members']}
+                    self.assertEqual(members['first']['outcome'], 'read')
+                    self.assertEqual(members['first']['server_uuid'], first_uuid)
+                    self.assertEqual(members['second']['outcome'], 'failed')
+                    self.assertIsNone(members['second']['server_uuid'])
+                    self.assertEqual(body['summary']['read'], 1)
+                    self.assertEqual(body['summary']['failed'], 1)
+                logged = log.getvalue()
+                self.assertEqual(logged.count('myflames: unexpected error'), 1)
+                self.assertIn('KeyError', logged)
+                self.assertIn('[redacted]', logged)
+                self.assertNotIn(secret, logged)
+                self.assertNotIn(secret, json.dumps(body))
+
+    def test_cancel_routes_unexpected_error_after_cancel_returns_500_outcome_unknown(self):
+        from myflames import csv_import_api, dbops, ui
+        secret = 'cancel-outcome-secret'
+        connection = {'host': 'db.example', 'port': 3306, 'user': 'dba', 'password': secret}
+        cancelled = []
+
+        def fail_snapshot():
+            raise KeyError('post-cancel snapshot error ' + secret)
+
+        def lc_cancel():
+            lc_job.state = 'cancelled'
+            cancelled.append('/api/lifecycle/cancel')
+
+        def lc_snapshot():
+            if '/api/lifecycle/cancel' in cancelled:
+                fail_snapshot()
+            return {'id': 'lc-cancel-outcome', 'state': lc_job.state}
+
+        lc_job = types.SimpleNamespace(
+            id='lc-cancel-outcome', state='running', thread=None, created=time.monotonic(),
+            lock=threading.Lock(), connection_id=None, cancelled=threading.Event(),
+            start=lambda: None, cancel=lc_cancel, snapshot=lc_snapshot, close=lambda: None)
+        ui._lifecycle_add(self.server, lc_job, 'target', connection)
+
+        identity = dbops.identity_endpoint(dbops.connection_identity(connection))
+        live_job = types.SimpleNamespace(
+            id='live-cancel-outcome', identity=identity, created=time.monotonic(), state='running',
+            cancel=lambda: cancelled.append('/api/live/cancel'),
+            snapshot=fail_snapshot, _request_cancel=lambda: None)
+        with self.server.jobs.lock:
+            self.server.jobs.jobs[live_job.id] = live_job
+
+        progress = csv_import_api.registry(self.server).start_progress('csv-stop-outcome-0001', 'apply')
+        def stop_then_fail():
+            cancelled.append('/api/import/csv/stop')
+            raise RuntimeError('post-kill stop error ' + secret)
+        progress.killer(stop_then_fail)
+
+        cases = (
+            ('/api/lifecycle/cancel', {'id': lc_job.id, 'connection': connection}, 'KeyError'),
+            ('/api/live/cancel', {'id': live_job.id, 'connection': connection}, 'KeyError'),
+            ('/api/import/csv/stop', {'progress_id': 'csv-stop-outcome-0001', 'connection': connection}, 'RuntimeError'),
+        )
+        for path, payload, error_name in cases:
+            with self.subTest(path=path):
+                log = io.StringIO()
+                with patch.object(ui.sys, 'stderr', log):
+                    status, body, _ = self.request(path, payload)
+                self.assertIn(path, cancelled)
+                self.assertEqual(status, 500)
+                self.assertEqual(body, {'error': ui._unexpected_error_message(path)})
+                self.assertIn('outcome is unknown', body['error'])
+                self.assertIn(error_name, log.getvalue())
+                self.assertIn('[redacted]', log.getvalue())
+                self.assertNotIn(secret, log.getvalue())
+                self.assertNotIn(secret, json.dumps(body))
+
+    def test_sql_outcome_path_disconnect_during_200_send_and_error_before_send(self):
+        from myflames import ui
+        secret = 'editor-send-disconnect-secret'
+        orig_send = ui.WorkspaceHandler._send
+
+        for error_type in (BrokenPipeError, ConnectionResetError, TimeoutError):
+            with self.subTest(phase='during_200_send', error_type=error_type.__name__):
+                sends = []
+                handlers = []
+                def send_with_body_disconnect(handler, status, body, *args, **kwargs):
+                    sends.append(status)
+                    handlers.append(handler)
+                    if status == 200:
+                        orig_write = handler.wfile.write
+                        writes = [0]
+                        def failing_write(data):
+                            writes[0] += 1
+                            if writes[0] == 1:
+                                return orig_write(data)
+                            raise error_type('client closed mid-reply')
+                        handler.wfile.write = failing_write
+                    return orig_send(handler, status, body, *args, **kwargs)
+
+                log = io.StringIO()
+                with patch.object(ui, 'api_response', return_value={'ok': True}), \
+                        patch.object(ui.WorkspaceHandler, '_send', new=send_with_body_disconnect), \
+                        patch.object(ui.sys, 'stderr', log):
+                    with self.assertRaises((http.client.HTTPException, OSError)):
+                        self.request('/api/editor/run', {'connection': {'password': secret}})
+                self.assertEqual(sends, [200])
+                self.assertEqual(log.getvalue(), '')
+                self.assertTrue(handlers[-1].close_connection)
+
+        for error_type in (BrokenPipeError, ConnectionResetError, TimeoutError, RuntimeError):
+            with self.subTest(phase='before_send', error_type=error_type.__name__):
+                sends = []
+                def spy_send(handler, status, body, *args, **kwargs):
+                    sends.append(status)
+                    return orig_send(handler, status, body, *args, **kwargs)
+
+                log = io.StringIO()
+                with patch.object(ui, 'api_response', side_effect=error_type('failed before send ' + secret)), \
+                        patch.object(ui.WorkspaceHandler, '_send', new=spy_send), \
+                        patch.object(ui.sys, 'stderr', log):
+                    status, body, _ = self.request('/api/editor/run', {'connection': {'password': secret}})
+                self.assertEqual(sends, [500])
+                self.assertEqual(status, 500)
+                self.assertEqual(body, {'error': ui._unexpected_error_message('/api/editor/run')})
+                self.assertIn('outcome is unknown', body['error'])
+                self.assertIn(error_type.__name__, log.getvalue())
+                self.assertIn('[redacted]', log.getvalue())
+                self.assertNotIn(secret, log.getvalue())
+                self.assertNotIn(secret, json.dumps(body))
+
+        with self.subTest(phase='json_encode_error_in_200_send'):
+            log = io.StringIO()
+            with patch.object(ui, 'api_response', return_value={'bad': object()}), \
+                    patch.object(ui.sys, 'stderr', log):
+                status, body, _ = self.request('/api/editor/run', {'connection': {'password': secret}})
+            self.assertEqual(status, 500)
+            self.assertEqual(body, {'error': ui._unexpected_error_message('/api/editor/run')})
+            self.assertIn('TypeError', log.getvalue())
+            self.assertNotIn(secret, log.getvalue())
+
+    def test_body_read_disconnect_on_sql_outcome_path_is_quiet(self):
+        from myflames import ui
+        orig_send = ui.WorkspaceHandler._send
+        # socket.timeout is an alias of TimeoutError on newer Python; keep one of each.
+        error_types = tuple(dict.fromkeys((BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                                           TimeoutError, socket.timeout)))
+        for error_type in error_types:
+            with self.subTest(error_type=error_type.__name__):
+                sends = []
+
+                def spy_send(handler, status, body, *args, **kwargs):
+                    sends.append(status)
+                    return orig_send(handler, status, body, *args, **kwargs)
+
+                log = io.StringIO()
+                # The client goes away while its body is read: payload stays
+                # None, api_response never runs, nothing was sent to any server.
+                with patch.object(ui.WorkspaceHandler, '_read_body',
+                                  side_effect=error_type('client gone mid-body')), \
+                        patch.object(ui.WorkspaceHandler, '_send', new=spy_send), \
+                        patch.object(ui.sys, 'stderr', log), \
+                        patch.object(ui, 'api_response',
+                                     side_effect=AssertionError('api_response must not run')):
+                    with self.assertRaises((http.client.HTTPException, OSError)):
+                        self.request('/api/editor/run', {'connection': {'host': 'db.example'}})
+                self.assertEqual(sends, [], 'no response is sent on the dead socket')
+                self.assertEqual(log.getvalue(), '')
+
+    def test_error_inside_api_response_on_lifecycle_cancel_keeps_500(self):
+        from myflames import ui
+        log = io.StringIO()
+        with patch.object(ui, 'api_response', side_effect=RuntimeError('post-cancel read-back bug')), \
+                patch.object(ui.sys, 'stderr', log):
+            status, body, _ = self.request('/api/lifecycle/cancel',
+                                           {'id': 'job-1', 'connection': {'host': 'db.example'}})
+        self.assertEqual(status, 500)
+        self.assertEqual(body, {'error': ui._unexpected_error_message('/api/lifecycle/cancel')})
+        self.assertIn('outcome is unknown', body['error'])
+        self.assertIn('RuntimeError', log.getvalue())
 
     def test_investigation_save_update_list_and_delete(self):
         value = {'schema_version': 'investigation-1.0', 'name': 'Before index',

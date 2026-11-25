@@ -111,7 +111,7 @@ try {
   await page.click("#tables-schemas-panel .perf-picker-list input");
   assert.equal(await page.$eval("#tables-schemas-panel .perf-picker-all input", (e) => e.checked), false);
   // A name the list does not have can be typed and used (Enter).
-  await page.click("#tables-schemas-panel .perf-picker-search", { clickCount: 3 });
+  await page.click("#tables-schemas-panel .perf-picker-search", { count: 3 });
   await page.keyboard.type("archive_db");
   assert.match(await text("#tables-schemas-panel .perf-picker-foot"), /Use “archive_db”/);
   await page.keyboard.press("Enter");
@@ -198,7 +198,7 @@ try {
     throw new Error('Filter tables "uk": expected every rendered table name to include "uk" within 5000 ms');
   });
   assert.ok((await rows(missingLabel)).every((t) => t.includes("uk")));
-  await page.click(`${view} input[aria-label="Filter tables"]`, { clickCount: 3 });
+  await page.click(`${view} input[aria-label="Filter tables"]`, { count: 3 });
   await page.keyboard.press("Backspace");
 
   // Row details in the inspector: why, the NULL check and the fix to copy, the caveat.
@@ -427,6 +427,8 @@ try {
   await page.waitForSelector(trigger);
   await page.$eval(trigger, (b) => { b.scrollIntoView({ block: "nearest", inline: "nearest" }); b.focus(); b.click(); });
   await page.waitForSelector(".row-action-menu [role=menuitem]");
+  assert.equal(await page.$eval('.row-action-menu', menu => menu.closest('.popover').parentElement === document.body), true,
+    "the row menu escapes the view's stacking context");
   await page.$$eval(".row-action-menu [role=menuitem]", (items) => {
     const add = items.find((i) => /^Add column/.test((i.textContent || "").trim()));
     add.focus(); add.click();
@@ -436,6 +438,18 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction((s) => !document.querySelector(s), {}, sheet);
   assert.equal(await page.$eval(trigger, (b) => b === document.activeElement), true, "focus returns to the row's ⋯ button");
+  await page.click(trigger);
+  await page.waitForSelector('.row-action-menu [role=menuitem]');
+  await page.$$eval('.row-action-menu [role=menuitem]', items => {
+    const remove = items.find(item => /^Remove column/.test(item.textContent.trim()));
+    remove.focus(); remove.click();
+  });
+  await page.waitForSelector(`${sheet} .col-info-card`);
+  assert.equal((await sheetState()).title, 'Remove column from mftab.no_key');
+  await page.locator(`${sheet} button ::-p-text(Cancel)`).click();
+  await page.waitForFunction(selector => !document.querySelector(selector), {}, sheet);
+  assert.equal(await page.$eval(trigger, button => button === document.activeElement), true,
+    'Cancel returns focus from Remove column to the portaled row menu opener');
   await h.select(`${view} tr[data-table="mftab.no_key"]`);
 
   await page.locator(".view-inspector button ::-p-text(Indexes)").click();
@@ -558,7 +572,7 @@ try {
   await page.type('input[aria-label="Minimum fragmentation percent"]', "90");
   await page.waitForFunction(() => document.querySelectorAll('[aria-label="Fragmentation by table"] tbody tr[data-table]').length === 2);
   assert.deepEqual(await rows(freeLabel), ["analytics.hourly", "s.`name.t.`name"]);
-  await page.click('input[aria-label="Minimum fragmentation percent"]', { clickCount: 3 });
+  await page.click('input[aria-label="Minimum fragmentation percent"]', { count: 3 });
   await page.keyboard.press("Backspace");
   await page.waitForFunction(() => document.querySelectorAll('[aria-label="Fragmentation by table"] tbody tr[data-table]').length === 3);
   const quoted = "`s.``name`.`t.``name`";

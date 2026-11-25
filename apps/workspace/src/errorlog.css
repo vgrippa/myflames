@@ -38,7 +38,7 @@
   box-shadow: 0 0 0 1px var(--focus);
 }
 
-.errorlog-export .popover-panel {
+.errorlog-export-panel {
   min-width: 220px;
 }
 

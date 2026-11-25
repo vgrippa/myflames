@@ -777,7 +777,7 @@
   gap: var(--space-2);
   margin: var(--space-2) 0;
 }
-.result-export .popover fieldset,
+.result-export-panel fieldset,
 .popover :is(.export-sql, .export-binary) {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);

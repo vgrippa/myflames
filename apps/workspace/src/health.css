@@ -236,11 +236,19 @@
   line-height: var(--leading-sm);
 }
 .health-watch-line {
-  display: inline-flex;
+  display: flex;
+  flex: 1 1 100%;
   align-items: baseline;
-  flex-wrap: wrap;
+  justify-content: space-between;
   gap: var(--space-2);
   min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.health-watch-line > span {
+  min-width: 0;
+}
+.health-watch-line > button {
+  flex: none;
 }
 .health-watch-note {
   min-width: 0;

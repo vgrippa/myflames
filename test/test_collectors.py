@@ -7,7 +7,10 @@ and database-free while still exercising the real parsing and query
 assembly paths.
 """
 import os
+import gc
+import statistics
 import sys
+import time
 import unittest
 
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -452,6 +455,123 @@ class TestCollectSessionVariables(unittest.TestCase):
             "innodb_flush_log_at_trx_commit",
         }
         self.assertTrue(essentials.issubset(set(ADVISOR_VARIABLES)))
+
+
+def _hostile_sql_shapes(size):
+    """The four regressions from the read-only SQL scanner timing probe."""
+    return (
+        ("dash_control", "SELECT 1 --\x01" + "/* " * (size // 3)),
+        ("nbe_literal", "SELECT '\\' AS a, '" + "/* " * (size // 3) + "' FROM dual"),
+        ("open_comments", "SELECT 1 " + "/* " * (size // 3)),
+        ("escaped_quotes", "SELECT " + '\\"' * (size // 2)),
+    )
+
+
+def _sql_scanner_probe_functions():
+    """Exercise the original probe and every editor/GRANT tokenizer consumer.
+
+    The editor helpers accept already masked code. Feed the hostile text
+    directly to their tokenizers to exercise their worst-case input without
+    including classification or connecting to a database. The policy's
+    token-to-text list is measured separately for the same reason.
+    """
+    from myflames import (analysis_query, collectors, dbops, discover,
+                         editor_session, index_hint, live, privileges, readyset, slowlog)
+
+    def unit(sql):
+        return {"code": sql, "send": sql, "idents": [], "sql_mode": None}
+
+    return (
+        ("collectors._strip_comments_and_literals", collectors._strip_comments_and_literals),
+        ("collectors.extract_table_references", lambda sql: collectors.extract_table_references(sql, "db", limit=20)),
+        ("live._select_problem", live._select_problem),
+        ("dbops.classify", dbops.classify),
+        ("dbops.redact", lambda sql: dbops.redact(sql, "hunter2")),
+        ("readyset._runnable_export_sql", lambda sql: readyset._runnable_export_sql("CREATE SHALLOW CACHE FROM " + sql + ";")),
+        ("readyset._normalize_query_or_id", readyset._normalize_query_or_id),
+        ("readyset._redact_export_sql", lambda sql: readyset._redact_export_sql(sql, "hunter2")),
+        ("discover.parameterize", discover.parameterize),
+        ("analysis_query.prepare", analysis_query.prepare),
+        ("slowlog.fingerprint", slowlog.fingerprint),
+        ("index_hint._comments", index_hint._comments),
+        ("editor_session._next_sql_mode", lambda sql: editor_session._next_sql_mode(unit(sql), {})),
+        ("editor_session._unit_changes_mode", lambda sql: editor_session._unit_changes_mode(unit(sql))),
+        ("editor_session._DdlBoundaryScanner", lambda sql: editor_session._DdlBoundaryScanner(sql, 0)),
+        ("editor_session._decision token list", lambda sql: [m.group() for m in editor_session._MASKED_TOKEN.finditer(sql)]),
+        ("dbops.GRANT_TOKEN", lambda sql: [m.group() for m in dbops.GRANT_TOKEN.finditer(sql)]),
+        ("privileges.tokens", privileges.tokens),
+        ("privileges.grant_source", privileges.grant_source),
+        ("privileges.parse_grants", lambda sql: privileges.parse_grants([sql])),
+    )
+
+
+def _scanner_seconds(function, sql, allow_refusal=False):
+    """Best of three per-call wall times, excluding collection pauses.
+
+    Refusals are valid probe results, but programming errors must fail the
+    test instead of being mistaken for fast input rejection.
+    """
+    def call():
+        try:
+            function(sql)
+        except ValueError:
+            if not allow_refusal:
+                raise
+
+    samples = []
+    for unused in range(3):
+        gc.collect()
+        was_enabled = gc.isenabled()
+        if was_enabled:
+            gc.disable()
+        try:
+            start = time.perf_counter()
+            call()
+            samples.append(time.perf_counter() - start)
+        finally:
+            if was_enabled:
+                gc.enable()
+    return min(samples)
+
+
+class TestSQLScannerTiming(unittest.TestCase):
+    def test_hostile_statement_scaling(self):
+        """Bound slow-call growth; use an absolute budget below clock-noise scale."""
+        small, large = _hostile_sql_shapes(16384), _hostile_sql_shapes(65536)
+        for name, function in _sql_scanner_probe_functions():
+            allow_refusal = name in ("readyset._normalize_query_or_id", "privileges.grant_source")
+            for (shape, first), (same_shape, second) in zip(small, large):
+                self.assertEqual(shape, same_shape)
+                with self.subTest(function=name, shape=shape):
+                    short = _scanner_seconds(function, first, allow_refusal)
+                    long = _scanner_seconds(function, second, allow_refusal)
+                    print("SQL scanner %s %s: 16K=%.6fs 64K=%.6fs ratio=%.2f" %
+                          (name, shape, short, long, long / short), flush=True)
+                    if long >= 0.05:
+                        self.assertLess(long, 8 * short,
+                                        "%s %s grew %.2fx (linear is about 4x, quadratic about 16x)"
+                                        % (name, shape, long / short))
+                    else:
+                        self.assertLess(long, 0.05,
+                                        "%s %s exceeded the 50 ms clock-noise bound" % (name, shape))
+
+    def test_one_megabyte_statement_budget(self):
+        from myflames import analysis_query, collectors, live
+        functions = (
+            ("collectors._strip_comments_and_literals", collectors._strip_comments_and_literals),
+            ("live._select_problem", live._select_problem),
+            ("analysis_query.prepare", analysis_query.prepare),
+            # prepare keeps its 200,000-character input limit. Also exercise
+            # its scanner at 1 MB so that the early refusal cannot hide a
+            # regression in the scanning work used for accepted-size input.
+            ("analysis_query._scan", analysis_query._scan),
+        )
+        for name, function in functions:
+            for shape, sql in _hostile_sql_shapes(1000000):
+                with self.subTest(function=name, shape=shape):
+                    elapsed = _scanner_seconds(function, sql, allow_refusal=name == "analysis_query._scan")
+                    print("SQL scanner %s %s: 1MB=%.6fs" % (name, shape, elapsed), flush=True)
+                    self.assertLess(elapsed, 1.0, "%s %s exceeded 1 s" % (name, shape))
 
 
 if __name__ == "__main__":

@@ -272,6 +272,7 @@ function SetValueField({ info, value, onChange, id, hintId, disabled, label }: {
       <Popover
         label={label ? `Choose ${label} members` : "Choose members"}
         className="set-value-popover"
+        panelClassName="set-value-panel"
         buttonClassName="set-value-button"
         disabled={disabled}
         trigger={<span className="set-value-summary">{value || "(empty)"}</span>}

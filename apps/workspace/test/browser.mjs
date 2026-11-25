@@ -92,6 +92,15 @@ for (const dimensions of [[904, 620, 920, 1416], [390, 420, 920, 1416], [320, 36
   checkZoom(...dimensions, true);
   checkZoom(...dimensions, false);
 }
+// A host with neither window.performance nor a global Performance clock still
+// supports fit, zoom and resize through Date.now(). Restore Node's clock after.
+const performanceDescriptor = Object.getOwnPropertyDescriptor(globalThis, "performance");
+try {
+  Object.defineProperty(globalThis, "performance", { configurable: true, value: undefined });
+  checkZoom(904, 620, 920, 1416, true);
+} finally {
+  Object.defineProperty(globalThis, "performance", performanceDescriptor);
+}
 // A report column that shrinks the 1200-unit SVG to 60%: fit zooms in so
 // the text still renders at 11 px.
 checkZoom(1200, 660, 920, 1416, false, 0.6);
@@ -302,6 +311,10 @@ try {
   await page.waitForSelector('.editor-toolbar');
   for (const width of [390, 320]) {
     await page.setViewport({ width, height: 844 });
+    // The narrow workbench (panes become sheets) follows the viewport through
+    // matchMedia and a React render; measuring before it lands sees the wide
+    // layout's squeezed panel with its buttons outside the toolbar.
+    await page.waitForSelector('.editor-workbench.is-narrow');
     const clipped = await page.$$eval('.editor-toolbar button', (els) => els.filter((el) => {
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) return false;

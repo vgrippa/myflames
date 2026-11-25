@@ -8,7 +8,7 @@ import { appVersion, time, type Plan } from "./api";
 import { Icon, type IconName } from "./components";
 import { CountBadge, Popover, closePopovers, useFocusScope } from "./kit";
 import { UpdateBadge } from "./UpdateBadge";
-import { useMinuteClock } from "./UpdateCheck";
+import { useMinuteClock } from "./UpdateBadge";
 import { updatePhase, updatePhaseLabel, useUpdateStatus } from "./updateStatus";
 import { applySidebarWidth, clampSidebarWidth, setUiPreference, SIDEBAR_DEFAULT, SIDEBAR_MIN, SIDEBAR_MAX, useUiPreferences } from "./uiPreferences";
 import type { SaveStatus } from "./session";

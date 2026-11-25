@@ -5,8 +5,10 @@ import os
 from pathlib import Path
 import random
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -133,13 +135,62 @@ class DiscoveryTests(unittest.TestCase):
         with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
             full = self.discover(shell_folder, mysql.parent)
             filtered = self.discover(shell_folder, mysql.parent, names=ct.QUERY_DISCOVERY_NAMES)
-        self.assertEqual([s['realpath'] for s in full['shells']], [str(mysql)])
+        self.assertEqual(full['shells'], [])
         for label, report in (('full', full), ('filtered', filtered)):
             with self.subTest(discovery=label):
                 self.assertEqual([g['programs']['mysql']['realpath'] for g in report['installations']],
                                  [str(mysql)])
                 self.assertEqual(ct.select(report, dict(engine='mysql', version='8.4.13'))['client']['path'],
                                  str(mysql))
+
+    def test_mysqlsh_link_to_mysql_is_unavailable_in_settings_and_maintenance(self):
+        from myflames import lifecycle
+        mysql = self.make(self.root / 'client/bin', banner='mysql Ver 8.4.13 for test')
+        aliases = private_client_dir(self.root / 'aliases/bin')
+        shell_link = aliases / 'mysqlsh'
+        shell_link.symlink_to(mysql)
+        server = dict(engine='mysql', version='8.4.13')
+        path = os.pathsep.join((str(aliases), str(mysql.parent)))
+        with mock.patch.dict(os.environ, {'PATH': path, 'MYFLAMES_BUNDLED_CLIENT_DIR': ''}), \
+                mock.patch.object(lifecycle, 'COMMON_BIN_DIRS', ()), \
+                mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')), \
+                mock.patch.object(ct.connector, 'client_choices', return_value={'mysql': None, 'mariadb': None}):
+            discovered = self.discover(aliases, mysql.parent)
+            selected = ct.select(discovered, server)
+            self.assertEqual(discovered['shells'], [])
+            self.assertIsNone(selected['shell'])
+            self.assertEqual(selected['client']['realpath'], str(mysql))
+            bad_copy = next(item for item in discovered['copies'] if item['name'] == 'mysqlsh')
+            self.assertFalse(bad_copy['available'])
+            self.assertTrue(bad_copy.get('error'))
+            for facts in (None, server):
+                with self.subTest(server=facts):
+                    report = lifecycle.detect_tools(server=facts)
+                    self.assertFalse(report['tools']['mysqlsh']['available'])
+                    offers = lifecycle.offered_tools(server, report)
+                    self.assertNotIn('mysqlsh', offers['dump'])
+                    self.assertEqual(offers['upgrade'], 'native_subset')
+                    if facts is not None:
+                        self.assertIsNone(report['used']['shell'])
+
+    def test_renamed_shell_binary_is_identified_by_its_version_banner(self):
+        binary = self.make(self.root / 'real/bin', 'shell-launcher',
+                           banner='mysqlsh Ver 9.7.0 for macos15 on arm64 - for MySQL 9.7.0')
+        aliases = private_client_dir(self.root / 'aliases/bin')
+        shell_link = aliases / 'mysqlsh'
+        shell_link.symlink_to(binary)
+        with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
+            report = self.discover(aliases)
+        self.assertEqual([item['realpath'] for item in report['shells']], [str(binary)])
+        self.assertEqual(ct.select(report, dict(engine='mysql', version='8.4.13'))['shell']['path'],
+                         str(shell_link))
+
+    def test_mysql_banner_cannot_become_shell_when_file_is_named_mysqlsh(self):
+        binary = self.make(self.root / 'renamed/bin', 'mysqlsh', banner='mysql Ver 8.4.13 for test')
+        with mock.patch.object(ct.connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(self.root / 'etc-mysql')):
+            report = self.discover(binary.parent)
+        self.assertEqual(report['shells'], [])
+        self.assertFalse(report['copies'][0]['available'])
 
     def test_F1_query_client_is_the_client_settings_reports_when_a_dump_tool_comes_first(self):
         a = private_client_dir(self.root / 'a/bin')
@@ -280,6 +331,190 @@ class DiscoveryTests(unittest.TestCase):
             report = self.discover(self.root)
             self.assertEqual(run.call_count, 2)
             self.assertEqual(report['skipped'][0]['error'], 'TimeoutExpired')
+
+    def test_stop_event_kills_and_reaps_running_discovery_probe(self):
+        binary = self.make(self.root / 'slow/bin')
+        started = self.root / 'probe-started'
+        binary.write_text('#!%s\nimport pathlib, time\npathlib.Path(%r).touch()\n'
+                          'time.sleep(5)\nprint("mysql Ver 8.4.13")\n' % (sys.executable, str(started)))
+        stop = threading.Event()
+        children = []
+        real_popen = ct.subprocess.Popen
+
+        def launch(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        with mock.patch.object(ct.subprocess, 'Popen', side_effect=launch), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.discover, binary.parent, stop=stop)
+            try:
+                deadline = time.monotonic() + 5
+                while not started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(started.exists(), 'the slow version probe never started')
+            finally:
+                t0 = time.monotonic()
+                stop.set()
+                report = future.result(timeout=10)
+                elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(report['installations'], [])
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].returncode, 'the probe child must be reaped before discovery ends')
+        self.assertNotIn(ct._probe_key('mysql', str(binary)), ct._PROBE_CACHE)
+        self.assertFalse(ct._PROBE_FLIGHTS)
+
+    def test_stopped_probe_waiter_leaves_the_owners_flight_alone(self):
+        binary = self.make(self.root)
+        key = ct._probe_key('mysql', str(binary))
+        stop = threading.Event()
+        done = mock.Mock()
+
+        def stop_waiting(timeout):
+            stop.set()
+            return False
+
+        done.wait.side_effect = stop_waiting
+        flight = dict(done=done, result=None, error=None)
+        with ct._PROBE_LOCK:
+            ct._PROBE_FLIGHTS[key] = flight
+        try:
+            with mock.patch.object(ct.connector, '_run_bounded') as run:
+                result = ct.probe('mysql', str(binary), stop=stop)
+            self.assertFalse(result['available'])
+            run.assert_not_called()
+            self.assertEqual(done.wait.call_count, 1)
+            done.set.assert_not_called()
+            with ct._PROBE_LOCK:
+                self.assertIs(ct._PROBE_FLIGHTS[key], flight)
+        finally:
+            with ct._PROBE_LOCK:
+                ct._PROBE_FLIGHTS.pop(key, None)
+
+    def test_probe_stop_preserves_outer_read_cancellation_and_guard(self):
+        from myflames import read_cancel
+        for trigger in ('stop', 'read', 'both'):
+            with self.subTest(trigger=trigger):
+                binary = self.make(self.root / trigger)
+                stop, cancel = threading.Event(), threading.Event()
+                guard = mock.Mock()
+                continued = []
+
+                def run(*args, **kwargs):
+                    self.assertIs(read_cancel.current_guard(), guard)
+                    if trigger in ('stop', 'both'):
+                        stop.set()
+                    if trigger in ('read', 'both'):
+                        cancel.set()
+                    # Model the bounded runner's next cancellation poll.
+                    read_cancel.check()
+                    continued.append(True)
+                    return subprocess.CompletedProcess(args[0], 0, b'mysql Ver 8.4.13', b'')
+
+                with read_cancel.scope(cancel, guard), mock.patch.object(
+                        ct.connector, '_run_bounded', side_effect=run):
+                    if trigger == 'stop':
+                        result = ct.probe('mysql', str(binary), stop=stop)
+                        self.assertEqual(result, {'available': False, 'error': 'Version probe stopped.'})
+                    else:
+                        with self.assertRaises(read_cancel.CancelledRead):
+                            ct.probe('mysql', str(binary), stop=stop)
+                    self.assertIs(read_cancel.current(), cancel)
+                    self.assertIs(read_cancel.current_guard(), guard)
+                self.assertFalse(continued, 'either cancellation must interrupt the owned runner')
+                self.assertNotIn(ct._probe_key('mysql', str(binary)), ct._PROBE_CACHE)
+                self.assertFalse(ct._PROBE_FLIGHTS)
+
+
+    def test_outer_read_cancellation_reaps_probe_with_an_unset_stop(self):
+        from myflames import read_cancel
+        binary = self.make(self.root / 'cancelled/bin')
+        started = self.root / 'cancelled-probe-started'
+        binary.write_text('#!%s\nimport pathlib, time\npathlib.Path(%r).touch()\n'
+                          'time.sleep(5)\nprint("mysql Ver 8.4.13")\n' % (sys.executable, str(started)))
+        cancel, stop = threading.Event(), threading.Event()
+        children = []
+        real_popen = ct.subprocess.Popen
+
+        def launch(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        def probe():
+            with read_cancel.scope(cancel):
+                return ct.probe('mysql', str(binary), stop=stop)
+
+        with mock.patch.object(ct.subprocess, 'Popen', side_effect=launch), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(probe)
+            try:
+                deadline = time.monotonic() + 5
+                while not started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(started.exists(), 'the slow version probe never started')
+                t0 = time.monotonic()
+                cancel.set()
+                with self.assertRaises(read_cancel.CancelledRead):
+                    future.result(timeout=10)
+                self.assertLess(time.monotonic() - t0, 0.75)
+                self.assertFalse(stop.is_set(), 'the outer event alone must stop the probe')
+                self.assertIsNotNone(children[0].returncode, 'the owned child must be reaped')
+                self.assertNotIn(ct._probe_key('mysql', str(binary)), ct._PROBE_CACHE)
+                self.assertFalse(ct._PROBE_FLIGHTS)
+            finally:
+                cancel.set()
+                stop.set()
+                try:
+                    future.result(timeout=10)
+                except read_cancel.CancelledRead:
+                    pass
+                for child in children:
+                    if child.poll() is None:
+                        child.kill()
+                    child.wait(timeout=3)
+
+
+    def test_read_cancel_kills_and_reaps_owned_version_probe(self):
+        from myflames import read_cancel
+        binary = self.make(self.root / 'slow-read/bin')
+        started = self.root / 'read-probe-started'
+        binary.write_text('#!%s\nimport pathlib, time\npathlib.Path(%r).touch()\n'
+                          'time.sleep(2)\nprint("mysql Ver 8.4.13")\n' % (sys.executable, str(started)))
+        cancel = threading.Event()
+        children = []
+        real_popen = ct.subprocess.Popen
+
+        def launch(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        def discover_read():
+            with read_cancel.scope(cancel):
+                return self.discover(binary.parent)
+
+        with mock.patch.object(ct.subprocess, 'Popen', side_effect=launch), \
+                ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(discover_read)
+            try:
+                deadline = time.monotonic() + 5
+                while not started.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(started.exists(), 'the owned version probe never started')
+            finally:
+                t0 = time.monotonic()
+                cancel.set()
+                with self.assertRaises(read_cancel.CancelledRead):
+                    future.result(timeout=10)
+                elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].returncode, 'cancellation must reap the owned child')
+        self.assertNotIn(ct._probe_key('mysql', str(binary)), ct._PROBE_CACHE)
+        self.assertFalse(ct._PROBE_FLIGHTS)
 
     def test_unrecognized_numeric_banner_is_not_cached(self):
         self.make(self.root, banner='/Applications/myflames 3.1.0/mysql: no version')
@@ -1032,6 +1267,156 @@ class DiscoveryTests(unittest.TestCase):
                 mock.patch.object(ct.subprocess, 'run', side_effect=AssertionError('no probe')):
             self.discover(self.root, job=job)
 
+    def test_read_cancellation_stops_discovery_before_second_probe(self):
+        from myflames import read_cancel
+        folders = [self.make(self.root / str(i)).parent for i in range(3)]
+        cancel = threading.Event()
+
+        def probe_and_cancel(*args, **kwargs):
+            cancel.set()
+            return dict(available=True, version='mysql Ver 8.4.13',
+                        version_tuple=[8, 4, 13], engine='mysql')
+
+        with mock.patch.object(ct, 'probe', side_effect=probe_and_cancel) as probe:
+            with read_cancel.scope(cancel), self.assertRaises(read_cancel.CancelledRead):
+                self.discover(*folders)
+        self.assertEqual(probe.call_count, 1)
+
+    def test_read_cancellation_stops_snapshot_between_candidates(self):
+        from myflames import read_cancel
+        folders = [self.make(self.root / str(i)).parent for i in range(3)]
+        cancel = threading.Event()
+        checked = ct.connector.checked_program
+
+        def check_and_cancel(*args, **kwargs):
+            result = checked(*args, **kwargs)
+            cancel.set()
+            return result
+
+        with mock.patch.object(ct.connector, 'checked_program', side_effect=check_and_cancel) as check:
+            with read_cancel.scope(cancel), self.assertRaises(read_cancel.CancelledRead):
+                ct.snapshot(path=os.pathsep.join(str(folder) for folder in folders),
+                            common_dirs=(), bundled=False, names=('mysql',))
+        self.assertEqual(check.call_count, 1)
+
+    def test_read_cancellation_prevents_direct_version_probe(self):
+        from myflames import read_cancel
+        binary = self.make(self.root)
+        cancel = threading.Event()
+        result = subprocess.CompletedProcess([], 0, b'mysql Ver 8.4.13\n')
+        with mock.patch.object(ct.subprocess, 'run', return_value=result) as run:
+            with read_cancel.scope(cancel):
+                cancel.set()
+                with self.assertRaises(read_cancel.CancelledRead):
+                    ct.probe('mysql', str(binary))
+        run.assert_not_called()
+
+    def test_read_cancellation_interrupts_wait_for_shared_version_probe(self):
+        from myflames import read_cancel
+        binary = self.make(self.root)
+        key = ct._probe_key('mysql', str(binary))
+        cancel = threading.Event()
+        done = mock.Mock()
+
+        def wait(timeout):
+            cancel.set()
+            # A second wait completes so the unfixed implementation fails
+            # deterministically instead of leaving a test thread blocked.
+            return done.wait.call_count > 1
+
+        done.wait.side_effect = wait
+        flight = dict(done=done, result=dict(available=True, version='mysql Ver 8.4.13',
+                                            version_tuple=[8, 4, 13], engine='mysql'))
+        with ct._PROBE_LOCK:
+            ct._PROBE_FLIGHTS[key] = flight
+        try:
+            with mock.patch.object(ct.subprocess, 'run') as run:
+                with read_cancel.scope(cancel), self.assertRaises(read_cancel.CancelledRead):
+                    ct.probe('mysql', str(binary))
+            run.assert_not_called()
+            self.assertEqual(done.wait.call_count, 1)
+        finally:
+            with ct._PROBE_LOCK:
+                ct._PROBE_FLIGHTS.pop(key, None)
+
+    def test_read_cancellation_wins_when_shared_version_probe_finishes(self):
+        from myflames import read_cancel
+        binary = self.make(self.root)
+        key = ct._probe_key('mysql', str(binary))
+        cancel = threading.Event()
+        done = mock.Mock()
+
+        def finish_and_cancel(timeout):
+            cancel.set()
+            return True
+
+        done.wait.side_effect = finish_and_cancel
+        flight = dict(done=done, result=dict(available=True, version='mysql Ver 8.4.13',
+                                            version_tuple=[8, 4, 13], engine='mysql'))
+        with ct._PROBE_LOCK:
+            ct._PROBE_FLIGHTS[key] = flight
+        try:
+            with mock.patch.object(ct.subprocess, 'run') as run:
+                with read_cancel.scope(cancel), self.assertRaises(read_cancel.CancelledRead):
+                    ct.probe('mysql', str(binary))
+            run.assert_not_called()
+            self.assertEqual(done.wait.call_count, 1)
+            # A cancelled waiter must leave the shared result for other callers.
+            with ct._PROBE_LOCK:
+                self.assertIs(ct._PROBE_FLIGHTS[key], flight)
+        finally:
+            with ct._PROBE_LOCK:
+                ct._PROBE_FLIGHTS.pop(key, None)
+
+    def test_uncancelled_probe_waiter_retries_a_cancelled_owner(self):
+        from myflames import read_cancel
+        binary = self.make(self.root)
+        key = ct._probe_key('mysql', str(binary))
+        done = mock.Mock()
+        flight = dict(done=done, result=None, error=read_cancel.CancelledRead())
+
+        def finish_cancelled_owner(timeout):
+            # The original owner removes its completed flight in finally.
+            with ct._PROBE_LOCK:
+                self.assertIs(ct._PROBE_FLIGHTS.pop(key), flight)
+            return True
+
+        done.wait.side_effect = finish_cancelled_owner
+        with ct._PROBE_LOCK:
+            ct._PROBE_FLIGHTS[key] = flight
+        try:
+            result = subprocess.CompletedProcess([], 0, b'mysql Ver 8.4.13\n', b'')
+            with read_cancel.scope(threading.Event()), \
+                    mock.patch.object(ct.connector, '_run_bounded', return_value=result) as run:
+                found = ct.probe('mysql', str(binary))
+            self.assertTrue(found['available'])
+            self.assertEqual(found['version_tuple'], [8, 4, 13])
+            run.assert_called_once()
+            self.assertEqual(done.wait.call_count, 1)
+        finally:
+            with ct._PROBE_LOCK:
+                ct._PROBE_FLIGHTS.pop(key, None)
+
+    def test_stop_event_stops_discover_between_candidates(self):
+        folders = [self.make(self.root / str(i)).parent for i in range(3)]
+        stop = threading.Event()
+        real_run = ct.connector._run_bounded
+
+        def run_and_stop(*args, **kwargs):
+            result = real_run(*args, **kwargs)
+            stop.set()
+            return result
+
+        with mock.patch.object(ct.connector, '_run_bounded', side_effect=run_and_stop) as run:
+            report = self.discover(*folders, stop=stop)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(len(report['installations']), 1)
+
+        with mock.patch.object(ct, 'snapshot', side_effect=AssertionError('must not scan when already stopped')), \
+                mock.patch.object(ct.subprocess, 'run', side_effect=AssertionError('no probe')):
+            stopped = self.discover(*folders, stop=stop)
+        self.assertEqual(stopped, dict(installations=[], shells=[], skipped=[], copies=[]))
+
 
 class SelectionTests(unittest.TestCase):
     @staticmethod
@@ -1280,6 +1665,54 @@ class EndpointTests(unittest.TestCase):
         self.assertIsNone(ct.server_facts(1))
         self.assertIsNotNone(ct.server_facts(0))
         self.assertEqual(len(ct._FACTS), 256)
+
+    def test_unidentified_server_uses_same_endpoint_key_without_inventing_facts(self):
+        key = ct.endpoint_key(dict(host='proxy', port=6032, user='first'))
+        ct.remember_unidentified_server(key)
+        same_endpoint = ct.endpoint_key(dict(host='proxy', port=6032, user='second',
+                                             password='not-a-real-secret', ssl_mode='REQUIRED'))
+        self.assertTrue(ct.first_contact_unidentified(same_endpoint))
+        self.assertIsNone(ct.server_facts(key))
+        for options in (dict(host='proxy', port=6033), dict(host='proxy-alias', port=6032),
+                        dict(host='proxy', port=6032, ssh_host='jump')):
+            self.assertFalse(ct.first_contact_unidentified(ct.endpoint_key(options)))
+        ct.remember_server(key, 'mysql', '8.4.14')
+        self.assertFalse(ct.first_contact_unidentified(key))
+        self.assertEqual(ct.server_facts(key), dict(engine='mysql', version='8.4.14'))
+        # A slower rejected probe cannot erase a successful concurrent read.
+        ct.remember_unidentified_server(key)
+        self.assertFalse(ct.first_contact_unidentified(key))
+        self.assertEqual(ct.server_facts(key), dict(engine='mysql', version='8.4.14'))
+
+    def test_unidentified_servers_share_fact_lru_limit_and_read_recency(self):
+        for index in range(256):
+            ct.remember_unidentified_server(index)
+        self.assertTrue(ct.first_contact_unidentified(0))
+        ct.remember_server(256, 'mysql', '8.4.14')
+        self.assertFalse(ct.first_contact_unidentified(1))
+        self.assertTrue(ct.first_contact_unidentified(0))
+        self.assertEqual(len(ct._FACTS), 256)
+        # Reading the unknown facts of a retained endpoint is still a use.
+        self.assertIsNone(ct.server_facts(2))
+        ct.remember_unidentified_server(257)
+        self.assertTrue(ct.first_contact_unidentified(2))
+        self.assertFalse(ct.first_contact_unidentified(3))
+
+    def test_unidentified_server_and_valid_facts_are_thread_safe(self):
+        def worker(index):
+            for attempt in range(15):
+                key = ct.endpoint_key(dict(host='refusal-%d-%d' % (index, attempt)))
+                ct.remember_unidentified_server(key)
+                self.assertTrue(ct.first_contact_unidentified(key))
+                self.assertIsNone(ct.server_facts(key))
+                ct.remember_server(key, 'mariadb', '11.8.2-MariaDB')
+                ct.remember_unidentified_server(key)
+                self.assertFalse(ct.first_contact_unidentified(key))
+                self.assertEqual(ct.server_facts(key),
+                                 dict(engine='mariadb', version='11.8.2-MariaDB'))
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(worker, range(4)))
+        self.assertEqual(len(ct._FACTS), 60)
 
     def test_thread_safety(self):
         def worker(i):

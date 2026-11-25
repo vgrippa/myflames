@@ -321,7 +321,7 @@ async function stage(name, value) {
   await page.waitForSelector(input(name));
   if (await page.$eval(input(name), e => e.getAttribute("role") === "switch")) { await page.click(input(name)); return; }
   if (await page.$eval(input(name), e => e.tagName === "SELECT")) { await page.select(input(name), value); return; }
-  await page.click(input(name), { clickCount: 3 }); await page.keyboard.press("Backspace"); await page.type(input(name), value);
+  await page.click(input(name), { count: 3 }); await page.keyboard.press("Backspace"); await page.type(input(name), value);
 }
 async function review(count) {
   await pendingCount(count);
@@ -358,7 +358,7 @@ const audit = () =>
 const statement = () => page.$eval(`${single} .variable-statement`, (e) => e.textContent).catch(() => "");
 async function setValue(name, value) {
   const input = `${single} #variable-value-${name}`;
-  await page.click(input, { clickCount: 3 });
+  await page.click(input, { count: 3 });
   await page.keyboard.press("Backspace");
   await page.type(input, value);
 }
@@ -548,6 +548,29 @@ try {
   await edit();
   await search("sql_mode");
   await page.waitForSelector(input("sql_mode"));
+  // An unknown member is kept in the list's hint. Its spacing belongs to the
+  // panel, so it survives when the table's picker is portaled to body.
+  const originalMembers = await page.$eval(`${input("sql_mode")} .set-value-summary`, summary => summary.textContent);
+  const typeMembers = async value => {
+    const selector = `${input("sql_mode")}.variable-input`;
+    await page.click(selector, { count: 3 });
+    await page.keyboard.press("Backspace");
+    await page.type(selector, value);
+  };
+  await page.click(`${input("sql_mode")} .set-value-as-text`);
+  await typeMembers(`${originalMembers},PORTAL_TEST_MEMBER`);
+  await page.locator(`${view} .set-value button ::-p-text(Choose from list)`).click();
+  await page.click(`${input("sql_mode")} .set-value-button`);
+  await page.waitForSelector('.set-value-panel .hint');
+  assert.deepEqual(await page.$eval('.set-value-panel', panel => {
+    const style = getComputedStyle(panel.querySelector('.hint'));
+    return [panel.parentElement === document.body, style.marginTop, style.marginRight, style.marginBottom, style.marginLeft];
+  }), [true, '8px', '0px', '0px', '0px'], 'set members keep their hint spacing in the portal');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.set-value-panel'));
+  await page.click(`${input("sql_mode")} .set-value-as-text`);
+  await typeMembers(originalMembers);
+  await page.locator(`${view} .set-value button ::-p-text(Choose from list)`).click();
   const memberBox = async (name) => {
     const handle = await page.evaluateHandle((n) => [...document.querySelectorAll(".popover .set-value-member")]
       .find((e) => e.textContent.trim() === n)?.querySelector("input"), name);
@@ -573,7 +596,7 @@ try {
   await search("sql_mode");
   await page.click(`${input("sql_mode")} .set-value-as-text`);
   await page.waitForSelector(`${input("sql_mode")}.variable-input`);
-  await page.click(`${input("sql_mode")}.variable-input`, { clickCount: 3 });
+  await page.click(`${input("sql_mode")}.variable-input`, { count: 3 });
   await page.keyboard.press("Backspace");
   await page.type(`${input("sql_mode")}.variable-input`, "NO_ZERO_DATE");
   await review(1);

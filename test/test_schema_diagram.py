@@ -410,6 +410,22 @@ class TestMermaidDiagram(unittest.TestCase):
         self.assertEqual(again['tables'][1]['name'], 'order.child & co')
         self.assertEqual(again['tables'][1]['columns'][0]['name'], 'parent key')
 
+    def test_mermaid_dollar_labels_are_escaped_and_roundtrip_as_text(self):
+        self.assertEqual(d._mermaid_escape('#&\"\'<>\n\r\t\x7f\x80$'),
+                         '#35;#amp;#quot;#39;#lt;#gt;#10;#13;#9;#127;#128;#36;')
+        model = d.import_sql('''CREATE TABLE `$$x$$` (`$$column$$` INT PRIMARY KEY);
+          CREATE TABLE child(parent_id INT,
+          CONSTRAINT `$$relationship$$` FOREIGN KEY(parent_id) REFERENCES `$$x$$`(`$$column$$`));''')
+        text = d.export_mermaid(model)['text']
+        self.assertNotIn('$', text)
+        self.assertIn('T1["#36;#36;x#36;#36;"]', text)
+        self.assertIn('name: #36;#36;column#36;#36;', text)
+        self.assertIn('"#36;#36;relationship#36;#36;"', text)
+        again = d.import_mermaid(text)
+        self.assertEqual(again['tables'][0]['name'], '$$x$$')
+        self.assertEqual(again['tables'][0]['columns'][0]['name'], '$$column$$')
+        self.assertEqual(again['relationships'][0]['name'], '$$relationship$$')
+
     def test_unsupported_directives_and_empty_entity(self):
         model = d.import_mermaid('erDiagram\n%% ordinary\nEmpty {}\ndirection LR\nclassDef red fill:red;')
         self.assertEqual([t['name'] for t in model['tables']], ['Empty'])

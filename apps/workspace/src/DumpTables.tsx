@@ -76,9 +76,9 @@ export function tableFacts(table: SchemaTable) {
 }
 
 /** Multi-select of the database's tables. An empty selection is All tables. */
-export function TablePicker({ id, schema, value, onChange, tables, disabled }: {
+export function TablePicker({ id, schema, value, onChange, tables, disabled, invalid }: {
   id: string; schema: string; value: string[]; onChange: (value: string[]) => void;
-  tables: ReturnType<typeof useSchemaTables>; disabled?: boolean;
+  tables: ReturnType<typeof useSchemaTables>; disabled?: boolean; invalid?: boolean;
 }) {
   const control = useRef<HTMLFieldSetElement>(null);
   const total = tables.loading && !tables.tables.length ? null : tables.truncated ? null : tables.tables.length;
@@ -86,6 +86,8 @@ export function TablePicker({ id, schema, value, onChange, tables, disabled }: {
     <fieldset ref={control} className="perf-picker-control" disabled={disabled}>
       <legend className="visually-hidden">Tables of {schema}</legend>
       <Popover label={`Choose tables of ${schema}`} className="perf-picker-popover dump-table-popover" buttonClassName="perf-picker-button"
+        disabled={disabled}
+        panelClassName={invalid ? "dump-table-invalid" : undefined}
         buttonTitle="Choose tables" wide
         trigger={<><span className="visually-hidden">Tables: </span><span id={id} className="perf-picker-summary">{tableSummary(value, total)}</span></>}>
         <TablePanel schema={schema} value={value} onChange={onChange} tables={tables}

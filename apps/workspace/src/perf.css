@@ -171,9 +171,17 @@
   white-space: nowrap;
 }
 .perf-picker-panel {
+  grid-column: 1 / -1;
   min-width: 0;
   color: var(--ink);
   white-space: normal;
+}
+/* These inputs previously inherited the toolbar-field rule through the
+   database picker's trigger. Its panel can now live outside that toolbar. */
+.schema-picker-panel input,
+.schema-picker-panel select {
+  max-width: 220px;
+  font-size: var(--text-sm);
 }
 .perf-picker-head {
   display: flex;

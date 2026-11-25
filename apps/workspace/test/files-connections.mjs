@@ -122,7 +122,7 @@ try {
   const bodyText = () => page.evaluate(() => document.body.textContent || '');
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const setInput = async (selector, text) => {
-    await page.click(selector, { clickCount: 3 });
+    await page.click(selector, { count: 3 });
     if (text) await page.type(selector, text);
     else await page.keyboard.press('Backspace');
   };

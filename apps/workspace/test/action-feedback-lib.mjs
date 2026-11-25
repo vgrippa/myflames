@@ -347,7 +347,7 @@ export async function waitNotBusy(page, selector, timeout = 8000) {
 }
 const typeInto = async (page, selector, text) => {
   const field = await visible(page, selector);
-  await field.click({ clickCount: 3 });
+  await field.click({ count: 3 });
   await field.type(text);
 };
 const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

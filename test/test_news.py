@@ -711,7 +711,8 @@ class TestSettingAndEndpoint(unittest.TestCase):
         import inspect
         from myflames import ui
         from myflames.ui import WorkspaceServer
-        self.assertIn('news_reader=fetch_feed', inspect.getsource(ui.cmd_ui))
+        self.assertIn('news_reader=_fetch_feed', inspect.getsource(ui.cmd_ui))
+        self.assertIn('from .news import fetch_feed', inspect.getsource(ui.cmd_ui))
         server = WorkspaceServer(store_path=str(self.store.path))
         self.assertIsNone(server.news_reader, 'test servers never read feeds')
         thread = threading.Thread(target=server.serve_forever, daemon=True)

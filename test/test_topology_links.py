@@ -1577,6 +1577,202 @@ class TestMultiTierTopology(unittest.TestCase):
                 self.assertEqual(found, [])
                 self.assertIn("not on this computer", problem)
 
+    def test_remote_direct_loopback_peer_does_not_filter_local_proxy_and_local_reporter_still_filters(self):
+        # A remote direct replica (not SSH, not on this computer) reporting a
+        # loopback source must not drop a local direct saved proxy at that port.
+        remote_replica = {
+            "id": "p-rem", "name": "Remote Replica", "host": "10.0.0.20", "port": 3306, "group": "lab",
+        }
+        local_proxy = {
+            "id": "p-local-px", "name": "Local Proxy", "host": "127.0.0.1", "port": 6033,
+            "remember_password": True, "group": "lab",
+        }
+        remote_primary = {
+            "id": "p-rem-pri", "name": "Remote Primary", "host": "10.0.0.10", "port": 3306,
+            "remember_password": True, "group": "lab",
+        }
+        candidates = topology_links._filter_tier_candidates(
+            [remote_replica, local_proxy, remote_primary],
+            {"profile_host": "10.0.0.20", "profile_port": 3306, "ssh_host": None},
+            peer_endpoints=[
+                {"host": "127.0.0.1", "port": 6033},
+                {"host": "10.0.0.10", "port": 3306},
+            ],
+            skip_profile_id="p-rem",
+            current=remote_replica,
+        )
+        self.assertEqual([c["id"] for c in candidates], ["p-local-px"])
+
+        # A peer carrying a remote reporter's observer_host also stays out of
+        # local loopback scope even when local_identity itself is local.
+        local_cur = {"id": "p-loc-cur", "name": "Local Cur", "host": "127.0.0.1", "port": 3306, "group": "lab"}
+        scoped_candidates = topology_links._filter_tier_candidates(
+            [local_cur, local_proxy],
+            {"profile_host": "127.0.0.1", "profile_port": 3306},
+            peer_endpoints=[{"host": "127.0.0.1", "port": 6033, "observer_host": "10.0.0.20"}],
+            skip_profile_id="p-loc-cur",
+            current=local_cur,
+        )
+        self.assertEqual([c["id"] for c in scoped_candidates], ["p-local-px"])
+
+        # End-to-end: discover_database_tiers probes the local proxy at 127.0.0.1:6033
+        # when the remote direct replica reports a loopback source at 127.0.0.1:6033.
+        probed_ids = []
+        px_conn = FakeProbeConn(
+            "proxysql",
+            servers=[{
+                "hostgroup_id": "10", "hostname": "10.0.0.20", "port": "3306",
+                "status": "ONLINE", "weight": "100", "comment": "remote replica",
+            }],
+        )
+
+        def opener(profile):
+            probed_ids.append(profile["id"])
+            return px_conn
+
+        tiers = topology_links.discover_database_tiers(
+            FakeProbeConn("database", hostname="rem-rep", port=3306),
+            {"profile_host": "10.0.0.20", "profile_port": 3306, "hostname": "rem-rep", "port": 3306},
+            peer_endpoints=[{"host": "127.0.0.1", "port": 6033}],
+            profiles=[remote_replica, local_proxy],
+            open_profile=opener,
+            observer_host="10.0.0.20",
+            current_profile_id="p-rem",
+        )
+        self.assertEqual(probed_ids, ["p-local-px"])
+        self.assertEqual([node["profile_id"] for node in tiers["proxysql"]], ["p-local-px"])
+
+        # And a remote-reported loopback peer never matches a local proxy's
+        # loopback backend target even if the peer dict carried profile_host/port.
+        topology_links._reset_cache_for_tests()
+        unrelated_px = FakeProbeConn(
+            "proxysql",
+            servers=[{
+                "hostgroup_id": "10", "hostname": "127.0.0.1", "port": "6033",
+                "status": "ONLINE", "weight": "100", "comment": "local backend",
+            }],
+        )
+        unrelated_tiers = topology_links.discover_database_tiers(
+            FakeProbeConn("database", hostname="rem-rep", port=3306),
+            {"profile_host": "10.0.0.20", "profile_port": 3306, "hostname": "rem-rep", "port": 3306},
+            peer_endpoints=[{"host": "127.0.0.1", "port": 6033, "profile_host": "127.0.0.1", "profile_port": 6033}],
+            profiles=[remote_replica, local_proxy],
+            open_profile=lambda p: unrelated_px,
+            observer_host="10.0.0.20",
+            current_profile_id="p-rem",
+        )
+        self.assertEqual(unrelated_tiers["proxysql"], [])
+
+        # Conversely, when the reporting server IS direct and loopback on this
+        # computer, its reported loopback peer counts as a known local DB and
+        # filters a direct local saved connection at that port, while keeping SSH.
+        local_replica = {
+            "id": "p-loc-rep", "name": "Local Replica", "host": "127.0.0.1", "port": 3306, "group": "lab",
+        }
+        local_primary = {
+            "id": "p-loc-pri", "name": "Local Primary", "host": "localhost", "port": 6033,
+            "remember_password": True, "group": "lab",
+        }
+        ssh_proxy = {
+            "id": "p-ssh-px", "name": "SSH Proxy", "host": "127.0.0.1", "port": 6033,
+            "ssh_host": "bastion.example", "remember_password": True, "group": "lab",
+        }
+        other_local_proxy = {
+            "id": "p-loc-px", "name": "Local Proxy", "host": "127.0.0.1", "port": 6032,
+            "remember_password": True, "group": "lab",
+        }
+        local_candidates = topology_links._filter_tier_candidates(
+            [local_replica, local_primary, ssh_proxy, other_local_proxy],
+            {"profile_host": "127.0.0.1", "profile_port": 3306},
+            peer_endpoints=[{"host": "127.0.0.1", "port": 6033}],
+            skip_profile_id="p-loc-rep",
+            current=local_replica,
+        )
+        self.assertEqual([c["id"] for c in local_candidates], ["p-ssh-px", "p-loc-px"])
+
+    def test_hex_and_octal_ipv4_canonicalization(self):
+        from myflames import replication
+        for host, expected in (
+            ("0x7f.0.0.1", "127.0.0.1"),
+            ("0x7f000001", "127.0.0.1"),
+            ("0X7F000001", "127.0.0.1"),
+            ("0x7f.1", "127.0.0.1"),
+            ("0x7f.0.1", "127.0.0.1"),
+            ("0x7f.0x0.0x0.0x1", "127.0.0.1"),
+            ("0177.0.0.1", "127.0.0.1"),
+            ("0177.0.0.01", "127.0.0.1"),
+            ("0177.1", "127.0.0.1"),
+            ("0177.0.1", "127.0.0.1"),
+            ("017700000001", "127.0.0.1"),
+            ("0177.0x0.0.0x1", "127.0.0.1"),
+            ("0x0", "0.0.0.0"),
+            ("00", "0.0.0.0"),
+        ):
+            with self.subTest(loopback=host):
+                self.assertEqual(topology_links._host_key(host), expected)
+                self.assertTrue(topology_links.is_loopback(host))
+                self.assertTrue(replication._is_loopback(host))
+
+        for host, expected in (
+            ("0x0a.0.0.5", "10.0.0.5"),
+            ("0x0a000005", "10.0.0.5"),
+            ("012.0.0.5", "10.0.0.5"),
+            ("012.5", "10.0.0.5"),
+            ("010.0.0.1", "8.0.0.1"),
+            ("0x7f", "0.0.0.127"),
+            ("0xdb.example.com", "0xdb.example.com"),
+            ("0x7f.example.com", "0x7f.example.com"),
+            ("0x7f.foo", "0x7f.foo"),
+            ("0x", "0x"),
+            ("08.0.0.1", "08.0.0.1"),
+            ("127.008.0.1", "127.008.0.1"),
+            ("0x100.0.0.1", "0x100.0.0.1"),
+            ("0x100000000", "0x100000000"),
+            ("0x7f.0.0.1.2", "0x7f.0.0.1.2"),
+            ("ssh:0x7f000001", "ssh:0x7f000001"),
+        ):
+            with self.subTest(non_loopback=host):
+                self.assertEqual(topology_links._host_key(host), expected)
+                self.assertFalse(topology_links.is_loopback(host))
+
+        # Hex and octal forms compare equal to dotted IPv4 on direct local reads,
+        # and remote observers reporting hex/octal loopback never match local saved DBs.
+        local_db = {
+            "kind": "database", "profile_id": "p-local", "profile_name": "Local",
+            "profile_host": "127.0.0.1", "profile_port": 3306, "ssh_host": None,
+            "hostname": "local-box", "port": 3306,
+        }
+        for target in ("0x7f000001", "0x7f.0.0.1", "0177.0.0.01", "017700000001"):
+            with self.subTest(local_target=target):
+                self.assertEqual(
+                    topology_links.match_database_endpoint(target, 3306, [local_db], observer_host="127.0.0.1"),
+                    (local_db, "endpoint"),
+                )
+                saved_same_spelling = dict(local_db, profile_host=target)
+                self.assertEqual(
+                    topology_links.match_database_endpoint(target, 3306, [saved_same_spelling], observer_host="remote.example"),
+                    (None, None),
+                )
+                found, problem = replication.match_source_profiles(
+                    {"host": target, "port": 3306},
+                    [{"id": "p-local", "name": "Local", "host": target, "port": 3306}],
+                    replica_host="remote.example",
+                )
+                self.assertEqual(found, [])
+                self.assertIn("not on this computer", problem)
+
+        remote_db = {
+            "kind": "database", "profile_id": "p-rem", "profile_name": "Remote",
+            "profile_host": "10.0.0.5", "profile_port": 3306, "ssh_host": None,
+            "hostname": "rem-box", "port": 3306,
+        }
+        for target in ("0x0a.0.0.5", "0x0a000005", "012.0.0.5"):
+            with self.subTest(remote_target=target):
+                self.assertEqual(
+                    topology_links.match_database_endpoint(target, 3306, [remote_db], observer_host="proxy.example"),
+                    (remote_db, "endpoint"),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

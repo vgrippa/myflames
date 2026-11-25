@@ -139,7 +139,8 @@ try {
   // Nothing is read before the Server place is on screen. Health is the first
   // view and reads once when it opens on screen (the default 5 s window).
   assert.equal(state.seen.length, 0, "nothing is read before Health is on screen");
-  state.delay = 400;
+  let releaseFirst;
+  state.queue.push({ status: 200, body: mysql, wait: new Promise((r) => { releaseFirst = r; }) });
   await h.server();
   assert.deepEqual(await texts(".source-list .source-group h3"), Object.keys(SERVER_GROUPS));
   assert.deepEqual(await texts(".source-list .source-group:first-child .source-label"), ["Health", "InnoDB", "Error log"]);
@@ -147,10 +148,17 @@ try {
   await page.waitForSelector(`${view} .capture-status`);
   assert.match(await text(`${view} .capture-status`), /Sampling the server for 5 s/);
   assert.equal(await page.$(`${view} .view-empty`), null, "no empty state while the first read runs");
+  releaseFirst();
   await page.waitForSelector(`${view} .summary-line`);
   await h.idle(view);
-  state.delay = 0;
   assert.equal(state.seen.length, 1, "one read on open");
+  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "-1", "While visible is the default");
+  assert.deepEqual(await page.$$eval(`${view} .auto-refresh option`, (els) => els.map((e) => [e.value, e.textContent])),
+    [["-1", "While visible"], ["0", "Off"], ["10", "Every 10 s"], ["30", "Every 30 s"], ["60", "Every 60 s"]]);
+  // Keep the existing report and baseline scenarios manually driven before the
+  // default 5 s automatic refresh can fire under load. The visible-only
+  // lifecycle is exercised separately below with its own clock.
+  await page.select(`${view} .auto-refresh select`, "0");
   // One reading: Live charts holds each value and one muted line, never a
   // chart of one point or a Min equal to its Max.
   assert.equal(await text(`${view} #health-live-h`), "Live charts");
@@ -162,12 +170,6 @@ try {
   [["queries", "283/s", false, false, true], ["threads_running", "2 threads", false, false, true],
     ["bp_disk_reads", "0.30 pages/s", false, false, true], ["threads_connected", "1 connection", false, false, true]]);
   assert.match(await text(`${view} .health-live-chart[data-chart="queries"] .health-chart-summary`), /^Queries per second: 283\/s, one reading so far\.$/);
-  assert.equal(await page.$eval(`${view} .auto-refresh select`, (e) => e.value), "-1", "While visible is the default");
-  assert.deepEqual(await page.$$eval(`${view} .auto-refresh option`, (els) => els.map((e) => [e.value, e.textContent])),
-    [["-1", "While visible"], ["0", "Off"], ["10", "Every 10 s"], ["30", "Every 30 s"], ["60", "Every 60 s"]]);
-  // Keep the existing report and baseline scenarios manually driven. The
-  // visible-only lifecycle is exercised separately below with its own clock.
-  await page.select(`${view} .auto-refresh select`, "0");
   // 900 px and below the tiles form strips that scroll sideways: each group's
   // heading carries its share of the summary's count (a dot plus words), so
   // Diagnostics plus the groups add up to the summary line at a glance.
@@ -182,6 +184,53 @@ try {
   assert.equal(tally(/(\d+) problems?/, parts), tally(/(\d+) problems?/, [line]), `problems add up (${parts.join(" | ")} vs ${line})`);
   assert.equal(tally(/(\d+) to watch/, parts), tally(/(\d+) to watch/, [line]), "to watch adds up");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 0, "no sideways page scroll at 720 px");
+  // A popover opened inside the view paints above the view's sticky toolbar.
+  // With the Columns button in the lower half of the window the menu opens
+  // above it, over the toolbar band; probe the overlap. (.view-main is its own
+  // stacking context, so the panel renders through a portal.)
+  // Compact navigation: Back shows the pushed list, then choose the view. The
+  // compact layout follows the place's ResizeObserver, so wait for it first.
+  await page.waitForSelector('.server-layout.is-compact .server-view[data-view="health"] .server-back', { visible: true });
+  await page.click('.server-view[data-view="health"] .server-back');
+  await page.waitForSelector('.server-layout.show-list #server-nav-locks', { visible: true });
+  await page.click('#server-nav-locks');
+  await page.waitForSelector('.server-view[data-view="locks"]', { visible: true });
+  const columnsButton = '.server-view[data-view="locks"] button[aria-label="Columns of Transactions"]';
+  await page.waitForSelector(columnsButton, { visible: true });
+  const placed = await page.evaluate((button) => {
+    document.querySelector(button).scrollIntoView({ block: "center", behavior: "instant" });
+    const b = document.querySelector(button).getBoundingClientRect();
+    window.scrollBy(0, Math.round(b.top - (innerHeight * 0.72)));
+    return document.querySelector(button).getBoundingClientRect().toJSON();
+  }, columnsButton);
+  await page.click(columnsButton);
+  await page.waitForSelector('.popover[aria-label="Columns of Transactions"]', { visible: true });
+  await page.waitForFunction(() => document.querySelector('.popover[aria-label="Columns of Transactions"]')?.contains(document.activeElement));
+  assert.equal(await page.$eval('.popover[aria-label="Columns of Transactions"]', panel => panel.parentElement === document.body), true,
+    'the content Columns popover uses the body portal at 720 px');
+  const toolbarOf = '.server-layout.is-compact .server-view[data-view="locks"] > .view-toolbar';
+  const probe = await page.evaluate((bar) => {
+    const pop = document.querySelector('.popover[aria-label="Columns of Transactions"]');
+    const toolbar = document.querySelector(bar);
+    const pr = pop.getBoundingClientRect();
+    const br = toolbar.getBoundingClientRect();
+    if (!(pr.top < br.bottom - 4 && pr.bottom > br.top + 4))
+      return { overlap: false, pop: pr.toJSON(), bar: br.toJSON() };
+    const x = pr.left + pr.width / 2;
+    const y = Math.min(br.top + br.height / 2, pr.bottom - 4);
+    const el = document.elementFromPoint(x, y);
+    return { overlap: true, inside: pop.contains(el), hit: el ? String(el.className || el.tagName) : "none" };
+  }, toolbarOf);
+  assert.ok(probe.overlap, `the Columns menu opened above its button reaches the sticky toolbar (button at ${JSON.stringify(placed)}, popover ${JSON.stringify(probe.pop)}, toolbar ${JSON.stringify(probe.bar)})`);
+  assert.ok(probe.inside, `the Columns menu paints above the sticky toolbar where they overlap (hit: ${probe.hit})`);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('.popover[aria-label="Columns of Transactions"]'));
+  assert.equal(await page.$eval(columnsButton, button => button === document.activeElement), true,
+    'Escape from the portaled Columns menu returns focus to its opener');
+  await page.click('.server-view[data-view="locks"] .server-back');
+  await page.waitForSelector('.server-layout.show-list #server-nav-health', { visible: true });
+  await page.$eval('#server-nav-health', (e) => e.click());
+  await page.waitForSelector(`${view} .summary-line`, { visible: true });
   await page.setViewport({ width: 1440, height: 1000 });
   await page.waitForFunction((v) => getComputedStyle(document.querySelector(`${v} .tile-section-status`)).display === "none", {}, view);
   assert.equal(state.seen[0].interval, 5);
@@ -387,12 +436,12 @@ try {
   await page.waitForSelector(`${view} .summary-line`);
 
   // Refresh: a second sample draws the sparklines on the key tiles.
-  state.queue.push({ status: 200, body: later });
-  state.delay = 400;
+  let releaseSecond;
+  state.queue.push({ status: 200, body: later, wait: new Promise((r) => { releaseSecond = r; }) });
   await h.refresh();
   await page.waitForSelector(`${view} .capture-status`);
   assert.match(await text(`${view} .capture-status`), /Sampling the server for 10 s/);
-  state.delay = 0;
+  releaseSecond();
   await page.waitForFunction(() => !!document.querySelector('.tile-item[data-metric="questions"] svg.sparkline'));
   await h.idle(view);
   assert.equal(state.seen.length, 2);

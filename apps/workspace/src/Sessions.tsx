@@ -507,7 +507,10 @@ export function SessionsView({
               disabled={actionsOff || !!blocked}
               title={blocked || `Kill connection ${v.id} or its query; asks first`}
               onClick={(e) => {
-                const opener = e.currentTarget.closest(".popover-anchor")?.querySelector<HTMLElement>("button") || null;
+                // The menu may render through a portal: find its opener
+                // through aria-controls instead of DOM ancestry.
+                const menuId = e.currentTarget.closest<HTMLElement>('[role="menu"]')?.id;
+                const opener = (menuId ? document.querySelector<HTMLElement>(`[aria-controls="${menuId}"]`) : null) || null;
                 const chosenOn = reads.key;
                 closePopovers();
                 // After the menu has closed and handed focus back to ⋯, and

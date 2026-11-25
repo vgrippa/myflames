@@ -810,6 +810,7 @@ function ExportMenu({
     <Popover
       label={`Export result ${n}`}
       className="result-export"
+      panelClassName="result-export-panel"
       buttonClassName="button small"
       buttonTitle={filterTitle || "Export or copy this result"}
       wide

@@ -75,7 +75,12 @@ test("late reconnect refreshes status without committing the password being type
     window: { addEventListener: (name, fn) => { focus[name] = fn; }, removeEventListener: name => { delete focus[name]; } },
     document: { activeElement: { matches: () => false } },
     sharedRead: (_key, _params, read, options) => read(options.signal),
-    readPrivileges: async c => { requests.push({ ...c }); return { account: "actor@%", actions: {} }; },
+    api: async (endpoint, { connection }, signal) => {
+      assert.equal(endpoint, "live/privileges");
+      assert.ok(signal instanceof AbortSignal);
+      requests.push({ ...connection });
+      return { account: "actor@%", actions: {} };
+    },
   });
   let connection = { host: "A", password: "committed" }, connectRevision = 0, passwordRevision = 0;
   const render = () => renderComponent("PrivilegesProvider", { connection, connectRevision, passwordRevision }).props.value;
@@ -104,7 +109,12 @@ test("explicit Use connection commits new credentials even for the same identity
   const renderComponent = await component("privileges.ts", {
     window: { addEventListener() {}, removeEventListener() {} },
     sharedRead: (_key, _params, read, options) => read(options.signal),
-    readPrivileges: async c => { requests.push({ ...c }); return { actions: {} }; },
+    api: async (endpoint, { connection }, signal) => {
+      assert.equal(endpoint, "live/privileges");
+      assert.ok(signal instanceof AbortSignal);
+      requests.push({ ...connection });
+      return { actions: {} };
+    },
   });
   const render = () => renderComponent("PrivilegesProvider", { connection, passwordRevision });
   render(); await flush();

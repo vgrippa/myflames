@@ -2,7 +2,11 @@
 // One paint path updates the viewBox, the zoom percentage, and the
 // directional button limits together, so buttons, wheel, fit, and reset
 // always agree. Wheel deltas are normalized by deltaMode and eased with a
-// bounded per-frame step so trackpad momentum cannot jump.
+// bounded per-frame step so trackpad momentum cannot jump. During a wheel
+// gesture the frames repaint through one transform on the gesture layer
+// instead of a viewBox change per frame (a viewBox change re-lays out every
+// node of a large plan); the viewBox catches up once, when the gesture
+// settles.
 //
 // Fit (on open, the Fit button, a double click, and a resize or screen
 // scale change while fitted) never makes the smallest text smaller than
@@ -13,6 +17,13 @@
 
 /** Smallest on-screen text a fit may produce (web-design: nothing below 11 px). */
 export const MIN_TEXT_PX = 11;
+
+/** During a wheel gesture the zoom readout is rewritten at most this often.
+ * Each text write re-lays out the chart's toolbar subtree in the workspace
+ * page (containment on the toolbar alone did not stop it), so a per-frame
+ * write cost more than the transform it accompanies; the final value is
+ * always written when the gesture settles. */
+export const READOUT_MS = 120;
 
 export interface ZoomButtons {
   fit: HTMLButtonElement;
@@ -34,6 +45,11 @@ export interface ZoomOptions {
   /** Smallest font size the canvas draws, in its own units; fit keeps it
    * at MIN_TEXT_PX or more on screen. Without it, fit is not limited. */
   smallestTextPx?: number;
+  /** When true, wheel frames scale the existing drawing with one CSS
+   * transform on the viewport (a composited repaint) and the viewBox catches
+   * up once when the gesture settles, instead of re-laying out the drawing
+   * on every frame. */
+  wheelTransform?: boolean;
 }
 
 export interface ZoomController {
@@ -59,6 +75,10 @@ export function createZoom(options: ZoomOptions): ZoomController {
   const { root, viewport, graphWidth, graphHeight, buttons } = options;
   let { width, height } = options;
   const win = root.ownerDocument.defaultView || window;
+  // Reports and embedded hosts may expose only a partial window. Keep the
+  // readout on one clock, with a wall-clock fallback when Performance is absent.
+  const now = typeof performance !== "undefined" && typeof performance.now === "function"
+    ? () => performance.now() : () => Date.now();
   let box: Box = { x: 0, y: 0, w: width, h: height };
   let drag: { x: number; y: number; bx: number; by: number; scaleX: number; scaleY: number } | null = null;
   let moved = false;
@@ -67,6 +87,13 @@ export function createZoom(options: ZoomOptions): ZoomController {
   let wheelPoint = { x: 0, y: 0 };
   let wheelTime: number | null = null;
   let wheelScreen: { left: number; top: number; width: number; height: number; pageHeight: number } | null = null;
+  /** The box the viewBox still shows while a wheel gesture scales the
+   * drawing with a CSS transform; null outside a gesture. */
+  let gestureBase: Box | null = null;
+  const wheelTransform = options.wheelTransform === true;
+  // Promote once, at rest: a mid-gesture promotion would make the first
+  // wheel frame as expensive as the layout this avoids.
+  if (wheelTransform) root.style.willChange = "transform";
   let fitted = false;
   /** Screen scale the current fit was computed for. */
   let fittedScale = 1;
@@ -88,16 +115,68 @@ export function createZoom(options: ZoomOptions): ZoomController {
     wheelDelta = 0;
     wheelTime = null;
     wheelScreen = null;
+    commitGesture();
+  }
+
+  /** The readout's last written percent: rewriting the same text every wheel
+   * frame still dirties layout, so only a real change touches the DOM. */
+  let lastReadout = "";
+  /** When the readout text was last written; mid-gesture frames skip the
+   * write until READOUT_MS has passed (see the constant). */
+  let lastReadoutAt = 0;
+  function paintReadout() {
+    const percent = Math.round(width / box.w * 100) + "%";
+    if (percent !== lastReadout) {
+      lastReadout = percent;
+      lastReadoutAt = now();
+      buttons.reset.textContent = percent;
+      buttons.reset.setAttribute("aria-label", "Zoom " + percent + ". Reset to 100%");
+      buttons.reset.setAttribute("title", "Current zoom: " + percent + ". Click to reset to 100%");
+    }
+    buttons.zoomIn.disabled = box.w <= minimum() + 0.00001;
+    buttons.zoomOut.disabled = box.w >= maximum() - 0.00001;
   }
 
   function paint() {
     viewport.setAttribute("viewBox", [box.x, box.y, box.w, box.h].join(" "));
-    const percent = Math.round(width / box.w * 100) + "%";
-    buttons.reset.textContent = percent;
-    buttons.reset.setAttribute("aria-label", "Zoom " + percent + ". Reset to 100%");
-    buttons.reset.setAttribute("title", "Current zoom: " + percent + ". Click to reset to 100%");
-    buttons.zoomIn.disabled = box.w <= minimum() + 0.00001;
-    buttons.zoomOut.disabled = box.w >= maximum() - 0.00001;
+    paintReadout();
+  }
+
+  /** A wheel frame: the same mapping the viewBox would give, as one CSS
+   * transform of the root element showing the last committed frame, so the
+   * frame is a composited scale of the existing drawing instead of a layout
+   * of every node. Zoomed-in frames keep the drawing over the whole element
+   * (the translate grows negative as the scale grows); a zoomed-out frame
+   * shows the canvas background in the strip the drawing catches up with
+   * when the gesture settles. Only the workspace canvas opts in: a report
+   * keeps its SVG chrome steady and paints the viewBox per frame. */
+  function paintGesture() {
+    if (!wheelTransform || !gestureBase) { paint(); return; }
+    const scale = gestureBase.w / box.w;
+    const style = root.style;
+    style.transformOrigin = "0 0";
+    style.transform =
+      "translate(" + width * (gestureBase.x - box.x) / box.w + "px, " +
+      height * (gestureBase.y - box.y) / box.h + "px) scale(" + scale + ")";
+    // The readout follows at READOUT_MS intervals, not per frame: its text
+    // write re-lays out the chart subtree in the workspace page (measured
+    // about 25 layouts, 900 ms per gesture, with the write per frame; one
+    // layout without it), which costs more than the transform itself.
+    // commitGesture -> paint writes the exact final percent on settle, so the
+    // readout and its accessible name are correct after every gesture.
+    if (now() - lastReadoutAt >= READOUT_MS) paintReadout();
+  }
+
+  /** The gesture is over: the viewBox shows the final box again and the
+   * drawing is crisp at its own coordinates (pixel-identical to a per-frame
+   * viewBox paint). */
+  function commitGesture() {
+    if (!gestureBase) return;
+    gestureBase = null;
+    const style = root.style;
+    style.transform = "";
+    style.transformOrigin = "";
+    paint();
   }
 
   /** CSS pixels per canvas unit. The workspace canvas is kept at 1 by its
@@ -140,7 +219,7 @@ export function createZoom(options: ZoomOptions): ZoomController {
     paint();
   }
 
-  function zoom(factor: number, px: number, py: number) {
+  function applyZoom(factor: number, px: number, py: number) {
     fitted = false;
     // Within the limits, or from a fit past them toward them: zooming in
     // from a tiny embedding's fit never jumps back out across the cap.
@@ -150,6 +229,13 @@ export function createZoom(options: ZoomOptions): ZoomController {
     box.y += box.h * py * (1 - ratio);
     box.w = next;
     box.h *= ratio;
+  }
+
+  function zoom(factor: number, px: number, py: number) {
+    // Settle a wheel gesture first: paint() changes the viewBox, and the
+    // gesture's transform must not still scale the root over it.
+    stopWheel();
+    applyZoom(factor, px, py);
     paint();
   }
 
@@ -205,7 +291,12 @@ export function createZoom(options: ZoomOptions): ZoomController {
     }
     const px = (wheelPoint.x - wheelScreen.left) / wheelScreen.width;
     const py = (wheelPoint.y - wheelScreen.top) / wheelScreen.height;
-    zoom(Math.exp(step), px, py);
+    // The first frame of a gesture snapshots the box the viewBox shows;
+    // later frames scale the element against that snapshot, and stopWheel
+    // (settle, or any interrupt) commits the final box.
+    if (wheelTransform && !gestureBase) gestureBase = { ...box };
+    applyZoom(Math.exp(step), px, py);
+    if (gestureBase) paintGesture(); else paint();
     if (Math.abs(wheelDelta) > 0.00001) {
       wheelFrame = win.requestAnimationFrame(animateWheel);
     } else {

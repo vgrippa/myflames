@@ -24,6 +24,7 @@ state verification.
 """
 import copy
 import hashlib
+import heapq
 import json
 import re
 import unicodedata
@@ -1291,16 +1292,11 @@ def explain_cache(conn, query_or_id, cache_type=None, schema="readyset"):
     }
 
 
-_EXPORT_ESCAPES = {
-    "0": "\x00",
-    "b": "\b",
-    "n": "\n",
-    "r": "\r",
-    "t": "\t",
-    "Z": "\x1a",
-}
 _EXPORT_REDACTED_COMMENT = (
     "-- Credentials in this definition are shown as [redacted]; it will not run as is."
+)
+_EXPORT_AMBIGUOUS_COMMENT = (
+    "-- This definition was hidden because its credentials depend on the server's quote mode."
 )
 _EXPORT_UNSAFE_COMMENT = (
     "-- This definition was not exported as runnable SQL: it is not a single CREATE CACHE statement."
@@ -1315,113 +1311,682 @@ _EXPORT_LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 # A legacy multibyte client charset can consume either ASCII byte as the
 # tail of the preceding non-ASCII character, changing quote tracking.
 _EXPORT_CHARSET_AMBIGUITY = re.compile(r"[^\x00-\x7f][\\`]")
-# Export also covers malformed URL credentials with '/' or '@' in the password.
-# The scheme boundary prevents retries within a long scheme-like word; the
-# username stops at ':' or '/', and the greedy, bounded password scan ends
-# at the last '@' before whitespace or a quote, never at an interior '@'.
+# Recognize the authority prefix separately from its password: malformed
+# user-info may contain SQL quotes, spaces, slashes or backticks. Scanning
+# each prefix's segment once avoids regex retries on long server text.
 _EXPORT_URL_CREDENTIALS = re.compile(
     r"(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*://[^:/@\s'\"`]*:)"
-    r"[^\s'\"`]{0,1024}@(?![^@\s'\"`]*@)"
+)
+_EXPORT_UTF8_COMMAND = "charset utf8mb4"
+_EXPORT_REDACTED_TOKEN = re.compile(
+    r"'(?:" + re.escape(dbops.REDACTED) + r")'|\"(?:" +
+    re.escape(dbops.REDACTED) + r")\"|" + re.escape(dbops.REDACTED)
+)
+_EXPORT_URL_UNSAFE_CHARS = frozenset("\\'\"`/*-#\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+_EXPORT_URL_CODE_UNSAFE = re.compile(
+    r"[\\'\"`#\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029;=,]|/\*|\*/|--"
 )
 
 
-def _unescape_sql_literal(body, quote):
-    """Decode doubled-quote and backslash escapes inside a SQL string literal body."""
+def _export_url_spans(sql, backslash_escapes=True, prefixes=None, scan=None, skipped=None):
+    """URL password spans through the last @, under one backslash reading.
+
+    A URL inside a complete backticked identifier is an identifier, not a
+    credential. A second authority before the first @ is part of a malformed
+    password. Ambiguous quoted text is hidden rather than partly exposed.
+    When *skipped* is a list, append ``(start, end)`` of each prefix skipped
+    because it started before *scanned*, so callers can fail closed if a
+    skipped prefix lies outside every yielded span.
+    """
+    if prefixes is None:
+        if "://" not in sql:
+            return
+        prefixes = list(_EXPORT_URL_CREDENTIALS.finditer(sql))
+    if not prefixes:
+        return
+    if scan is None:
+        scan = dbops.lex_sql(sql, backslash_escapes=backslash_escapes)
+    unclosed = set(scan['unclosed'])
+    # Find each identifier's final @ once. Searching its remaining suffix
+    # for every URL prefix is quadratic when many prefixes share that @.
+    identifiers = [(start, end, sql.rfind('@', start, end)) for kind, start, end in scan["tokens"]
+                   if kind == "identifier" and (start, end) not in unclosed]
+    scanned, ident, token, pending = 0, 0, 0, None
+    for index, prefix in enumerate(prefixes):
+        if prefix.start() < scanned:
+            if skipped is not None:
+                skipped.append((prefix.start(), prefix.end()))
+            continue
+        while ident < len(identifiers) and identifiers[ident][1] <= prefix.start():
+            ident += 1
+        if (pending is None and ident < len(identifiers) and
+                identifiers[ident][0] <= prefix.start() < identifiers[ident][1] and
+                prefix.end() <= identifiers[ident][2]):
+            continue
+        end = prefixes[index + 1].start() if index + 1 < len(prefixes) else len(sql)
+        while token < len(scan['tokens']) and scan['tokens'][token][2] <= prefix.start():
+            token += 1
+        if token < len(scan['tokens']):
+            # Nested URL-like text, including an earlier @, can belong to
+            # one password. Never split a literal/comment/code token there.
+            end = max(end, scan['tokens'][token][2])
+        if unclosed:
+            end = len(sql)  # Broken quotes cannot establish a safe boundary.
+        # No overlap between segments, including unsuccessful matches.
+        last_at = sql.rfind("@", prefix.end(), end)
+        scanned = end
+        if last_at < 0:
+            if pending is None:
+                pending = prefix
+            continue
+        start = pending.end() if pending is not None else prefix.end()
+        yield start, last_at
+        pending = None
+
+
+def _merge_export_url_spans(spans1, spans2=None):
+    """Merge ordered URL password spans into disjoint ``(start, end)`` tuples."""
+    stream = spans1 if spans2 is None else heapq.merge(spans1, spans2)
+    merged, pending = [], None
+    for start, end in stream:
+        if pending is not None:
+            old_start, old_end = pending
+            if start <= old_end:
+                pending = old_start, max(old_end, end)
+                continue
+            merged.append(pending)
+        pending = start, end
+    if pending is not None:
+        merged.append(pending)
+    return merged
+
+
+def _redact_export_urls(sql):
+    """Hide URL passwords under both backslash readings of the original SQL.
+
+    The definition's NO_BACKSLASH_ESCAPES setting is unknown. Scan both
+    readings before replacing anything, then hide the union of their spans:
+    a string ending in a backslash closes in one reading and not the other,
+    so one reading can keep a URL credential that the other hides.
+    """
+    if "://" not in sql:
+        return sql, False
+    prefixes = list(_EXPORT_URL_CREDENTIALS.finditer(sql))
+    if not prefixes:
+        return sql, False
+    spans1 = _export_url_spans(sql, prefixes=prefixes)
+    spans2 = _export_url_spans(sql, backslash_escapes=False, prefixes=prefixes) if "\\" in sql else None
+    merged = _merge_export_url_spans(spans1, spans2)
+    if not merged:
+        return sql, False
+    parts, kept = [], 0
+    for start, end in merged:
+        parts.extend((sql[kept:start], dbops.REDACTED))
+        kept = end
+    return "".join(parts) + sql[kept:], True
+
+
+_EXPORT_SQL_ESCAPES = {
+    "0": "\x00",
+    "'": "'",
+    '"': '"',
+    "b": "\b",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "Z": "\x1a",
+    "\\": "\\",
+}
+
+
+def _decode_export_sql_escapes(text, quote=None):
+    """Decode MySQL backslash escapes (and doubled *quote* if given) in one pass."""
     out = []
     i = 0
-    n = len(body)
+    n = len(text)
     while i < n:
-        ch = body[i]
-        if ch == quote and i + 1 < n and body[i + 1] == quote:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            out.append(_EXPORT_SQL_ESCAPES.get(nxt, nxt))
+            i += 2
+            continue
+        if quote and ch == quote and i + 1 < n and text[i + 1] == quote:
             out.append(quote)
             i += 2
-        elif ch == "\\" and i + 1 < n:
-            nxt = body[i + 1]
-            out.append(_EXPORT_ESCAPES.get(nxt, nxt))
-            i += 2
-        else:
-            out.append(ch)
-            i += 1
+            continue
+        out.append(ch)
+        i += 1
     return "".join(out)
 
 
-def _redact_export_sql(sql, password=None):
-    """Redact exported DDL, preserving identifiers unless they contain *password*.
+def _export_token_has_password(body, password, quote=None):
+    """True when *password* appears in raw, quote-collapsed or unescaped *body*."""
+    if not password:
+        return False
+    if password in body:
+        return True
+    if quote:
+        doubled = quote * 2
+        if doubled in body and password in body.replace(doubled, quote):
+            return True
+    elif ("''" in body and password in body.replace("''", "'")) or (
+            '""' in body and password in body.replace('""', '"')):
+        return True
+    if "\\" in body:
+        if password in _decode_export_sql_escapes(body):
+            return True
+        if quote and (quote * 2) in body and password in _decode_export_sql_escapes(body, quote):
+            return True
+    return False
 
-    Applies ``dbops.redact`` to the whole SQL with identifiers masked, and replaces any
-    quoted SQL string literal (``'...'`` or ``"..."``) containing *password*
-    with ``'[redacted]'``, or a comment's content with ``[redacted]``.
-    Returns ``(redacted_sql, changed)``; a detected connection password marks
-    the definition changed even when it already equals the redaction marker.
-    """
-    pw = password if isinstance(password, str) and password else None
-    scan = dbops.lex_sql(sql)
+
+def _export_literal_password_spans(sql, password, backslash_escapes=True, scan=None):
+    """Password-bearing strings/comments under one reading of the original SQL."""
+    if scan is None:
+        scan = dbops.lex_sql(sql, backslash_escapes=backslash_escapes)
     unclosed = set(scan["unclosed"])
-    parts = []
-    identifiers = {}
-    used = set(sql + (pw or ""))
-    mask_codepoint = 0xe000
-    changed = False
     for kind, start, end in scan["tokens"]:
         tok = sql[start:end]
-        if kind == "identifier":
-            if pw and (pw in tok or pw in tok[1:-1].replace("``", "`")):
-                tok = "`" + dbops.REDACTED + "`"
-                changed = True
-            # Each identifier gets its own same-length, quote-free mask.
-            # Distinct characters allow restoration even if redaction changes
-            # earlier lengths or consumes a mask in malformed surrounding SQL.
-            while chr(mask_codepoint) in used:
-                mask_codepoint += 1
-            mask = chr(mask_codepoint)
-            mask_codepoint += 1
-            identifiers[mask] = tok
-            parts.append(mask * (end - start))
-            continue
-        # Replace whole secret-bearing literals/comments before URL redaction.
-        updated = tok
-        if kind == "string" and pw:
-            quote = tok[0]
-            body = tok[1:] if (start, end) in unclosed else tok[1:-1]
-            # Inspect original bytes before a URL pass can remove a prefix of
-            # a password containing '@', leaving only its tail behind.
-            if (pw in body or
-                    pw in _unescape_sql_literal(body, quote) or
-                    pw in body.replace(quote * 2, quote)):
-                updated = "'" + dbops.REDACTED + "'"
-                changed = True
-        elif kind == "comment" and pw and pw in tok:
+        replacement = None
+        if kind == "string":
+            closed = (start, end) not in unclosed and len(tok) >= 2 and tok[-1] == tok[0]
+            quote = tok[0] if tok[:1] in ("'", '"') else "'"
+            body = tok[1:-1] if closed else tok[1:]
+            if _export_token_has_password(body, password, quote):
+                replacement = quote + dbops.REDACTED + quote
+        elif kind == "comment":
+            closed = (start, end) not in unclosed
             if tok.startswith("/*"):
-                updated = "/* " + dbops.REDACTED + " */"
-            else:
-                updated = ("-- " if tok.startswith("--") else "# ") + dbops.REDACTED
-            changed = True
-        parts.append(updated)
-    masked = "".join(parts)
-    # A bare password (including the marker itself) must disable the DDL even
-    # when replacement would leave identical text.
-    changed = changed or bool(pw and pw in masked)
-    # Run the export URL pass first: the shared redactor can stop at the first
-    # '@'. Whole-definition redaction then sees both credential keywords and
-    # their literals, without treating identifier contents as SQL clauses.
-    updated = _EXPORT_URL_CREDENTIALS.sub(lambda m: m.group(1) + dbops.REDACTED + "@", masked)
-    updated = dbops.redact(updated, pw)
-    changed = changed or updated != masked
-    restored = []
-    previous = None
-    for ch in updated:
+                body = tok[2:-2] if closed and tok.endswith("*/") and len(tok) >= 4 else tok[2:]
+                if _export_token_has_password(body, password):
+                    replacement = "/* %s */" % dbops.REDACTED
+            elif tok.startswith("--"):
+                if _export_token_has_password(tok[2:], password):
+                    replacement = "-- %s" % dbops.REDACTED
+            elif tok.startswith("#"):
+                if _export_token_has_password(tok[1:], password):
+                    replacement = "# %s" % dbops.REDACTED
+        if replacement is not None:
+            yield start, end, replacement
+
+
+def _merge_export_literal_spans(sql, password, scan1=None, scan2=None):
+    """Merge password-bearing string/comment spans across both backslash readings."""
+    if not isinstance(password, str) or not password:
+        return []
+    spans = _export_literal_password_spans(sql, password, True, scan=scan1)
+    if "\\" in sql:
+        spans = heapq.merge(spans, _export_literal_password_spans(sql, password, False, scan=scan2))
+    merged, pending = [], None
+    for start, end, replacement in spans:
+        if pending is not None:
+            old_start, old_end, old_replacement = pending
+            if start < old_end:
+                pending = old_start, max(old_end, end), old_replacement
+                continue
+            merged.append(pending)
+        pending = start, end, replacement
+    if pending is not None:
+        merged.append(pending)
+    return merged
+
+
+def _redact_export_literal_passwords(sql, password):
+    """Hide connection *password* inside strings/comments under either SQL mode.
+
+    The definition's NO_BACKSLASH_ESCAPES setting is unknown. Scan both
+    readings before replacing anything, then hide the union of their spans:
+    replacing one reading first can change the other's quote boundaries.
+    Identifiers, keywords and bare SQL words stay visible only when neither
+    reading places them inside a password-bearing string or comment.
+    """
+    merged = _merge_export_literal_spans(sql, password)
+    return _apply_export_spans(sql, merged)
+
+
+def _export_identifier_spans(sql, backslash_escapes=True, scan=None):
+    """Spans of closed backticked identifiers under one backslash reading."""
+    if scan is None:
+        scan = dbops.lex_sql(sql, backslash_escapes=backslash_escapes)
+    unclosed = set(scan["unclosed"])
+    return [(start, end) for kind, start, end in scan["tokens"]
+            if kind == "identifier" and (start, end) not in unclosed]
+
+
+def _next_export_mask(used, codepoint):
+    """Next unused Unicode Private Use Area character, or None if exhausted."""
+    while True:
+        if codepoint == 0xf900:
+            codepoint = 0xf0000
+        elif codepoint == 0xffffe:
+            codepoint = 0x100000
+        elif codepoint >= 0x10fffe:
+            return None, codepoint
+        ch = chr(codepoint)
+        codepoint += 1
+        if ch not in used:
+            return ch, codepoint
+
+
+def _mask_export_identifiers(sql, ident_spans):
+    """Replace *ident_spans* with one private-use mask char per original char."""
+    if not ident_spans:
+        return sql, {}
+    parts, identifiers, kept = [], {}, 0
+    used, mask_codepoint = set(sql), 0xe000
+    for start, end in ident_spans:
+        if start > kept:
+            parts.append(sql[kept:start])
+        mask, mask_codepoint = _next_export_mask(used, mask_codepoint)
+        if mask is None:
+            parts.append(sql[start:end])
+        else:
+            identifiers[mask] = sql[start:end]
+            parts.append(mask * (end - start))
+        kept = end
+    if kept < len(sql):
+        parts.append(sql[kept:])
+    return "".join(parts), identifiers
+
+
+def _restore_export_identifiers(text, identifiers):
+    """Restore private-use identifier masks left intact after redaction."""
+    if not identifiers:
+        return text
+    restored, previous = [], None
+    for ch in text:
         if ch not in identifiers:
             restored.append(ch)
         elif ch != previous:
             restored.append(identifiers[ch])
         previous = ch
-    restored = "".join(restored)
-    # Malformed SQL can split a literal password across token boundaries.
-    # Do not let restoring an identifier put those raw bytes back together.
-    if pw and pw in restored:
-        restored = restored.replace(pw, dbops.REDACTED)
-        changed = True
-    return restored, changed
+    return "".join(restored)
+
+
+def _apply_export_spans(sql, spans):
+    """Apply sorted disjoint ``(start, end, replacement)`` spans to *sql*."""
+    if not spans:
+        return sql, False
+    parts, kept = [], 0
+    for start, end, replacement in spans:
+        parts.extend((sql[kept:start], replacement))
+        kept = end
+    return "".join(parts) + sql[kept:], True
+
+
+def _extract_redact_spans(masked, updated, identifiers=None):
+    """Recover ``(start, end, replacement)`` spans on *masked* from ``dbops.redact``.
+
+    Returns ``(spans, exact)``. When every unchanged separator between
+    ``[redacted]`` markers aligns uniquely, *exact* is True and *spans*
+    reproduce *updated* verbatim. When a separator also appears inside a
+    redacted value, ambiguous runs collapse to their enclosing envelope and
+    *exact* is False so no secret byte can escape. Returns ``(None, False)``
+    if alignment fails or splits a masked identifier, so callers fail closed.
+    """
+    if updated == masked:
+        return [], True
+    tokens = [(m.start(), m.end(), m.group(0))
+              for m in _EXPORT_REDACTED_TOKEN.finditer(updated)]
+    if not tokens:
+        return None, False
+    k = len(tokens)
+    seps = [updated[:tokens[0][0]]]
+    for idx in range(1, k):
+        seps.append(updated[tokens[idx - 1][1]:tokens[idx][0]])
+    seps.append(updated[tokens[-1][1]:])
+    reps = [tok[2] for tok in tokens]
+    n = len(masked)
+    if not masked.startswith(seps[0]) or not masked.endswith(seps[k]):
+        return None, False
+    end_limit = n - len(seps[k])
+    cursor = len(seps[0])
+    if cursor > end_limit:
+        return None, False
+    lo = [0] * (k + 1)
+    lo[k] = end_limit
+    for idx in range(1, k):
+        pos = masked.find(seps[idx], cursor, end_limit)
+        if pos < 0:
+            return None, False
+        lo[idx] = pos
+        cursor = pos + len(seps[idx])
+    hi = [0] * (k + 1)
+    hi[k] = end_limit
+    limit = end_limit
+    for idx in range(k - 1, 0, -1):
+        pos = masked.rfind(seps[idx], lo[idx], limit)
+        if pos < 0:
+            return None, False
+        hi[idx] = pos
+        limit = pos
+    spans = []
+    exact = True
+    idx = 0
+    while idx < k:
+        start = lo[idx] + len(seps[idx])
+        if lo[idx + 1] == hi[idx + 1]:
+            end = lo[idx + 1]
+            rep = reps[idx]
+            if masked[start:end] != rep:
+                spans.append((start, end, rep))
+            idx += 1
+        else:
+            j = idx + 1
+            while j < k and lo[j] != hi[j]:
+                j += 1
+            end = hi[j]
+            run_start, run_end = idx, j
+            while run_start < run_end:
+                rep = reps[run_start]
+                if run_start + 1 == run_end:
+                    if end - start == len(rep) and masked.startswith(rep, start):
+                        start = end
+                        run_start += 1
+                    break
+                sep_next = seps[run_start + 1]
+                step = len(rep) + len(sep_next)
+                if (end - start >= step and masked.startswith(rep, start) and
+                        (not sep_next or masked.startswith(sep_next, start + len(rep)))):
+                    start += step
+                    run_start += 1
+                else:
+                    break
+            while run_start < run_end:
+                rep = reps[run_end - 1]
+                if run_end - 1 == run_start:
+                    if end - start == len(rep) and masked.endswith(rep, start, end):
+                        end = start
+                        run_end -= 1
+                    break
+                sep_prev = seps[run_end - 1]
+                step = len(rep) + len(sep_prev)
+                if (end - start >= step and masked.endswith(rep, start, end) and
+                        (not sep_prev or masked.endswith(sep_prev, start, end - len(rep)))):
+                    end -= step
+                    run_end -= 1
+                else:
+                    break
+            if run_start == run_end:
+                if start < end:
+                    return None, False
+            else:
+                rep = reps[run_start]
+                if run_end - run_start > 1:
+                    exact = False
+                if masked[start:end] != rep:
+                    spans.append((start, end, rep))
+            idx = j
+    if identifiers:
+        for start, end, _rep in spans:
+            if 0 < start < n and masked[start] in identifiers and masked[start - 1] == masked[start]:
+                return None, False
+            if 0 < end < n and masked[end] in identifiers and masked[end - 1] == masked[end]:
+                return None, False
+    return spans, exact
+
+
+def _merge_export_all_spans(lit_spans, url_spans, cred_spans):
+    """Merge literal-password, URL and SQL-credential spans on the original SQL.
+
+    Overlapping or abutting spans across sources collapse to their union so a
+    literal-password span can never erase a credential keyword while leaving
+    its value literal visible. Adjacent non-empty literal spans stay distinct.
+    """
+    stream = heapq.merge(
+        ((start, 0, end, dbops.REDACTED) for start, end in url_spans),
+        ((start, 1, end, rep) for start, end, rep in cred_spans),
+        ((start, 2, end, rep) for start, end, rep in lit_spans),
+    )
+    merged, pending = [], None
+    for start, kind, end, rep in stream:
+        if pending is not None:
+            old_start, old_end, old_kind, old_rep = pending
+            if start < old_end or (start == old_end and (old_kind != 2 or kind != 2)):
+                pending = old_start, max(old_end, end), min(old_kind, kind), old_rep
+                continue
+            merged.append((old_start, old_end, old_rep))
+        pending = start, end, kind, rep
+    if pending is not None:
+        merged.append((pending[0], pending[1], pending[3]))
+    return merged
+
+
+def _has_export_redacted_credential(masked):
+    """True when an existing ``[redacted]`` marker sits in a credential clause."""
+    if dbops.REDACTED not in masked:
+        return False
+    probe = masked.replace(dbops.REDACTED, "myflames_export_secret_marker")
+    return dbops.redact(probe) != probe
+
+
+def _check_export_second_reading(sql, ident_spans1, result1, check_marker=False,
+                                 ident_spans2=None, raw_has_marker=False):
+    """Compare backslash_escapes=False against reading 1's redacted output.
+
+    Returns ``(ambiguous, marker_changed)``. *ambiguous* is True when the two
+    readings disagree symmetrically on any hidden credential (either reading
+    hides something the other kept), so the caller fails closed.
+    *marker_changed* is True when reading 2 finds an already-redacted
+    ``[redacted]`` marker in a credential clause.
+    """
+    if ident_spans2 is None:
+        ident_spans2 = _export_identifier_spans(sql, backslash_escapes=False)
+    if ident_spans2 == ident_spans1:
+        return False, False
+    masked2, identifiers2 = _mask_export_identifiers(sql, ident_spans2)
+    updated2 = dbops.redact(masked2)
+    restored2 = _restore_export_identifiers(updated2, identifiers2)
+    if restored2 != result1:
+        return True, False
+    if updated2 == masked2 and check_marker and _has_export_redacted_credential(masked2):
+        return False, True
+    if dbops.REDACTED in sql:
+        spans1 = set(ident_spans1)
+        spans2 = set(ident_spans2)
+        if raw_has_marker or (
+                any(dbops.REDACTED in sql[a:b] for a, b in spans1 - spans2) and
+                any(dbops.REDACTED in sql[a:b] for a, b in spans2 - spans1)):
+            # Existing [redacted] text could align distinct replacements across
+            # the two readings; re-check with existing markers substituted.
+            marker, _ = _next_export_mask(set(sql), 0xe000)
+            if marker is None:
+                return True, False
+            sql_marked = sql.replace(dbops.REDACTED, marker * len(dbops.REDACTED))
+            m1, ids1 = _mask_export_identifiers(sql_marked, ident_spans1)
+            m2, ids2 = _mask_export_identifiers(sql_marked, ident_spans2)
+            r1 = _restore_export_identifiers(dbops.redact(m1), ids1)
+            r2 = _restore_export_identifiers(dbops.redact(m2), ids2)
+            if r1 != r2:
+                return True, False
+    return False, False
+
+
+def _export_url_spans_safe(sql, url_spans, scan, ident_spans):
+    """True when every URL span stays strictly inside one safe token of *scan*.
+
+    A span is safe only when it never overlaps a closed backticked identifier in
+    *ident_spans* and lies strictly inside one closed string or comment token,
+    or strictly inside one code token free of quote, comment, newline, backslash
+    and statement-separator syntax.
+    """
+    if not url_spans:
+        return True
+    if ident_spans:
+        ident_idx = 0
+        ident_count = len(ident_spans)
+        for start, end in url_spans:
+            while ident_idx < ident_count and ident_spans[ident_idx][1] <= start:
+                ident_idx += 1
+            if ident_idx < ident_count:
+                ident_start = ident_spans[ident_idx][0]
+                if ident_start < end or (start == end and ident_start <= start):
+                    return False
+    tokens = scan["tokens"]
+    token_count = len(tokens)
+    unclosed = set(scan["unclosed"])
+    token_idx = 0
+    for start, end in url_spans:
+        while token_idx < token_count and tokens[token_idx][2] <= start:
+            token_idx += 1
+        if token_idx >= token_count:
+            return False
+        kind, tok_start, tok_end = tokens[token_idx]
+        if start < tok_start or end > tok_end:
+            return False
+        if kind == "string":
+            if (tok_start, tok_end) in unclosed or start <= tok_start or end >= tok_end - 1:
+                return False
+        elif kind == "comment":
+            if (tok_start, tok_end) in unclosed:
+                return False
+            if sql.startswith("/*", tok_start):
+                if start < tok_start + 2 or end >= tok_end - 2:
+                    return False
+            elif sql.startswith("--", tok_start):
+                if start < tok_start + 2 or end >= tok_end:
+                    return False
+            elif sql.startswith("#", tok_start):
+                if start < tok_start + 1 or end >= tok_end:
+                    return False
+            else:
+                return False
+        elif kind == "code":
+            if start <= tok_start or end >= tok_end:
+                return False
+            if _EXPORT_URL_CODE_UNSAFE.search(sql, start, end) is not None:
+                return False
+        else:
+            return False
+    return True
+
+
+def _has_uncovered_url_prefix(skipped, spans):
+    """True when any skipped URL prefix lies outside every yielded span."""
+    if not skipped:
+        return False
+    span_idx = 0
+    span_count = len(spans)
+    for p_start, p_end in skipped:
+        while span_idx < span_count and spans[span_idx][1] < p_end:
+            span_idx += 1
+        if span_idx >= span_count or spans[span_idx][0] > p_start:
+            return True
+    return False
+
+
+def _redact_export_sql(sql, password=None):
+    """Redact credential syntax and password-bearing literals or comments.
+
+    A connection password can also be an ordinary table, column, keyword or
+    identifier. Do not pass it as the shared redactor's substring scrubber, and
+    never run a global replace over the definition. Literal-password spans,
+    URL credential spans and masked ``dbops.redact`` credential spans are all
+    evaluated on the original definition under both backslash readings before
+    any substitution can alter quote parity or erase credential keywords. When
+    the two readings disagree on credentials, or any URL span crosses a token
+    boundary, overlaps an identifier, or holds unsafe syntax in code, the
+    definition fails closed to a single comment line.
+    """
+    raw_sql = sql
+    has_backslash = "\\" in raw_sql
+    scan1 = dbops.lex_sql(raw_sql, backslash_escapes=True)
+    scan2 = dbops.lex_sql(raw_sql, backslash_escapes=False) if has_backslash else scan1
+
+    lit_spans = _merge_export_literal_spans(raw_sql, password, scan1=scan1, scan2=scan2)
+
+    url_spans1, url_spans2 = [], []
+    url_skipped1, url_skipped2 = [], []
+    if "://" in raw_sql:
+        prefixes = list(_EXPORT_URL_CREDENTIALS.finditer(raw_sql))
+        if prefixes:
+            url_spans1 = list(_export_url_spans(raw_sql, True, prefixes, scan=scan1, skipped=url_skipped1))
+            url_spans2 = (list(_export_url_spans(raw_sql, False, prefixes, scan=scan2, skipped=url_skipped2))
+                          if has_backslash else url_spans1)
+            if not has_backslash:
+                url_skipped2 = url_skipped1
+    if (_has_uncovered_url_prefix(url_skipped1, url_spans1) or
+            (has_backslash and _has_uncovered_url_prefix(url_skipped2, url_spans2))):
+        return _EXPORT_AMBIGUOUS_COMMENT, True
+    url_disagree = url_spans1 != url_spans2
+    url_spans = _merge_export_url_spans(url_spans1, url_spans2 if has_backslash else None)
+
+    ident_spans1 = _export_identifier_spans(raw_sql, True, scan=scan1)
+    ident_spans2 = _export_identifier_spans(raw_sql, False, scan=scan2) if has_backslash else ident_spans1
+
+    if url_spans:
+        if (not _export_url_spans_safe(raw_sql, url_spans, scan1, ident_spans1) or
+                (has_backslash and not _export_url_spans_safe(raw_sql, url_spans, scan2, ident_spans2))):
+            return _EXPORT_AMBIGUOUS_COMMENT, True
+
+    if url_disagree:
+        if lit_spans or dbops.REDACTED in raw_sql:
+            return _EXPORT_AMBIGUOUS_COMMENT, True
+        for start, end in url_spans:
+            if any(ch in _EXPORT_URL_UNSAFE_CHARS for ch in raw_sql[start:end]):
+                return _EXPORT_AMBIGUOUS_COMMENT, True
+
+    masked1, identifiers1 = _mask_export_identifiers(raw_sql, ident_spans1)
+    updated1 = dbops.redact(masked1)
+    restored1 = _restore_export_identifiers(updated1, identifiers1)
+
+    if ident_spans2 == ident_spans1:
+        masked2, identifiers2, updated2, restored2 = masked1, identifiers1, updated1, restored1
+    else:
+        masked2, identifiers2 = _mask_export_identifiers(raw_sql, ident_spans2)
+        updated2 = dbops.redact(masked2)
+        restored2 = _restore_export_identifiers(updated2, identifiers2)
+
+    raw_has_marker = dbops.REDACTED in raw_sql
+
+    if url_disagree:
+        cred_spans1, exact1 = _extract_redact_spans(masked1, updated1, identifiers1)
+        cred_spans2, exact2 = _extract_redact_spans(masked2, updated2, identifiers2)
+        if cred_spans1 is None or cred_spans2 is None or not exact1 or not exact2:
+            return _EXPORT_AMBIGUOUS_COMMENT, True
+        res1, _ = _apply_export_spans(raw_sql, _merge_export_all_spans((), url_spans, cred_spans1))
+        res2, _ = _apply_export_spans(raw_sql, _merge_export_all_spans((), url_spans, cred_spans2))
+        if res1 != res2:
+            return _EXPORT_AMBIGUOUS_COMMENT, True
+        return res1, True
+
+    if restored1 != restored2:
+        return _EXPORT_AMBIGUOUS_COMMENT, True
+
+    if ident_spans2 != ident_spans1 and raw_has_marker:
+        marker, _ = _next_export_mask(set(raw_sql), 0xe000)
+        if marker is None:
+            return _EXPORT_AMBIGUOUS_COMMENT, True
+        sql_marked = raw_sql.replace(dbops.REDACTED, marker * len(dbops.REDACTED))
+        m1, ids1_m = _mask_export_identifiers(sql_marked, ident_spans1)
+        m2, ids2_m = _mask_export_identifiers(sql_marked, ident_spans2)
+        r1_m = _restore_export_identifiers(dbops.redact(m1), ids1_m)
+        r2_m = _restore_export_identifiers(dbops.redact(m2), ids2_m)
+        if r1_m != r2_m:
+            return _EXPORT_AMBIGUOUS_COMMENT, True
+
+    if not lit_spans and not url_spans:
+        changed = updated1 != masked1
+        if not changed and raw_has_marker:
+            changed = (_has_export_redacted_credential(masked1) or
+                       (ident_spans2 != ident_spans1 and _has_export_redacted_credential(masked2)))
+        return restored1, changed
+
+    cred_spans, _exact = _extract_redact_spans(masked1, updated1, identifiers1)
+    if cred_spans is None:
+        return _EXPORT_AMBIGUOUS_COMMENT, True
+    if ident_spans2 != ident_spans1 and updated2 != masked2:
+        cred_spans2, _exact2 = _extract_redact_spans(masked2, updated2, identifiers2)
+        if cred_spans2 is None or cred_spans2 != cred_spans:
+            return _EXPORT_AMBIGUOUS_COMMENT, True
+
+    merged = _merge_export_all_spans(lit_spans, url_spans, cred_spans)
+    result, changed = _apply_export_spans(raw_sql, merged)
+    if not changed and raw_has_marker:
+        changed = (_has_export_redacted_credential(masked1) or
+                   (ident_spans2 != ident_spans1 and _has_export_redacted_credential(masked2)))
+    return result, changed
 
 
 def _export_has_controls(text):
@@ -1553,23 +2118,20 @@ def export_caches(conn):
     lines = ["-- Readyset cache definitions exported by myflames (Readyset %s)" % version,
              "-- Recognized credentials in query text are shown as [redacted]."]
     last_db = None
+    needs_utf8 = False
     for r in rows:
         source_q = r.get("query") or r.get("create statement") or ""
         if not source_q.strip():
             continue
-        prefix_db, raw_q = _split_export_use(source_q)
+        prefix_db, raw_q = _split_export_use(source_q, check_charset=False)
         q, redacted = _redact_export_sql(raw_q, pw)
         # Readyset's prefix is the schema used by CREATE, even when the
         # database column disagrees with the shallow cache's search path.
         raw_db = prefix_db if prefix_db is not None else r.get("database")
         db = str(raw_db) if raw_db not in (None, "") else None
-        # Extracted USE names and the database column bypass the definition's
-        # redactor. Apply the same secret and framing restrictions here.
-        db_redacted = bool(db and pw and pw in db)
-        if db_redacted:
-            db = dbops.REDACTED
-            redacted = True
-        db_safe_no_charset = _export_db_safe(db)
+        # Database names are identifiers, not credential values, even when
+        # one happens to equal the connection password.
+        db_safe = _export_db_safe(db)
         db_charset_unsafe = False
         if db and db != last_db:
             try:
@@ -1579,38 +2141,34 @@ def export_caches(conn):
                 db_charset_unsafe = bool(_EXPORT_CHARSET_AMBIGUITY.search(use))
             except ValueError:
                 use = "Database name could not be exported as runnable SQL."
-                db_safe_no_charset = False
-            db_safe = db_safe_no_charset and not db_charset_unsafe
-            if not db_safe or db_redacted:
+                db_safe = False
+            if not db_safe:
                 use = "-- " + _review_text(use)
             else:
                 last_db = db
+                needs_utf8 = needs_utf8 or db_charset_unsafe
             lines.append(use)
-        else:
-            db_safe = db_safe_no_charset
-        stmt = q if q.endswith(";") else (q + ";")
-        runnable = db_safe and _runnable_export_sql(stmt)
+        hidden = redacted and q == _EXPORT_AMBIGUOUS_COMMENT
+        stmt = q if hidden or q.endswith(";") else (q + ";")
+        runnable = not hidden and db_safe and _runnable_export_sql(stmt, check_charset=False)
+        if runnable and not redacted and _EXPORT_CHARSET_AMBIGUITY.search(stmt):
+            needs_utf8 = True
         if not runnable:
-            charset_only = False
-            if db_safe_no_charset and (db_charset_unsafe or _EXPORT_CHARSET_AMBIGUITY.search(stmt)):
-                if _runnable_export_sql(stmt, check_charset=False):
-                    charset_only = True
-                elif prefix_db is None:
-                    alt_db, alt_q = _split_export_use(source_q, check_charset=False)
-                    if alt_db is not None and _export_db_safe(alt_db):
-                        alt_stmt, _ = _redact_export_sql(alt_q, pw)
-                        if not alt_stmt.endswith(";"):
-                            alt_stmt += ";"
-                        charset_only = _runnable_export_sql(alt_stmt, check_charset=False)
-            lines.append(_EXPORT_CHARSET_COMMENT if charset_only else _EXPORT_UNSAFE_COMMENT)
+            lines.append(_EXPORT_UNSAFE_COMMENT)
         if redacted:
             lines.append(_EXPORT_REDACTED_COMMENT)
-        if redacted or not runnable:
+        if (redacted or not runnable) and not hidden:
             # A substituted literal can still be valid SQL. Keep disabled
             # definitions on one comment line with every control visible.
             stmt = "-- " + _review_text(stmt)
         lines.append(stmt)
         items.append({"database": db, "statement": stmt})
+    if needs_utf8:
+        # Unlike SET NAMES alone, mysql's charset command synchronizes its
+        # own lexer with the server. Only this fixed exporter-owned command
+        # may precede definitions containing ambiguous legacy-charset bytes.
+        lines[2:2] = ["-- Import with a mysql-compatible client; use UTF-8 for these definitions.",
+                      _EXPORT_UTF8_COMMAND]
     return {
         "schema_version": EXPORT_SCHEMA_VERSION,
         "version": version,

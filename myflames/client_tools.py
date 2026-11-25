@@ -56,32 +56,50 @@ def _banner_version(banner, name):
     return tuple(int(n) for n in match.group(1).split('.')) if match else (0, 0, 0)
 
 
-def probe(name, binary, refresh=False, job=None):
+def probe(name, binary, refresh=False, job=None, stop=None):
     """Return independent lifecycle-compatible banner fields; successes use LRU.
 
     Concurrent requests for an identity share its in-flight result, including
     failures, but failures are never retained for subsequent calls. No child
     runs under the global lock. An identity changed during probing is not cached.
+    With ``stop``, cancellation kills and reaps an owned child, or leaves a
+    shared flight without interrupting the other caller that owns it.
     """
-    from . import lifecycle
-    if job:
-        job.check_cancel()
-    key = _probe_key(name, binary)
-    with _PROBE_LOCK:
-        if key is not None and not refresh and key in _PROBE_CACHE:
-            _PROBE_CACHE.move_to_end(key)
-            return copy.deepcopy(_PROBE_CACHE[key])
-        flight = _PROBE_FLIGHTS.get(key) if key is not None else None
-        owner = flight is None
+    from . import lifecycle, read_cancel
+    stopped = {'available': False, 'error': 'Version probe stopped.'}
+    while True:
+        read_cancel.check()
+        if stop is not None and stop.is_set():
+            return stopped
+        if job:
+            job.check_cancel()
+        key = _probe_key(name, binary)
+        with _PROBE_LOCK:
+            if key is not None and not refresh and key in _PROBE_CACHE:
+                _PROBE_CACHE.move_to_end(key)
+                return copy.deepcopy(_PROBE_CACHE[key])
+            flight = _PROBE_FLIGHTS.get(key) if key is not None else None
+            owner = flight is None
+            if owner:
+                flight = {'done': threading.Event(), 'result': None, 'error': None}
+                if key is not None:
+                    _PROBE_FLIGHTS[key] = flight
         if owner:
-            flight = {'done': threading.Event(), 'result': None}
-            if key is not None:
-                _PROBE_FLIGHTS[key] = flight
-    if not owner:
+            break
         while not flight['done'].wait(0.1):
+            read_cancel.check()
+            if stop is not None and stop.is_set():
+                return stopped
             if job:
                 job.check_cancel()
+        read_cancel.check()
+        if stop is not None and stop.is_set():
+            return stopped
         if flight['result'] is None:
+            if isinstance(flight.get('error'), read_cancel.CancelledRead):
+                # Another request owns this probe. Its cancellation must not
+                # cancel an unrelated caller sharing client discovery.
+                continue
             raise RuntimeError('Version probe was interrupted.')
         return copy.deepcopy(flight['result'])
     result = {'available': False}
@@ -92,9 +110,28 @@ def probe(name, binary, refresh=False, job=None):
                     # Inventory may reuse a trust walk; every actual launch,
                     # including --version, must check the whole tree afresh.
                     binary = connector.checked_shell_program(binary)
-                child = subprocess.run([os.path.abspath(binary), '--version'],
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       timeout=8, env=lifecycle._clean_env(home, shell=name == 'mysqlsh'))
+                read_cancel.check()
+                argv = [os.path.abspath(binary), '--version']
+                env = lifecycle._clean_env(home, shell=name == 'mysqlsh')
+                cancel = stop if stop is not None else read_cancel.current()
+                if cancel is None:
+                    child = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                           stderr=subprocess.STDOUT, timeout=8, env=env)
+                else:
+                    # The bounded runner polls cancellation and kills/reaps the
+                    # process group before the probe's temporary HOME closes,
+                    # including an ordinary discovery owned by a live read. A
+                    # warm-up stop and the caller's read cancellation both end it.
+                    outer_cancel = read_cancel.current()
+                    if stop is not None and outer_cancel is not None:
+                        class ProbeCancellation:
+                            def is_set(self):
+                                return stop.is_set() or outer_cancel.is_set()
+
+                        cancel = ProbeCancellation()
+                    with read_cancel.scope(cancel, guard=read_cancel.current_guard()):
+                        child = connector._run_bounded(argv, timeout=8, input=b'', env=env, kill_tree=True)
+                    child.stdout += child.stderr
             banner = child.stdout.decode('utf-8', 'replace').strip()[:4096]
             # Preserve lifecycle's historical tuple semantics here. Discovery
             # derives its distribution version from this cached banner instead.
@@ -102,9 +139,21 @@ def probe(name, binary, refresh=False, job=None):
             result.update(version=banner, version_tuple=list(version),
                           engine=server_info.detect_flavor(banner),
                           available=child.returncode == 0 and version != (0, 0, 0))
+            if name == 'mysqlsh' and result['available']:
+                # mysql clients print argv[0] in their version banner. A
+                # mysqlsh symlink therefore cannot establish tool identity.
+                real_name = os.path.basename(os.path.realpath(binary)).lower()
+                if real_name.endswith('.exe'):
+                    real_name = real_name[:-4]
+                shell_banner = bool(re.search(r'\b(?:mysqlsh|MySQL Shell)\b', banner, re.I))
+                other_banner = bool(re.search(
+                    r'\b(?:mysql|mariadb|mysqldump|mariadb-dump)\s+(?:Ver|Distrib)\b', banner, re.I))
+                if ((real_name in PROGRAMS and real_name != 'mysqlsh') or other_banner or
+                        (real_name != 'mysqlsh' and not shell_banner)):
+                    result.update(available=False, error='The resolved program is not MySQL Shell.')
             if not result['available']:
-                result['error'] = 'Version probe failed or returned an unrecognized version.'
-        except (OSError, subprocess.TimeoutExpired, connector.ClientMissingError) as exc:
+                result.setdefault('error', 'Version probe failed or returned an unrecognized version.')
+        except (OSError, subprocess.TimeoutExpired, connector.ConnectorError) as exc:
             result['error'] = str(exc) if isinstance(exc, connector.ClientMissingError) else type(exc).__name__
         with _PROBE_LOCK:
             if (result['available'] and _banner_version(result['version'], name) != (0, 0, 0)
@@ -114,7 +163,21 @@ def probe(name, binary, refresh=False, job=None):
                 while len(_PROBE_CACHE) > _PROBE_LIMIT:
                     _PROBE_CACHE.popitem(last=False)
             flight['result'] = copy.deepcopy(result)
+        read_cancel.check()
         return result
+    except read_cancel.CancelledRead as exc:
+        # A stopped owner publishes cancellation, so an unrelated caller that
+        # shared its flight retries instead of inheriting the stopped result.
+        flight['error'] = exc
+        if stop is not None and stop.is_set():
+            # The original scope is restored here. A caller cancellation
+            # takes precedence when both events were set during the probe.
+            read_cancel.check()
+            return stopped
+        raise
+    except BaseException as exc:
+        flight['error'] = exc
+        raise
     finally:
         with _PROBE_LOCK:
             if key is not None:
@@ -130,7 +193,8 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False,
     Trust checks are stat-only; execution still requires a fresh check.
     Optional names limits discovery before any per-program filesystem checks.
     """
-    from . import lifecycle
+    from . import lifecycle, read_cancel
+    read_cancel.check()
     names = frozenset(PROGRAMS if names is None else names)
     programs = tuple(name for name in PROGRAMS if name in names)
     if not programs:
@@ -158,6 +222,7 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False,
     order, shell_order = 0, 0
     for folder, source in folders:
         for name in (('mysqlsh',) if source == 'managed' else programs):
+            read_cancel.check()
             binary = os.path.abspath(os.path.join(folder, name + ('.exe' if os.name == 'nt' else '')))
             if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
                 continue
@@ -193,6 +258,7 @@ def snapshot(path=None, common_dirs=None, bundled=None, cache_shell_trust=False,
                                     source=source)
                 continue
             copies[key] = candidate
+    read_cancel.check()
     return sorted(list(copies.values()) + refused, key=lambda c: (c['order'], c['realpath'], c['name']))
 
 
@@ -248,19 +314,27 @@ def _shell_order(shell):
 
 
 def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None, cache_shell_trust=False,
-             names=None):
+             names=None, stop=None):
     """Return {installations: [...], shells: [...], skipped: [...]}.
 
     At most 32 non-Shell and 4 Shell version-probe requests per call, including
     cached requests. Shell never consumes the query-tool discovery budget.
     mysqlpump is stat-only. Skipped records contain candidate metadata plus
     available=False and error (also reason); presence records are deprecated.
+    Optional ``stop`` (a ``threading.Event``) also interrupts a running probe.
     """
+    from . import read_cancel
+    read_cancel.check()
+    if stop is not None and stop.is_set():
+        return dict(installations=[], shells=[], skipped=[], copies=[])
     groups, shells, skipped = {}, [], []
     copies = []
     probes = {'tools': 0, 'shell': 0}
     cache_shell_trust = cache_shell_trust and not refresh
     for candidate in snapshot(path, common_dirs, bundled, cache_shell_trust=cache_shell_trust, names=names):
+        read_cancel.check()
+        if stop is not None and stop.is_set():
+            break
         if job:
             job.check_cancel()
         name, binary = candidate['name'], candidate['path']
@@ -293,7 +367,8 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None,
                 skipped.append(dict(candidate, available=False, error='probe limit', reason='probe limit'))
                 continue
             probes[category] += 1
-            fields = probe(name, candidate['realpath'], refresh=refresh, job=job)
+            read_cancel.check()
+            fields = probe(name, candidate['realpath'], refresh=refresh, job=job, stop=stop)
             if fields['available']:
                 fields['version_tuple'] = list(_banner_version(fields['version'], name))
                 if fields['version_tuple'] == [0, 0, 0]:
@@ -318,10 +393,14 @@ def discover(path=None, common_dirs=None, bundled=None, refresh=False, job=None,
                                found_in=candidate['found_in'], origin=origin, origin_label=label,
                                bundled=candidate['bundled'], has_auth_plugins=_has_auth_plugins(folder),
                                order=candidate['order'], programs={})
-        program = dict(path=binary, realpath=candidate['realpath'], version=version)
+        # Keep the pre-probe identity private to resolution. A later stat
+        # must not label an old banner with a replacement file's identity.
+        program = dict(path=binary, realpath=candidate['realpath'], version=version,
+                       _identity=candidate['identity'])
         if name == 'mysqlpump':
             program['deprecated'] = True
         groups[key]['programs'][name] = program
+    read_cancel.check()
     for group in groups.values():
         preferred = next((group['programs'][name] for name in
                           ('mariadb', 'mysql', 'mariadb-dump', 'mysqldump')
@@ -501,12 +580,39 @@ def remember_server(key, engine, version):
             _FACTS.popitem(last=False)
 
 
+def remember_unidentified_server(key):
+    """Remember an answered but unidentified endpoint in the same facts LRU.
+
+    None marks an unsupported statement or an unsupported/incomplete nonempty
+    identity reply, not an engine/version fact. Session, authentication and
+    transport failures must never enter this cache. Concurrent valid facts
+    take precedence. This marker cannot establish account compatibility with
+    a client's authentication plugins.
+    """
+    with _FACTS_LOCK:
+        if key not in _FACTS:
+            _FACTS[key] = None
+        _FACTS.move_to_end(key)
+        while len(_FACTS) > 256:
+            _FACTS.popitem(last=False)
+
+
+def first_contact_unidentified(key):
+    """Whether a completed probe could not identify this endpoint's engine."""
+    with _FACTS_LOCK:
+        if key in _FACTS:
+            _FACTS.move_to_end(key)
+            return _FACTS[key] is None
+    return False
+
+
 def server_facts(key):
     """Return an independent {engine,version} or None and mark the key recently used."""
     with _FACTS_LOCK:
         facts = _FACTS.get(key)
-        if facts is not None:
+        if key in _FACTS:
             _FACTS.move_to_end(key)
+        if facts is not None:
             return dict(facts)
     return None
 

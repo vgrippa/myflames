@@ -6,14 +6,19 @@
 // shows its whole sentence wherever one toolbar row can hold it. Checked at
 // 1440, 1040 and 720 px, light and dark, with the schema browser open and
 // closed, one statement or two (the scope), a plain state and a long
-// transaction meter. The real isolated workspace (perf-harness.mjs); every
-// editor and live request is mocked, so no database is needed.
+// transaction meter. Choosing a connection never shifts the toolbar: its
+// first control keeps its left edge at 1440 and 720 px, and the connection
+// pill reserves its safety badges while they load (the reported 23 px jump
+// of the pill when they appeared). The real isolated workspace
+// (perf-harness.mjs); every editor and live request is mocked, so no
+// database is needed.
 // Build first: npm run build && node test/editor-toolbar-layout.mjs
 // EDITOR_TOOLBAR_SHOTS=<dir> keeps a screenshot of each width and theme.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { open, setUiPreferences } from "./perf-harness.mjs";
+import { chooseConnection, openConnectionPicker } from "./chrome-helpers.mjs";
 
 // The server's note when Run analysis is unavailable (myflames/privileges.py
 // NO_ANALYZE_NOTE): MySQL before 8.3 has no EXPLAIN ANALYZE FORMAT=JSON.
@@ -21,6 +26,7 @@ const NO_ANALYZE = "Run analysis needs EXPLAIN ANALYZE FORMAT=JSON, which MySQL 
 const METER = { age_seconds: 240, age_source: "innodb", rows_modified: "1240", rows_locked: "1243", lock_structs: "5",
   blocking: 3, blocking_truncated: false, note: null };
 let inTransaction = false;
+let profilesArm = null;
 const session = (tabId) => ({
   schema_version: "editor-session-1.0", tab_id: tabId, state: "idle",
   connection: { profile_id: null, name: "Local MySQL", host: "127.0.0.1", port: 3306, user: "", type: "production", read_only: false },
@@ -41,6 +47,12 @@ const h = await open("/api/unused", "editor-toolbar-layout", {
   "/api/editor/saved/list": ok({ items: [] }),
   "/api/live/schemas": ok({ schema_version: "schemas-1.0", engine: "mysql", server_version: "8.0.40",
     schemas: [{ name: "shop", tables: 1, system: false }], system: [], all_note: "" }),
+  // The badge-reserve check reloads with the saved connections list delayed,
+  // so the pill's safety is briefly unknown; otherwise the list passes through.
+  "/api/profiles/list": (body, request) => {
+    if (!profilesArm) { request.continue(); return null; }
+    return { status: 200, delay: profilesArm.delay, body: profilesArm.body };
+  },
 });
 const { page } = h;
 const shots = process.env.EDITOR_TOOLBAR_SHOTS || h.shots;
@@ -186,6 +198,86 @@ try {
   await page.waitForSelector(".editor-transaction-trigger");
   assert.match(await page.$eval(".editor-transaction-trigger", (e) => e.textContent), /Transaction open.*1,240 rows changed.*blocking 3/);
   await sweep("Transaction open");
+
+  // Choosing a connection never shifts the toolbar: its first control keeps
+  // its left edge at 1440 and 720 px, and so does the connection pill when
+  // the new label is exactly as wide (equal-length names). The pill reserves
+  // its safety badges while they load, so their appearance cannot move it.
+  const authToken = () => page.evaluate(async () =>
+    (await (await fetch("/api/auth/session", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" }, body: "{}" })).json()).token);
+  const saveProfile = async (value) => {
+    const token = await authToken();
+    return page.evaluate(async ({ value, token }) => {
+      const r = await fetch("/api/profiles/save", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": token }, body: JSON.stringify({ value }) });
+      return (await r.json()).id;
+    }, { value, token });
+  };
+  const listProfiles = async () => {
+    const token = await authToken();
+    return page.evaluate(async (token) =>
+      (await fetch("/api/profiles/list", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": token }, body: "{}" })).json(), token);
+  };
+  const geometry = () => page.evaluate(() => {
+    const left = (selector) => {
+      const e = document.querySelector(selector);
+      return e && e.getClientRects().length ? Math.round(e.getBoundingClientRect().left * 10) / 10 : null;
+    };
+    const pill = document.querySelector(".window-toolbar .connection-pill");
+    return {
+      first: left(".query-lab .editor-toolbar .run-actions"),
+      headerFirst: left("header.window-toolbar > *"),
+      pill: pill && pill.getClientRects().length ? Math.round(pill.getBoundingClientRect().left * 10) / 10 : null,
+      reserved: !!pill?.querySelector(".is-reserved"),
+      tagged: !!pill?.querySelector(".safety-tags:not(.is-reserved)"),
+    };
+  });
+  const alpha = await saveProfile({ name: "Alpha", host: "127.0.0.1", port: 3306, user: "a" });
+  const bravo = await saveProfile({ name: "Bravo", host: "127.0.0.1", port: 3307, user: "b" });
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await openConnectionPicker(page);
+  await page.waitForFunction((id) =>
+    [...document.querySelectorAll(".window-toolbar select[aria-label=Connection] option")].some((o) => o.value === id), {}, bravo);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".window-toolbar .picker-panel"));
+  for (const width of [1440, 720]) {
+    await page.setViewport({ width, height: width === 720 ? 600 : 900 });
+    await page.waitForFunction(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    const before = await geometry();
+    await chooseConnection(page, alpha);
+    const onAlpha = await geometry();
+    await chooseConnection(page, bravo);
+    const onBravo = await geometry();
+    for (const [name, m] of [["before", before], ["Alpha", onAlpha], ["Bravo", onBravo]]) {
+      assert.equal(m.first, before.first, `the toolbar's first control keeps its left edge at ${width} px (${name})`);
+      assert.equal(m.headerFirst, before.headerFirst, `the window toolbar keeps its first control at ${width} px (${name})`);
+    }
+    assert.ok(Math.abs(onBravo.pill - onAlpha.pill) <= 2, `the connection pill does not move between same-width labels at ${width} px (${onAlpha.pill} -> ${onBravo.pill})`);
+  }
+  // The badges appear when the saved connections list arrives; the reserved
+  // space keeps the pill where it was (the 23 px shift reported at 720 px,
+  // the wider Production tag at 1440 px).
+  profilesArm = { delay: 1200, body: await listProfiles() };
+  for (const width of [1440, 720]) {
+    await page.setViewport({ width, height: width === 720 ? 600 : 900 });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    let first = null;
+    let settled = null;
+    for (let i = 0; i < 80; i++) {
+      const g = await geometry();
+      if (g.pill !== null) {
+        if (!first) {
+          first = g;
+          assert.equal(g.reserved, true, `the pill reserves its badges at ${width} px while they load`);
+        }
+        if (g.tagged) { settled = g; break; }
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(first && settled, `the pill and its badges showed at ${width} px`);
+    assert.equal(settled.reserved, false);
+    assert.equal(settled.pill, first.pill, `the pill does not move when its badges appear at ${width} px`);
+  }
+  profilesArm = null;
 
   assert.deepEqual(h.errors, []);
   console.log("editor-toolbar-layout: no overlapping labels at 1440, 1040 and 720 px, light and dark, schema browser open and closed, scope, Auto-commit and the transaction meter");

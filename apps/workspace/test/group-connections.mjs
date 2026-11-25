@@ -1232,7 +1232,7 @@ try {
   await page.click('.view-inspector button[data-change="max_connections"]');
   const variableSheet = 'dialog.variable-sheet[open]';
   await page.waitForSelector(`${variableSheet} #variable-value-max_connections`, { visible: true });
-  await page.click(`${variableSheet} #variable-value-max_connections`, { clickCount: 3 });
+  await page.click(`${variableSheet} #variable-value-max_connections`, { count: 3 });
   await page.keyboard.press("Backspace");
   await page.type(`${variableSheet} #variable-value-max_connections`, "300");
   await page.waitForFunction((sel) => document.querySelector(`${sel} .variable-statement`)?.textContent === "SET GLOBAL max_connections = 300;" &&

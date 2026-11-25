@@ -4383,6 +4383,12 @@ kbd {
   flex: none;
   gap: var(--space-1);
 }
+/* Reserved while the settings load: the badge keeps its layout so its
+   appearance never shifts the toolbar. */
+.connection-pill .safety-tags.is-reserved,
+.connection-pill .connection-pill-type.is-reserved {
+  visibility: hidden;
+}
 .connection-pill .type-tag {
   font-size: var(--text-xs);
   border: 0;
@@ -5203,6 +5209,15 @@ kbd {
   }
   .sidebar:not(:has(> .sidebar-drawer.open)) .update-badge > * { display: none; }
   .sidebar:not(:has(> .sidebar-drawer.open)) .update-badge:is([data-phase="downloading"], [data-phase="preparing"]) { background: var(--accent); }
+  /* The busy state shows on the rail too, on the same aria-busy. */
+  .sidebar:not(:has(> .sidebar-drawer.open)) .update-badge[aria-busy="true"] > .spinner {
+    display: block;
+    width: 8px;
+    height: 8px;
+    border-width: 2px;
+    border-color: rgb(255 255 255 / 0.4);
+    border-top-color: var(--accent-ink);
+  }
 }
 /* A failed opening of Software update, at the control that launched it
    (UpdateCheck.tsx UpdateOpenError): the reason with Retry and Dismiss. The

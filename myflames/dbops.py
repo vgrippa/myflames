@@ -402,7 +402,7 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             dollar_quotes=False, client=False, unknown_execute=True, wsrep_on=None,
             client_delimiter=None, framing=(), ansi_quotes=False, mssql=False,
             sql_mode=None, comment_dialect=None, client_engine=None, client_ansi_quotes=False,
-            client_backslash_escapes=None):
+            client_backslash_escapes=None, _cache=None, _framing_key=None):
     """Read SQL once, preserving source spans and every lexical uncertainty.
 
     Tokens are (kind, start, end). Executed comment openers/closers are
@@ -440,11 +440,44 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
             backslash_escapes = client_backslash_escapes
     version = parse_version_tuple(server_version, leading=True, prefer_mariadb=engine == "mariadb", default=None)
     version_id = None if version is None else version[0] * 10000 + version[1] * 100 + version[2]
+    # The splitter supplies the retained scan's integer identity. Derive its
+    # delimiter map once; equal maps still share a lexer result when other
+    # client token roles differ. Arbitrary caller-owned framing stays mutable
+    # and is snapshotted on every call, as on the uncached path.
+    saved_framing = _cache.get(("framing", _framing_key)) if _cache is not None and _framing_key is not None else None
+    if saved_framing is None:
+        framing_at = {start: end for kind, start, end in framing if kind in ("delimiter_command", "delimiter")}
+        framing_key = tuple(sorted(framing_at.items())) if _cache is not None else None
+        if _cache is not None and _framing_key is not None:
+            values = _cache.setdefault("framing_values", {})
+            framing_key = values.setdefault(framing_key, len(values))
+            _cache[("framing", _framing_key)] = (framing_at, framing_key)
+    else:
+        framing_at, framing_key = saved_framing
+    cache_key = None
+    if _cache is not None:
+        # Cache the scanner's effective inputs, after mode/status overrides.
+        # The version/comment switches are only read in the /* branch. Keep
+        # the delimiter even in server scans: optimizer-hint checks use it.
+        comments = (version_id, unknown_execute, wsrep_on, comment_dialect) if "/*" in sql else ()
+        cache_key = ("lex", sql, backslash_escapes, engine, dollar_quotes, client,
+                     client_delimiter, framing_key, ansi_quotes, mssql,
+                     client_engine, comments)
+        try:
+            cached = _cache.get(cache_key)
+        except TypeError:
+            # Preserve the uncached handling of unusual, unhashable options.
+            cache_key = None
+        else:
+            if cached is not None:
+                return cached
     tokens, comments, unclosed, issues = [], [], [], []
     n, pos, code_start = len(sql), 0, 0
     active, pending = None, False
     command_start = 0
-    framing_at = {start: end for kind, start, end in framing if kind in ("delimiter_command", "delimiter")}
+    # Unit heads inside executable comments can all look past the same
+    # trailing comments. Share their landing positions within this scan.
+    command_comment_skips = {} if client else None
 
     def token(kind, start, end):
         if code_start < start:
@@ -508,7 +541,8 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 # pending or open a quote. A DELIMITER consumed by our own
                 # splitter loses this issue only after the server reading
                 # proves that the discarded prefix contains no SQL.
-                command = _client_named_command(sql, pos, client_delimiter, across_lines=True)
+                command = _client_named_command(sql, pos, client_delimiter, across_lines=True,
+                                                _comment_skips=command_comment_skips)
                 if command is not None and command[2]:
                     issues.append((command[0], REASON_NAMED_CLIENT_COMMAND % command[1]))
             if client_delimiter is not None and line_start and not pending and active is None:
@@ -535,7 +569,8 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
                 # add_line, even when those bytes are executable SQL or
                 # contain quotes. Refuse instead of changing the reviewed
                 # text or trying to retain the command's discarded tail.
-                command = _client_named_command(sql, pos, client_delimiter)
+                command = _client_named_command(sql, pos, client_delimiter,
+                                                _comment_skips=command_comment_skips)
                 if command is not None:
                     at, name, after_comment = command
                     if not pending or after_comment:
@@ -756,7 +791,18 @@ def lex_sql(sql, backslash_escapes=True, engine=None, server_version=None,
         active["end"] = n
         active["problem"] = "unterminated executable comment"
         unclosed.append((active["start"], n))
-    return {"tokens": tokens, "comments": comments, "unclosed": unclosed, "issues": issues}
+    result = {"tokens": tokens, "comments": comments, "unclosed": unclosed, "issues": issues}
+    if cache_key is not None:
+        # Different mode inputs can yield identical complete scans. Retain
+        # one result per interned meaning, not another large token list for
+        # every input key. Only canonical scans need their ids kept alive.
+        scan_key = _scan_cache_key(result, _cache)
+        shared = _cache.setdefault("scans", {}).setdefault(scan_key, result)
+        if shared is not result:
+            del _cache["scan_keys"][id(result)]
+        result = shared
+        _cache[cache_key] = result
+    return result
 
 
 def skipped_executable_comments(sql, engine, server_version, backslash_escapes=None, wsrep_on=None,
@@ -788,6 +834,7 @@ def skipped_executable_comments(sql, engine, server_version, backslash_escapes=N
 #: command in --binary-mode (client/mysql.cc find_command and
 #: is_delimiter_command compare only the first 9 characters).
 _DELIMITER_COMMAND = re.compile(r"[ \t\v\f\r]*(delimiter[^ \t\r\n\f\v]*)", re.I | re.ASCII)
+_DELIMITER_LINE = re.compile(r"^[ \t\v\f\r]*delimiter[^ \t\r\n\f\v]*", re.I | re.M | re.ASCII)
 _CLIENT_SPACE = " \t\n\r\f\v"
 _NAMED_CLIENT_COMMAND = re.compile(r"delimiter|charset|sandbox", re.I | re.ASCII)
 # Union of named commands in the supported client command tables, used only
@@ -800,7 +847,7 @@ _COMMENT_COMMAND_LINE = re.compile(
     r"nowarning|resetconnection|query_attributes|ssl_session_data_print|costs|\?)", re.I | re.ASCII)
 
 
-def _client_named_command(sql, start, delimiter, across_lines=False):
+def _client_named_command(sql, start, delimiter, across_lines=False, _comment_skips=None):
     """A command at a line/unit head, conservatively skipping block comments.
 
     mysql-8.4.0 client/mysql.cc:2453-2464,2577-2593 runs this lookup
@@ -811,22 +858,38 @@ def _client_named_command(sql, start, delimiter, across_lines=False):
     checks keep their bounded lookahead while a statement is pending.
     """
     at, after_comment = start, False
+    skipped = []
     while True:
+        # Cache only the raw comment-prefix landing, never the command:
+        # DELIMITER can change during a scan. Line-local and cross-line
+        # lookups must also keep separate entries. Every recorded prefix
+        # skips a comment, preserving after_comment on a cache hit.
+        key = (across_lines, at)
+        if _comment_skips is not None and key in _comment_skips:
+            at, after_comment = _comment_skips[key], True
+            break
         while at < len(sql) and sql[at] in (_CLIENT_SPACE if across_lines else " \t\r\f\v"):
             at += 1
         if across_lines and (sql.startswith("#", at) or (sql.startswith("--", at) and
                 (at + 2 == len(sql) or sql[at + 2] in _CLIENT_SPACE))):
+            skipped.append(key)
             end = sql.find("\n", at)
             if end < 0:
-                return None
+                at = len(sql)
+                break
             at, after_comment = end + 1, True
             continue
         if not sql.startswith("/*", at):
             break
+        skipped.append(key)
         end = sql.find("*/", at + 2)
         if end < 0:
-            return None
+            at = len(sql)
+            break
         at, after_comment = end + 2, True
+    if _comment_skips is not None:
+        for key in skipped:
+            _comment_skips[key] = at
     command = _NAMED_CLIENT_COMMAND.match(sql, at)
     if command is None:
         return None
@@ -985,8 +1048,39 @@ def _delimiter_argument(sql, at, client_engine=None):
 
 # ---- splitting -----------------------------------------------------------------------
 
-def _masked_fragment(sql, scan, start, end):
+def _scan_cache_key(scan, cache):
+    """Intern immutable scan contents once per object in one classify call.
+
+    Keep the scan alive alongside its integer key so object ids cannot be
+    reused. Full tuples are hashed only when interning a new scan, never
+    for each statement's fragment lookup. The optional derived ends index
+    does not change a scan's meaning.
+    """
+    keys = cache.setdefault("scan_keys", {})
+    saved = keys.get(id(scan))
+    if saved is None:
+        key = (tuple(scan["tokens"]),
+               tuple(tuple(sorted(comment.items())) for comment in scan["comments"]),
+               tuple(scan["unclosed"]), tuple(scan["issues"]))
+        values = cache.setdefault("scan_values", {})
+        saved = keys[id(scan)] = (scan, values.setdefault(key, len(values)))
+    return saved[1]
+
+
+def _masked_fragment(sql, scan, start, end, _cache=None, _scan_key=None):
     """Mask one source range using the server tokens, never rescan with a regex."""
+    cache_key = None
+    if _cache is not None:
+        if _scan_key is None:
+            _scan_key = _scan_cache_key(scan, _cache)
+        cache_key = ("mask", sql, _scan_key, start, end)
+        try:
+            cached = _cache.get(cache_key)
+        except TypeError:
+            cache_key = None
+        else:
+            if cached is not None:
+                return cached
     code, idents, spans = [], [], []
     ends = scan.get("ends")
     if ends is None:
@@ -1009,13 +1103,16 @@ def _masked_fragment(sql, scan, start, end):
         else:
             code.append(" ")
         at += 1
-    return _CODE_SPACE.sub(" ", "".join(code)).strip(" "), idents, tuple(spans)
+    result = _CODE_SPACE.sub(" ", "".join(code)).strip(" "), idents, tuple(spans)
+    if cache_key is not None:
+        _cache[cache_key] = result
+    return result
 
 
 def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=False,
                      engine=None, server_version=None, unknown_execute=True, wsrep_on=None,
                      ansi_quotes=False, mssql=False, sql_mode=None, comment_dialect=None, client_engine=None,
-                     client_ansi_quotes=False, discarded_prefixes=None, client_backslash_escapes=None):
+                     client_ansi_quotes=False, discarded_prefixes=None, client_backslash_escapes=None, _cache=None):
     """Client statement boundaries with code masked by the server's SQL lexer.
 
     ``text`` and offsets retain the original SQL. ``code``, ``idents`` and
@@ -1042,10 +1139,73 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
     framing = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes, client=True,
                       client_delimiter=delimiter, sql_mode=sql_mode, ansi_quotes=ansi_quotes,
                       client_engine=client_engine, comment_dialect=comment_dialect,
-                      client_ansi_quotes=client_ansi_quotes, client_backslash_escapes=client_backslash_escapes)
+                      client_ansi_quotes=client_ansi_quotes, client_backslash_escapes=client_backslash_escapes,
+                      _cache=_cache)
+    framing_key = _scan_cache_key(framing, _cache) if _cache is not None else None
     scan = lex_sql(sql, backslash_escapes, engine, server_version, dollar_quotes,
                    unknown_execute=unknown_execute, wsrep_on=wsrep_on, framing=framing["tokens"],
-                   ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect)
+                   ansi_quotes=ansi_quotes, mssql=mssql, sql_mode=sql_mode, comment_dialect=comment_dialect,
+                   _cache=_cache, _framing_key=framing_key)
+    cache_key = None
+    scan_key = None
+    if _cache is not None:
+        scan_key = _scan_cache_key(scan, _cache)
+        # Equal complete scans produce equal units even when the original
+        # mode arguments differ. Prefix collection has an output argument,
+        # so leave that splitter path uncached.
+        if discarded_prefixes is None:
+            cache_key = ("split", sql, delimiter, client_engine,
+                         framing_key, scan_key)
+            try:
+                cached = _cache.get(cache_key)
+            except TypeError:
+                cache_key = None
+            else:
+                if cached is not None:
+                    return cached
+        # _masked_fragment adds an ends index. Give it private dictionaries;
+        # tokens/comments/issues and the resulting idents are only read by
+        # the splitter and classification consumers. Populate both indexes
+        # even on a fragment-cache hit, which does not run the helper body.
+        framing = dict(framing, ends=[token[2] for token in framing["tokens"]])
+        scan = dict(scan, ends=[token[2] for token in scan["tokens"]])
+        # Pass the originals' integer keys to fragment lookups. The private
+        # copies and their ends indexes can die when this split finishes;
+        # retaining their object ids would keep every index alive too.
+
+    def interval_index(ranges):
+        starts, ends = [], []
+        farthest = -1
+        for left, right in sorted(ranges):
+            starts.append(left)
+            farthest = max(farthest, right)
+            ends.append(farthest)
+        return starts, ends
+
+    def overlaps(index, start, end):
+        starts, ends = index
+        at = bisect.bisect_left(starts, end) - 1
+        return at >= 0 and ends[at] > start
+
+    # Comments can contain many client statement endings. Index their
+    # intervals once instead of scanning every comment for every ending.
+    # Prefix maxima also retain enclosing comments when intervals overlap.
+    executed_comments = interval_index((comment["start"], comment["end"])
+                                      for comment in scan["comments"] if comment["executes"] is not False)
+    unclosed_tokens = interval_index(scan["unclosed"] + framing["unclosed"])
+    all_issues = scan["issues"] + framing["issues"]
+    issue_order = sorted(range(len(all_issues)), key=lambda at: all_issues[at][0])
+    issue_positions = [all_issues[at][0] for at in issue_order]
+
+    def issues_between(start, end):
+        left = bisect.bisect_left(issue_positions, start)
+        right = bisect.bisect_left(issue_positions, end)
+        # Preserve the original server-then-client issue order, including
+        # issues the lexer discovers out of position order when closing a
+        # comment. Sorting the whole list by position would change output.
+        for at in sorted(issue_order[left:right]):
+            yield all_issues[at]
+
     out = []
     consumed_delimiters = set()
     state = {"start": 0, "pending": False, "issues": [], "unclosed": False}
@@ -1058,7 +1218,7 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
 
     def finish(end, next_start):
         start = state["start"]
-        code, idents, tokens = _masked_fragment(sql, scan, start, end)
+        code, idents, tokens = _masked_fragment(sql, scan, start, end, _cache=_cache, _scan_key=scan_key)
         # A skipped comment cannot mask SQL across separate COM_QUERYs.
         # In --force mode a later fragment could execute after the first
         # fragment's unclosed-comment error. Refuse this framing, including
@@ -1071,15 +1231,12 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
                     issue(REASON_COMMENT_FRAMING)
                 if kind in ("string", "identifier") and left < boundary < right:
                     issue(REASON_QUOTE_FRAMING)
-            for comment in scan["comments"]:
-                if comment["executes"] is not False and comment["start"] < boundary < comment["end"]:
-                    issue(REASON_EXECUTED_FRAMING)
-        for at, reason in scan["issues"] + framing["issues"]:
-            if start <= at < end and not (at in consumed_delimiters and
-                                          reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+            if overlaps(executed_comments, boundary, boundary):
+                issue(REASON_EXECUTED_FRAMING)
+        for at, reason in issues_between(start, end):
+            if not (at in consumed_delimiters and reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
                 issue(reason)
-        unclosed = state["unclosed"] or any(left < end and right > start
-                                            for left, right in scan["unclosed"] + framing["unclosed"])
+        unclosed = state["unclosed"] or overlaps(unclosed_tokens, start, end)
         if code or state["pending"] or state["issues"] or unclosed:
             raw = sql[start:end]
             lead = len(raw) - len(raw.lstrip())
@@ -1091,7 +1248,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             # mysql-8.4.0:client/readline.cc:75-95.
             if sys.platform == "win32" and client_engine != "mariadb" and "\r\n" in text:
                 issue(REASON_CRLF_TRANSPORT)
-            unused_code, unused_idents, client_tokens = _masked_fragment(sql, framing, start, end)
+            unused_code, unused_idents, client_tokens = _masked_fragment(
+                sql, framing, start, end, _cache=_cache, _scan_key=framing_key)
             out.append({"text": text, "start": start + lead, "end": start + lead + len(text),
                         "code": code, "idents": idents, "token_spans": tokens,
                         "client_token_spans": client_tokens,
@@ -1115,10 +1273,9 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             # when this DELIMITER is the last line of the run.
             # mysql-8.4.0:client/mysql.cc:2455-2471,2895-2902;
             # mariadb-11.8.9:sql/sql_lex.cc:2416-2467.
-            prefix_code, unused_idents, unused_tokens = _masked_fragment(sql, scan, state["start"], left)
-            ignored = not prefix_code and not any(
-                comment["executes"] is not False and comment["start"] < left and
-                comment["end"] > state["start"] for comment in scan["comments"])
+            prefix_code, unused_idents, unused_tokens = _masked_fragment(
+                sql, scan, state["start"], left, _cache=_cache, _scan_key=scan_key)
+            ignored = not prefix_code and not overlaps(executed_comments, state["start"], left)
             if ignored:
                 consumed_delimiters.add(command.start(1))
                 if discarded_prefixes is not None:
@@ -1128,9 +1285,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
                       "before changing DELIMITER.")
             # Suppress only the exact command proved safe above. Other
             # commands and problems in the prefix must still refuse.
-            for at, reason in scan["issues"] + framing["issues"]:
-                if state["start"] <= at < line_end and not (at in consumed_delimiters and
-                                                            reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
+            for at, reason in issues_between(state["start"], line_end):
+                if not (at in consumed_delimiters and reason == REASON_NAMED_CLIENT_COMMAND % "DELIMITER"):
                     issue(reason)
             if not ignored:
                 finish(line_end, line_end)
@@ -1163,6 +1319,8 @@ def split_statements(sql, backslash_escapes=True, delimiter=";", dollar_quotes=F
             state["pending"] = True
         pos += 1
     finish(n, n)
+    if cache_key is not None:
+        _cache[cache_key] = out
     return out
 
 
@@ -1622,7 +1780,10 @@ def _set_statement_for(flat):
 
 
 def _set_checks(upper, idents):
-    rest = upper[re.match(r"\s*SET\b", upper).end():]
+    head = re.match(r"\s*SET\b", upper)
+    if head is None:
+        return _verdict("risky", "unknown", "myflames could not read this SET statement.")
+    rest = upper[head.end():]
     if re.match(r"\s*PASSWORD\b", rest):
         return _verdict("risky", "account", "SET PASSWORD changes an account password.")
     if re.match(r"\s*DEFAULT\s+ROLE\b", rest):
@@ -1718,6 +1879,10 @@ def _classify_code(upper, idents, key_columns, native_functions=None):
             if m.group(1).startswith("INTO"):
                 return _verdict("write", "session", "EXPLAIN ... INTO assigns the plan to a user variable.")
             rest = rest[m.end():]
+        if re.match(r"\s*\([\s(]*SET\b", rest):
+            # Keep an unreadable SET behind EXPLAIN on the same refusal
+            # path as a parenthesized SET at the statement head.
+            return _set_checks(rest, idents)
         if analyzed and rest.strip():
             inner = _classify_code(rest, idents, key_columns, native_functions)
             inner["reasons"] = ["EXPLAIN ANALYZE runs the statement."] + inner["reasons"]
@@ -1896,10 +2061,10 @@ def _classify_statement(stmt, key_columns, native_functions=None):
 
 
 def _classify_reading(sql, backslash_escapes, key_columns, engine=None, server_version=None,
-                      unknown_execute=True, wsrep_on=None, delimiter=";", **quote_args):
+                      unknown_execute=True, wsrep_on=None, delimiter=";", _cache=None, **quote_args):
     units = split_statements(sql, backslash_escapes, delimiter=delimiter, engine=engine,
                              server_version=server_version, unknown_execute=unknown_execute,
-                             wsrep_on=wsrep_on, **quote_args)
+                             wsrep_on=wsrep_on, _cache=_cache, **quote_args)
     statements = []
     native_functions = _native_read_functions(engine, server_version)
     for stmt in units:
@@ -1911,7 +2076,7 @@ def _classify_reading(sql, backslash_escapes, key_columns, engine=None, server_v
 
 
 def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_version=None, wsrep_on=None,
-             sql_mode=None, client_engine=None, client_status_synced=False, delimiter=";"):
+             sql_mode=None, client_engine=None, client_status_synced=False, delimiter=";", _use_cache=True):
     """Classify every modelled server reading and keep the worst effect.
 
     Unknown engines or MySQL versions use all version-number grammars. Unknown quote modes
@@ -1923,12 +2088,16 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
         raise ValueError("Pass SQL text.")
     if len(sql) > 1000000:
         raise ValueError("SQL text is limited to 1,000,000 characters.")
+    # Never retain SQL (which can contain credentials) between requests or
+    # share mutable scanner results with concurrent classifier calls. Tests
+    # can disable reuse while exercising the same complete reading logic.
+    cache = {} if _use_cache else None
     readings = lexer_readings(backslash_escapes, engine, sql_mode, server_version, client_engine, sql,
                               client_status_synced=client_status_synced)
     units, statements = _classify_reading(sql, key_columns=key_columns, engine=engine,
                                          server_version=server_version, wsrep_on=wsrep_on,
-                                         delimiter=delimiter, **readings[0])
-    reference = _mode_reading(units)
+                                         delimiter=delimiter, _cache=cache, **readings[0])
+    reference = _mode_reading(units, _cache=cache)
     skipped_reference = None
     summary = _worst(statements)
     ambiguous = False
@@ -1948,8 +2117,8 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
     for reading in readings[1:]:
         units, alternative = _classify_reading(sql, key_columns=key_columns, engine=engine,
                                               server_version=server_version, wsrep_on=wsrep_on,
-                                              delimiter=delimiter, **reading)
-        meaning = _mode_reading(units)
+                                              delimiter=delimiter, _cache=cache, **reading)
+        meaning = _mode_reading(units, _cache=cache)
         if meaning != reference:
             # A future gate cannot execute with the legacy five-digit
             # grammar. If that yields exactly the existing all-skip reading,
@@ -1960,8 +2129,8 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
                 if skipped_reference is None:
                     skipped, unused = _classify_reading(
                         sql, key_columns=key_columns, engine=engine, server_version=server_version,
-                        unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, **readings[0])
-                    skipped_reference = _mode_reading(skipped)
+                        unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, _cache=cache, **readings[0])
+                    skipped_reference = _mode_reading(skipped, _cache=cache)
                 ambiguous = ambiguous or meaning != skipped_reference
             else:
                 ambiguous = True
@@ -1970,12 +2139,12 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
     if ambiguous:
         summary["reasons"].append(AMBIGUOUS_REASON)
     for reading in readings if "/*" in sql else ():
-        scan = lex_sql(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, **reading)
+        scan = lex_sql(sql, engine=engine, server_version=server_version, wsrep_on=wsrep_on, _cache=cache, **reading)
         uncertain = [c for c in scan["comments"] if c["problem"]]
         if uncertain:
             unused_units, alternative = _classify_reading(
                 sql, key_columns=key_columns, engine=engine, server_version=server_version,
-                unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, **reading)
+                unknown_execute=False, wsrep_on=wsrep_on, delimiter=delimiter, _cache=cache, **reading)
             summary = _worst([summary, _worst(alternative)])
             merge(alternative)
             if len({c["opener"] for c in uncertain}) > 1 or any(
@@ -1990,9 +2159,9 @@ def classify(sql, backslash_escapes=None, key_columns=None, engine=None, server_
                     statement.update(_worst([statement, unknown]))
     for reading in readings if "$" in sql else ():
         plain = split_statements(sql, delimiter=delimiter, engine=engine, server_version=server_version,
-                                 wsrep_on=wsrep_on, **reading)
+                                 wsrep_on=wsrep_on, _cache=cache, **reading)
         dollars = split_statements(sql, delimiter=delimiter, dollar_quotes=True, engine=engine,
-                                   server_version=server_version, wsrep_on=wsrep_on, **reading)
+                                   server_version=server_version, wsrep_on=wsrep_on, _cache=cache, **reading)
         if _target_reading(plain) != _target_reading(dollars):
             ambiguous = True
             summary = _verdict("risky", "unknown", "Dollar quotes change the SQL interpretation between clients.")
@@ -2168,7 +2337,14 @@ class TargetEvidenceConnection(object):
             body += "\n;\n".join(bodies) + "\n"
             delimiter = next((value for value in _TARGET_DELIMITERS if value not in body), None)
             if delimiter is None:
-                raise ValueError("no safe review evidence packet delimiter")
+                # Account names and other server data may contain every fixed
+                # candidate. Keep framing independent of that data, checking
+                # random candidates against the complete packet as well.
+                # Both clients store at most 15 delimiter bytes: mysql-8.4.7
+                # client/mysql.cc:226,4415 and mariadb-11.4.9:281,4597.
+                import secrets
+                while delimiter is None or delimiter in body:
+                    delimiter = "__mf_" + secrets.token_hex(4) + "__"
             flags = list(extra_flags or [])
             if "--skip-reconnect" not in flags:
                 flags.append("--skip-reconnect")
@@ -2391,13 +2567,18 @@ def _target_reading(units):
              u.get("token_spans", ()), u.get("client_token_spans", ()), u.get("next_start")) for u in units]
 
 
-def _mode_reading(units):
+def _mode_reading(units, _cache=None):
     """Compare boundaries, token roles, restored identifiers and effects.
 
     A double-quoted identifier is not interchangeable with a string, even
     when both classify as a read or DDL. The editor needs the actual names
     for ALTER preflight, timeout guards and typed DROP confirmation.
     """
+    cache_key = ("mode", id(units))
+    if _cache is not None:
+        cached = _cache.get(cache_key)
+        if cached is not None:
+            return cached[1]
     out = []
     for unit in units:
         verdict = _classify_statement(unit, None)
@@ -2406,6 +2587,10 @@ def _mode_reading(units):
         out.append((unit["start"], unit["end"], unit["delimiter"],
                     code, unit.get("token_spans", ()),
                     unit["unclosed"], unit["issues"], verdict["kind"], verdict["category"]))
+    if _cache is not None:
+        # Comparison tuples are read-only. Retain the units with the result
+        # so their id remains unique for the lifetime of this call's cache.
+        _cache[cache_key] = (units, out)
     return out
 
 
@@ -3338,6 +3523,16 @@ def sensitive(name):
 
 
 _STRING = r"""(?:'(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"(?:""|\\[\s\S]|[^"\\])*(?:"|\\?\Z))"""
+_STRING_NO_BACKSLASH = r"""(?:'(?:''|[^'])*(?:'|\Z)|"(?:""|[^"])*(?:"|\Z))"""
+# Stored text includes rejected SQL too. Hide introduced/encoded literals
+# even where that credential clause would reject their spelling on a server.
+# Escaped openers belong to dynamic SQL and need its enclosing-string end.
+_SECRET_VALUE = (
+    r"(?:(?:(?<![\w])_[\w]+\s+)?(?:0x[0-9a-fA-F]+|0b[01]+)\b"
+    r"|(?:(?<![\w])_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)?(?:" + _STRING + r"|\\['\"]))"
+    r"(?:\s+COLLATE\s+(?:`[^`]*`|[\w]+))?")
+_SECRET_VALUE_OPENER = re.compile(
+    r"(?:(?<![\w])_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)?(\\?)(['\"])", re.I)
 # A bounded inventory also protects quoted SQL and server echoes, where a
 # whole-statement lexer cannot know which quote belongs to the surrounding text.
 # Recognize each quoted component as well as a quoted dotted inventory name.
@@ -3346,25 +3541,165 @@ _SECRET_VARIABLE_NAME = r"(?:" + "|".join(
     r"\s*\.\s*".join(r"(?:" + re.escape(part) + r"|`" + re.escape(part) +
                       r"`|\"" + re.escape(part) + r"\")" for part in name.split('.')) + r")"
     for name in sorted(_SECRET_VARIABLES)) + r")"
-_SECRET_PATTERNS = tuple(re.compile(p + "(" + _STRING + ")", re.I | re.S) for p in (
-    # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
-    # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
-    r"(\bIDENTIFIED\s+(?:WITH\s+(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s+)?(?:BY|AS)\s+(?:PASSWORD\s+)?)",
-    # MariaDB IDENTIFIED VIA plugin USING 'x' or USING PASSWORD('x').
-    r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
-    # PASSWORD('x'), OLD_PASSWORD('x').
-    r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
-    # Bounded fallback for diagnostics that quote a whole SET PASSWORD statement.
-    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)",
-    # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
-    # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
-    r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
-    # Inventory assignments in dynamic SQL, diagnostics and quoted examples.
+_SECRET_VARIABLE_LITERAL = re.compile(
     r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
-    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)",
+    _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(?P<secret>" + _SECRET_VALUE + r")", re.I | re.S)
+# Keep original enclosing-string boundaries, including whether the final
+# quote closed the string or was escaped. The ordinary literal fallback
+# cannot distinguish a doubled quote in dynamic SQL from an empty value.
+# Bound quotes inside ordinary comments and backtick identifiers to those
+# tokens so prose apostrophes never open false strings across later SQL,
+# while keeping executable comments transparent.
+_SECRET_LITERAL_CONTEXT_STRING = (
+    r"'(?:''|\\[\s\S]|[^'\\])*(?P<single_end>'|\\?\Z)"
+    r'|"(?:""|\\[\s\S]|[^"\\])*(?P<double_end>"|\\?\Z)')
+_SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH = (
+    r"'(?:''|[^'])*(?P<single_end>'|\Z)"
+    r'|"(?:""|[^"])*(?P<double_end>"|\Z)')
+_SECRET_LITERAL_CONTEXT_SKIP = (
+    r"|(?P<backtick>`(?:``|[^`])*(?:`|\Z))"
+    r"|(?P<block>/\*(?!!|[mM]!)[\s\S]*?(?:\*/|\Z))"
+    r"|(?P<line>--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)")
+_SECRET_LITERAL_CONTEXT_PLAIN = re.compile(_SECRET_LITERAL_CONTEXT_STRING)
+_SECRET_LITERAL_CONTEXT_PLAIN_NO_BACKSLASH = re.compile(
+    _SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH)
+_SECRET_LITERAL_CONTEXT = re.compile(
+    _SECRET_LITERAL_CONTEXT_STRING + _SECRET_LITERAL_CONTEXT_SKIP)
+_SECRET_LITERAL_CONTEXT_NO_BACKSLASH = re.compile(
+    _SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH + _SECRET_LITERAL_CONTEXT_SKIP)
+_REPLACE_FOLLOW = re.compile(
+    r"(\s+REPLACE\s+)(?P<secret>" + _SECRET_VALUE + r")", re.I | re.S)
+_REPLACE_FOLLOW_NO_BACKSLASH = re.compile(
+    _REPLACE_FOLLOW.pattern.replace(_STRING, _STRING_NO_BACKSLASH)
+    .replace(r"|\\['\"]", ''), _REPLACE_FOLLOW.flags)
+_SECRET_CONCAT_PREFIX = re.compile(
+    r"(?:\A|;)\s*SET\s+@[\w$]+\s*(?::=|=)\s*CONCAT\s*\(\s*\Z", re.I)
+_SECRET_CONCAT_QUOTE = re.compile(
+    r"\s*,\s*QUOTE\s*\(\s*@[\w$]+\s*\)\s*\)(?=\s*(?:;|\Z))", re.I)
+_SET_PASSWORD_KEYWORD = re.compile(r"\bSET\s+PASSWORD\b", re.I)
+
+
+class _SetPasswordMatch:
+    """Minimal re.Match-compatible result for the character-bounded SET PASSWORD scan."""
+    __slots__ = ('_start', '_secret_start', '_end')
+
+    def __init__(self, start, secret_start, end):
+        self._start = start
+        self._secret_start = secret_start
+        self._end = end
+
+    def start(self, group=0):
+        if group == 'secret':
+            return self._secret_start
+        if group == 0:
+            return self._start
+        raise IndexError(group)
+
+    def end(self):
+        return self._end
+
+
+class _BoundedSetPasswordPattern:
+    """Character-bounded SET PASSWORD prefix scan (512 chars max before '=').
+
+    Skips closed quoted account tokens (for example FOR 'a=b'@'%') so '=' inside
+    a quoted account name never ends the prefix early, while bounding the total
+    account walk to 512 characters rather than 512 tokens and refusing a bare
+    backslash before a quote in backslash-escape mode so repeated malformed
+    prefixes stay strictly linear.
+    """
+    __slots__ = ('pattern', 'flags', '_account', '_tail')
+
+    def __init__(self, backslash_escapes=True):
+        if backslash_escapes:
+            account_quoted = (
+                r"'(?:''|\\[\s\S]|[^'\\])*'|\"(?:\"\"|\\[\s\S]|[^\"\\])*\"|`(?:``|[^`])*`")
+            unquoted = r"\\(?!['\"])|[^=;'\"`\\]"
+            secret_value = _SECRET_VALUE
+        else:
+            account_quoted = r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`"
+            unquoted = r"[^=;'\"`]"
+            secret_value = (_SECRET_VALUE.replace(_STRING, _STRING_NO_BACKSLASH)
+                            .replace(r"|\\['\"]", ''))
+        account_expr = (
+            r"(?:(?=(?P<account>" + account_quoted + r"))(?P=account)|" + unquoted + r")*=")
+        self.flags = re.I | re.S
+        self.pattern = r"(\bSET\s+PASSWORD\b" + account_expr + r"\s*)(?P<secret>" + secret_value + r")"
+        self._account = re.compile(account_expr, re.S)
+        self._tail = re.compile(r"\s*(?P<secret>" + secret_value + r")", re.I | re.S)
+
+    def search(self, text, pos=0):
+        text_len = len(text)
+        account_match = self._account.match
+        tail_match = self._tail.match
+        kw_search = _SET_PASSWORD_KEYWORD.search
+        while pos < text_len:
+            cmd = kw_search(text, pos)
+            if cmd is None:
+                return None
+            start = cmd.end()
+            limit = min(text_len, start + 513)
+            if text.find('=', start, limit) != -1:
+                prefix = account_match(text, start, limit)
+                if prefix is not None:
+                    tail = tail_match(text, prefix.end())
+                    if tail is not None:
+                        return _SetPasswordMatch(cmd.start(), tail.start('secret'), tail.end())
+            pos = start
+        return None
+
+
+_SET_PASSWORD_BOUNDED = _BoundedSetPasswordPattern(True)
+_SET_PASSWORD_BOUNDED_NO_BACKSLASH = _BoundedSetPasswordPattern(False)
+_SECRET_PATTERNS = tuple(
+    p if isinstance(p, _BoundedSetPasswordPattern)
+    else re.compile(p + "(?P<secret>" + _SECRET_VALUE + ")", re.I | re.S)
+    for p in (
+        # IDENTIFIED BY 'x', IDENTIFIED WITH plugin BY|AS 'x', MariaDB IDENTIFIED BY PASSWORD 'hash';
+        # CLONE INSTANCE FROM ... IDENTIFIED BY 'x'.
+        r"(\bIDENTIFIED\s+(?:WITH\s+(?:`[^`]*`|'[^']*'|\"[^\"]*\"|\w+)\s+)?(?:BY|AS)\s+(?:PASSWORD\s+)?)",
+        # MariaDB IDENTIFIED VIA plugin USING 'x' or USING PASSWORD('x').
+        r"(\b(?:VIA|WITH)\s+(?:`[^`]*`|\w+)\s+USING\s+(?:PASSWORD\s*\(\s*)?)",
+        # PASSWORD('x'), OLD_PASSWORD('x').
+        r"(\b(?:OLD_)?PASSWORD\s*\(\s*)",
+        # Character-bounded account walk before recognizing an assignment.
+        _SET_PASSWORD_BOUNDED,
+        # SOURCE_PASSWORD = 'x', MASTER_PASSWORD = 'x', PASSWORD = 'x', OPTIONS (PASSWORD 'x'). Not a
+        # word inside quotes ('caching_sha2_password' is followed by its own closing quote).
+        r"((?<![\w'\"`])\w*PASSWORD(?:\s*=)?\s*)",
+    )
+) + (
+    _SECRET_VARIABLE_LITERAL,
     # ALTER USER ... RANDOM PASSWORD or SET PASSWORD ... TO RANDOM REPLACE 'current'.
-    r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)",
-))
+    re.compile(r"((?:\bRANDOM(?:\s+PASSWORD)?|\[redacted\]['\"])\s+REPLACE\s+)(?P<secret>" +
+               _SECRET_VALUE + r")", re.I | re.S),
+)
+# Retain every old diagnostic match, including malformed quoted accounts.
+# Only the new introduced-literal alternative needs the stricter account walk.
+_SET_PASSWORD_LEGACY_LITERAL = re.compile(
+    r"(\bSET\s+PASSWORD\b[^=;]{0,512}=\s*)(?P<secret>" + _STRING + r")", re.I | re.S)
+_SECRET_PATTERNS_NO_BACKSLASH = {
+    # A backslash before an opener is only an escaped dynamic quote in the
+    # escaping reading; treating it as an opener in the other mode invents a
+    # value with no end and can consume subsequent, independent statements.
+    pattern: (_SET_PASSWORD_BOUNDED_NO_BACKSLASH
+              if pattern is _SET_PASSWORD_BOUNDED
+              else re.compile(pattern.pattern.replace(_STRING, _STRING_NO_BACKSLASH)
+                              .replace(r"|\\['\"]", ''), pattern.flags))
+    for pattern in _SECRET_PATTERNS + (_SET_PASSWORD_LEGACY_LITERAL,)}
+# Each keyword is required by its corresponding pattern, independent of SQL
+# context. REPLACE must not require RANDOM: earlier substitutions supply the
+# alternative [redacted] prefix. Unicode inputs always take the full path.
+_SECRET_PATTERN_KEYWORDS = ('identified', 'using', 'password', 'password',
+                            'password', None, 'replace')
+# Four characters suffice for a cheap candidate check, never classification.
+# The SET scanner also joins malformed name fragments. Preserve those cases
+# when a shorter initial token ends at a gap or quote.
+_SECRET_VARIABLE_STARTS = tuple(sorted({name[:4] for name in _SECRET_VARIABLES}))
+_SECRET_VARIABLE_FRAGMENT = re.compile(
+    r"(?<![\w$])(?:" + "|".join(sorted({start[:size]
+        for start in _SECRET_VARIABLE_STARTS for size in range(1, len(start))})) +
+    r")(?=\s|[\"`]|/\*|--(?=\s|\Z)|\#)")
 # Quotes and comments consume their whole span, including an unfinished
 # tail, before recognizing commands. Start at the beginning of the text so
 # SET PASSWORD inside a literal cannot shift the quote boundaries.
@@ -3372,7 +3707,18 @@ _SET_PASSWORD_PART = re.compile(
     _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
     r"|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*|(?P<command>\bSET\s+PASSWORD\b)|[=;]", re.I)
 _SET_PASSWORD_LITERAL = re.compile(r"(\s*)(" + _STRING + ")", re.S)
-_SET_PASSWORD_KEYWORD = re.compile(r"\bSET\s+PASSWORD\b", re.I)
+_SET_PASSWORD_VALUE = re.compile(
+    r"(\s*)(" + _SECRET_VALUE.replace(r"|\\['\"]", '') + ")", re.I | re.S)
+_SET_PASSWORD_ACCOUNT_TOKEN = re.compile(
+    r"\s+|/\*[\s\S]*?\*/|(?P<line>--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)"
+    r"|(?P<quoted>'(?:''|\\[\s\S]|[^'\\])*'|\"(?:\"\"|\\[\s\S]|[^\"\\])*\"|`(?:``|[^`])*`)"
+    r"|(?P<at>@)|(?P<lp>\()|(?P<rp>\))"
+    r"|(?P<word>[\w$.-]+)|(?P<bad>[\s\S])")
+_SET_PASSWORD_ACCOUNT_TOKEN_NO_BACKSLASH = re.compile(
+    r"\s+|/\*[\s\S]*?\*/|(?P<line>--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)"
+    r"|(?P<quoted>'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`)"
+    r"|(?P<at>@)|(?P<lp>\()|(?P<rp>\))"
+    r"|(?P<word>[\w$.-]+)|(?P<bad>[\s\S])")
 _SET_PASSWORD_SEPARATOR = re.compile(r"\bSET\s+PASSWORD\b|[=;]", re.I)
 _SET_PASSWORD_FROM_KEYWORD = re.compile(
     _STRING + r"|`(?:``|[^`])*(?:`|\Z)|/\*[\s\S]*?(?:\*/|\Z)"
@@ -3384,23 +3730,73 @@ _URL_VALUE_BOUNDARY = re.compile(r"[\s/]")
 _URL_SQL_END = re.compile(r"[\s'\"`]")
 _URL_VALUE_END = re.compile(r"\s")
 _URL_DATABASE_SCHEMES = frozenset(('mysql', 'mariadb', 'mysqlx', 'postgres', 'postgresql'))
+_URL_IPV6_HOST = re.compile(
+    r"\[[0-9a-fA-F.]*:[0-9a-fA-F.]*:[0-9a-fA-F:.]*(?:%[0-9a-zA-Z._~%-]+)?\](?::[0-9]*)?")
 # Literal and comment tokens protect commas and SET words inside values.
 # Keep name components separate so comments and backticks can surround dots
 # or the assignment operator without hiding a sensitive system variable.
-_SET_VARIABLE_TOKEN = (
+_SET_VARIABLE_NAME_PART = r"(?:[\w$]+|" + _STRING + r"|`(?:``|[^`])*(?:`|\Z))"
+_SET_VARIABLE_COMPONENT = (
     r"(?P<quoted>" + _STRING + r"|`(?:``|[^`])*(?:`|\Z))"
-    r"|(?P<executable>/\*(?:!|M!)-?\d{0,5})"
+    # Reversed MariaDB markers need five digits before a version is present;
+    # fewer digits are SQL, possibly the secret value. Keep the established
+    # permissive normal-marker handling, and leave sixth digits to the lexer.
+    r"|(?P<executable>/\*(?:!|M!)(?:!(?:[0-9]{5})?|-?\d{0,5}))"
     r"|(?P<comment>/\*[\s\S]*?(?:\*/|\Z)|--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)"
     r"|(?P<word>[\w$]+)|@+|:=|[=.,;()]|[^\w\s'\"`@=.,;()/*]+|[^\s]")
+_SET_VARIABLE_TOKEN = (
+    # A variable's name is never a clause keyword, including @@scope.name.
+    r"(?P<variable>@@?" + _SET_VARIABLE_NAME_PART +
+    r"(?:[ \t]*\.[ \t]*" + _SET_VARIABLE_NAME_PART + r")*)|" + _SET_VARIABLE_COMPONENT)
+_SET_VARIABLE_COMPONENT_PART = re.compile(_SET_VARIABLE_COMPONENT, re.I)
 _SET_VARIABLE_PART = re.compile(_SET_VARIABLE_TOKEN, re.I)
 _SET_VARIABLE_EXECUTABLE_PART = re.compile(r"(?P<end>\*/)|" + _SET_VARIABLE_TOKEN, re.I)
+_SET_VARIABLE_COMPONENT_NO_BACKSLASH = re.compile(
+    _SET_VARIABLE_COMPONENT.replace(_STRING, _STRING_NO_BACKSLASH), re.I)
+_SET_VARIABLE_PART_NO_BACKSLASH = re.compile(
+    _SET_VARIABLE_TOKEN.replace(_STRING, _STRING_NO_BACKSLASH), re.I)
+_SET_VARIABLE_EXECUTABLE_NO_BACKSLASH = re.compile(
+    r"(?P<end>\*/)|" + _SET_VARIABLE_TOKEN.replace(_STRING, _STRING_NO_BACKSLASH), re.I)
 _SET_VARIABLE_VERSION_TAIL = re.compile(r"(?P<word>\d+)")
+_SET_VARIABLE_DELIMITER = re.compile(r"(?P<delimiter>[\s\S]+)")
 _SET_VARIABLE_SCOPES = frozenset(('GLOBAL', 'SESSION', 'PERSIST', 'PERSIST_ONLY', 'LOCAL'))
-_SET_VALUE_ENDS = frozenset(('WHERE', 'ORDER', 'LIMIT', 'ON', 'RETURNING', 'FOR'))
+_SET_VALUE_ENDS = frozenset(('WHERE', 'ORDER', 'LIMIT', 'ON', 'RETURNING', 'FOR', 'AS'))
+# Recognize a complete row alias before revealing it. Unrecognized or
+# unfinished suffixes stay inside the hidden value, including arithmetic
+# containing an AS identifier. Ordinary comments here also fail closed.
+_SET_ALIAS_IDENTIFIER = r"(?:`(?:``|[^`])+`|[A-Za-z_$][\w$]*)"
+_SET_ROW_ALIAS = re.compile(
+    r"AS\s+" + _SET_ALIAS_IDENTIFIER +
+    r"(?:\s*\(\s*" + _SET_ALIAS_IDENTIFIER +
+    r"(?:\s*,\s*" + _SET_ALIAS_IDENTIFIER + r")*\s*\))?\s*" +
+    r"(?=ON\s+DUPLICATE\s+KEY\s+UPDATE\b|;|\Z)", re.I)
+# Only reveal an alias after a value with an unambiguous outer shape. Infix
+# expressions and unfinished operator phrases stay hidden through the alias.
+# The token walk separately checks balanced parentheses and quote boundaries.
+_SET_ALIAS_VALUE = re.compile(
+    r"(?:" + _STRING + r"|@[\w$]+|[0-9]+|(?:[A-Za-z_$][\w$]*\s*)?\([\s\S]*\))")
 # ER_WRONG_VALUE_FOR_VAR prints the rejected value verbatim, so apostrophes
 # and line breaks inside it are not SQL quote or message boundaries.
 _WRONG_VALUE_FOR_VAR = re.compile(
     r"\bVariable '([^'\r\n]{1,64})' can't be set to the value of '", re.I)
+# Match the same client code spelling as error_code / connection_error_text,
+# including wrappers and the client's optional SQLSTATE / at-line suffix.
+_CLIENT_ERROR_CODE = re.compile(r"\bERROR\s+(\d{3,5})\b", re.I)
+_ERROR_QUOTED_NAME = re.compile(r"(?<![A-Za-z0-9_])(['\"`])([^'\"`\r\n]{1,64})\1")
+# System variable names (including component.name) are ASCII identifiers in both engines.
+_ERROR_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?")
+# ASCII prose apostrophes (can't, Italian puo') are not value openers, while
+# non-ASCII labels (MariaDB Chinese 变量'...'无法设置为'...') can touch the quote.
+_ERROR_VALUE_OPEN = re.compile(r"(?<![A-Za-z0-9_])['\"`]")
+# Fail closed across a custom DELIMITER boundary when the remaining text
+# contains a credential keyword, inventory variable name, URL scheme, or client
+# error echo (such as ERROR 1064 near '...'), matching 3.5.1. Escaped
+# whitespace in JSON/Python-repr echoes (\nIDENTIFIED) also precedes keywords.
+_DELIMITER_TAIL_CREDENTIAL = re.compile(
+    r"(?:\b|(?<=\\[nrtfv]))(?:IDENTIFIED|USING|REPLACE)\b|PASSWORD|://|(?:\b|(?<=\\[nrtfv]))ERROR\s+\d{3,5}\b|" +
+    "|".join(r"(?:\b|(?<=\\[nrtfv]))" + re.escape(name.split(".")[-1]) + r"\b"
+             for name in sorted(_SECRET_VARIABLES)),
+    re.I)
 
 
 #: MySQL SHOW CREATE USER prints a hash with non-printable bytes as a hex
@@ -3431,10 +3827,18 @@ def _URL_SECRET(text, quoted=True):
         end = mark.start() if mark is not None else len(text)
         last_at = text.rfind("@", scheme.end(), end)
         colon = text.find(":", scheme.end(), last_at if last_at >= 0 else end)
-        if colon >= 0 and text.find("[", scheme.end(), colon) >= 0:
-            colon = -1  # A colon inside a bracketed host is not user-info.
+        # Only a bracketed IPv6 host directly after "://" treats its colon as
+        # a host colon (after "user-info@", last_at >= 0 already skips it).
+        # Brackets in a user name must not disable redaction.
+        if colon >= 0 and last_at < 0 and text.startswith("[", scheme.end()):
+            host = _URL_IPV6_HOST.match(text, scheme.end(), end)
+            if host is not None and (host.end() == end or text[host.end()] in (",", "?", "#")):
+                colon = -1
         if (last_at < 0 and colon >= 0 and end < len(text) and text[end] == "/"
-                and (scheme.group()[:-3].lower() in _URL_DATABASE_SCHEMES
+                # A ':' prefix is already outside the matched scheme; for '+'
+                # dialect/driver or pool combinations, match any component.
+                and (any(part in _URL_DATABASE_SCHEMES
+                         for part in text[scheme.start():scheme.end() - 3].lower().split('+'))
                      or not text[colon + 1:end].isdigit())):
             mark = value_end.search(text, end)
             end = mark.start() if mark is not None else len(text)
@@ -3446,13 +3850,116 @@ def _URL_SECRET(text, quoted=True):
             yield colon + 1, last_at
 
 
-def _secret_variable_tokens(text):
-    """Scan SQL once, recognizing closing markers only in executable bodies."""
+def _secret_variable_boundary_plan(text):
+    """Return ``(safe_boundaries, prefix_boundaries)`` proved under both readings.
+
+    Only the shared client splitter can establish custom statement endings.
+    Ignore ambiguous/unclosed units so uncertain framing still hides more.
+    Both backslash readings must agree before revealing anything after it.
+    Above 2 Mi characters or 4,096 delimiter tokens (semicolons plus every
+    declared custom delimiter), or when no DELIMITER command line declares a
+    usable non-semicolon delimiter, skip these two complete lexer/splitter
+    passes: redaction also runs synchronously during editor and investigation
+    saves. Count potential endings before lexing, even inside quotes/comments,
+    to bound comment-heavy inputs whose client command lookahead can revisit
+    the remaining text at every ending. When a later unit has an issue or an
+    unclosed quote, *safe_boundaries* keeps only endings after the last bad
+    unit while *prefix_boundaries* keeps clean endings before the first bad
+    unit so glued delimiters (``1$$SET ...``) still separate statements while
+    failing closed on any secret value that reaches them. The splitter itself
+    stays unbounded for Query editor callers.
+    """
+    if len(text) > 2 * 1024 * 1024 or 'delimiter' not in text.lower():
+        return [], []
+    total = text.count(';')
+    if total > 4096:
+        return [], []
+    declared = set()
+    commands = 0
+    for match in _DELIMITER_LINE.finditer(text):
+        commands += 1
+        if commands > 4096:
+            return [], []
+        value, _ = _delimiter_argument(text, match.end())
+        if value and '\\' not in value and value != ';' and value not in declared:
+            declared.add(value)
+            if len(declared) > 64:
+                return [], []
+            total += text.count(value)
+            if total > 4096:
+                return [], []
+    if not declared:
+        return [], []
+    safe_readings, prefix_readings = [], []
+    any_bad = False
+    for escapes in (True, False):
+        statements = list(split_statements(text, backslash_escapes=escapes))
+        safe = set()
+        bad = False
+        # Use a custom boundary to reveal trailing text only when both it and
+        # every later unit are issue-free and closed under both readings.
+        for statement in reversed(statements):
+            if statement['issues'] or statement['unclosed']:
+                bad = True
+                break
+            delimiter, end = statement['delimiter'], statement['next_start']
+            start = end - len(delimiter)
+            if (delimiter != ';' and statement['end'] <= start
+                    and text.startswith(delimiter, start)):
+                safe.add((start, end))
+        prefix = set()
+        if bad:
+            any_bad = True
+            for statement in statements:
+                if statement['issues'] or statement['unclosed']:
+                    break
+                delimiter, end = statement['delimiter'], statement['next_start']
+                start = end - len(delimiter)
+                if (delimiter != ';' and statement['end'] <= start
+                        and text.startswith(delimiter, start)):
+                    prefix.add((start, end))
+        else:
+            prefix = safe
+        safe_readings.append(safe)
+        prefix_readings.append(prefix)
+    safe_common = sorted(safe_readings[0] & safe_readings[1])
+    if not any_bad:
+        return safe_common, []
+    prefix_common = sorted((prefix_readings[0] & prefix_readings[1]) - set(safe_common))
+    return safe_common, prefix_common
+
+
+def _secret_variable_boundaries(text):
+    """Return custom endings proved safe under both backslash readings."""
+    return _secret_variable_boundary_plan(text)[0]
+
+
+def _secret_variable_tokens(text, backslash_escapes=True, allow_custom_boundaries=True,
+                            custom_boundaries=None):
+    """Scan redaction tokens, recognizing closers only in executable bodies.
+
+    Bound token searches at proven endings even when a word contains '$$'.
+    """
+    if custom_boundaries is not None:
+        boundaries = custom_boundaries
+    else:
+        boundaries = _secret_variable_boundaries(text) if allow_custom_boundaries else []
+    boundary = 0
     cursor, executable = 0, False
     while cursor < len(text):
-        pattern = _SET_VARIABLE_EXECUTABLE_PART if executable else _SET_VARIABLE_PART
-        token = pattern.search(text, cursor)
+        limit = boundaries[boundary][0] if boundary < len(boundaries) else len(text)
+        if backslash_escapes:
+            pattern = _SET_VARIABLE_EXECUTABLE_PART if executable else _SET_VARIABLE_PART
+        else:
+            pattern = _SET_VARIABLE_EXECUTABLE_NO_BACKSLASH if executable else _SET_VARIABLE_PART_NO_BACKSLASH
+        token = pattern.search(text, cursor, limit)
         if token is None:
+            if boundary < len(boundaries):
+                cursor = boundaries[boundary][1]
+                yield _SET_VARIABLE_DELIMITER.match(text, limit, cursor)
+                boundary += 1
+                executable = False
+                continue
             return
         cursor = token.end()
         if token.lastgroup == 'executable':
@@ -3461,7 +3968,7 @@ def _secret_variable_tokens(text):
             # MariaDB also accepts a sixth version digit adjacent to SQL.
             # Keep leftover digits as a token, separate from a following SET
             # or name, so both names and numeric secret values remain visible.
-            tail = _SET_VARIABLE_VERSION_TAIL.match(text, cursor)
+            tail = _SET_VARIABLE_VERSION_TAIL.match(text, cursor, limit)
             if tail is not None:
                 cursor = tail.end()
                 yield tail
@@ -3471,19 +3978,52 @@ def _secret_variable_tokens(text):
             yield token
 
 
-def _redact_secret_variables(text):
-    """Redact SET values from the shared inventory in one token pass.
+def _may_have_secret_variables(text):
+    """Skip inventory scans only when no supported name can start here."""
+    # Python's Unicode re.I also matches dotless i, long s and Kelvin sign.
+    # Keep that behavior, and leave executable version/name joins to the lexer.
+    if not text.isascii():
+        return True
+    folded = text.lower()
+    return (any(start in folded for start in _SECRET_VARIABLE_STARTS)
+            or '/*!' in folded or '/*m!' in folded
+            or _SECRET_VARIABLE_FRAGMENT.search(folded) is not None)
+
+
+def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries=True,
+                           custom_boundaries=None, pass1_redacted=None,
+                           fail_closed_boundaries=False, include_stage=False):
+    """Find SET values from the shared inventory in one quote-mode reading.
 
     Top-level clauses end a value; commas and later SET statements start new
     assignments. Parentheses, strings and ordinary comments protect separators.
     Executable-comment markers are transparent to SQL state. Track the last
     value token to leave a trailing closing marker and whitespace intact.
     """
-    parts, kept, value_start, value_end = [], 0, None, None
+    value_start, value_end = None, None
     in_set, depth, name_parts, awaiting_value = False, 0, None, False
+    insert, value_can_end = False, False
+    stuck_351, value_no_drop = False, False
     version_tail_at = None
-    for token in _secret_variable_tokens(text):
-        value = token.group()
+    tail_clean_from = len(text)
+    tokens = _secret_variable_tokens(
+        text, backslash_escapes, allow_custom_boundaries, custom_boundaries)
+    components = iter(())
+    component_pattern = (_SET_VARIABLE_COMPONENT_PART if backslash_escapes
+                         else _SET_VARIABLE_COMPONENT_NO_BACKSLASH)
+    while True:
+        token = next(components, None)
+        if token is None:
+            token = next(tokens, None)
+        if token is None:
+            break
+        if token.lastgroup == 'variable' and value_start is None and not awaiting_value:
+            # Only a secret RHS needs atomic variables. Elsewhere preserve
+            # the old conservative SET recognition in malformed text, and
+            # the existing LHS normalization of @@ scopes and quoted names.
+            components = component_pattern.finditer(text, token.start(), token.end())
+            token = next(components)
+        value = ';' if token.lastgroup == 'delimiter' else token.group()
         if token.lastgroup == 'executable':
             version_tail_at = token.end() if value[-1:].isdigit() else None
             continue
@@ -3497,22 +4037,74 @@ def _redact_secret_variables(text):
         if version_tail and name_parts is not None:
             continue
         word = value.upper() if token.lastgroup == 'word' else None
-        restart = (word == 'SET' and in_set and depth == 0
-                   and name_parts is None and not awaiting_value)
+        # Assignment-free SET NAMES and CHARACTER SET must not hide a later
+        # SET command. The SET belonging to CHARACTER SET is not a restart.
+        restart = (word == 'SET' and in_set and depth == 0 and not awaiting_value
+                   and (not name_parts or name_parts[-1].upper() != 'CHARACTER'))
         if restart:
+            if name_parts is not None:
+                stuck_351 = True
             in_set = False
+            insert = False
+        if depth == 0 and not in_set:
+            if word == 'INSERT':
+                insert = True
+            elif insert and word in ('SELECT', 'UPDATE', 'DELETE', 'REPLACE', 'ALTER',
+                                     'CREATE', 'DROP', 'VALUES', 'VALUE'):
+                insert = False
+        # AS ends an INSERT SET value at its row alias. In other statements
+        # it can be ambiguous secret text; keep hiding the whole value there.
+        # A clause keyword glued to a split custom delimiter starting with a
+        # word/$ character (such as WHERE$$) was one word in 3.5.1 and must let
+        # the delimiter tail check decide whether to keep hiding.
+        glued_word_delim = (
+            token.end() < len(text)
+            and (text[token.end()].isalnum() or text[token.end()] in ('_', '$')))
+        clause_end = (depth == 0 and value_start is not None and value_end is not None
+                      and word in _SET_VALUE_ENDS and not glued_word_delim and (word != 'AS' or
+                      insert and _SET_ROW_ALIAS.match(text, token.start()) and (
+                          (value_can_end and _SET_ALIAS_VALUE.fullmatch(text, value_start, value_end))
+                          or (pass1_redacted is not None
+                              and (value_start, value_end) in pass1_redacted))))
         if (value_start is not None and value_end is not None and depth == 0
-                and (restart or word in _SET_VALUE_ENDS)):
+                and (restart or clause_end)):
             body = text[value_start:value_end]
             quote = body[0] if body[:1] in ("'", '"') else ''
-            parts.extend((text[kept:value_start], quote, REDACTED, quote))
-            kept, value_start, value_end = value_end, None, None
+            yield (value_start, value_end, quote, value_no_drop) if include_stage else (value_start, value_end, quote)
+            value_start, value_end = None, None
             in_set, name_parts = False, None
+            insert = False
+        if token.lastgroup == 'delimiter' and (value_start is not None or awaiting_value):
+            tail_at = token.end()
+            # Keep hiding through the end of text (as 3.5.1 did) when the tail
+            # holds a credential keyword or inventory name, when a later unit
+            # has an issue/unclosed quote, or when the custom delimiter appears
+            # glued to non-whitespace / a flipped-parity doubled-quote value.
+            # Memoize the earliest clean suffix so at most one regex search
+            # runs per call.
+            keep_hiding = fail_closed_boundaries or depth > 0 or (tail_at < len(text) and (
+                text[tail_at] not in _CLIENT_SPACE or
+                (value_start is not None and value_end is not None and
+                 text[value_start:value_start + 2] in ("''", '""') and
+                 value_end - value_start > 2)))
+            if not keep_hiding and tail_at < tail_clean_from:
+                if _DELIMITER_TAIL_CREDENTIAL.search(text, tail_at) is not None:
+                    keep_hiding = True
+                else:
+                    tail_clean_from = tail_at
+            if keep_hiding:
+                start = token.start() if value_start is None else value_start
+                quote = text[start] if value_start is not None and text[start:start + 1] in ("'", '"') else ''
+                yield (start, len(text), quote, value_no_drop) if include_stage else (start, len(text), quote)
+                return
         if awaiting_value:
             value_start = token.start() if value not in (',', ';') else None
             awaiting_value = False
         if value_start is not None and (value not in (',', ';') or value == ',' and depth > 0):
             value_end = token.end()
+            value_can_end = token.lastgroup in ('quoted', 'word', 'variable') or value == ')'
+        if token.lastgroup == 'variable':
+            continue
         if token.lastgroup == 'quoted':
             if name_parts is not None:
                 quote = value[0]
@@ -3529,10 +4121,16 @@ def _redact_secret_variables(text):
             if value_start is not None:
                 body = text[value_start:value_end]
                 quote = body[0] if body[:1] in ("'", '"') else ''
-                parts.extend((text[kept:value_start], quote, REDACTED, quote))
-                kept, value_start, value_end = value_end, None, None
+                yield (value_start, value_end, quote, value_no_drop) if include_stage else (value_start, value_end, quote)
+                value_start, value_end = None, None
             if value == ';':
+                if token.lastgroup == 'delimiter':
+                    if in_set and name_parts is not None:
+                        stuck_351 = True
+                else:
+                    stuck_351 = False
                 in_set, depth = False, 0
+                insert = False
             name_parts = [] if in_set else None
         elif in_set and depth == 0 and name_parts is not None:
             if value in ('=', ':='):
@@ -3545,21 +4143,686 @@ def _redact_secret_variables(text):
                         name_parts = name_parts[2:]
                 if sensitive(''.join(name_parts)):
                     awaiting_value = True
+                    value_no_drop = fail_closed_boundaries or stuck_351
+                stuck_351 = False
                 name_parts = None
             else:
                 name_parts.append(value)
+        elif depth == 0 and value in ('=', ':='):
+            stuck_351 = False
     if value_start is not None:
         body = text[value_start:value_end]
         quote = body[0] if body[:1] in ("'", '"') else ''
-        parts.extend((text[kept:value_start], quote, REDACTED, quote))
-        kept = value_end
-    return ''.join(parts) + text[kept:] if parts else text
+        yield (value_start, value_end, quote, value_no_drop) if include_stage else (value_start, value_end, quote)
+
+
+_QUOTE_CLOSE = {
+    "'": re.compile(r"(?:''|\\[\s\S]|[^'\\])*(?:'|\\?\Z)"),
+    '"': re.compile(r'(?:""|\\[\s\S]|[^"\\])*(?:"|\\?\Z)'),
+}
+_QUOTE_CLOSE_NO_BACKSLASH = {
+    "'": re.compile(r"(?:''|[^'])*(?:'|\Z)"),
+    '"': re.compile(r'(?:""|[^"])*(?:"|\Z)'),
+}
+_TRACKER_SKIP = (
+    r"|`(?:``|[^`])*(?P<bt_end>`|\Z)"
+    r"|/\*(?!!|[mM]!)[\s\S]*?(?P<blk_end>\*/|\Z)"
+    r"|(?P<line>--(?=\s|\Z)[^\r\n]*|\#[^\r\n]*)")
+_TRACKER_CONTEXT = re.compile(_SECRET_LITERAL_CONTEXT_STRING + _TRACKER_SKIP)
+_TRACKER_CONTEXT_NO_BACKSLASH = re.compile(
+    _SECRET_LITERAL_CONTEXT_STRING_NO_BACKSLASH + _TRACKER_SKIP)
+_TRACKER_CONT = {
+    'single_end': (re.compile(r"(?:''|\\[\s\S]|[^'\\])*(?P<single_end>'|\\?\Z)"),
+                   re.compile(r"(?:''|[^'])*(?P<single_end>'|\Z)")),
+    'double_end': (re.compile(r'(?:""|\\[\s\S]|[^"\\])*(?P<double_end>"|\\?\Z)'),
+                   re.compile(r'(?:""|[^"])*(?P<double_end>"|\Z)')),
+    'bt_end': (re.compile(r"(?:``|[^`])*(?P<bt_end>`|\Z)"),
+               re.compile(r"(?:``|[^`])*(?P<bt_end>`|\Z)")),
+    'blk_end': (re.compile(r"[\s\S]*?(?P<blk_end>\*/|\Z)"),
+                re.compile(r"[\s\S]*?(?P<blk_end>\*/|\Z)")),
+    'line': (re.compile(r"(?P<line>[^\r\n]*)"),
+             re.compile(r"(?P<line>[^\r\n]*)")),
+}
+# 3.5.1 sequential redaction stage order:
+# 0: _redact_set_password_all, 1: _redact_secret_variables,
+# 2..8: _SECRET_PATTERNS[0..6] (_REPLACE_FOLLOW matches run at stage 8).
+# _NO_DROP_FLAG marks 3.5.2-only stage-1 spans (prefix_boundaries or after
+# assignment-free SET resets) so overlaps on their closing quote fail closed
+# while still keeping stage 1 when they overlap a later-stage span.
+_REPLACE_STAGE = 8
+_NO_DROP_FLAG = 1 << 8
+_SECRET_VALUE_INTRODUCER = re.compile(r"(?:_[\w]+(?:\s+[XBN])?\s*|[XBN]\s*)", re.I)
+_AFTER_LITERAL_WS = re.compile(r"[ \t\r\n]*")
+# Valid SQL continuation immediately after the closing quote of a balanced
+# literal (used to distinguish a real literal terminator from a cut literal
+# that stole the opening quote of a following secret).
+_VALID_AFTER_LITERAL = re.compile(
+    r"[ \t\r\n]*(?:;|,|\)|\b(?:"
+    r"WHERE|ORDER|LIMIT|ON|AS|FOR|AND|OR|REQUIRE|WITH|REPLACE|RETAIN|"
+    r"PASSWORD|ACCOUNT|COMMENT|ATTRIBUTE|FAILED_LOGIN_ATTEMPTS|"
+    r"PASSWORD_LOCK_TIME|DISCARD\s+OLD\s+PASSWORD|"
+    r"ADD\s+[23]\s+FACTOR|MODIFY\s+[23]\s+FACTOR|"
+    r"DEFAULT_AUTH|PLUGIN_DIR|DATA\s+DIRECTORY|INDEX\s+DIRECTORY|"
+    r"ENGINE|SECONDARY_ENGINE|MAX_ROWS|MIN_ROWS|AVG_ROW_LENGTH|"
+    r"COMPRESSION|ENCRYPTION|AUTO_INCREMENT|PACK_KEYS|"
+    r"STATS_AUTO_RECALC|STATS_PERSISTENT|STATS_SAMPLE_PAGES|"
+    r"CHECKSUM|TABLE_CHECKSUM|PAGE_CHECKSUM|DELAY_KEY_WRITE|ROW_FORMAT|"
+    r"UNION|CHARACTER\s+SET|CHARSET|INSERT_METHOD|TABLESPACE|STORAGE|"
+    r"CONNECTION|KEY_BLOCK_SIZE|START\s+TRANSACTION|"
+    r"ENGINE_ATTRIBUTE|SECONDARY_ENGINE_ATTRIBUTE|AUTOEXTEND_SIZE|"
+    r"FILE_FORMAT|FILES|ALLOW_MISSING_FILES|VERIFY_KEY_CONSTRAINTS|"
+    r"STRICT_LOAD|AUTO_REFRESH|AUTO_REFRESH_SOURCE|"
+    r"TRANSACTIONAL|SEQUENCE|PARTITION\s+BY|"
+    r"DEFAULT|RETURNING|USING|COLLATE|END"
+    r")\b|/\*|\*/|--(?=\s|\Z)|#|\Z)",
+    re.I)
+
+
+def _classify_tracker_token(text, text_len, s_start, s_end, grp, end_tok, limit):
+    if grp in ('single_end', 'double_end'):
+        quote = text[s_start]
+        if end_tok == quote:
+            if s_end == limit and limit < text_len and text[limit] == quote:
+                return '', grp, limit - 1
+            return quote, None, s_end
+        if s_end == limit and limit < text_len:
+            return '', grp, (limit - 1 if end_tok == '\\' else limit)
+        return '', None, s_end
+    if grp == 'bt_end':
+        if end_tok == '`':
+            if s_end == limit and limit < text_len and text[limit] == '`':
+                return '', grp, limit - 1
+            return '', None, s_end
+        if s_end == limit and limit < text_len:
+            return '', grp, limit
+        return '', None, s_end
+    if grp == 'blk_end':
+        if end_tok == '*/':
+            return '', None, s_end
+        if s_end == limit and limit < text_len:
+            return '', grp, (limit - 1 if limit - s_start > 2 and text[limit - 1] == '*' else limit)
+        return '', None, s_end
+    if s_end == limit and limit < text_len and text[limit] not in '\r\n':
+        return '', grp, limit
+    return '', None, s_end
+
+
+def _advance_tracker(tracker, text, text_len, start, limit):
+    """Advance a bounded per-group context tracker through *start* within *limit*."""
+    pat, is_bs, s_start, s_end, s_quote, trunc_grp, trunc_pos = tracker
+    if trunc_grp is not None and s_end <= start:
+        cont_pat = _TRACKER_CONT[trunc_grp][0 if is_bs else 1]
+        token = cont_pat.match(text, trunc_pos, limit)
+        s_end = token.end()
+        s_quote, trunc_grp, trunc_pos = _classify_tracker_token(
+            text, text_len, s_start, s_end, trunc_grp, token.group(trunc_grp), limit)
+    while s_end <= start:
+        token = pat.search(text, s_end, limit)
+        if token is None:
+            s_start = s_end = limit
+            s_quote = ''
+            trunc_grp = None
+            break
+        s_start, s_end = token.start(), token.end()
+        grp = token.lastgroup
+        if s_end == limit and limit < text_len:
+            if (grp == 'blk_end' and s_end - s_start <= 3 and
+                    (text.startswith('/*!', s_start) or
+                     text.startswith('/*m!', s_start) or
+                     text.startswith('/*M!', s_start))):
+                s_end = s_start + 2
+                s_quote = ''
+                trunc_grp = None
+                continue
+            if (grp == 'line' and text.startswith('--', s_start) and
+                    s_end - s_start == 2 and not text[limit].isspace()):
+                s_end = s_start + 2
+                s_quote = ''
+                trunc_grp = None
+                continue
+        s_quote, trunc_grp, trunc_pos = _classify_tracker_token(
+            text, text_len, s_start, s_end, grp, token.group(grp), limit)
+    tracker[2] = s_start
+    tracker[3] = s_end
+    tracker[4] = s_quote
+    tracker[5] = trunc_grp
+    tracker[6] = trunc_pos
+    return s_start, s_end, s_quote
+
+
+def _balanced_strings(text, backslash_escapes):
+    """Return closed top-level string index if all strings in *text* are closed."""
+    pat = _TRACKER_CONTEXT if backslash_escapes else _TRACKER_CONTEXT_NO_BACKSLASH
+    closed = set()
+    outer_starts = []
+    outer_spans = []
+    for token in pat.finditer(text):
+        grp = token.lastgroup
+        if grp in ('single_end', 'double_end'):
+            start, end = token.start(), token.end()
+            quote = text[start]
+            if token.group(grp) != quote:
+                return None
+            closed.add((start, end))
+            outer_starts.append(start)
+            outer_spans.append((start, end, quote))
+    return closed, outer_starts, outer_spans
+
+
+def _is_balanced_span(balance, start, end, quote):
+    """Return 1 for a closed top-level string, 2 if nested inside one (and at its
+    closing boundary when end == o_end - 1), else 0."""
+    if balance is None:
+        return 0
+    closed, outer_starts, outer_spans = balance
+    if (start, end) in closed:
+        return 1
+    at = bisect.bisect_right(outer_starts, start) - 1
+    if at >= 0:
+        o_start, o_end, o_quote = outer_spans[at]
+        if o_start < start and end < o_end and o_quote != quote:
+            return 2 if end == o_end - 1 else 1
+    return 0
+
+
+def _extend_swallowed_quote(text, pos, quote, has_backslash):
+    """Extend *pos* to the closing *quote* under both backslash readings."""
+    end = _QUOTE_CLOSE[quote].match(text, pos).end()
+    if has_backslash:
+        end = max(end, _QUOTE_CLOSE_NO_BACKSLASH[quote].match(text, pos).end())
+    return end
+
+
+_STRUCTURAL_IN_LITERAL = re.compile(r"""['"`\\=;,()\#\r\n]|--|/\*|\*/""")
+
+
+def _remap_custom_boundaries(text, applied_spans, boundaries):
+    """Shift Pass-1 proven custom boundaries into redacted *text*, or drop all
+    if a replacement touched a boundary or broke quote/comment closure across one."""
+    if not boundaries:
+        return ()
+    remapped = []
+    span_idx = 0
+    num_spans = len(applied_spans)
+    delta = 0
+    for b_start, b_end in boundaries:
+        while span_idx < num_spans and applied_spans[span_idx][1] <= b_start:
+            s_start, s_end, rep_len = applied_spans[span_idx]
+            delta += rep_len - (s_end - s_start)
+            span_idx += 1
+        if span_idx < num_spans and applied_spans[span_idx][0] < b_end:
+            return ()
+        remapped.append((b_start + delta, b_end + delta))
+    modes = ((_TRACKER_CONTEXT, _TRACKER_CONTEXT_NO_BACKSLASH)
+             if '\\' in text else (_TRACKER_CONTEXT,))
+    for pat in modes:
+        b_idx = 0
+        num_b = len(remapped)
+        for token in pat.finditer(text):
+            t_start, t_end = token.start(), token.end()
+            while b_idx < num_b and remapped[b_idx][0] <= t_start:
+                b_idx += 1
+            if b_idx < num_b and remapped[b_idx][0] < t_end:
+                return ()
+    return remapped
+
+
+def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False,
+                       allow_custom_boundaries=False):
+    """Replace ordered spans, failing closed on mis-paired overlapping quotes.
+
+    Returns ``(redacted_text, any_overlap, needs_followup, remapped, unquoted_redacted)``,
+    where *any_overlap* is True when a replacement merged non-identical
+    overlapping spans or failed closed to EOF, *needs_followup* is True when
+    any replacement could alter SQL quote, comment, separator, or length
+    structure for a follow-up pass, *remapped* shifts proven Pass-1 custom
+    boundaries into *redacted_text* when still closed, and *unquoted_redacted*
+    records Pass-1 unquoted ``[redacted]`` offsets for INSERT row-alias checks.
+    """
+    has_backslash = '\\' in text
+    text_len = len(text)
+    # Each group: [start, end, quote, end_quote, swallowed_quotes_or_None, overlapped, fail_eof]
+    groups = []
+    last_end = -1
+    trackers = None
+    g_first_stage = 0
+    g_first_end = 0
+    g_first_bs = True
+    g_stages = None
+    g_bs_stages = None
+    g_no_drop_end = -1
+    any_swallowed = False
+    any_fail_eof = False
+    balance_cache = {}
+    boundary_starts = None
+    for start, end, quote, tag in spans:
+        no_drop = bool(tag & _NO_DROP_FLAG)
+        base_tag = tag & ~_NO_DROP_FLAG
+        stage = base_tag >> 1
+        bs_mode = bool(base_tag & 1)
+        if start < last_end:
+            group = groups[-1]
+            old_start, old_end, old_quote, end_quote, swallowed, _, fail_eof = group
+            if g_stages is None:
+                g_stages = {g_first_stage: g_first_end}
+                g_bs_stages = {g_first_stage: g_first_end} if g_first_bs else {}
+            if start > old_start:
+                if not fail_eof and quote in ("'", '"') and text[start] == quote:
+                    if trackers is None:
+                        modes = ((_TRACKER_CONTEXT, True), (_TRACKER_CONTEXT_NO_BACKSLASH, False)) if has_backslash else ((_TRACKER_CONTEXT, True),)
+                        trackers = [[pat, is_bs, old_start, old_start, '', None, old_start]
+                                    for pat, is_bs in modes]
+                    closing_starts = []
+                    all_closing = True
+                    any_closing = False
+                    for tracker in trackers:
+                        s_start, s_end, s_quote = _advance_tracker(
+                            tracker, text, text_len, start, old_end)
+                        if s_quote == quote and s_start < start and start == s_end - 1:
+                            any_closing = True
+                            closing_starts.append(s_start)
+                        else:
+                            all_closing = False
+                            closing_starts.append(None)
+                    if any_closing:
+                        earlier_stage = min(s for s, e in g_stages.items() if e > start)
+                        earlier_bs_stage = (
+                            min((s for s, e in g_bs_stages.items() if e > start), default=None)
+                            if has_backslash else earlier_stage)
+                        if stage < earlier_stage or (
+                                earlier_bs_stage is not None and stage < earlier_bs_stage) or (
+                                start < g_no_drop_end):
+                            group[6] = True
+                            any_fail_eof = True
+                        elif all_closing and earlier_bs_stage is not None and not (
+                                earlier_stage == 0 and stage == 0) and not (
+                                earlier_stage == 0 and stage == 5) and (
+                                closing_starts[0] == old_start
+                                or (earlier_bs_stage == 1 and (
+                                    start < old_end - 1
+                                    or (closing_starts[0] > old_start
+                                        and _SECRET_VALUE_INTRODUCER.fullmatch(
+                                            text, old_start, closing_starts[0]) is not None)))):
+                            if True not in balance_cache:
+                                balance_cache[True] = _balanced_strings(text, True)
+                            bal_kind = _is_balanced_span(
+                                balance_cache[True], closing_starts[0], start + 1, quote)
+                            if not bal_kind and has_backslash and balance_cache[True] is None:
+                                if False not in balance_cache:
+                                    balance_cache[False] = _balanced_strings(text, False)
+                                bal_kind = _is_balanced_span(
+                                    balance_cache[False], closing_starts[1], start + 1, quote)
+                            valid_after = bal_kind and (
+                                bal_kind == 2
+                                or _VALID_AFTER_LITERAL.match(text, start + 1) is not None)
+                            if bal_kind == 1 and not valid_after:
+                                if boundary_starts is None:
+                                    if boundaries is None and allow_custom_boundaries:
+                                        boundaries = _secret_variable_boundary_plan(text)[0]
+                                    boundary_starts = frozenset(
+                                        b_start for b_start, _ in (boundaries or ()))
+                                if boundary_starts:
+                                    after_ws = _AFTER_LITERAL_WS.match(text, start + 1).end()
+                                    valid_after = after_ws in boundary_starts
+                            if valid_after:
+                                # A later (or equal) 3.5.1 stage starting on the real
+                                # closing quote of a balanced plain or introduced literal
+                                # followed by a valid SQL continuation or proven custom
+                                # delimiter was already removed before that stage ran in
+                                # 3.5.1: drop it so valid SQL stays intact.
+                                continue
+                if start != old_start or end != old_end:
+                    group[5] = True
+                if not group[6] and end <= old_end:
+                    # An earlier 3.5.1 stage strictly nested inside a later-stage
+                    # span ran before the outer span in 3.5.1 and could remove
+                    # separators or quotes. Fail closed when the quotes are not
+                    # cleanly balanced.
+                    earlier_stage = min(s for s, e in g_stages.items() if e > start)
+                    earlier_bs_stage = (
+                        min((s for s, e in g_bs_stages.items() if e > start), default=None)
+                        if has_backslash else earlier_stage)
+                    if stage < earlier_stage or (
+                            earlier_bs_stage is not None and stage < earlier_bs_stage):
+                        if True not in balance_cache:
+                            balance_cache[True] = _balanced_strings(text, True)
+                        old_is_lit = old_quote in ("'", '"') and text[old_start] == old_quote
+                        ok = (quote in ("'", '"')
+                              and _is_balanced_span(balance_cache[True], start, end, quote)
+                              and (not old_is_lit
+                                   or _is_balanced_span(balance_cache[True], old_start, old_end, old_quote)))
+                        if not ok and has_backslash:
+                            if False not in balance_cache:
+                                balance_cache[False] = _balanced_strings(text, False)
+                            ok = (quote in ("'", '"')
+                                  and _is_balanced_span(balance_cache[False], start, end, quote)
+                                  and (not old_is_lit
+                                       or _is_balanced_span(balance_cache[False], old_start, old_end, old_quote)))
+                        if not ok:
+                            group[6] = True
+                            any_fail_eof = True
+                if end > old_end:
+                    # The later span swallowed the earlier span's closing quote.
+                    if end_quote in ("'", '"'):
+                        if (not fail_eof and quote in ("'", '"') and quote != end_quote
+                                and text[start] == quote):
+                            earlier_stage = min(s for s, e in g_stages.items() if e > start)
+                            earlier_bs_stage = (
+                                min((s for s, e in g_bs_stages.items() if e > start), default=None)
+                                if has_backslash else earlier_stage)
+                            if stage < earlier_stage or (
+                                    earlier_bs_stage is not None and stage < earlier_bs_stage):
+                                group[6] = True
+                                any_fail_eof = True
+                        if swallowed is None:
+                            swallowed = group[4] = set()
+                        swallowed.add(end_quote)
+                        any_swallowed = True
+                    group[1] = end
+                    group[3] = quote
+                    last_end = end
+            else:
+                if start != old_start or end != old_end:
+                    group[5] = True
+                if end > old_end:
+                    group[1] = end
+                    group[3] = quote
+                    last_end = end
+                # An enclosing-string interpretation can omit a quote that the
+                # standalone-literal interpretation would otherwise insert.
+                group[2] = min(old_quote, quote)
+            if end > g_stages.get(stage, -1):
+                g_stages[stage] = end
+            if bs_mode and end > g_bs_stages.get(stage, -1):
+                g_bs_stages[stage] = end
+            if no_drop and end > g_no_drop_end:
+                g_no_drop_end = end
+            continue
+        groups.append([start, end, quote, quote, None, False, False])
+        last_end = end
+        trackers = None
+        g_first_stage = stage
+        g_first_end = end
+        g_first_bs = bs_mode
+        g_stages = None
+        g_bs_stages = None
+        g_no_drop_end = end if no_drop else -1
+
+    if any_swallowed or any_fail_eof:
+        merged = []
+        read_idx = 0
+        num_groups = len(groups)
+        while read_idx < num_groups:
+            group = groups[read_idx]
+            read_idx += 1
+            while True:
+                if group[6]:
+                    group[1] = text_len
+                    read_idx = num_groups
+                    break
+                if group[4]:
+                    pending_quotes = list(group[4])
+                    group[4].clear()
+                    extended = []
+                    new_end = group[1]
+                    new_quote = group[3]
+                    for quote in pending_quotes:
+                        if quote in ("'", '"'):
+                            cand = _extend_swallowed_quote(
+                                text, group[1], quote, has_backslash)
+                            extended.append((quote, cand))
+                            if cand > new_end:
+                                new_end = cand
+                                new_quote = quote
+                    if new_end > group[1]:
+                        group[1] = new_end
+                        group[3] = new_quote
+                        group[5] = True
+                        if new_end < text_len:
+                            for quote, cand in extended:
+                                if cand < new_end:
+                                    group[4].add(quote)
+                        while read_idx < num_groups and groups[read_idx][0] < group[1]:
+                            nxt = groups[read_idx]
+                            read_idx += 1
+                            if nxt[6]:
+                                group[6] = True
+                            if nxt[1] > group[1]:
+                                if group[3] in ("'", '"'):
+                                    group[4].add(group[3])
+                                group[1] = nxt[1]
+                                group[3] = nxt[3]
+                            if nxt[4]:
+                                group[4].update(nxt[4])
+                            group[5] = True
+                        continue
+                break
+            merged.append(group)
+        groups = merged
+
+    parts, kept, any_overlap, removed_semi, needs_followup = [], 0, False, False, False
+    has_semi = ';' in text
+    redacted_len = len(REDACTED)
+    redacted_quoted_len = redacted_len + 2
+    structural_search = _STRUCTURAL_IN_LITERAL.search
+    for start, end, quote, _, _, overlapped, fail_eof in groups:
+        if start < kept:
+            kept = max(kept, end)
+            continue
+        if overlapped or fail_eof:
+            any_overlap = True
+            needs_followup = True
+        if has_semi and not removed_semi and ';' in text[start:end]:
+            removed_semi = True
+            needs_followup = True
+        if not needs_followup and (
+                quote not in ("'", '"') or end - start < 2
+                or text[start] != quote or text[end - 1] != quote
+                or (set_password_possible and end - start > redacted_quoted_len)
+                or structural_search(text, start + 1, end - 1) is not None):
+            needs_followup = True
+        parts.extend((text[kept:start], quote, REDACTED, quote))
+        kept = end
+    redacted = ''.join(parts) + text[kept:] if parts else text
+    remapped = ()
+    unquoted_redacted = None
+    if needs_followup and parts:
+        applied = [] if (boundaries and allow_custom_boundaries and not any_overlap and not removed_semi) else None
+        unquoted = set()
+        kept_pos = 0
+        delta = 0
+        for start, end, quote, _, _, _, _ in groups:
+            if start < kept_pos:
+                kept_pos = max(kept_pos, end)
+                continue
+            rep_len = redacted_len + 2 * len(quote)
+            if not quote:
+                unquoted.add((start + delta, start + delta + rep_len))
+            if applied is not None:
+                applied.append((start, end, rep_len))
+            delta += rep_len - (end - start)
+            kept_pos = end
+        if unquoted:
+            unquoted_redacted = unquoted
+        if applied:
+            remapped = _remap_custom_boundaries(redacted, applied, boundaries)
+    return redacted, any_overlap, needs_followup, remapped, unquoted_redacted
+
+
+def _redact_spans(text, spans):
+    """Replace ordered spans, hiding the union before changing any offsets."""
+    return _redact_spans_pass(text, ((s, e, q, 1) for s, e, q in spans))[0]
+
+
+def _redact_secret_variables(text):
+    """Hide SET secrets under both possible NO_BACKSLASH_ESCAPES readings.
+
+    Both scans read the original text: a substitution in one mode must not
+    remove an assignment or change the quote boundaries seen by the other.
+    Inputs without backslashes need just the original linear scan.
+    """
+    spans = _secret_variable_spans(text)
+    if '\\' in text:
+        spans = heapq.merge(spans, _secret_variable_spans(text, False))
+    return _redact_spans(text, spans)
 
 
 def _redact_literal(match):
     literal = match.group(2)
     quote = literal[0]
     return match.group(1) + quote + REDACTED + quote
+
+
+def _secret_literal_contexts(text, backslash_escapes=True):
+    """Yield enclosing single/double-quoted string matches in order.
+
+    Block comments and backtick identifiers bound their own quotes so quotes
+    inside them never open false strings across later SQL. Line comments bound
+    prose apostrophes (``it's``, ``don't``) and closed strings to the line,
+    while allowing an unclosed standalone quote opener at line end to span
+    into a following line so multiline dynamic SQL after a stray ``--`` or
+    ``#`` still keeps its enclosing-string boundary. Executable comments
+    remain transparent.
+    """
+    context = (_SECRET_LITERAL_CONTEXT if backslash_escapes
+               else _SECRET_LITERAL_CONTEXT_NO_BACKSLASH)
+    plain = (_SECRET_LITERAL_CONTEXT_PLAIN if backslash_escapes
+             else _SECRET_LITERAL_CONTEXT_PLAIN_NO_BACKSLASH)
+    cursor = 0
+    while cursor < len(text):
+        token = context.search(text, cursor)
+        if token is None:
+            return
+        group = token.lastgroup
+        if group in ('single_end', 'double_end'):
+            yield token
+            cursor = token.end()
+            continue
+        start, end = token.start(), token.end()
+        if group == 'block':
+            body_start = start + 2
+            body_end = (end - 2 if end - start >= 4
+                        and text.endswith('*/', body_start, end) else end)
+        elif group == 'line':
+            body_start = start + (2 if text.startswith('--', start) else 1)
+            body_end = end
+        else:
+            body_start = start + 1
+            body_end = end - 1 if end - start >= 2 and text[end - 1] == '`' else end
+        cursor = end
+        if (text.find("'", body_start, body_end) == -1
+                and text.find('"', body_start, body_end) == -1):
+            continue
+        for inner in plain.finditer(text, body_start, body_end):
+            if group == 'line' and inner.group(inner.lastgroup) != text[inner.start()]:
+                prev = text[inner.start() - 1] if inner.start() > body_start else ''
+                if not (text[inner.start()] == "'" and (prev.isalnum() or prev == '_')):
+                    extended = plain.match(text, inner.start())
+                    if extended is not None:
+                        yield extended
+                        cursor = extended.end()
+                        break
+            yield inner
+
+
+def _secret_literal_spans(text, pattern, backslash_escapes=True, stage=None):
+    """Extend ambiguous dynamic values through their original enclosing string.
+
+    Ordered scans preserve the diagnostic fallback's entire hidden span.
+    The sole empty-fragment exception is a SET @q = CONCAT('name = ',
+    QUOTE(@value)) statement: its closing quote is not a value opener. An
+    arbitrary diagnostic must still take the conservative fallback.
+    """
+    follow_pattern = _REPLACE_FOLLOW if backslash_escapes else _REPLACE_FOLLOW_NO_BACKSLASH
+    inventory_pattern = (pattern is _SECRET_VARIABLE_LITERAL or pattern is
+                         _SECRET_PATTERNS_NO_BACKSLASH.get(_SECRET_VARIABLE_LITERAL))
+    contexts, context_ends = None, None
+    found = []
+    followed = set()
+    bisect_right = bisect.bisect_right
+    pattern_search = pattern.search
+    follow_match = follow_pattern.match
+    text_len = len(text)
+    bs_bit = 1 if backslash_escapes else 0
+    base_tag = None if stage is None else ((stage << 1) | bs_bit)
+    forced_tag = (_REPLACE_STAGE << 1) | bs_bit
+    cursor, forced = 0, None
+    while cursor < text_len:
+        was_forced = forced is not None
+        match, forced = forced or pattern_search(text, cursor), None
+        if match is None:
+            break
+        start, end = match.start("secret"), match.end()
+        if contexts is None:
+            contexts = list(_secret_literal_contexts(text, backslash_escapes))
+            context_ends = [item.end() for item in contexts]
+        at = bisect_right(context_ends, match.start())
+        enclosing = contexts[at] if at < len(contexts) else None
+        ch = text[start]
+        if ch == "'" or ch == '"':
+            escaped, quote = False, ch
+        else:
+            opener = _SECRET_VALUE_OPENER.match(text, start, end)
+            escaped = opener is not None and bool(opener.group(1))
+            quote = '' if escaped else opener.group(2) if opener is not None else "'"
+        if enclosing is not None and enclosing.start() < match.start() and start < enclosing.end():
+            outer_quote = text[enclosing.start()]
+            closed = enclosing.group(enclosing.lastgroup) == outer_quote
+            limit = enclosing.end() - int(closed)
+            if (start == limit and closed
+                    and _SECRET_CONCAT_PREFIX.search(text, context_ends[at - 1] if at else 0, enclosing.start())
+                    and _SECRET_CONCAT_QUOTE.match(text, enclosing.end())):
+                # Resume at the real close, not the fallback match's end:
+                # that match may have swallowed a later real assignment.
+                if not was_forced:
+                    cursor = enclosing.end()
+                continue
+            # Different inner/outer quotes have an unambiguous value end.
+            # Keep diagnostic punctuation after it, while preserving the
+            # inventory fallback's older conservative enclosing-string rule.
+            if start < limit and (inventory_pattern or escaped or quote == outer_quote):
+                end = max(end, limit)
+                if quote == outer_quote:
+                    quote = ''
+        if escaped and end == match.end():
+            # An escaped opener without a known enclosing string has no
+            # trustworthy end. Never leave its trailing value visible.
+            end = text_len
+        if base_tag is None:
+            found.append((start, end, quote))
+        else:
+            found.append((start, end, quote, forced_tag if was_forced else base_tag))
+        if end < text_len and match.end() not in followed:
+            # Capture a following REPLACE literal in the original text before
+            # merged spans from another quote reading can cover its keyword,
+            # and walk each follow position only once so keywords re-found
+            # inside an already followed literal cannot restart a chain.
+            followed.add(match.end())
+            forced = follow_match(text, match.end())
+        if not was_forced:
+            # Resume just inside the matched value so a keyword swallowed by an
+            # unterminated or mis-framed literal is still scanned; spans are
+            # sorted and unioned before rewriting.
+            cursor = start + 1
+    found.sort()
+    return iter(found)
+
+
+def _secret_literal_readings(text, pattern, stage=None):
+    """Credential spans under both modes, before either reading changes text.
+
+    This also applies to account/replication patterns, preserving the enclosing
+    literal boundary for doubled and backslash-escaped dynamic SQL values.
+    """
+    spans = _secret_literal_spans(text, pattern, True, stage)
+    if '\\' in text:
+        spans = heapq.merge(spans, _secret_literal_spans(
+            text, _SECRET_PATTERNS_NO_BACKSLASH[pattern], False, stage))
+    return spans
+
+
+def _redact_secret_variable_literals(text, pattern):
+    return _redact_spans_pass(text, _secret_literal_readings(text, pattern, _REPLACE_STAGE))[0]
 
 
 def _redact_variable_errors(text):
@@ -3579,6 +4842,44 @@ def _redact_variable_errors(text):
         if end < 0:
             end = limit
         parts.extend((text[kept:message.end()], REDACTED))
+        kept = end
+    text = ''.join(parts) + text[kept:] if parts else text
+    # The English fallback also handles diagnostics without an error code.
+    # Numbered messages cannot depend on lc_messages or the word "Variable".
+    # Values are printed verbatim, not SQL-escaped: hide from the first value
+    # opener through the last quote, including embedded quotes and newlines.
+    # Stop at the next client diagnostic, regardless of its error number.
+    messages = list(_CLIENT_ERROR_CODE.finditer(text))
+    parts, kept = [], 0
+    for index, message in enumerate(messages):
+        if message.group(1) != '1231':
+            continue
+        limit = messages[index + 1].start() if index + 1 < len(messages) else len(text)
+        # In every ER_WRONG_VALUE_FOR_VAR translation in MySQL and MariaDB,
+        # the quoted variable name comes first on the error line. Leave
+        # ordinary recognizable variable names readable; fail closed on secret
+        # or unrecognizable names, or when an earlier quote precedes the name.
+        line_end = text.find('\n', message.end(), limit)
+        name_limit = limit if line_end < 0 else line_end
+        name = _ERROR_QUOTED_NAME.search(text, message.end(), name_limit)
+        first_quote = name is not None and not any(
+            quote in text[message.end():name.start()] for quote in ("'", '"', '`'))
+        var_name = name.group(2) if first_quote else ''
+        known_name = first_quote and sensitive(var_name)
+        if first_quote and not known_name and _ERROR_VARIABLE_NAME.fullmatch(var_name):
+            continue
+        start = name.end() if known_name else message.end()
+        opener = _ERROR_VALUE_OPEN.search(text, start, limit)
+        if opener is None:
+            continue
+        end = max(text.rfind(quote, opener.end(), limit) for quote in ("'", '"', '`'))
+        # An unknown name gives no trusted message structure. An odd quote
+        # count can be a raw embedded apostrophe or an unfinished final value;
+        # either way a last-quote guess could expose its trailing bytes.
+        if (not known_name or end < 0 or
+                any(text.count(quote, opener.start(), limit) % 2 for quote in ("'", '"', '`'))):
+            end = limit
+        parts.extend((text[kept:opener.end()], REDACTED))
         kept = end
     return ''.join(parts) + text[kept:] if parts else text
 
@@ -3600,24 +4901,69 @@ def _redact_set_password(text):
     return ''.join(parts) + text[kept:] if parts else text
 
 
+def _secret_value_quote(text, start, end):
+    ch = text[start]
+    if ch == "'" or ch == '"':
+        return ch
+    opener = _SECRET_VALUE_OPENER.match(text, start, end)
+    return opener.group(2) if opener is not None else "'"
+
+
+def _is_set_password_account(text, start, end):
+    """Whether *text[start:end]* is a valid SET PASSWORD [FOR account] prefix."""
+    def check(pat):
+        tokens = []
+        for tok in pat.finditer(text, start, end):
+            grp = tok.lastgroup
+            if grp is None:
+                continue
+            if grp == 'line':
+                if tok.end() == end:
+                    return False
+                continue
+            if grp == 'bad' or len(tokens) >= 4:
+                return False
+            tokens.append((grp, tok.group()))
+        if not tokens:
+            return True
+        if tokens[0][0] != 'word' or tokens[0][1].upper() != 'FOR':
+            return False
+        rest = tokens[1:]
+        if len(rest) == 1:
+            return rest[0][0] in ('quoted', 'word')
+        if len(rest) == 3:
+            if (rest[0][0] == 'word' and rest[0][1].upper() == 'CURRENT_USER'
+                    and rest[1][0] == 'lp' and rest[2][0] == 'rp'):
+                return True
+            return (rest[0][0] in ('quoted', 'word') and rest[1][0] == 'at'
+                    and rest[2][0] in ('quoted', 'word'))
+        return False
+
+    if check(_SET_PASSWORD_ACCOUNT_TOKEN):
+        return True
+    return '\\' in text[start:end] and check(_SET_PASSWORD_ACCOUNT_TOKEN_NO_BACKSLASH)
+
+
 def _set_password_lexical_spans(text):
     """Keep the lexical helper's decisions as spans in the original text."""
-    pending = False
+    pending, command_end = False, 0
     for token in _SET_PASSWORD_PART.finditer(text):
         if token.lastgroup == 'command':
-            pending = True
+            pending, command_end = True, token.end()
         elif token.group() == ';':
             pending = False
         elif pending and token.group() == '=':
             pending = False
             literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+            if literal is None and _is_set_password_account(text, command_end, token.start()):
+                literal = _SET_PASSWORD_VALUE.match(text, token.end())
             if literal is not None:
                 yield literal.start(2), literal.end(2)
 
 
 def _set_password_separator_spans(text):
     """Cover diagnostic and executable-comment assignments without a length cap."""
-    pending, kept = False, 0
+    pending, kept, command_end = False, 0, 0
     for token in _SET_PASSWORD_SEPARATOR.finditer(text):
         if token.start() < kept:
             continue
@@ -3627,12 +4973,16 @@ def _set_password_separator_spans(text):
         elif value == '=':
             if pending:
                 literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                plain = literal is not None
+                if literal is None and _is_set_password_account(text, command_end, token.start()):
+                    literal = _SET_PASSWORD_VALUE.match(text, token.end())
                 if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
                     yield literal.start(2), literal.end(2)
-                    kept = literal.end()
+                    if plain:
+                        kept = literal.end()
             pending = False
         else:
-            pending = True
+            pending, command_end = True, token.end()
 
 
 def _set_password_keyword_spans(text):
@@ -3649,9 +4999,13 @@ def _set_password_keyword_spans(text):
             cursor = token.end()
             if token.group() == '=':
                 literal = _SET_PASSWORD_LITERAL.match(text, token.end())
+                plain = literal is not None
+                if literal is None and _is_set_password_account(text, command.end(), token.start()):
+                    literal = _SET_PASSWORD_VALUE.match(text, token.end())
                 if literal is not None and literal.group(2) not in ("'", '"', "''", '""'):
                     yield literal.start(2), literal.end(2)
-                    cursor = literal.end()
+                    if plain:
+                        cursor = literal.end()
             break
 
 
@@ -3671,10 +5025,80 @@ def _redact_set_password_all(text):
         if start < kept:
             kept = max(kept, end)
             continue
-        quote = text[start]
+        quote = _secret_value_quote(text, start, end)
         parts.extend((text[kept:start], quote, REDACTED, quote))
         kept = end
     return ''.join(parts) + text[kept:] if parts else text
+
+
+def _redact_credential_pass(text, allow_custom_boundaries=True, semicolon_only=False,
+                            custom_boundaries=None, pass1_redacted=None):
+    """Run credential scans on *text* and apply their merged union once."""
+    folded = text.lower() if text.isascii() else None
+    inventory = _may_have_secret_variables(text)
+    has_backslash = '\\' in text
+    set_password_possible = '=' in text and (
+        folded is None or ('password' in folded and 'set' in folded))
+    scans = []
+    if set_password_possible:
+        spans = heapq.merge(_set_password_lexical_spans(text),
+                            _set_password_separator_spans(text),
+                            _set_password_keyword_spans(text))
+        scans.append((start, end, _secret_value_quote(text, start, end),
+                      1 if text[start] in ("'", '"') else 11)
+                     for start, end in spans)
+        scans.append(_secret_literal_readings(text, _SET_PASSWORD_LEGACY_LITERAL, 5))
+    boundaries, prefix_boundaries = None, ()
+    if inventory:
+        if custom_boundaries is not None:
+            boundaries = custom_boundaries
+        elif allow_custom_boundaries:
+            boundaries, prefix_boundaries = _secret_variable_boundary_plan(text)
+        else:
+            boundaries = ()
+        scans.append((start, end, quote, 3 | (_NO_DROP_FLAG if no_drop else 0))
+                     for start, end, quote, no_drop in _secret_variable_spans(
+                         text, True, allow_custom_boundaries, boundaries, pass1_redacted,
+                         include_stage=True))
+        if has_backslash:
+            scans.append((start, end, quote, 2 | (_NO_DROP_FLAG if no_drop else 0))
+                         for start, end, quote, no_drop in _secret_variable_spans(
+                             text, False, allow_custom_boundaries, boundaries, pass1_redacted,
+                             include_stage=True))
+        if prefix_boundaries:
+            prefix_bs_tag = 3 | _NO_DROP_FLAG
+            prefix_nobs_tag = 2 | _NO_DROP_FLAG
+            scans.append((start, end, quote, prefix_bs_tag)
+                         for start, end, quote in _secret_variable_spans(
+                             text, True, False, prefix_boundaries, pass1_redacted, True))
+            if has_backslash:
+                scans.append((start, end, quote, prefix_nobs_tag)
+                             for start, end, quote in _secret_variable_spans(
+                                 text, False, False, prefix_boundaries, pass1_redacted, True))
+    elif custom_boundaries is not None:
+        boundaries = custom_boundaries
+    for index, (pattern, keyword) in enumerate(zip(_SECRET_PATTERNS, _SECRET_PATTERN_KEYWORDS)):
+        if semicolon_only and pattern is not _SECRET_PATTERNS[3]:
+            continue
+        stage = 2 + index
+        if pattern is _SECRET_VARIABLE_LITERAL:
+            if inventory:
+                scans.append(_secret_literal_readings(text, pattern, stage))
+            continue
+        if folded is not None and keyword is not None and keyword not in folded:
+            continue
+        if pattern is _SECRET_PATTERNS[3] and '=' not in text:
+            continue
+        scans.append(_secret_literal_readings(text, pattern, stage))
+    # Every scan uses the original quote boundaries, so one replacement
+    # cannot hide a later pattern or shorten its other SQL-mode reading.
+    if not scans:
+        return text, False, False, (), None
+    merged = scans[0] if len(scans) == 1 else heapq.merge(*scans)
+    return _redact_spans_pass(
+        text, merged, boundaries=boundaries,
+        set_password_possible=set_password_possible,
+        allow_custom_boundaries=allow_custom_boundaries)
 
 
 def redact(text, password=None, quoted=True):
@@ -3694,18 +5118,36 @@ def redact(text, password=None, quoted=True):
                                password.replace('"', '""')}, key=len, reverse=True):
             if variant:
                 text = text.replace(variant, REDACTED)
-    text = _redact_set_password_all(text)
-    text = _redact_variable_errors(text)
-    text = _redact_secret_variables(text)
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub(_redact_literal, text)
+    # These are candidate checks, not SQL parsing. The substitutions insert
+    # only [redacted] and quotes, so they cannot create a missing keyword.
+    # Preserve Python re.I's non-ASCII equivalences by disabling all guards
+    # on non-ASCII input, just as the inventory guard does.
+    folded = text.lower() if text.isascii() else None
+    if folded is None or 'variable' in folded or '1231' in folded:
+        text = _redact_variable_errors(text)
+    text, overlapped, needs_followup, remapped, unquoted_redacted = _redact_credential_pass(text)
+    if needs_followup:
+        # One bounded follow-up pass (without re-running split_statements to
+        # open new custom delimiter boundaries) handles secrets exposed after
+        # a first-pass replacement collapsed an overlap, semicolon, '=', comma,
+        # or odd quote.
+        text, _, _, _, _ = _redact_credential_pass(
+            text, allow_custom_boundaries=False, semicolon_only=not overlapped,
+            custom_boundaries=remapped, pass1_redacted=unquoted_redacted)
+    folded = text.lower() if text.isascii() else None
+    if folded is None or 'replace' in folded:
+        # A preceding credential now supplies the [redacted] REPLACE arm.
+        text = _redact_secret_variable_literals(text, _SECRET_PATTERNS[-1])
     parts, kept = [], 0
-    for start, end in _URL_SECRET(text, quoted=quoted):
-        parts.extend((text[kept:start], REDACTED))
-        kept = end
+    if folded is None or '://' in folded:
+        for start, end in _URL_SECRET(text, quoted=quoted):
+            parts.extend((text[kept:start], REDACTED))
+            kept = end
     if parts:
         text = "".join(parts) + text[kept:]
-    return _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
+    if folded is None or '0x' in folded:
+        text = _HEX_SECRET.sub(lambda m: m.group(1) + "'" + REDACTED + "'", text)
+    return text
 
 
 def redact_value(value, password=None):

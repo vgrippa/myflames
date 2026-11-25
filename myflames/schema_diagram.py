@@ -1010,7 +1010,7 @@ def import_mermaid(text):
 
 
 def _mermaid_escape(text):
-    escapes = {'#': '#35;', '&': '#amp;', '"': '#quot;', "'": '#39;',
+    escapes = {'#': '#35;', '$': '#36;', '&': '#amp;', '"': '#quot;', "'": '#39;',
                '<': '#lt;', '>': '#gt;', '\n': '#10;', '\r': '#13;'}
     return ''.join(escapes.get(c, '#%d;' % ord(c) if ord(c) < 32 or 127 <= ord(c) <= 159 else c)
                    for c in text)

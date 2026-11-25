@@ -14,7 +14,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { load, open, pause } from "./perf-harness.mjs";
+import { load, open, pause, portalScreenshots } from "./perf-harness.mjs";
 
 const top = await load("top-mysql-8.4-lab.json");
 const table = await load("slow-log-table.json");
@@ -101,9 +101,18 @@ try {
 
   // ---- Performance Schema: the range filters the loaded rows, never a read.
   await openRange();
+  const rangeLook = await page.$eval(dialog, panel => ({
+    display: getComputedStyle(panel.querySelector('.qd-range')).display,
+    gap: getComputedStyle(panel.querySelector('.qd-range')).rowGap,
+    titleMargin: getComputedStyle(panel.querySelector('.popover-title')).marginBottom,
+    hintMargins: [...panel.querySelectorAll('.qd-range .hint')].map(hint => getComputedStyle(hint).margin),
+  }));
+  assert.deepEqual(rangeLook, { display: 'grid', gap: '8px', titleMargin: '0px', hintMargins: ['0px', '0px'] },
+    'the range form retains its own internal selectors and spacing');
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("type")), "datetime-local", "From has focus");
   assert.match(await text(dialog), /Times are the server's clock \(FIRST_SEEN and LAST_SEEN\)/);
   assert.match(await text(dialog), /totals since counting began/);
+  await portalScreenshots(page, 'query-digest-range', `${qd} button[aria-label="Time range"]`, dialog);
   // From after To is refused beside the fields; the dialog stays open.
   await setInput(`${dialog} input[type=datetime-local]:first-of-type`, "2026-10-31T09:50:00");
   const inputs = await page.$$(`${dialog} input[type=datetime-local]`);
@@ -111,6 +120,8 @@ try {
   await setInput(`[id="${toId}"]`, "2026-10-31T09:40:00");
   await page.click(`${dialog} button[type=submit]`);
   assert.equal(await text(`${dialog} .form-error`), "From must be before To.");
+  assert.equal(await page.$eval(`${dialog} .form-error`, error => getComputedStyle(error).margin), '0px',
+    'range validation uses the same zero-margin form rule');
   // A real range: statements first seen before To and last seen after From.
   const from = "2026-10-31T09:47:58", to = "2026-10-31T09:47:59";
   await setInput(`[id="${fromId}"]`, from);

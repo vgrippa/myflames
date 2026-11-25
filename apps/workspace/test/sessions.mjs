@@ -835,7 +835,7 @@ try {
   await button("Follow progress", `${view} `);
   assert.equal(await page.$eval(`${view} .auto-refresh select`, el => el.value), "10");
   await page.select(`${view} .auto-refresh select`, "0");
-  await page.click(`${row(95)} td[data-col=state]`, { clickCount: 2 });
+  await page.click(`${row(95)} td[data-col=state]`, { count: 2 });
   await inspectorHas(/DDL progress.*Copying rows.*stage\/sql\/copy to tmp table.*Elapsed.*2 min 6 s.*Time left \(estimate\).*2 min 54 s.*42[,.]?000 of 100[,.]?000/);
   for (const width of [1440, 720]) {
     await page.setViewport({ width, height: 900 });

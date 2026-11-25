@@ -326,7 +326,7 @@ async function browserSuite() {
   assert.deepEqual(seriesRows, [["8.4", ["8.4.0"]]]);
 
   // Unknown name: typed text plus Enter asks for it as written; Python's close names become buttons.
-  await page.click(`${view} input[role="combobox"]`, { clickCount: 3 });
+  await page.click(`${view} input[role="combobox"]`, { count: 3 });
   await page.keyboard.type("innodb_log_size"); await page.keyboard.press("Enter");
   await page.waitForSelector(`${view} .pv-suggestions button`);
   assert.match(await page.$eval(`${view} .summary-text`, e => e.textContent), /no parameter named innodb_log_size/);
@@ -343,7 +343,7 @@ async function browserSuite() {
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("role")), "combobox", "a close name returns focus to the field");
 
   // Combobox keyboard: type, ArrowDown, Enter picks the catalog name; Escape closes the list first.
-  await page.click(`${view} input[role="combobox"]`, { clickCount: 3 });
+  await page.click(`${view} input[role="combobox"]`, { count: 3 });
   await page.keyboard.type("redo_log_cap");
   await page.waitForSelector(`${view} .pv-combobox-list:not([hidden]) [role="option"]`);
   assert.deepEqual(await page.$$eval(`${view} [role="option"]`, o => o.map(x => x.textContent)), ["innodb_redo_log_capacity"]);
@@ -352,7 +352,7 @@ async function browserSuite() {
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => /from 8\.0\.30/.test(document.querySelector('[data-view="parameters-versions"] .summary-text')?.textContent || ""));
   assert.deepEqual(await page.$$eval(`${view} .pv-history-table tbody`, b => b.map(t => t.dataset.series)), ["8.0", "8.4"], "changes grouped by series, oldest first");
-  await page.click(`${view} input[role="combobox"]`, { clickCount: 3 }); await page.keyboard.type("innodb_io");
+  await page.click(`${view} input[role="combobox"]`, { count: 3 }); await page.keyboard.type("innodb_io");
   await page.waitForSelector(`${view} .pv-combobox-list:not([hidden])`);
   await page.keyboard.press("Escape");
   await page.waitForSelector(`${view} .pv-combobox-list[hidden]`, { hidden: true });

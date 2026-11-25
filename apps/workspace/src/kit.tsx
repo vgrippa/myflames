@@ -47,6 +47,17 @@ const FOCUSABLE = 'button, [href], input, select, textarea, summary, [tabindex]'
  * that apply to them (an Export menu's "Hide literal values"). */
 const MENU_ITEMS = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
 
+/** A sheet opened from an action menu returns to the menu's trigger, even
+ * when that menu lives in a portal and closes before the sheet mounts. */
+export function actionOpener(): HTMLElement | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || active === document.body) return null;
+  const menu = active.closest<HTMLElement>('[role="menu"]');
+  if (!menu) return active;
+  return (menu.id ? document.querySelector<HTMLElement>(`[aria-controls="${CSS.escape(menu.id)}"]`) : null)
+    || scopeOpeners.get(menu) || null;
+}
+
 /** Shared lifecycle for dialogs, popovers, drawers and context menus. Callers
  * provide a focusable container (tabIndex=-1) for empty or disabled content.
  * Mutable callbacks do not restart the scope or overwrite its opener. */
@@ -135,6 +146,26 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
       if (target?.isConnected && visible(target)) target.focus({ preventScroll: true });
     };
   }, [ref, options.open]);
+}
+
+/** Focus that follows an inspector or detail opening or closing, or a Back
+ * navigation: the page must not jump to the target, so focus moves with
+ * preventScroll, and only a target outside the visible area (the viewport,
+ * intersected with any scroll container holding it) is scrolled into view
+ * with block: "nearest", so a visible target never moves. */
+export function focusWithoutScroll(element: HTMLElement | null | undefined) {
+  if (!element) return;
+  element.focus({ preventScroll: true });
+  let clipTop = 0;
+  let clipBottom = window.innerHeight;
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    if (!/(auto|scroll)/.test(getComputedStyle(node).overflowY)) continue;
+    const box = node.getBoundingClientRect();
+    clipTop = Math.max(clipTop, box.top);
+    clipBottom = Math.min(clipBottom, box.bottom);
+  }
+  const rect = element.getBoundingClientRect();
+  if (rect.bottom < clipTop || rect.top > clipBottom) element.scrollIntoView({ block: "nearest" });
 }
 
 // ---- Status --------------------------------------------------------------
@@ -248,6 +279,7 @@ export function Popover({
   label,
   trigger,
   className = "",
+  panelClassName = "",
   buttonClassName = "info-button",
   wide,
   buttonTitle,
@@ -263,6 +295,8 @@ export function Popover({
   /** Button content; an ⓘ icon by default. */
   trigger?: ReactNode;
   className?: string;
+  /** Styles owned by the panel, independent of its trigger's DOM ancestors. */
+  panelClassName?: string;
   buttonClassName?: string;
   /** Up to 400 px wide (notes lists). */
   wide?: boolean;
@@ -285,6 +319,11 @@ export function Popover({
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
   const button = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  // Escape the view's stacking context without lifting scrolled content over
+  // its sticky toolbar. Dialogs and nested popovers already own their layer.
+  const anchorEl = button.current;
+  const portal = open && !!anchorEl?.closest(".view-main") &&
+    !anchorEl.closest("dialog, .popover, .editor-options-popover");
   useFocusScope(panel, {
     open, onClose: () => setOpen(false), returnFocus: () => button.current, menu,
     initialFocus: initialFocus ? () => panel.current?.querySelector<HTMLElement>(initialFocus) : undefined,
@@ -310,6 +349,49 @@ export function Popover({
   // Fixed position below (or above) the button, kept inside the viewport.
   useLayoutEffect(() => {
     if (!open) return;
+    const anchor = button.current?.parentElement;
+    const inherited = new Set<string>();
+    // Root theme/text tokens continue inheriting from body. Copy only local
+    // overrides that the portal would otherwise lose, and refresh them when
+    // an ancestor's theme, font, density or visibility changes.
+    const inheritAppearance = () => {
+      const p = panel.current;
+      if (!portal || !anchor || !p) return true;
+      const source = getComputedStyle(anchor);
+      if (!anchor.isConnected || !anchor.getClientRects().length ||
+          anchor.closest('[hidden], [inert], [aria-hidden="true"]') ||
+          source.visibility === "hidden" || button.current?.matches(":disabled")) {
+        setOpen(false);
+        return false;
+      }
+      const body = getComputedStyle(document.body);
+      const next = new Set<string>();
+      for (let i = 0; i < source.length; i++) {
+        const property = source[i];
+        if (!property.startsWith("--")) continue;
+        const value = source.getPropertyValue(property);
+        if (value === body.getPropertyValue(property)) continue;
+        p.style.setProperty(property, value);
+        next.add(property);
+      }
+      for (const property of inherited) if (!next.has(property)) p.style.removeProperty(property);
+      inherited.clear();
+      for (const property of next) inherited.add(property);
+      p.style.fontFamily = source.fontFamily;
+      p.style.direction = source.direction;
+      // A report from another connection is dimmed as a group. Its menus
+      // used to share that compositing too, including Readyset's own shade.
+      let opacity = 1;
+      const filters: string[] = [];
+      for (let el: HTMLElement | null = anchor; el && el !== document.body; el = el.parentElement) {
+        const context = el === anchor ? source : getComputedStyle(el);
+        opacity *= Number(context.opacity);
+        if (context.filter !== "none") filters.push(context.filter);
+      }
+      p.style.setProperty("--popover-context-opacity", String(opacity));
+      p.style.filter = filters.join(" ") || "none";
+      return true;
+    };
     const place = () => {
       const b = button.current?.getBoundingClientRect();
       const p = panel.current;
@@ -327,14 +409,21 @@ export function Popover({
       p.style.visibility = "visible";
       setStyle({ left, top: boundedTop, width, maxHeight: floor - boundedTop - 8 });
     };
-    place();
+    const update = () => { if (inheritAppearance()) place(); };
+    update();
+    const observer = portal ? new MutationObserver(update) : null;
+    for (let el = anchor; observer && el; el = el.parentElement) {
+      observer.observe(el, { attributes: true,
+        attributeFilter: ["class", "style", "data-theme", "dir", "hidden", "inert", "aria-hidden", "disabled"] });
+    }
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
+      observer?.disconnect();
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, wide, panelWidth]);
+  }, [open, wide, panelWidth, portal]);
   return (
     <span className={`popover-anchor ${className}`}>
       <button
@@ -357,11 +446,14 @@ export function Popover({
       >
         {trigger || <Icon name="info" size={15} />}
       </button>
-      {open && (
-        <div ref={panel} id={id} className={`popover${wide ? " is-wide" : ""}`} tabIndex={-1} role={menu ? "menu" : "dialog"} aria-label={label} style={style}>
-          {children}
-        </div>
-      )}
+      {open && (() => {
+        const panelNode = (
+          <div ref={panel} id={id} className={`popover${wide ? " is-wide" : ""}${panelClassName ? ` ${panelClassName}` : ""}`} tabIndex={-1} role={menu ? "menu" : "dialog"} aria-label={label} style={style}>
+            {children}
+          </div>
+        );
+        return portal ? createPortal(panelNode, document.body) : panelNode;
+      })()}
     </span>
   );
 }
@@ -3239,7 +3331,7 @@ function Inspector({
   const width = shared?.width ?? INSPECTOR_DEFAULT;
   useEffect(() => {
     body.current?.scrollTo?.({ top: 0 });
-    if(detailBackLabel)root.current?.querySelector<HTMLButtonElement>(".detail-back")?.focus();
+    if(detailBackLabel)focusWithoutScroll(root.current?.querySelector<HTMLButtonElement>(".detail-back"));
   }, [content?.key]);
   // Shared scopes let nested row menus and confirmation dialogs own focus
   // without the sheet trapping their keys or closing underneath them.
@@ -3422,7 +3514,7 @@ export function ViewLayout({
       const active = document.activeElement as HTMLElement | null;
       if (active && active !== document.body && split.contains(active)) return;
       const row = main.current?.querySelector<HTMLElement>('.is-selected[data-row-key], [aria-current="true"][data-row-key]');
-      row?.focus({ preventScroll: false });
+      focusWithoutScroll(row);
     });
   }
   return (

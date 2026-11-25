@@ -4,6 +4,7 @@
 // workspace may import these modules directly. No React or d3 here.
 import { barInfo, bars, MIN_WORKSPACE_WIDTH as barMinWidth, renderBargraph } from "./bargraph";
 import { createBridge } from "./core/bridge";
+import { createZoom } from "./core/zoom";
 import { commas, fitLabel, fmt, pyFixed, pyG, time, treeTime } from "./core/format";
 import { highlightText } from "./core/highlights";
 import { availableViews, mount, mountAll, registerPanel, registerView } from "./core/mount";
@@ -30,6 +31,6 @@ export type { ChartData, ChartHandle, ChartNode, MountOptions } from "./core/typ
 
 /** Pure helpers exposed for the Node/browser unit tests. */
 export const internals = {
-  barInfo, barMinWidth, bars, commas, createSelection, fitFrameLabel, fitLabel, flameHeader, flameScale, flameUnits, flameValueText, fmt, frameColor,
+  barInfo, barMinWidth, bars, commas, createSelection, createZoom, fitFrameLabel, fitLabel, flameHeader, flameScale, flameUnits, flameValueText, fmt, frameColor,
   highlightText, labelHash, layout, layoutFrames, pyFixed, pyG, rowColor, rowInfo, time, treeMinWidth, treeTime,
 };

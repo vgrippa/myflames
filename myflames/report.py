@@ -202,8 +202,16 @@ def _run_all(conn, jobs, workers, cancel, password):
     if not jobs:
         return results
     guarded = _Guarded(conn, cancel)
+    from . import read_cancel
+    request_cancel = read_cancel.current()
+    request_guard = read_cancel.current_guard()
+
+    def run(key, fn):
+        with read_cancel.scope(request_cancel, request_guard):
+            return _timed(key, fn, guarded, password)
+
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
-    futures = [(key, pool.submit(_timed, key, fn, guarded, password)) for key, fn in jobs]
+    futures = [(key, pool.submit(run, key, fn)) for key, fn in jobs]
     try:
         for key, future in futures:
             results[key] = future.result()
@@ -253,7 +261,8 @@ def analysis_report(conn, interval=DEFAULT_INTERVAL, schemas=None, require_choic
     schemas = check_schemas(schemas)
     if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_WORKERS:
         raise ValueError("Choose 1 to %d views at a time." % MAX_WORKERS)
-    cancel = cancel or threading.Event()
+    from . import read_cancel
+    cancel = cancel or read_cancel.current() or threading.Event()
     clock = clock or time.monotonic
     if sleep is None:
         def sleep(seconds):
@@ -1112,6 +1121,9 @@ class _Flight(object):
         self.done = threading.Event()
         self.result = None
         self.error = None
+        self.cancel = threading.Event()
+        self.callers = 0
+        self.worker = None
 
 
 _FLIGHTS = {}
@@ -1140,33 +1152,81 @@ def flight_key(options, profile_id=None, safety=None):
     return key
 
 
-def run_single_flight(key, options, work):
+def request_fingerprint(payload):
+    """All request fields, with type/order preserved and no secret in the key."""
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hmac.new(_FLIGHT_SECRET, encoded, hashlib.sha256).hexdigest()
+
+
+def run_single_flight(key, options, work, cancel=None):
     """Run *work()* once per *key* (a connection identity) at a time. A
     second call with the same *options* while it runs waits and gets the same
-    result as its own deep copy; a call with different options is refused."""
+    result as its own deep copy; a call with different options is refused.
+
+    Each caller owns its optional cancellation event. Cancellable work runs
+    in its own read context, cancelled only when the final caller leaves. In particular,
+    disconnecting the first caller cannot abandon a joined caller's read.
+    Keys are removed on completion or cancellation; this never caches results.
+    """
+    from . import read_cancel
+    cancel = cancel if cancel is not None else read_cancel.current()
+    if cancel is not None:
+        read_cancel.check(cancel)
+
+    def execute(flight):
+        try:
+            with read_cancel.scope(flight.cancel if cancel is not None else None):
+                flight.result = work()
+        except BaseException as exc:
+            flight.error = exc
+        finally:
+            with _FLIGHTS_LOCK:
+                if _FLIGHTS.get(key) is flight:
+                    del _FLIGHTS[key]
+            flight.done.set()
+
     with _FLIGHTS_LOCK:
         flight = _FLIGHTS.get(key)
         owner = flight is None
         if owner:
             flight = _FLIGHTS[key] = _Flight(options)
-    if not owner:
-        if flight.options != options:
+            flight.worker = threading.Thread(target=execute, args=(flight,), name="myflames-live-read", daemon=True)
+        elif flight.options != options:
             raise ValueError("A full analysis with other settings is already running for this connection; wait "
                              "for it to finish.")
-        flight.done.wait()
+        flight.callers += 1
+    try:
+        if owner:
+            try:
+                flight.worker.start()
+            except BaseException as exc:
+                flight.error = exc
+                with _FLIGHTS_LOCK:
+                    if _FLIGHTS.get(key) is flight:
+                        del _FLIGHTS[key]
+                flight.done.set()
+                raise
+        while not flight.done.wait(0.05):
+            if cancel is not None:
+                read_cancel.check(cancel)
+        if cancel is not None:
+            read_cancel.check(cancel)
         if flight.error is not None:
             raise flight.error
         return copy.deepcopy(flight.result)
-    try:
-        flight.result = work()
-        return copy.deepcopy(flight.result)
-    except BaseException as exc:
-        flight.error = exc
-        raise
     finally:
         with _FLIGHTS_LOCK:
-            _FLIGHTS.pop(key, None)
-        flight.done.set()
+            flight.callers -= 1
+            last = flight.callers == 0
+            if last and not flight.done.is_set():
+                flight.cancel.set()
+                if _FLIGHTS.get(key) is flight:
+                    del _FLIGHTS[key]
+        # No orphan client or sampling thread after the final HTTP worker is
+        # released. Other callers keep the shared worker, not the first HTTP
+        # request, alive until the report is ready.
+        if last and flight.worker.ident is not None:
+            flight.worker.join()
 
 # ---- text, digest, Markdown and HTML ------------------------------------------------------------
 

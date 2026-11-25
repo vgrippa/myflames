@@ -535,7 +535,7 @@ try {
       .find((b) => b.textContent.trim() === "Change on every member…").click());
     await page.waitForSelector(sheetSel, { visible: true });
     await until((sel) => document.querySelector(`${sel} .rolling-field input`)?.value === "500", sheetSel);
-    await page.click(`${sheetSel} .rolling-field input`, { clickCount: 3 });
+    await page.click(`${sheetSel} .rolling-field input`, { count: 3 });
     await page.type(`${sheetSel} .rolling-field input`, "400");
     await sheetClick("Review");
     await page.waitForSelector(`${sheetSel} .rolling-review-list li[data-member="p-ic-2"]`, { visible: true });

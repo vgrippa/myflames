@@ -18,9 +18,7 @@ import threading
 import time
 
 from . import slowlog
-
-PATHS = ("/api/slow-log/choose", "/api/slow-log/open-path", "/api/slow-log/read", "/api/slow-log/progress",
-         "/api/slow-log/stop")
+from .ui_routes import SLOW_LOG_PATHS as PATHS
 PROGRESS_SCHEMA = "slow-log-progress-1.0"
 FILE_LIMIT = 16
 FILE_TTL = 6 * 3600

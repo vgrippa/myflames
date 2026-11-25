@@ -9,11 +9,18 @@ import { Icon } from "./components";
 import { groupConnectionLabel } from "./binding";
 
 const GroupEditorSheet = lazy(() => import("./GroupEditorSheet").then(module => ({ default: module.GroupEditorSheet })));
-import { ReadinessFacts, checkReadiness, copyReadiness, readinessHint, readinessLine } from "./readiness";
+// Readiness (the per-server facts strip and its checks) is most of its own
+// module; the strip rides with the first screen the way the editor chunk
+// does (preload beside the first render), and Check/test runs import it on
+// demand. lazyComponent keeps a mounted strip from remounting when the chunk
+// lands (lazy.tsx).
+const ReadinessFacts = lazyComponent(() => import("./readiness").then((m) => m.ReadinessFacts));
+void ReadinessFacts.preload().catch(() => {});
 import { connectionKey, connectionLabel, hostHasSpace, sshKey, trimPasted, trimPastedEnd } from "./binding";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, InfoPopover, InspectorContext, Popover, closePopovers,
   SearchField, Segmented, Select, ViewLayout, useFocusScope, type Column } from "./kit";
 import { actionLabel, privilegeResult, usePrivileges } from "./privileges";
+import { lazyComponent } from "./lazy";
 import { defaultConnection, relativeTime, SSL_MODES, type SessionConnection } from "./session";
 
 const ImportConnections = lazy(() => import("./ImportConnections").then(module => ({ default: module.ImportConnections })));
@@ -430,6 +437,18 @@ export function Connections({
   const [forgetting, setForgetting] = useState(false);
   // One save at a time (the ref answers before React re-renders).
   const savingRef = useRef(false);
+  // Each save's own answer about its password, by connection id: when the
+  // list read right after a save failed, the list can hold a stale entry (or
+  // lack a just-saved connection), and a retry must not read its stored
+  // password as unsaved. A successful list read is newer and clears the
+  // entries it covers (in saveProfile and in the profiles effect below).
+  const savedPasswordById = useRef<Record<string, boolean>>({});
+  // A newer list replaces each kept save answer it covers. A failed read
+  // keeps the list's identity (savedConnections.ts), so this effect does not
+  // run and the answers stay.
+  useEffect(() => {
+    for (const p of profiles) delete savedPasswordById.current[p.id];
+  }, [profiles]);
   // formGen changes when the form opens or closes; draftGen also when a field
   // changes. A save applies its answer only to the same form, a test only to
   // the same settings.
@@ -648,25 +667,41 @@ export function Connections({
     try {
       const target = profiles.find((p) => p.id === targetId);
       const storeTyped = withPassword && !!password;
-      const keepExisting = !storeTyped && !!target?.has_saved_password;
+      // The most recent successful save's own answer wins over the list until
+      // a newer list read succeeds: a stale entry (the refresh right after
+      // that save failed, so the list still shows the password as unsaved, or
+      // lacks a just-saved connection) must not turn a settings-only retry
+      // into forgetting the stored password.
+      const answered = Object.prototype.hasOwnProperty.call(savedPasswordById.current, targetId);
+      const keepExisting = !storeTyped && !!(answered ? savedPasswordById.current[targetId] : target?.has_saved_password);
       const p = await api<Profile>("profiles/save", {
         id: targetId || undefined,
         value: settings,
         password: storeTyped ? password : undefined,
         remember_password: storeTyped || keepExisting,
       });
-      copyReadiness(formConnection, { ...settings, profile_id: p.id });
-      await refresh();
+      savedPasswordById.current[p.id] = !!p.has_saved_password;
+      // The profile is durable now. Retain its id before another await, so
+      // an optional module or list read failure cannot turn a retry into a
+      // second create request.
+      if (formGen.current === gen) {
+        setEditingId(p.id);
+        setDevFor(settings.type === "development" ? developmentFor(settings) : null);
+      }
+      // A successful list read supersedes the kept save answers it names,
+      // even when its content is unchanged (the list then keeps its identity
+      // and the profiles effect above does not run).
+      for (const item of await refresh()) delete savedPasswordById.current[item.id];
+      try {
+        (await import("./readiness")).copyReadiness(formConnection, { ...settings, profile_id: p.id });
+      } catch {
+        setError("The connection was saved, but readiness details could not be loaded. Reload to check readiness.");
+        setErrorMissing("");
+      }
       // The edited connection stays in use, and a first saved connection
       // becomes the one in use, unless the user chose another connection
       // (Use, Use without saving, the picker) or moved to another form meanwhile.
       const sameForm = formGen.current === gen;
-      if (sameForm) {
-        setEditingId(p.id);
-        // The form now shows what was saved (a moved Development connection
-        // saved as Production stays Production on screen).
-        setDevFor(settings.type === "development" ? developmentFor(settings) : null);
-      }
       if (choice() === chosen && ((sameForm && !startedOn) || startedOn === p.id || (!!targetId && startedOn === targetId)))
         onUse(p.id, connectionFields(settings), password || "");
       statusFromTest.current = false;
@@ -708,9 +743,10 @@ export function Connections({
     // The result line belongs to this test from now on.
     if (statusFromTest.current) { statusFromTest.current = false; setStatus(""); }
     try {
+      const readinessModule = await import("./readiness");
       const [test, readiness] = await Promise.allSettled([
         api<ConnectionTestResult>("connection/test", { connection: formConnection }),
-        checkReadiness(formConnection),
+        readinessModule.checkReadiness(formConnection),
       ]);
       if (test.status === "rejected") throw test.reason;
       const r = test.value;
@@ -721,8 +757,8 @@ export function Connections({
       setTypingSchema(false);
       setShowSystemSchemas(!!draft.database && isSystemDatabase(draft.database));
       statusFromTest.current = true;
-      setStatus(readiness.status === "fulfilled" ? `Connected · ${readinessLine(readiness.value)}` : testedText(r));
-      setReadinessNote(readiness.status === "fulfilled" ? readinessHint(readiness.value) : "Readiness could not be checked; try Check now.");
+      setStatus(readiness.status === "fulfilled" ? `Connected · ${readinessModule.readinessLine(readiness.value)}` : testedText(r));
+      setReadinessNote(readiness.status === "fulfilled" ? readinessModule.readinessHint(readiness.value) : "Readiness could not be checked; try Check now.");
       if (tested.editing && !savedPassword && tested.password && canRemember)
         setOfferSave(true);
     } catch (e) {
@@ -748,6 +784,7 @@ export function Connections({
     setForgetting(true);
     try {
       await api("profiles/forget-password", { id });
+      savedPasswordById.current[id] = false;
       await refresh();
       setStatus("Saved password forgotten. Enter the password to connect.");
     } catch (e) {
@@ -821,7 +858,8 @@ export function Connections({
     setRowTests((t) => ({ ...t, [key]: { state: "testing", identity, seq } }));
     try {
       const [test] = await Promise.allSettled([
-        api<ConnectionTestResult>("connection/test", { connection }), checkReadiness(connection),
+        api<ConnectionTestResult>("connection/test", { connection }),
+        import("./readiness").then((m) => m.checkReadiness(connection)),
       ]);
       if (test.status === "rejected") throw test.reason;
       const r = test.value;
@@ -918,8 +956,8 @@ export function Connections({
           <button role="menuitem" onClick={() => act(() => openForm(row.profile))} aria-label={`Edit ${name}`}>Edit</button>
           <button role="menuitem" onClick={() => act(() => duplicate(row))} aria-label={`Duplicate ${name}`}>Duplicate</button>
           <button role="menuitem" disabled={busy} onClick={() => act(() => {
-            void checkReadiness({ ...row.fields, type: row.profile?.type, profile_id: row.key,
-              password: row.key === active.id && sameEndpoint(row.fields, active.fields) ? active.password : "" }).catch(() => {});
+            void import("./readiness").then((m) => m.checkReadiness({ ...row.fields, type: row.profile?.type, profile_id: row.key,
+              password: row.key === active.id && sameEndpoint(row.fields, active.fields) ? active.password : "" }).catch(() => {}));
           })} aria-label={`Check now ${name}`}>Check now</button>
           <button role="menuitem" disabled={busy} onClick={() => act(() => {
             openForm(row.profile);
@@ -1548,14 +1586,24 @@ export function ConnectionPicker({
           <span className="connection-pill-name">{name}</span>
           {groupTag(activeGroup ? activeGroup.name : profile?.group)}
           <span className="picker-target">{active.fields.name ? ` · ${connectionTarget(active.fields)}` : ""}</span>
-          {hasConnection && safety.known && <SafetyTags type={safety.type} readOnly={safety.read_only} />}
-          {/* Where the pills yield to width, a short type word stays beside the
-              dot (the Popover label names the type in full). */}
-          {hasConnection && safety.known && (
-            <span className={`connection-pill-type is-${safety.type}${safety.read_only ? " is-read-only" : ""}`} aria-hidden="true">
-              {safety.type === "development" ? "Dev" : "Prod"}
-            </span>
-          )}
+          {/* The badges' space is reserved while the settings load (Production
+              is assumed meanwhile, as the window footer says): they appear
+              without moving the pill or the rest of the toolbar. */}
+          {hasConnection && (() => {
+            const badgeType = safety.known ? safety.type : "production";
+            const badgeReadOnly = safety.known && safety.read_only;
+            return <>
+              <span className={`safety-tags${safety.known ? "" : " is-reserved"}`} aria-hidden={safety.known ? undefined : true}>
+                <span className={`type-tag is-${badgeType}`}>{TYPE_LABEL[badgeType]}</span>
+                {badgeReadOnly && <span className="type-tag is-read-only">Read-only</span>}
+              </span>
+              {/* Where the pills yield to width, a short type word stays beside the
+                  dot (the Popover label names the type in full). */}
+              <span className={`connection-pill-type is-${badgeType}${badgeReadOnly ? " is-read-only" : ""}${safety.known ? "" : " is-reserved"}`} aria-hidden="true">
+                {badgeType === "development" ? "Dev" : "Prod"}
+              </span>
+            </>;
+          })()}
           <span className="down-chevron"><Icon name="disclosure" size={12} /></span>
         </>}>
         <div className="picker-panel">
@@ -1567,8 +1615,8 @@ export function ConnectionPicker({
               const chosen = profiles.find(p => p.id === id);
               // The probe sends the connection fields only (connectionFields):
               // stored group metadata never leaves the profile list.
-              if (chosen) void checkReadiness({ ...connectionFields(chosen), type: chosen.type, profile_id: chosen.id,
-                password: id === active.id ? active.password : "" }).catch(() => {});
+              if (chosen) void import("./readiness").then((m) => m.checkReadiness({ ...connectionFields(chosen), type: chosen.type, profile_id: chosen.id,
+                password: id === active.id ? active.password : "" }).catch(() => {}));
             }} options={[
               ...(activeGroup ? [["group-connection", name] as [string, string]] : []),
               ...(profile ? [] : [[active.id, hasConnection ? `${name} (not saved)` : "No connection"] as [string, string]]),

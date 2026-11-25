@@ -1,10 +1,16 @@
 // A .ts module deliberately uses createElement so consumers need no JSX
 // wrapper. Server answers own privilege semantics; no grants are parsed here.
 import { Fragment, createContext, createElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
-import type { Connection } from "./api";
+import { api, type Connection } from "./api";
 import { connectionKey, sharedRead } from "./binding";
 import { useWritePolicy } from "./Connections";
-import { readPrivileges, type ActionPrivilege, type PrivilegesReport, type PrivilegeState } from "./accountsApi";
+import type { ActionPrivilege, PrivilegesReport, PrivilegeState } from "./accountsApi";
+
+// The same read as accountsApi.readPrivileges, spelled out here: gating
+// write actions is shell code, so this one endpoint stays in the entry chunk
+// while the accounts API loads with the Accounts view.
+const readPrivileges = (connection: Connection, signal?: AbortSignal) =>
+  api<PrivilegesReport>("live/privileges", { connection }, signal);
 
 export type PrivilegeGateResult = { state: PrivilegeState; missing: string[]; reason: string; disabledReason: string; available: boolean };
 type PrivilegesContextValue = {

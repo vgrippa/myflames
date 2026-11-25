@@ -11,7 +11,9 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
   import React, { useState } from 'react';
   import { createRoot } from 'react-dom/client';
   import { SplitButton, SplitPane, FormGrid, FormRow, PendingBar, Fields, DataTable,
-    WindowStatusProvider, WindowStatusBar, useWindowStatus, Checkbox, IconButton, ContextMenu } from './kit';
+    WindowStatusProvider, WindowStatusBar, useWindowStatus, Checkbox, IconButton, ContextMenu, Popover } from './kit';
+  import { SchemaPicker } from './PerfShared';
+  import { TablePicker } from './DumpTables';
   function Status() {
     useWindowStatus('server:A', { engineVersion: 'MySQL 8.4.0', connectionState: 'Connected', transaction: 'Autocommit', refreshedAt: 1000 });
     useWindowStatus('server:B', { engineVersion: 'MariaDB 11.4', connectionState: 'Disconnected' });
@@ -22,8 +24,29 @@ const bundle = await build({ stdin: { resolveDir: path.join(here, '../src'), loa
     const [density, setDensity] = useState<'default' | 'compact'>('default');
     const [selection, setSelection] = useState('0');
     const [emptyMenu, setEmptyMenu] = useState(false);
+    const [pickersDisabled, setPickersDisabled] = useState(false);
     const [menuPoint, setMenuPoint] = useState<{ x: number; y: number; tall: boolean } | null>(null);
     return <WindowStatusProvider>
+      <section id="portal-fixture">
+        <div id="portal-scroll" className="view-main" style={{ height: 260, overflow: 'auto',
+          fontFamily: 'var(--font-sans)', '--text-sm': '17px', '--leading-sm': '25px',
+          '--font-sans': 'Arial, sans-serif' } as React.CSSProperties}>
+          <div style={{ height: 120 }} />
+          <Popover label="Portaled options" panelClassName="portal-options" trigger="Options">
+            <input id="portal-first" aria-label="First option" />
+            <button id="portal-last">Last option</button>
+          </Popover>
+          <SchemaPicker id="fixture-schemas" value={[]} onChange={() => {}} disabled={pickersDisabled}
+            catalog={{ schemas: [{ name: 'app', tables: 1, system: false }], user_tables: 1 }}
+            loading={false} error="" onReload={() => {}} />
+          <TablePicker id="fixture-tables" schema="app" value={[]} onChange={() => {}} disabled={pickersDisabled}
+            tables={{ tables: [{ name: 'orders', type: 'table', engine: 'InnoDB', rows: 1, bytes: 16384 }],
+              loading: false, error: '', truncated: false, reload() {}, more() {} }} />
+          <div style={{ height: 320 }} />
+        </div>
+        <button id="portal-outside">Outside options</button>
+        <button id="toggle-pickers" onClick={() => setPickersDisabled(disabled => !disabled)}>Toggle picker availability</button>
+      </section>
       <SplitButton label="Run" onClick={() => setRuns(runs + 1)} popoverLabel="Run options" primary disabled={disabled}>
         <button onClick={() => setDisabled(true)}>Disable run</button>
       </SplitButton><output id="runs">{runs}</output>
@@ -98,6 +121,104 @@ try {
   await page.locator('.popover button').click();
   await page.waitForFunction(() => !document.querySelector('.popover'));
   assert.equal(await page.$$eval('.split-button button', els => els.every(e => e.disabled)), true);
+  // View content uses the same focus scope after its panel moves to body.
+  // Local text tokens and font choices still belong to the opener's surface.
+  const portalButton = '#portal-scroll button[aria-label="Portaled options"]';
+  const portalPanel = '.popover[aria-label="Portaled options"]';
+  await page.evaluate(() => { window.scrollTo(0, 0); document.getElementById('portal-scroll').scrollTop = 0; });
+  await page.click(portalButton);
+  await page.waitForSelector(portalPanel, { visible: true });
+  await page.waitForFunction(() => document.activeElement?.id === 'portal-first');
+  const portalLook = await page.$eval(portalPanel, panel => {
+    const button = document.querySelector('#portal-scroll button[aria-label="Portaled options"]');
+    const style = getComputedStyle(panel);
+    return { body: panel.parentElement === document.body, linked: button.getAttribute('aria-controls') === panel.id,
+      hook: panel.classList.contains('portal-options'), fontSize: style.fontSize, lineHeight: style.lineHeight,
+      fontFamily: style.fontFamily, anchorFont: getComputedStyle(button).fontFamily };
+  });
+  assert.deepEqual({ body: portalLook.body, linked: portalLook.linked, hook: portalLook.hook },
+    { body: true, linked: true, hook: true }, 'the opener identifies its portaled panel');
+  assert.equal(portalLook.fontSize, '17px', 'local interface text size reaches the portal');
+  assert.equal(portalLook.lineHeight, '25px', 'local interface line height reaches the portal');
+  assert.equal(portalLook.fontFamily, portalLook.anchorFont, 'local interface font reaches the portal');
+  await page.$eval('#portal-scroll', view => view.style.setProperty('--text-sm', '18px'));
+  await page.waitForFunction(selector => getComputedStyle(document.querySelector(selector)).fontSize === '18px', {}, portalPanel);
+  await page.$eval('#portal-scroll', view => view.style.setProperty('--text-sm', '17px'));
+  await page.waitForFunction(selector => getComputedStyle(document.querySelector(selector)).fontSize === '17px', {}, portalPanel);
+  const originalTheme = await page.evaluate(() => {
+    const old = document.documentElement.getAttribute('data-theme');
+    document.documentElement.dataset.theme = 'dark';
+    return old;
+  });
+  await page.waitForFunction(selector => getComputedStyle(document.querySelector(selector)).color === getComputedStyle(document.body).color, {}, portalPanel);
+  await page.evaluate(theme => {
+    if (theme === null) document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', theme);
+  }, originalTheme);
+  // Opacity and filters compose through view content rather than inheriting
+  // as text styles. A portal keeps that appearance as a report turns stale.
+  for (const [opacity, filter] of [['0.55', 'grayscale(1)'], ['0.6', 'grayscale(0.85)']]) {
+    await page.$eval('#portal-scroll', (view, value, effect) => {
+      view.style.opacity = value;
+      view.style.filter = effect;
+    }, opacity, filter);
+    await page.waitForFunction((selector, value, effect) => {
+      const style = getComputedStyle(document.querySelector(selector));
+      return style.opacity === value && style.filter === effect;
+    }, {}, portalPanel, opacity, filter);
+  }
+  await page.$eval('#portal-scroll', view => { view.style.removeProperty('opacity'); view.style.removeProperty('filter'); });
+  await page.waitForFunction(selector => {
+    const style = getComputedStyle(document.querySelector(selector));
+    return style.opacity === '1' && style.filter === 'none';
+  }, {}, portalPanel);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'portal-last');
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'portal-first', 'Tab wraps after the last panel control');
+  await page.keyboard.down('Shift'); await page.keyboard.press('Tab'); await page.keyboard.up('Shift');
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'portal-last', 'Shift+Tab wraps before the first control');
+  await page.$eval(portalPanel, panel => Promise.allSettled(panel.getAnimations().map(animation => animation.finished)));
+  const panelTop = () => page.$eval(portalPanel, panel => panel.getBoundingClientRect().top);
+  const beforeViewScroll = await panelTop();
+  await page.$eval('#portal-scroll', view => view.scrollTop += 32);
+  await page.waitForFunction((selector, before) => Math.abs(document.querySelector(selector).getBoundingClientRect().top - before + 32) < 1,
+    {}, portalPanel, beforeViewScroll);
+  const beforePageScroll = await panelTop();
+  await page.evaluate(() => window.scrollBy(0, 24));
+  await page.waitForFunction((selector, before) => Math.abs(document.querySelector(selector).getBoundingClientRect().top - before + 24) < 1,
+    {}, portalPanel, beforePageScroll);
+  await page.setViewport({ width: 720, height: 600 });
+  await page.waitForFunction(selector => {
+    const rect = document.querySelector(selector).getBoundingClientRect();
+    return rect.left >= 8 && rect.right <= innerWidth - 8 && rect.top >= 8 && rect.bottom <= innerHeight - 8;
+  }, {}, portalPanel);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(selector => !document.querySelector(selector), {}, portalPanel);
+  assert.equal(await page.$eval(portalButton, button => button === document.activeElement), true, 'Escape returns focus to the portaled opener');
+  await page.click(portalButton);
+  await page.waitForSelector(portalPanel, { visible: true });
+  await page.click('#portal-outside');
+  await page.waitForFunction(selector => !document.querySelector(selector), {}, portalPanel);
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'portal-outside', 'outside dismissal keeps the clicked control focused');
+  for (const picker of ['#fixture-schemas', '#fixture-tables']) {
+    await page.click(picker);
+    await page.waitForSelector('.popover', { visible: true });
+    // A programmatic click changes availability without the outside-mousedown
+    // dismissal, so this specifically exercises each picker's disabled prop.
+    await page.$eval('#toggle-pickers', button => button.click());
+    await page.waitForFunction(() => !document.querySelector('.popover'));
+    assert.equal(await page.$eval(picker, summary => summary.closest('button').disabled), true,
+      'disabling the picker closes its portaled panel');
+    await page.$eval('#toggle-pickers', button => button.click());
+  }
+  await page.click(portalButton);
+  await page.waitForSelector(portalPanel, { visible: true });
+  await page.$eval('#portal-scroll', view => view.hidden = true);
+  await page.waitForFunction(selector => !document.querySelector(selector), {}, portalPanel);
+  await page.$eval('#portal-scroll', view => view.hidden = false);
+  assert.equal(await page.$eval(portalButton, button => button.getAttribute('aria-expanded')), 'false',
+    'hiding a view closes its portaled panel');
   // The permanent Columns gutter is disjoint from the scroll viewport at
   // every scroll offset. At the right end, both the last header and its
   // right-aligned unit fit before the menu. Exercise row actions too.

@@ -45,6 +45,90 @@ def routing(rules, fast=(), users=USERS, variables=None):
     return pd.Routing(rules, list(fast), users, values)
 
 
+class TestWorkerCleanup(unittest.TestCase):
+    def test_killed_worker_wait_and_active_pipe_joins_are_bounded(self):
+        import subprocess
+        import threading
+        import time
+        release = threading.Event()
+
+        class Pipe:
+            def __init__(self):
+                self.closed = False
+                self.worker = None
+
+            def write(self, payload):
+                self.worker = threading.current_thread()
+                release.wait(2)
+                return len(payload)
+
+            def readline(self):
+                self.worker = threading.current_thread()
+                release.wait(2)
+                return b''
+
+            def close(self):
+                self.closed = True
+
+        stdin, stdout = Pipe(), Pipe()
+        proc = mock.Mock(stdin=stdin, stdout=stdout)
+
+        def wait(timeout=None):
+            self.assertIsNotNone(timeout, 'post-kill wait must have a deadline')
+            time.sleep(timeout)
+            raise subprocess.TimeoutExpired('pattern worker', timeout)
+
+        proc.wait.side_effect = wait
+        try:
+            with mock.patch.object(subprocess, 'Popen', return_value=proc), \
+                    mock.patch.object(pd, 'WORKER_START', 0.03), \
+                    mock.patch.object(pd, 'WORKER_CLEANUP_TIMEOUT', 0.05):
+                started = time.monotonic()
+                with self.assertRaisesRegex(OSError, 'did not start'):
+                    pd._run_worker([('x', False)], ['x'], 0, {})
+                self.assertLess(time.monotonic() - started, 0.75)
+            proc.kill.assert_called_once_with()
+            self.assertEqual(proc.wait.call_count, 1)
+            self.assertFalse(stdin.closed, 'a live writer owns its pipe')
+            self.assertFalse(stdout.closed, 'a live reader owns its pipe')
+        finally:
+            release.set()
+            for pipe in (stdin, stdout):
+                if pipe.worker is not None:
+                    pipe.worker.join(timeout=2)
+                    self.assertFalse(pipe.worker.is_alive())
+        self.assertTrue(stdin.closed)
+        self.assertTrue(stdout.closed)
+
+    def test_successful_worker_cleanup_joins_feed_and_drain(self):
+        import io
+        import subprocess
+        import threading
+        real_thread = threading.Thread
+        workers = []
+
+        def thread(*args, **kwargs):
+            worker = real_thread(*args, **kwargs)
+            worker.join = mock.Mock(wraps=worker.join)
+            workers.append(worker)
+            return worker
+
+        proc = mock.Mock(stdin=io.BytesIO(), stdout=io.BytesIO(b'ready\n1\n'))
+        proc.wait.return_value = 0
+        out = {}
+        with mock.patch.object(subprocess, 'Popen', return_value=proc), \
+                mock.patch.object(threading, 'Thread', side_effect=thread):
+            self.assertEqual(pd._run_worker([('x', False)], ['x'], 0, out), (1, False))
+        self.assertEqual(out, {0: '1'})
+        self.assertEqual(len(workers), 2)
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertTrue(all(worker.join.called and worker.join.call_args[1].get('timeout') is not None
+                            for worker in workers))
+        self.assertTrue(proc.stdin.closed)
+        self.assertTrue(proc.stdout.closed)
+        self.assertTrue(all(call[1].get('timeout') is not None for call in proc.wait.call_args_list))
+
+
 class TestRouting(unittest.TestCase):
     def test_unread_iterations_only_leave_affected_walks_not_judged(self):
         rules = [rule(1, flagIN=5, destination_hostgroup=50, apply=1),

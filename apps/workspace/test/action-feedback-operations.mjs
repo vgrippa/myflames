@@ -76,7 +76,7 @@ export function operationScenarios(h, fixtures) {
     await visible(page, "dialog.variable-sheet[open]");
     if (!reset) {
       const field = await visible(page, "#variable-value-max_connections");
-      await field.click({ clickCount: 3 }); await field.type("300");
+      await field.click({ count: 3 }); await field.type("300");
     }
     await confirmButton("dialog.variable-sheet[open]")(page);
   }
@@ -93,7 +93,7 @@ export function operationScenarios(h, fixtures) {
         await goView(page, "server", "config");
         await click(page, "Edit", config);
         const field = await visible(page, "#parameter-value-max_connections");
-        await field.click({ clickCount: 3 }); await field.type("300");
+        await field.click({ count: 3 }); await field.type("300");
         await click(page, "Review and apply (1)", config);
         await confirmButton(dialog)(page);
       },

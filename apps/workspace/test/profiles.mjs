@@ -284,7 +284,7 @@ try {
           .querySelector("input"),
       label,
     );
-    await input.click({ clickCount: 3 });
+    await input.click({ count: 3 });
     await page.keyboard.press("Backspace");
     await input.type(value);
   };
@@ -372,7 +372,7 @@ try {
   await button("Test connection");
   while (seen["/api/connection/test"].length === tests) await new Promise((r) => setTimeout(r, 25));
   assert.equal(last("/api/connection/test").connection.password, "typed");
-  await page.click(password, { clickCount: 3 });
+  await page.click(password, { count: 3 });
   await page.keyboard.press("Backspace");
   await page.waitForFunction(
     (selector) => document.querySelector(selector).placeholder === "Saved password",

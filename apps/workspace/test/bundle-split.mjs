@@ -120,12 +120,14 @@ if (html) {
   const entry = html.match(/<script type="module" crossorigin src="\/assets\/([^"]+\.js)"/)?.[1];
   assert.ok(entry, "index.html loads the entry chunk");
   const size = (await fs.stat(path.join(assets, "assets", entry))).size;
-  // 479,634 bytes after moving Explore, Compare and Learn into lazy chunks,
-  // down from master ef74ba2d's committed 508,046 bytes. The notebook stays
-  // eager in the shell alongside plan state, imports and navigation, leaving
-  // about 20 KB below the fixed 500,000-byte ceiling for release work.
+  // 451,196 bytes after moving the Client tools dialog, the accounts API,
+  // the SQL highlighter, the Server-view shared components, the command
+  // palette, the sample plan text, the update-check controls and the
+  // connection-readiness module behind lazy chunks (3.5.2), down from
+  // 499,503. Home, the connections manager and the shell stay eager. The
+  // budget is the new size plus about 5% of headroom for release work.
   // A place or view belongs in a lazy chunk.
-  assert.ok(size < 500_000, `entry chunk ${entry} is ${size} bytes; keep places and views out of it (lazy.tsx)`);
+  assert.ok(size < 474_000, `entry chunk ${entry} is ${size} bytes; keep places and views out of it (lazy.tsx)`);
 
   const entryText = await fs.readFile(path.join(assets, "assets", entry), "utf8");
   for (const marker of [".cm-content", ".cm-editor"])

@@ -388,10 +388,10 @@ try {
   const field = async (label) => page.evaluateHandle((text) => [...document.querySelectorAll(".connection-panel label.field")]
     .find((l) => l.firstChild?.textContent?.trim() === text)?.querySelector("input"), label);
   const host = await field("Host");
-  await host.click({ clickCount: 3 });
+  await host.click({ count: 3 });
   await host.type("db1.example");
   const user = await field("User");
-  await user.click({ clickCount: 3 });
+  await user.click({ count: 3 });
   await user.type("app");
   await h.button("Test connection", ".connection-panel ");
   await page.waitForSelector(".connection-panel [data-client-missing]");

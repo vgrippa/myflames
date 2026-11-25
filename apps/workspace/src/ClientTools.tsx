@@ -25,16 +25,9 @@ import { useConnectionInUse } from "./connectionInUse";
 import { ActionButton, errorText, Select, useFocusScope } from "./kit";
 import { droppedFilePath } from "./filesApi";
 import { Icon } from "./components";
-import { MAC, WINDOWS } from "./platform";
+import { CLIENT_HINT } from "./ClientMissing";
+import { WINDOWS } from "./platform";
 import "./client-missing.css";
-
-/** How to get client tools on this computer, by platform. Shown only when no
- * installation of either engine was found. */
-export const CLIENT_HINT = WINDOWS
-  ? "Install MySQL Server, MySQL Workbench or MariaDB, or choose mysql.exe."
-  : MAC
-    ? "Install MySQL's client with Homebrew (brew install mysql-client) or the MySQL installer."
-    : "Install the MySQL or MariaDB client with your package manager, or choose the client binary.";
 
 const ROLE_LABELS: { role: "client" | "dump" | "load" | "shell" | "backup"; label: string }[] = [
   { role: "client", label: "Queries" },

@@ -120,14 +120,69 @@ try {
   assert.deepEqual(await box(), initial, 'Fit cancels pending wheel motion');
   await wheel(10000, 0, 80);
   const beforeButton = await page.$eval('[data-action="in"]', el => {
-    const width = Number(document.querySelector('.wb-viewport').getAttribute('viewBox').split(' ')[2]);
+    const viewport = document.querySelector('.wb-viewport');
+    const width = Number(viewport.getAttribute('viewBox').split(' ')[2]);
+    // Mid-gesture in the workspace the viewBox still shows the gesture's
+    // first frame and a CSS transform on the root carries the zoom
+    // (core/zoom.ts); the effective width is the viewBox width divided by
+    // that scale. Report pages paint the viewBox per frame: scale 1.
+    const transform = (viewport.ownerSVGElement && viewport.ownerSVGElement.style.transform) || '';
+    const scale = Number((transform.match(/scale\(([^)]+)\)/) || [])[1] || 1);
     el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    return width;
+    return width / scale;
   });
   const buttonBox = await box();
   await settle();
   assert.deepEqual(await box(), buttonBox, 'toolbar actions cancel pending wheel motion');
   assert.ok(Math.abs(buttonBox[2] / beforeButton - .8) < .0001);
+
+  // A programmatic zoom during an active wheel gesture settles the gesture
+  // first (core/zoom.ts zoom calls stopWheel, like fit/reset/resize/show):
+  // no CSS transform stays on the root over the painted viewBox. The
+  // controller comes from the bundle's test surface (charts/index.ts
+  // internals); the toolbar path above cannot reach it without its own
+  // stopWheel.
+  const midGesture = await page.evaluate(() => new Promise((resolve) => {
+    const NS = 'http://www.w3.org/2000/svg';
+    const root = document.createElementNS(NS, 'svg');
+    root.setAttribute('width', '800');
+    root.setAttribute('height', '600');
+    root.setAttribute('viewBox', '0 0 800 600');
+    root.style.cssText = 'position:fixed;left:0;top:0';
+    const viewport = document.createElementNS(NS, 'svg');
+    viewport.setAttribute('width', '800');
+    viewport.setAttribute('height', '600');
+    viewport.setAttribute('viewBox', '0 0 800 600');
+    root.appendChild(viewport);
+    document.body.appendChild(root);
+    const buttons = {};
+    for (const name of ['fit', 'zoomIn', 'zoomOut', 'reset']) buttons[name] = document.createElement('button');
+    const controller = window.MyflamesCharts.internals.createZoom({
+      root, viewport, width: 800, height: 600, graphWidth: 2000, graphHeight: 1000,
+      buttons, wheelTransform: true,
+    });
+    const initialBox = viewport.getAttribute('viewBox');
+    viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: 96, clientX: 400, clientY: 300, cancelable: true }));
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const transformDuring = root.style.transform;
+      controller.zoom(0.8, 0.5, 0.5);
+      const result = {
+        initialBox, transformDuring,
+        transformAfter: root.style.transform,
+        box: viewport.getAttribute('viewBox'),
+        readout: buttons.reset.textContent,
+      };
+      controller.destroy();
+      root.remove();
+      resolve(result);
+    }));
+  }));
+  assert.ok(/scale\(/.test(midGesture.transformDuring), 'the wheel gesture put a transform on the root');
+  assert.equal(midGesture.transformAfter, '', 'zoom during a wheel gesture leaves no transform on the root');
+  const midBox = midGesture.box.split(' ').map(Number);
+  assert.ok(midBox[2] < 800, 'zoom during a wheel gesture zoomed in: ' + midGesture.box);
+  assert.notEqual(midGesture.box, midGesture.initialBox, 'the viewBox caught up with the zoom');
+  assert.equal(midGesture.readout, Math.round(800 / midBox[2] * 100) + '%', 'the readout matches the painted viewBox');
 
   // Zooming out by hand still reaches the whole plan, below the fit's floor.
   await fit();

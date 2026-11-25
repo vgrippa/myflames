@@ -513,19 +513,24 @@ def health_report(conn, interval=DEFAULT_INTERVAL, sleep=None, clock=None, with_
     invocation and each sample carries its identity. Different servers or
     versions refuse the window; an incomplete identity cannot be saved.
     """
+    from . import read_cancel
     interval = _check_interval(interval)
-    sleep = sleep or time.sleep
+    if sleep is None and read_cancel.current() is None:
+        sleep = time.sleep
     clock = clock or time.monotonic
+    read_cancel.check()
     try:
         if with_identity:
             first = take_sample(conn, clock, with_identity=True, include_variables=True)
             variables = first["variables"]
         else:
             variables = read_variables(conn)
+            read_cancel.check()
             first = take_sample(conn, clock)
         remaining = interval - (clock() - first["t"])
         if remaining > 0:
-            sleep(remaining)
+            read_cancel.wait(remaining, sleep)
+        read_cancel.check()
         second = take_sample(conn, clock, with_identity=with_identity)
     except ConnectorError as exc:
         text = " ".join(str(exc).split())

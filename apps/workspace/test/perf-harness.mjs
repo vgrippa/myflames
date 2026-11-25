@@ -14,11 +14,110 @@ import puppeteer from "puppeteer";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const fixtures = fileURLToPath(new URL("./fixtures/", import.meta.url));
 
+/** Launch the suite browser as the leader of its own process group (POSIX:
+ * detached), so closeBrowser's force path can signal the whole tree, renderer,
+ * GPU and utility children included. Windows gets the same tree through
+ * taskkill /T, as the suite runner's stopWorker does. */
+export async function launchBrowser(launchArgs = []) {
+  return puppeteer.launch({ headless: "shell", detached: process.platform !== "win32", args: [...browserArgs, ...launchArgs] });
+}
+
+/** Stop the browser's whole tree, not only its parent process: on POSIX the
+ * group the detached browser leads (kill(-pid)); on Windows taskkill /T. The
+ * parent alone is the fallback when the tree signal is refused. */
+export function killBrowserTree(browserProcess) {
+  if (!browserProcess || browserProcess.exitCode !== null || browserProcess.signalCode !== null) return;
+  if (process.platform === "win32") {
+    const result = spawnSync("taskkill", ["/F", "/T", "/PID", String(browserProcess.pid)], { stdio: "ignore", timeout: 5000 });
+    if ((result.error || result.status !== 0) && browserProcess.exitCode === null && browserProcess.signalCode === null) {
+      browserProcess.kill("SIGKILL");
+    }
+    return;
+  }
+  // ESRCH means the group is already gone; like EPERM (a group of only an
+  // unreaped zombie) it leaves nothing to stop, as run_workspace_suites.mjs.
+  try { process.kill(-browserProcess.pid, "SIGKILL"); }
+  catch (error) { if (!["ESRCH", "EPERM"].includes(error.code)) throw error; }
+  if (browserProcess.exitCode === null && browserProcess.signalCode === null) browserProcess.kill("SIGKILL");
+}
+
+/** Close the browser with a bound, then force-stop its whole tree. The bound
+ * exists because browser.close() waits on the browser answering Browser.close
+ * with no timeout of its own: on a saturated machine the answer never came
+ * (the browser was still alive minutes later; health.mjs stalled here twice
+ * in release runs until the runner's timeout). */
+export async function closeBrowser(browser, { forceMs = 15000 } = {}) {
+  const browserProcess = browser.process();
+  const force = new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      killBrowserTree(browserProcess);
+      resolve();
+    }, forceMs);
+    timer.unref();
+  });
+  await Promise.race([browser.close().catch(() => undefined), force]);
+  killBrowserTree(browserProcess);
+}
+
 export const load = async (name) => JSON.parse(await fs.readFile(path.join(fixtures, name), "utf8"));
 export const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Review the three portal regression surfaces in both appearances and at the
+ * minimum desktop width. Reopen after each layout settles so the screenshot
+ * records the visible opener and panel together, then restore the test state. */
+export async function portalScreenshots(page, name, opener, panel) {
+  const directory = path.join(root, "local", "portal");
+  await fs.mkdir(directory, { recursive: true });
+  const viewport = page.viewport();
+  const before = await page.evaluate(() => ({ theme: document.documentElement.getAttribute("data-theme"), x: scrollX, y: scrollY }));
+  const close = async () => {
+    if (!(await page.$(panel))) return;
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(panel, { hidden: true });
+  };
+  const reopen = async () => {
+    await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place)")]
+      .filter(place => !place.closest("[hidden]") && place.offsetParent !== null)
+      .every(place => place.querySelector(".server-layout")?.classList.contains("is-compact") === (place.clientWidth < 720)));
+    await page.waitForSelector(opener, { visible: true });
+    await page.$eval(opener, button => button.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" }));
+    await page.click(opener);
+    await page.waitForSelector(panel, { visible: true });
+    await page.$eval(panel, surface => Promise.allSettled(surface.getAnimations().map(animation => animation.finished)));
+    await page.waitForFunction(selector => {
+      const surface = document.querySelector(selector);
+      const rect = surface.getBoundingClientRect();
+      return getComputedStyle(surface).visibility === "visible" && rect.top >= 0 && rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+    }, {}, panel);
+  };
+  try {
+    for (const theme of ["light", "dark"]) for (const width of [1440, 720]) {
+      await close();
+      await page.evaluate(value => document.documentElement.dataset.theme = value, theme);
+      await page.setViewport({ width, height: width === 1440 ? 900 : 600 });
+      await reopen();
+      await page.screenshot({ path: path.join(directory, `${name}-${width}-${theme}.png`) });
+    }
+  } finally {
+    await close();
+    await page.evaluate(theme => {
+      if (theme === null) document.documentElement.removeAttribute("data-theme");
+      else document.documentElement.setAttribute("data-theme", theme);
+    }, before.theme);
+    await page.setViewport(viewport);
+    await reopen();
+    await page.evaluate(({ x, y }) => window.scrollTo(x, y), before);
+  }
+}
 /** Extra Chromium launch flags for sandboxes that refuse the defaults
  * (MYFLAMES_BROWSER_ARGS="--no-sandbox"); empty in a normal environment. */
 export const browserArgs = (process.env.MYFLAMES_BROWSER_ARGS || "").split(" ").filter(Boolean);
+/** Optional CPU throttling rate (Emulation.setCPUThrottlingRate) for stress
+ * runs (MYFLAMES_CPU_THROTTLE=6); off by default (unset or <= 1). */
+export const cpuThrottle = Number(process.env.MYFLAMES_CPU_THROTTLE || 0);
+export async function applyCpuThrottle(page) {
+  if (Number.isFinite(cpuThrottle) && cpuThrottle > 1) await page.emulateCPUThrottling(cpuThrottle);
+}
 
 /** The Server sub-navigation labels by group, in order (SERVER_VIEWS in
  * Server.tsx). The one place suites learn the list: update it with a new view. */
@@ -158,7 +257,7 @@ export async function open(endpoint, name, extra = {}, {
     });
     proc.on("error", reject);
   });
-  const browser = await puppeteer.launch({ headless: "shell", args: [...browserArgs, ...launchArgs] });
+  const browser = await launchBrowser(launchArgs);
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -214,6 +313,7 @@ export async function open(endpoint, name, extra = {}, {
     else setTimeout(reply, state.delay);
   });
   await page.setViewport(viewport);
+  await applyCpuThrottle(page);
   if (beforeGoto) await beforeGoto(page);
   await page.goto(url, { waitUntil: "networkidle0" });
   /** The element is on screen (not in a hidden place, view or list). */
@@ -262,6 +362,12 @@ export async function open(endpoint, name, extra = {}, {
      * COMPACT_WIDTH in Server.tsx, which includes the 720 px window) the
      * pushed list or the pushed view with its Back button. */
     async views() {
+      // ResizeObserver applies the measured place width after setViewport.
+      // A Back control from the preceding narrow layout may still have a box
+      // for one frame before it is removed. Wait for the layout we will use.
+      await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place)")]
+        .filter((e) => !e.closest("[hidden]") && e.offsetParent !== null)
+        .every((e) => e.querySelector(".server-layout")?.classList.contains("is-compact") === (e.clientWidth < 720)));
       // Any of them on screen (kept views stay mounted, hidden, with their own title).
       await page.waitForFunction(() => [...document.querySelectorAll(".server-place:not(.is-tuning-place) :is(.source-list, .view-switcher, .server-view .server-back)")]
         .some((e) => !e.closest("[hidden]") && e.offsetParent !== null));
@@ -457,25 +563,7 @@ export async function open(endpoint, name, extra = {}, {
       await pause(150);
     },
     async close() {
-      // browser.close() waits on the browser answering Browser.close, with no
-      // bound: on a saturated machine the answer never came (the browser was
-      // still alive minutes later; health.mjs stalled here twice in release
-      // runs until the runner's timeout). Bound the wait, then stop the
-      // browser process directly.
-      const browserProcess = browser.process();
-      const force = new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
-            browserProcess.kill("SIGKILL");
-          }
-          resolve();
-        }, 15000);
-        timer.unref();
-      });
-      await Promise.race([browser.close().catch(() => undefined), force]);
-      if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
-        browserProcess.kill("SIGKILL");
-      }
+      await closeBrowser(browser);
       proc.kill();
       await fs.rm(directory, { recursive: true, force: true });
     },

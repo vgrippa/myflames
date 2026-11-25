@@ -15,8 +15,7 @@ from .schema_versions_api import _connection
 from .workspace_store import PROFILE_FIELDS
 
 SNAPSHOT_PREFIX = '/api/config/snapshots/'
-PATHS = tuple(SNAPSHOT_PREFIX + s for s in ('list', 'save', 'get', 'delete')) + (
-    '/api/config/compare', '/api/accounts/compare', '/api/accounts/export')
+from .ui_routes import COMPARE_PATHS as PATHS
 LIVE_PATHS = (SNAPSHOT_PREFIX + 'save', '/api/config/compare', '/api/accounts/compare', '/api/accounts/export')
 
 

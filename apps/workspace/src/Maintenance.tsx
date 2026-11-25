@@ -1044,7 +1044,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           {oneSchema && <div className={`form-row${tableFailure || missingTables.length ? " ops-invalid" : ""}`} role="group" aria-label="Tables" aria-invalid={!!tableFailure || !!missingTables.length || undefined} data-dump-tables={oneSchema}>
             <span className="form-row-label">Tables</span>
             <div className="form-row-control">
-              <TablePicker id="ops-dump-tables" schema={oneSchema} value={tables} onChange={setTables} tables={schemaTables} disabled={formDisabled} />
+              <TablePicker id="ops-dump-tables" schema={oneSchema} value={tables} onChange={setTables} tables={schemaTables} disabled={formDisabled} invalid={!!(tableFailure || missingTables.length)} />
               <p className={tableFailure || missingTables.length || unknownTables.length || schemaTables.error ? "form-error" : "hint"} role={tableFailure || missingTables.length || unknownTables.length || schemaTables.error ? "alert" : undefined}>
                 {missingTables.length ? `Not found in ${oneSchema}: ${missingTables.join(", ")}.` : tableFailure ? tableFailure.reason : unknownTables.length && schemaTables.truncated ? `Not in the tables loaded so far: ${unknownTables.join(", ")}. Load more tables to confirm them.`
                   : unknownTables.length ? `No longer in ${oneSchema}: ${unknownTables.join(", ")}. Choose tables from the list again.`

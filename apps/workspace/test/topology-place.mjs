@@ -602,7 +602,7 @@ try {
   await page.type(".topology-place .drift-search", "max_conn");
   await page.waitForFunction(() => !document.querySelector('.topology-place tr[data-row-key="server_id"]'));
   assert.ok(await paramRow("max_connections"), "the search keeps matching rows");
-  await page.click(".topology-place .drift-search", { clickCount: 3 });
+  await page.click(".topology-place .drift-search", { count: 3 });
   await page.keyboard.press("Backspace");
   await page.waitForSelector('.topology-place tr[data-row-key="server_id"]', { visible: true });
 
@@ -909,40 +909,68 @@ try {
 
   // ProxySQL route edges: every SHUNNED variant (SHUNNED_REPLICATION_LAG,
   // SHUNNED_AWS_BGD) gets the problem tone and an unreported
-  // (configuration-only) state gets the unknown tone and wording.
+  // (configuration-only) state gets the unknown tone and wording. The drawn
+  // label stays "hostgroup N"; the route's reasons ride in the edge's reason
+  // field and show in the tooltip and the Links list.
   const proxyNode = makeNode("proxy", { role: "proxy", product: "ProxySQL", version: "3.0.2" });
   reports.map.map = {
     ...originalMap,
     nodes: [...originalMap.nodes, proxyNode],
     edges: [
       ...originalMap.edges,
-      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_REPLICATION_LAG", label: "hostgroup 10" }),
+      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_REPLICATION_LAG", label: "hostgroup 10", reason: "Shunned for replication lag. No ONLINE member in this hostgroup." }),
       link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "SHUNNED_AWS_BGD", label: "hostgroup 15" }),
       link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: null, label: "hostgroup 20" }),
+      link("proxy", "p-topo-1", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "OFFLINE_SOFT", label: "hostgroup 30", reason: "No new traffic; existing queries and transactions may finish." }),
+      link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "OFFLINE_HARD", label: "hostgroup 40", reason: "ProxySQL has taken this backend out of traffic. No ONLINE member in this hostgroup." }),
+      link("proxy", "p-topo-2", { kind: "proxy_route", evidence: "endpoint", verified: false, state: "offline", label: "hostgroup 50", reason: "In the monitor's offline hostgroup." }),
     ],
   };
   reports.map.members = [...originalMembers, member({
     profile_id: proxyNode.profile_id, profile_name: proxyNode.label, host: proxyNode.host, role: proxyNode.role, state: proxyNode.state,
   })];
   await h.refresh();
-  await page.waitForFunction(() => document.querySelectorAll('.topology-map-diagram .topology-map-edge[data-edge-kind="proxy_route"]').length === 3);
-  // The edge <title> always carries the label and state; the drawn label may be
-  // omitted when it does not fit beside its line, so it is not the source here.
+  await page.waitForFunction(() => document.querySelectorAll('.topology-map-diagram .topology-map-edge[data-edge-kind="proxy_route"]').length === 6);
+  // The edge <title> carries the short label, the state and the reason; the
+  // drawn label may be omitted when it does not fit beside its line, so it is
+  // not the source here.
   const proxyEdgeStates = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"]`, (els) =>
     els.map((el) => ({
       tone: ["tone-problem", "tone-unknown", "tone-ok", "tone-watch"].find((c) => el.classList.contains(c)) || "",
       title: el.querySelector("title")?.textContent || "",
+      arrow: el.querySelector("path")?.getAttribute("marker-end") || "",
     })));
   const expectedRoutes = [
-    ["tone-problem", "hostgroup 10 · SHUNNED_REPLICATION_LAG"],
-    ["tone-problem", "hostgroup 15 · SHUNNED_AWS_BGD"],
-    ["tone-unknown", "hostgroup 20 · State not reported"],
+    ["tone-problem", "hostgroup 10 · SHUNNED_REPLICATION_LAG", "Shunned for replication lag. No ONLINE member in this hostgroup."],
+    ["tone-problem", "hostgroup 15 · SHUNNED_AWS_BGD", ""],
+    ["tone-unknown", "hostgroup 20 · State not reported", ""],
+    ["tone-problem", "hostgroup 30 · OFFLINE_SOFT", "No new traffic; existing queries and transactions may finish."],
+    ["tone-problem", "hostgroup 40 · OFFLINE_HARD", "ProxySQL has taken this backend out of traffic. No ONLINE member in this hostgroup."],
+    ["tone-problem", "hostgroup 50 · offline", "In the monitor's offline hostgroup."],
   ];
   assert.equal(proxyEdgeStates.length, expectedRoutes.length);
-  expectedRoutes.forEach(([tone, text], i) => {
+  const proxyListText = await page.$$eval('.topology-map-section', (sections) => sections.map((el) => el.textContent).join("\n"));
+  expectedRoutes.forEach(([tone, text, reason], i) => {
     assert.equal(proxyEdgeStates[i].tone, tone, `route ${i} tone`);
     assert.ok(proxyEdgeStates[i].title.includes(text), `route ${i} title has "${text}": ${proxyEdgeStates[i].title}`);
+    if (reason) assert.ok(proxyEdgeStates[i].title.includes(reason), `route ${i} title has the reason: ${proxyEdgeStates[i].title}`);
+    if (tone === "tone-problem") assert.match(proxyEdgeStates[i].arrow, /-problem\)/, `route ${i} has the down-link arrow`);
+    if (reason) assert.ok(proxyListText.includes(reason), `route ${i} keeps its reason in the list`);
   });
+  // The drawn labels stay short (no reasons), at both window widths.
+  const drawnRouteLabels = await page.$$eval(`${diagram} .topology-map-edge[data-edge-kind="proxy_route"] text`, (els) =>
+    els.map((el) => el.textContent));
+  for (const drawn of drawnRouteLabels) {
+    assert.match(drawn, /^hostgroup \d+( · |$)/, `drawn route label is the short hostgroup label: ${drawn}`);
+    assert.ok(!/No ONLINE member|out of traffic|new traffic|replication lag|offline hostgroup/.test(drawn),
+      `drawn route label carries no reason: ${drawn}`);
+  }
+  await page.setViewport({ width: 1440, height: 900 });
+  await assertLabelsClear(1440);
+  await page.setViewport({ width: 720, height: 520 });
+  await assertLabelsClear(720);
+  await page.setViewport({ width: 1440, height: 900 });
+  await checkOmissionNote();
   reports.map.members = originalMembers;
 
   // Empty reports do not produce invalid geometry or hide the text alternative.
@@ -1269,7 +1297,7 @@ try {
   assert.match(await sheetText(), /This server now \(SET GLOBAL\)/);
   assert.match(await sheetText(), /Now and after restart \(SET PERSIST\)/);
   assert.match(await sheetText(), /After restart only \(SET PERSIST_ONLY\)/);
-  await page.click(`${sheetSel} .rolling-field input`, { clickCount: 3 });
+  await page.click(`${sheetSel} .rolling-field input`, { count: 3 });
   await page.type(`${sheetSel} .rolling-field input`, "400");
   assert.deepEqual(await tickOf("db-1"), { checked: true, disabled: false }, "editing the value keeps a differing member ticked");
 

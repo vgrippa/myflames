@@ -353,6 +353,7 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
       <Popover
         label="Export error log"
         className="errorlog-export"
+        panelClassName="errorlog-export-panel"
         buttonClassName="button"
         disabled={!report?.available || !visibleEntries.length}
         buttonTitle="Export the entries that match these filters"

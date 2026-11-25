@@ -38,7 +38,8 @@ QUERY_TIMEOUT_S = 2
 
 _LOCAL_NAMES = frozenset(("127.0.0.1", "localhost", "::1"))
 _NIL_UUID = "00000000-0000-0000-0000-000000000000"
-_NUMERIC_HOST_RE = re.compile(r"[0-9.]+")
+_IPV4_PART_RE = r"(?:0x[0-9a-f]+|0[0-7]*|[1-9][0-9]*)"
+_NUMERIC_HOST_RE = re.compile(r"%s(?:\.%s){0,3}" % (_IPV4_PART_RE, _IPV4_PART_RE))
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 _READYSET_META_RE = re.compile(r"readyset-meta:\s*(\{.*\})", re.I | re.S)
 
@@ -124,18 +125,38 @@ def _norm_host(host):
     return text.rstrip(".")
 
 
+def _parse_numeric_ipv4(text):
+    """Canonicalize BSD/POSIX ``inet_aton`` IPv4 forms (decimal, ``0x`` hex,
+    ``0``-prefixed octal; 1 to 4 parts) consistently across platforms."""
+    if not _NUMERIC_HOST_RE.fullmatch(text):
+        return None
+    parts = text.split(".")
+    try:
+        nums = [
+            int(part, 16 if part.startswith("0x") else (8 if part.startswith("0") else 10))
+            for part in parts
+        ]
+    except ValueError:
+        return None
+    max_last = (1 << (8 * (5 - len(nums)))) - 1
+    if any(n > 0xFF for n in nums[:-1]) or nums[-1] > max_last:
+        return None
+    value = nums[-1]
+    for idx, n in enumerate(nums[:-1]):
+        value |= n << (24 - 8 * idx)
+    return str(ipaddress.IPv4Address(value))
+
+
 def _host_key(host):
     """A host as compared: a name in lower case without a trailing dot, or an
     IP address in canonical form (IPv4-mapped IPv6 collapsed to IPv4, numeric
-    shorthand/padded IPv4 canonicalized with ``inet_aton``)."""
+    shorthand/padded/hex/octal IPv4 canonicalized with ``inet_aton`` rules)."""
     text = _norm_host(host)
     if not text:
         return ""
-    if _NUMERIC_HOST_RE.fullmatch(text):
-        try:
-            text = socket.inet_ntoa(socket.inet_aton(text))
-        except (OSError, ValueError):
-            pass
+    ipv4 = _parse_numeric_ipv4(text)
+    if ipv4 is not None:
+        text = ipv4
     try:
         address = ipaddress.ip_address(text)
     except ValueError:
@@ -178,6 +199,25 @@ def _loopback_scope_matches(observer_host, profile_ssh_host=None):
     if not obs or obs.lower().startswith("ssh:"):
         return False
     return not _text(profile_ssh_host) and is_loopback(obs)
+
+
+def _effective_observer(local_identity, observer_host=None):
+    """Return the strictest observer host from *local_identity* and *observer_host*."""
+    local_obs = _observer_host(local_identity)
+    if observer_host is not None and (local_obs is None or not _loopback_scope_matches(observer_host)):
+        local_obs = observer_host
+    return local_obs
+
+
+def _peer_is_direct_local(peer, local_obs, local_ssh=None):
+    """True only when the server that reported *peer* is direct and loopback on this computer."""
+    if "observer_host" in peer:
+        reporter_obs = peer.get("observer_host")
+        reporter_ssh = peer.get("ssh_host")
+    else:
+        reporter_obs = local_obs
+        reporter_ssh = peer.get("ssh_host") or local_ssh
+    return _loopback_scope_matches(reporter_obs, reporter_ssh)
 
 
 def split_host_port(value, default_port=None):
@@ -772,7 +812,11 @@ def _database_matches_target(db_info, target_host, target_port, observer_host=No
         if thost in names and tport in ports:
             return True
     # Loopback target when both Readyset/ProxySQL and the DB run on this local host.
-    if is_loopback(thost) and _loopback_scope_matches(observer_host, db_info.get("ssh_host")):
+    db_obs = _observer_host(db_info)
+    db_is_ssh = bool(_text(db_info.get("ssh_host"))) or (
+        isinstance(db_obs, str) and db_obs.strip().lower().startswith("ssh:")
+    )
+    if is_loopback(thost) and not db_is_ssh and _loopback_scope_matches(observer_host, db_info.get("ssh_host")):
         local_hostname = _host_key(socket.gethostname()).split(".")[0]
         db_short = _host_key(db_info.get("hostname")).split(".")[0]
         ports = {_int(db_info.get("port")), _int(db_info.get("profile_port"))} - {None}
@@ -1071,18 +1115,36 @@ def _cached_probe_kind(profile_id):
     return None
 
 
-def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_profile_id=None, current=None):
+def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_profile_id=None, current=None,
+                            observer_host=None):
     """Every consenting group member is a candidate except known local/peer endpoints."""
     profiles = members(profiles, current_profile(profiles, skip_profile_id, current))
-    local_ssh = bool(_text(local_identity.get("ssh_host"))) if isinstance(local_identity, dict) else False
+    local_obs = _effective_observer(local_identity, observer_host)
+    local_ssh = local_identity.get("ssh_host") if isinstance(local_identity, dict) else None
+    local_direct_loopback = _loopback_scope_matches(local_obs, local_ssh)
     known_eps = set()
-    for item in [local_identity] + list(peer_endpoints or ()):
+    if isinstance(local_identity, dict):
+        eh = _host_key(local_identity.get("profile_host") or local_identity.get("host"))
+        ep = _int(local_identity.get("profile_port") or local_identity.get("port")) or 3306
+        if eh:
+            if not is_loopback(eh):
+                known_eps.add((eh, ep, False))
+            elif local_direct_loopback:
+                known_eps.add((eh, ep, True))
+    for item in peer_endpoints or ():
         if not isinstance(item, dict):
             continue
         eh = _host_key(item.get("profile_host") or item.get("host"))
         ep = _int(item.get("profile_port") or item.get("port")) or 3306
-        if eh:
-            known_eps.add((eh, ep, local_ssh or bool(_text(item.get("ssh_host")))))
+        if not eh:
+            continue
+        if is_loopback(eh):
+            # A loopback peer endpoint counts as known on this computer only
+            # when the server that reported it is itself direct and loopback.
+            if _peer_is_direct_local(item, local_obs, local_ssh):
+                known_eps.add((eh, ep, True))
+        else:
+            known_eps.add((eh, ep, False))
     candidates = []
     for p in profiles or ():
         if not isinstance(p, dict):
@@ -1096,9 +1158,10 @@ def _filter_tier_candidates(profiles, local_identity, peer_endpoints=(), skip_pr
         is_known_db = any(
             pp == ep and (
                 (ph == eh and not is_loopback(ph))
-                or (not ssh and not item_ssh and is_loopback(ph) and is_loopback(eh))
+                or (not ssh and is_local_loopback and is_loopback(ph)
+                    and (ph == eh or (ph in _LOCAL_NAMES and eh in _LOCAL_NAMES)))
             )
-            for eh, ep, item_ssh in known_eps
+            for eh, ep, is_local_loopback in known_eps
         )
         if is_known_db:
             continue
@@ -1118,7 +1181,8 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
     }
     current = current_profile(profiles, current_profile_id, getattr(open_profile, 'current_profile', None))
     candidates = _filter_tier_candidates(
-        profiles, local_identity, peer_endpoints=peer_endpoints, skip_profile_id=current_profile_id, current=current
+        profiles, local_identity, peer_endpoints=peer_endpoints, skip_profile_id=current_profile_id,
+        current=current, observer_host=observer_host,
     )
     probed, probe_notes = probe_saved_profiles(candidates, open_profile, skip_profile_id=current_profile_id, current=current)
     probe_notes = list(footprint.get("notes") or ()) + probe_notes
@@ -1133,6 +1197,10 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
 
     # Build the set of known database identities for this topology (this node + cluster/replication peers).
     local_copy = dict(local_identity)
+    if not _text(local_copy.get("ssh_host")) and isinstance(observer_host, str):
+        obs_s = observer_host.strip()
+        if obs_s.lower().startswith("ssh:"):
+            local_copy["ssh_host"] = obs_s[4:].strip() or obs_s
     if any(p.get("kind") in ("readyset", "proxysql") for p in probed) and not local_copy.get("hostname"):
         try:
             vmap = Reader(conn, TOPOLOGY_TAG).pairs(_DB_VARS_SQL)
@@ -1145,10 +1213,18 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
             })
         except (ConnectorError, ValueError):
             pass
+    local_obs = _effective_observer(local_copy, observer_host)
+    local_ssh = local_copy.get("ssh_host")
     known_dbs = [local_copy]
     for peer in peer_endpoints or ():
-        if isinstance(peer, dict):
-            known_dbs.append(peer)
+        if not isinstance(peer, dict):
+            continue
+        p_host = peer.get("profile_host") or peer.get("host")
+        if p_host and is_loopback(p_host) and not _peer_is_direct_local(peer, local_obs, local_ssh):
+            if _uuid_key(peer.get("server_uuid")):
+                known_dbs.append({"server_uuid": peer.get("server_uuid")})
+            continue
+        known_dbs.append(peer)
 
     # Also include any probed database profile that matches one of the peer endpoints or UUIDs.
     known_uuids = {_uuid_key(d.get("server_uuid")) for d in known_dbs} - {None}

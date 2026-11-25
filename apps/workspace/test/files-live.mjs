@@ -63,7 +63,7 @@ try {
   const pane = (side) => `.files-pane[data-side="${side}"]`;
   const row = (side, name) => `${pane(side)} [role="row"][data-name="${name}"]`;
   const pathOf = (side) => page.$eval(`${pane(side)} .files-crumbs`, (e) => e.dataset.path);
-  const typeInto = async (selector, text) => { await page.click(selector, { clickCount: 3 }); await page.type(selector, text); };
+  const typeInto = async (selector, text) => { await page.click(selector, { count: 3 }); await page.type(selector, text); };
   const waitText = (text, timeout = 30000) => page.waitForFunction((t) => document.body.innerText.includes(t), { timeout }, text);
 
   // The place is in the sidebar and opens on its empty state.
@@ -111,7 +111,7 @@ try {
   await page.waitForFunction((s) => document.querySelector(`${s} .files-crumbs`)?.dataset.path === "/home/lab", { timeout: 30000 }, pane("remote"));
   assert.equal(await pathOf("local"), home);
   await page.waitForSelector(row("remote", "data"));
-  await page.click(row("remote", "data"), { clickCount: 2 });
+  await page.click(row("remote", "data"), { count: 2 });
   await page.waitForFunction((s) => document.querySelector(`${s} .files-crumbs`)?.dataset.path === "/home/lab/data", {}, pane("remote"));
   await page.waitForSelector(row("remote", "big.bin"));
 

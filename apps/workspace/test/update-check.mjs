@@ -230,7 +230,10 @@ try {
   // control and the Settings gear stay busy until the dialog is open; a chunk
   // that cannot be read keeps the dialog closed and leaves a dismissible error
   // with Retry at the launching control, and Retry with the request allowed
-  // opens the dialog.
+  // opens the dialog. Every Retry starts a fresh load (three failures, then
+  // the third Retry opens it), Dismiss returns focus to the launcher, a
+  // failed Retry keeps focus on Retry, and the badge's busy state also shows
+  // on the 720 px icon rail.
   await page.reload({ waitUntil: "networkidle0" });
   state.slowAssets = /UpdateDialog-/;
   state.slowAssetsMs = 3000;
@@ -266,8 +269,72 @@ try {
   await page.click(`${updates} .update-open-error .update-open-retry`);
   await page.waitForSelector("dialog.update-dialog[open]");
   assert.equal(await page.$(`${updates} .update-open-error`), null, "the error clears when the dialog opens");
+  await page.waitForFunction(() => !!document.activeElement?.closest("dialog.update-dialog"), { polling: 100 });
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+  await closeSettings();
+
+  // 7b. Every Retry starts a fresh load: the first two opens and the first
+  // two Retries fail, the third Retry opens the dialog. Dismiss returns
+  // focus to the control that opened the dialog; a failed Retry keeps focus
+  // on Retry.
+  await page.reload({ waitUntil: "networkidle0" });
+  state.failAssets = /UpdateDialog-/;
+  await openUpdates();
+  await waitStatus(/^99\.0\.0 available/);
+  await page.click(`${updates} .update-check-download`);
+  await page.waitForSelector(`${updates} .update-open-error[role="alert"]`, { timeout: 15000 });
+  await page.locator(`${updates} .update-open-error button ::-p-text(Dismiss)`).click();
+  await page.waitForFunction((sel) => !document.querySelector(sel), { polling: 100 }, `${updates} .update-open-error`);
+  await page.waitForFunction(() => document.activeElement?.classList.contains("update-check-download"), { polling: 100 });
+  await page.click(`${updates} .update-check-download`);
+  await page.waitForSelector(`${updates} .update-open-error[role="alert"] .update-open-retry`, { timeout: 15000 });
+  const retryFails = async () => {
+    await page.click(`${updates} .update-open-error .update-open-retry`);
+    await page.waitForFunction((sel) => !document.querySelector(sel), { polling: 100 }, `${updates} .update-open-error`);
+    await page.waitForSelector(`${updates} .update-open-error[role="alert"] .update-open-retry`, { timeout: 15000 });
+    await page.waitForFunction(() => document.activeElement?.classList.contains("update-open-retry"), { polling: 100 });
+  };
+  await retryFails();
+  await retryFails();
+  state.failAssets = null;
+  await page.click(`${updates} .update-open-error .update-open-retry`);
+  await page.waitForSelector("dialog.update-dialog[open]");
+  await page.waitForFunction(() => !!document.activeElement?.closest("dialog.update-dialog"), { polling: 100 });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+  await closeSettings();
+
+  // 7c. The badge's busy state shows on the 720 px icon rail too: the same
+  // aria-busy, and the spinner visible in the dot.
+  await page.reload({ waitUntil: "networkidle0" });
+  state.slowAssets = /UpdateDialog-/;
+  state.slowAssetsMs = 3000;
+  await openUpdates();
+  await waitStatus(/^99\.0\.0 available/);
+  await page.setViewport({ width: 720, height: 520 });
+  await pause(150);
+  await page.click(".sidebar .brand-group .update-badge");
+  await page.waitForSelector(".sidebar .update-badge[aria-busy=\"true\"]");
+  const railBusy = await page.evaluate(() => {
+    const badge = document.querySelector(".sidebar .update-badge");
+    const spinner = badge?.querySelector(".spinner");
+    return { busy: badge?.getAttribute("aria-busy"), dot: (badge?.getBoundingClientRect().width || 0) <= 14,
+      spinnerVisible: !!spinner && getComputedStyle(spinner).display !== "none" && spinner.getClientRects().length > 0 };
+  });
+  assert.equal(railBusy.busy, "true", "the rail badge keeps the same aria-busy");
+  assert.ok(railBusy.dot, `the rail badge stays a dot: ${JSON.stringify(railBusy)}`);
+  assert.ok(railBusy.spinnerVisible, `the rail badge shows the busy spinner: ${JSON.stringify(railBusy)}`);
+  await page.screenshot({ path: path.join(shots, "update-rail-badge-busy-light-720.png") });
+  await (await page.$(".sidebar-head")).screenshot({ path: path.join(shots, "update-rail-badge-busy-brand-light-720.png") });
+  state.slowAssets = null;
+  state.slowAssetsMs = 1500;
+  await page.waitForSelector("dialog.update-dialog[open]");
+  assert.equal(await page.$eval(".sidebar .update-badge", (e) => e.getAttribute("aria-busy")), null,
+    "the rail badge's busy state ends when the dialog is open");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.update-dialog"));
+  await page.setViewport({ width: 1440, height: 900 });
   await closeSettings();
 
   // 8. Older than 24 hours: a past result with its date, not current, no Download.

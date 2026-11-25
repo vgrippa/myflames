@@ -563,9 +563,17 @@ def build_folded_label(node):
 def parse_node(node):
     if not isinstance(node, dict):
         return None
+    # Pasted JSON is untrusted input. Validate before labels, complexity and
+    # stable IDs call string methods, including fields whose empty non-string
+    # values would otherwise silently become "" through ``value or ""``.
+    for field in ("operation", "table_name", "index_name", "condition", "access_type",
+                  "schema_name", "join_algorithm", "join_type", "heading",
+                  "using_join_buffer", "index_access_type"):
+        value = node.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError("Plan node %s must be a string or null, got %s."
+                             % (field, type(value).__name__))
     operation = node.get("operation")
-    if operation is not None and not isinstance(operation, str):
-        raise ValueError("Plan node operation must be a string, got %s." % type(operation).__name__)
     op = (operation or "unknown").replace("`", "")
     op = re.sub(r"DATE'(\d{4}-\d{2}-\d{2})'", r"\1", op)
     loops = node.get("actual_loops", 1) or 1
@@ -725,8 +733,15 @@ def _join_members_hook(pairs):
     return out
 
 
+_PLAN_DEPTH_ERROR = 'This plan is too deeply nested (maximum 80 levels).'
+
+
 def _loads(text):
-    return json.loads(text, object_pairs_hook=_join_members_hook)
+    try:
+        return json.loads(text, object_pairs_hook=_join_members_hook)
+    except RecursionError:
+        # HTTP input validation also decodes plans before parse_explain.
+        raise ValueError(_PLAN_DEPTH_ERROR) from None
 
 
 def load_explain_json(text):
@@ -2168,9 +2183,20 @@ def parse_explain(text):
     """Parse EXPLAIN JSON text into root tree node.
 
     Raises ValueError for text that is not a plan, and for a plan whose
-    numeric fields are not finite numbers in range (``_check_plan_numbers``).
+    numeric fields are not finite numbers in range (``_check_plan_numbers``),
+    whose fields have invalid types/structure, or whose input exceeds the
+    workspace's maximum of 80 nesting levels.
     """
+    depth_error = _PLAN_DEPTH_ERROR
     data = load_explain_json(text)
+    stack = [(data, 0)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > 80:
+            raise ValueError(depth_error)
+        if isinstance(item, (dict, list)):
+            values = item.values() if isinstance(item, dict) else item
+            stack.extend((value, depth + 1) for value in values)
     # The text parsed as JSON, but a plan is always a JSON object. A scalar or
     # array (e.g. "42", "null", "[]") would make the membership tests below
     # raise an opaque TypeError, so reject it here with a clear ValueError —
@@ -2192,18 +2218,32 @@ def parse_explain(text):
         # writes "cost" (11.0+) and "rows" instead (sql_explain.cc).
         if not _has_mysql_v1_keys(data):
             engine = "mariadb"
-        data = _normalize_mariadb(data)
+        try:
+            data = _normalize_mariadb(data)
+        except RecursionError:
+            raise ValueError(depth_error) from None
+        except (TypeError, AttributeError, KeyError) as exc:
+            # The input may be JSON without having the engine's plan shape.
+            # Keep this conversion at the parser boundary: failures during
+            # later analysis or rendering are still internal errors.
+            raise ValueError("Not a valid EXPLAIN plan: %s" % exc) from None
     elif "operation" not in data:
         raise ValueError(
             "Not an EXPLAIN FORMAT=JSON plan: expected an \"operation\" tree "
             "(MySQL explain_json_format_version=2), a \"query_block\" object "
             "(MariaDB, or MySQL format version 1), or a \"query_plan\" envelope.")
-    root = parse_node(data)
-    if not root:
-        raise ValueError("Failed to parse EXPLAIN JSON")
-    root["engine"] = engine
-    _assign_node_ids(root)
-    _annotate_misestimates(root)
+    try:
+        root = parse_node(data)
+        if not root:
+            raise ValueError("Failed to parse EXPLAIN JSON")
+        root["engine"] = engine
+        _assign_node_ids(root)
+        _annotate_misestimates(root)
+    except RecursionError:
+        # A flat MariaDB join list can normalize into a deep binary tree.
+        raise ValueError(depth_error) from None
+    except (TypeError, AttributeError, KeyError) as exc:
+        raise ValueError("Not a valid EXPLAIN plan: %s" % exc) from None
     return root
 
 

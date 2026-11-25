@@ -107,6 +107,7 @@ const mock = {
   run: [],
 };
 const seen = [];
+let previewHold = null;
 const calls = (p) => seen.filter((s) => s.path === p).map((s) => s.body);
 function reply(p, body) {
   switch (p) {
@@ -188,6 +189,13 @@ try {
     // every editor and live endpoint is mocked so nothing runs.
     if (!p.startsWith("/api/editor/") && !p.startsWith("/api/live/")) return request.continue();
     seen.push({ path: p, body: JSON.parse(request.postData() || "{}") });
+    if (p === "/api/editor/preview" && previewHold?.sql === JSON.parse(request.postData() || "{}").sql) {
+      previewHold.pending.push(() => request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({
+        status: "ready", statements: [], aggregate: { state: "denied", missing: ["SELECT"], reason: "Obsolete preview", warning: "" },
+      }) }));
+      if (previewHold.pending.length === 2) previewHold.ready();
+      return;
+    }
     const answer = reply(p, JSON.parse(request.postData() || "{}"));
     if (answer === undefined || answer === null) {
       return request.respond({ status: 500, contentType: "application/json", body: '{"error":"no mock"}' });
@@ -475,6 +483,22 @@ try {
       await page.screenshot({ path: path.join(process.env.W2A_SHOTS, `editor-files-${width}-${theme}.png`) });
     }
   }
+  // A dispatched local preview may finish after an edit. Its old denial must
+  // neither abort the request nor disable Run for the new SQL.
+  let previewsReady;
+  const held = new Promise(resolve => { previewsReady = resolve; });
+  previewHold = { sql: "SELECT 111;", pending: [], ready: previewsReady };
+  await setText(previewHold.sql);
+  await held;
+  await setText("SELECT 112;");
+  await Promise.all(previewHold.pending.map(reply => reply()));
+  previewHold = null;
+  const afterStalePreview = page.waitForResponse(r => new URL(r.url()).pathname === "/api/editor/run");
+  await press("Enter");
+  await afterStalePreview;
+  assert.equal(calls("/api/editor/run").at(-1).sql, "SELECT 112;", "an obsolete denial cannot block the edited SQL");
+  assert.doesNotMatch(await page.$eval(".query-lab", e => e.textContent), /Obsolete preview/);
+
   assert.deepEqual(badResponses, Array.from({ length: 5 }, (_, i) => [i === 4 ? "/api/editor/close" : "/api/editor/file/save", 400]));
   assert.deepEqual(failedRequests, []);
   assert.equal(consoleMessages.length, 5, `only the five intentional 400 responses: ${consoleMessages}`);

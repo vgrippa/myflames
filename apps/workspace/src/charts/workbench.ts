@@ -305,6 +305,11 @@ export function renderWorkbench(context: ViewContext): ViewInstance {
     root, viewport, width, height: VIEWPORT_H, graphWidth, graphHeight,
     buttons: { fit: fitButton, zoomIn: inButton, zoomOut: outButton, reset: resetButton },
     fitWidth: workspace, smallestTextPx: SMALLEST_TEXT_PX,
+    // Workspace canvas only: wheel frames scale the committed drawing with
+    // one CSS transform on the root and the viewBox catches up on settle, so
+    // a 1,000-operator plan does not re-lay out per frame. A report keeps
+    // its SVG chrome steady with a viewBox paint per frame.
+    wheelTransform: workspace,
   });
   // Match both SVG coordinate systems to the actual flex canvas. Otherwise
   // preserveAspectRatio letterboxes a 1200-wide drawing inside phone panes

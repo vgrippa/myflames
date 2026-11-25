@@ -4,17 +4,197 @@ import io
 import json
 import os
 from pathlib import Path
+import random
+import re
+import signal
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
 from myflames.connector import ConnectorError, MySQLConnection
 from myflames import dbops
+from myflames import analysis_query, collectors, live
 from myflames.live import (LiveJob, LiveJobs, bind_query, capture_problem, connection_options,
                            measurement_summary, _sections, _status)
 from myflames.parser import parse_explain
 
 PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
 MARIA = (Path(__file__).parent / 'mariadb-explain-join.json').read_text(encoding="utf-8")
+
+
+# Frozen pre-linearization patterns. Do not derive these from the production
+# scanner: malformed SQL and mode-specific quote boundaries are the contract.
+_OLD_TOKEN = re.compile(
+    r"/\*.*?\*/|--(?=[ \t\n\r\f\v]|$)[^\r\n]*|\#[^\r\n]*|"
+    r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`(?:``|[^`])*`", re.S)
+_OLD_TOKEN_NO_BACKSLASH = re.compile(
+    r"/\*.*?\*/|--(?=[ \t\n\r\f\v]|$)[^\r\n]*|\#[^\r\n]*|"
+    r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`", re.S)
+_OLD_COLLECTOR_TOKEN = re.compile(
+    r"/\*.*?\*/|--(?=\s|$)[^\r\n]*|\#[^\r\n]*|"
+    r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"|`(?:``|[^`])*`", re.S)
+
+
+def _token_equivalence_corpus():
+    """Repeatable fragments with every length 0..400, plus captured fixtures."""
+    rng = random.Random(0x51A1C0DE)
+    fragments = ("/*", "*/", "/*!50000", "--", "--\x01", "#", "'", '"', "`",
+                 "\\", "''", '""', "``", ";", "\n", "\r", "\r\n", "\t", " ",
+                 "\f", "\v", "\x00", "\x1c", "\xa0", "é", "漢", "SELECT", "FROM", "x",
+                 "-", "/", "*")
+    for case in range(20000):
+        # Cycling lengths ensures empty and 400-character cases are present;
+        # fragment choices and truncation points come from the fixed seed.
+        length = case % 401
+        parts, size = [], 0
+        while size < length:
+            part = rng.choice(fragments)
+            parts.append(part)
+            size += len(part)
+        yield "random:%d" % case, ''.join(parts)[:length]
+
+    # A failed -- candidate can overlap the next valid -- comment.
+    for sql in ("---", "--- ", "----x---\n", "---\r'after'", "---\xa0'after'", "/*/", "/*/*/"):
+        yield 'overlap:%r' % sql, sql
+
+    # Greedy doubled quotes may backtrack to a closer before EOF. A failure
+    # of one opener must not suppress later successful openers of other kinds.
+    for quote in ("'", '"', "`"):
+        for count in (1, 2, 3, 4, 7, 20, 99):
+            for tail in ("", "x", "\\", "/*", " # 'closed'\n", " --\x01 \"closed\""):
+                yield "quotes:%r:%d:%r" % (quote, count, tail), quote * count + tail
+        for size in (1, 2, 7, 31):
+            for sql in (quote + ("\\" + quote) * size,
+                        quote * 3 + ("\\" + quote) * size,
+                        "/* " * size + quote + "x" + quote,
+                        quote + "/* " * size + "'ok'\n# done"):
+                yield "opener:%r" % sql, sql
+
+    root = Path(__file__).resolve().parent.parent
+    text_suffixes = {'.json', '.html', '.txt', '.sql', '.xml', '.log', '.py', '.tsx', '.mjs'}
+    paths = set()
+    for folder in (root / 'test/fixtures', root / 'apps/workspace/test/fixtures'):
+        paths.update(path for path in folder.rglob('*')
+                     if path.is_file() and path.suffix in text_suffixes)
+    paths.update(path for path in (root / 'test').iterdir()
+                 if path.is_file() and path.suffix in {'.json', '.sql', '.txt', '.log'})
+    for path in sorted(paths):
+        # Treat plan JSON as opaque text here; plan parsing remains parser.py's
+        # responsibility. This also covers non-SQL text arriving as a statement.
+        yield str(path.relative_to(root)), path.read_text(encoding='utf-8')
+
+    # Shared SQL fixtures also run decoded, so JSON escapes cannot alter the
+    # quote/backslash boundaries that their real consumers receive.
+    split = json.loads((root / 'apps/workspace/test/fixtures/sql-split.json').read_text(encoding='utf-8'))
+    for group in ('statements', 'cursors'):
+        for index, item in enumerate(split[group]):
+            sql = item['sql'].replace('|', '', 1) if group == 'cursors' else item['sql']
+            yield 'sql-split:%s:%d' % (group, index), sql
+    export = json.loads((root / 'apps/workspace/test/fixtures/readyset-export-caches.json').read_text(encoding='utf-8'))
+    yield 'readyset-export:sql', export['sql']
+    for index, cache in enumerate(export['caches']):
+        yield 'readyset-export:%d' % index, cache['statement']
+
+
+class TestTokenScannerEquivalence(unittest.TestCase):
+    @staticmethod
+    def _matches(pattern, sql, *bounds):
+        return [(match.span(), match.group(0)) for match in pattern.finditer(sql, *bounds)]
+
+    @staticmethod
+    def _mask(match):
+        token = match.group(0)
+        return token if token.startswith('`') else ' ' * len(token)
+
+    def test_original_regex_spans_and_substitutions(self):
+        scanners = ((_OLD_TOKEN, live.TOKEN),
+                    (_OLD_TOKEN_NO_BACKSLASH, live.TOKEN_NO_BACKSLASH),
+                    (_OLD_COLLECTOR_TOKEN, collectors._TOKENS))
+        for label, sql in _token_equivalence_corpus():
+            for old, new in scanners:
+                with self.subTest(case=label, pattern=old.pattern):
+                    self.assertEqual(self._matches(new, sql), self._matches(old, sql))
+                    self.assertEqual(new.sub(' ', sql), old.sub(' ', sql))
+                    self.assertEqual(new.sub(self._mask, sql), old.sub(self._mask, sql))
+            with self.subTest(case=label, consumer='collectors'):
+                self.assertEqual(collectors._strip_comments_and_literals(sql),
+                                 _OLD_COLLECTOR_TOKEN.sub(self._mask, sql))
+
+    def test_scan_bounds_counts_and_replacement_expansion(self):
+        statements = ("'a' /*b*/ `c``d` -- end\r\n\"e\" #tail", "/* 'x' --\x01 \"y\"",
+                      "'\\' AS x, '/* /*' FROM `t`", "--\xa0'quoted'\n'after'", "'''")
+        for old, new in ((_OLD_TOKEN, live.TOKEN),
+                         (_OLD_TOKEN_NO_BACKSLASH, live.TOKEN_NO_BACKSLASH),
+                         (_OLD_COLLECTOR_TOKEN, collectors._TOKENS)):
+            for sql in statements:
+                for start in (-1, 0, 1, len(sql) // 2, len(sql), len(sql) + 1):
+                    for end in (-1, 0, len(sql) // 2, len(sql), len(sql) + 1):
+                        with self.subTest(sql=sql, pattern=old.pattern, start=start, end=end):
+                            self.assertEqual(self._matches(new, sql, start, end),
+                                             self._matches(old, sql, start, end))
+                for count in (-1, 0, 1, 3):
+                    for replacement in (' ', r'[\g<0>]', self._mask):
+                        with self.subTest(sql=sql, pattern=old.pattern, count=count,
+                                          replacement=replacement):
+                            self.assertEqual(new.sub(replacement, sql, count=count),
+                                             old.sub(replacement, sql, count=count))
+
+    def test_interleaved_iterators_and_nested_substitutions_keep_local_state(self):
+        statements = ("/* 'one' `two` 'three'", "' /* done */ `safe` /* again */")
+        for old, new in ((_OLD_TOKEN, live.TOKEN),
+                         (_OLD_TOKEN_NO_BACKSLASH, live.TOKEN_NO_BACKSLASH),
+                         (_OLD_COLLECTOR_TOKEN, collectors._TOKENS)):
+            with self.subTest(pattern=old.pattern):
+                iterators = [new.finditer(sql) for sql in statements]
+                actual = [[], []]
+                # The first iterator has a dead /* opener, the second a
+                # dead quote. Neither may suppress the other's later tokens.
+                for index in (0, 1, 0, 1, 0, 1):
+                    match = next(iterators[index])
+                    actual[index].append((match.span(), match.group(0)))
+                self.assertEqual(actual, [self._matches(old, sql) for sql in statements])
+                for iterator in iterators:
+                    with self.assertRaises(StopIteration):
+                        next(iterator)
+
+                nested = "' `nested` /* unfinished"
+                outer = "'first' /* comment */ 'last' # end"
+
+                def replacement(match):
+                    # A callback can re-enter this same scanner and mark
+                    # opener kinds dead while the outer iterator is paused.
+                    self.assertEqual(new.sub(' ', nested), old.sub(' ', nested))
+                    return match.group(0).upper()
+
+                self.assertEqual(new.sub(replacement, outer),
+                                 old.sub(lambda match: match.group(0).upper(), outer))
+
+    def test_refusal_reasons_and_read_projections_match_old_scanners(self):
+        statements = [
+            "SELECT 1", "SELECT 'it''s', `a``b`, \"c\" FROM `t`", "SELECT SLEEP(1)",
+            "SELECT 1 --\x01" + "/* " * 31,
+            "SELECT '\\' AS a, '" + "/* " * 31 + "' FROM dual",
+            "SELECT 1 " + "/* " * 31, "SELECT " + '\\"' * 31,
+            "SELECT 1 --\xa0'not a comment'", "SELECT 'x\\'; DROP TABLE t; -- '",
+            "SELECT 'unterminated", "SELECT `unterminated", "SELECT 1 /*!50000 ; DROP TABLE t */",
+            "SELECT 1; SELECT 2", "SELECT /* 'comment' */ 1 # 'tail'",
+            "UPDATE t SET v='where' WHERE id=1", "DELETE FROM t WHERE id=1",
+            "INSERT INTO t SELECT id FROM source", "EXPLAIN FORMAT=JSON SELECT 1",
+        ]
+        for quote in ("'", '"', '`'):
+            statements.extend('SELECT ' + quote * count + ' FROM t' for count in range(1, 10))
+        for sql in statements:
+            current = (live._select_problem(sql), analysis_query.prepare(sql))
+            # Only substitute the historical token patterns. Classification,
+            # review policies and SQL safety checks still execute normally.
+            with patch.object(live, 'TOKEN', _OLD_TOKEN), \
+                    patch.object(live, 'TOKEN_NO_BACKSLASH', _OLD_TOKEN_NO_BACKSLASH), \
+                    patch.object(analysis_query, 'TOKEN', _OLD_TOKEN), \
+                    patch.object(analysis_query, 'TOKEN_NO_BACKSLASH', _OLD_TOKEN_NO_BACKSLASH):
+                old = (live._select_problem(sql), analysis_query.prepare(sql))
+            with self.subTest(sql=sql):
+                self.assertEqual(current, old)
 
 
 def payload(**extra):
@@ -239,9 +419,11 @@ class TestCaptureProtocol(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def _script(self, code, marker='mk'):
+    def _script(self, code, marker='mk', sql='SELECT 1;', timeout=None):
         import sys
         job = LiveJob(payload())
+        if timeout is not None:
+            job.timeout = timeout
         conn = MagicMock()
         conn._build_argv.return_value = [sys.executable, '-c', code, 'x', 'y']
         procs = []
@@ -251,7 +433,7 @@ class TestCaptureProtocol(unittest.TestCase):
             return procs[-1]
         with patch('myflames.live.subprocess.Popen', side_effect=spawn):
             try:
-                return job, procs, job._run_script_isolated(conn, 'SELECT 1;', marker, dict(os.environ), None)
+                return job, procs, job._run_script_isolated(conn, sql, marker, dict(os.environ), None)
             except ConnectorError as exc:
                 return job, procs, exc
 
@@ -274,6 +456,121 @@ class TestCaptureProtocol(unittest.TestCase):
         job, procs, result = self._script(code, 'mk')
         self.assertEqual(result, ('mk:connection\n42\nplan\n', 'warn'))
         self.assertIsNone(job.process)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX SIGTERM/SIGKILL behavior')
+    def test_timeout_reaps_a_client_that_ignores_sigterm(self):
+        code = ("import signal, sys, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "print('mk:connection', flush=True); print(42, flush=True)\n"
+                "time.sleep(5)\n")
+        started = time.monotonic()
+        job, procs, result = self._script(code, timeout=1)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIsInstance(result, ConnectorError)
+        self.assertIn('time limit', str(result))
+        self.assertEqual(procs[0].returncode, -signal.SIGKILL)
+        # Unbuffered stdout still supplies the target before cancellation.
+        self.conn.run.assert_called_once_with('KILL QUERY 42', timeout=5)
+        self.assertIsNone(job.process)
+        self.assertIsNone(job.connection_id)
+        self.assertFalse(job._cancel_thread.is_alive())
+
+    def test_large_stdin_cannot_hold_the_calling_thread_past_its_deadline(self):
+        # The child never reads stdin. The 256 KiB script fills any normal
+        # pipe buffer, so writing it on the caller would defeat the timeout.
+        code = 'import time\ntime.sleep(5)\n'
+        started = time.monotonic()
+        job, procs, result = self._script(code, sql='x' * (256 * 1024), timeout=0.3)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertIsInstance(result, ConnectorError)
+        self.assertIn('time limit', str(result))
+        self.assertIsNotNone(procs[0].poll())
+        self.assertIsNone(job.process)
+
+    def test_large_script_is_delivered_completely(self):
+        code = "import sys\nprint(len(sys.stdin.buffer.read()))\n"
+        job, procs, result = self._script(code, sql='x' * (256 * 1024), timeout=2)
+        self.assertEqual(result, ('262144\n', ''))
+        self.assertEqual(procs[0].returncode, 0)
+        self.assertIsNone(job.process)
+
+    def test_slow_kill_control_connection_cannot_extend_the_local_deadline(self):
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_control(sql, timeout=None):
+            entered.set()
+            release.wait(5)
+
+        self.conn.run.side_effect = slow_control
+        code = ("import time\nprint('mk:connection', flush=True); print(42, flush=True)\n"
+                "time.sleep(5)\n")
+        job = None
+        try:
+            started = time.monotonic()
+            job, procs, result = self._script(code, timeout=0.3)
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertTrue(entered.is_set())
+            self.assertIsInstance(result, ConnectorError)
+            self.assertIsNotNone(procs[0].poll())
+            self.assertIsNone(job.process)
+            self.conn.run.assert_called_once_with('KILL QUERY 42', timeout=5)
+        finally:
+            release.set()
+            if job is not None and job._cancel_thread is not None:
+                job._cancel_thread.join(timeout=1)
+        self.assertFalse(job._cancel_thread.is_alive())
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX SIGTERM/SIGKILL behavior')
+    def test_manager_close_reaps_an_active_client_and_joins_its_worker(self):
+        import sys
+        manager = LiveJobs()
+        code = ("import signal, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "print('mk:connection', flush=True); print(42, flush=True)\n"
+                "time.sleep(5)\n")
+        conn = MagicMock()
+        conn._build_argv.return_value = [sys.executable, '-c', code, 'x', 'y']
+        procs, errors = [], []
+        real = __import__('subprocess').Popen
+
+        def spawn(*args, **kwargs):
+            procs.append(real(*args, **kwargs))
+            return procs[-1]
+
+        def capture(job):
+            job.state = 'running'
+            try:
+                job._run_script_isolated(conn, 'SELECT 1;', 'mk', dict(os.environ), None)
+            except ConnectorError as exc:
+                errors.append(str(exc))
+                job.state = 'cancelled'
+
+        worker = None
+        try:
+            with patch.object(LiveJob, 'run', capture), \
+                    patch('myflames.live.subprocess.Popen', side_effect=spawn):
+                result = manager.start(payload())
+                job = manager.jobs[result['id']]
+                worker = manager.threads[result['id']]
+                deadline = time.monotonic() + 2
+                while job.connection_id is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(job.connection_id, 42)
+                started = time.monotonic()
+                manager.close()
+                self.assertLess(time.monotonic() - started, 2)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(job._cancel_thread.is_alive())
+            self.assertEqual(procs[0].returncode, -signal.SIGKILL)
+            self.assertTrue(errors)
+            self.conn.run.assert_called_once_with('KILL QUERY 42', timeout=5)
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=1)
+            if worker is not None:
+                worker.join(timeout=1)
 
     def test_sections_keep_multiline_raw_json_and_status_deltas(self):
         sections = _sections(captured('marker'), 'marker')
@@ -436,6 +733,68 @@ class TestCaptureProtocol(unittest.TestCase):
         self.assertEqual(job.state, 'cancelled')
         self.assertNotIn('password', job.options)
 
+    def test_cancel_during_invocation_setup_never_launches_client_or_sends_sql(self):
+        job = LiveJob(payload())
+        self.conn._build_argv.return_value = ['mysql', '-e', '']
+        self.conn._invocation_defaults.return_value.__enter__.side_effect = job.cancelled.set
+        proc = MagicMock()
+        proc.stdin.write.side_effect = len
+        proc.stdout = io.BytesIO()
+        proc.stderr = io.BytesIO()
+        proc.poll.return_value = proc.returncode = 0
+        with patch('myflames.live.subprocess.Popen', return_value=proc) as popen, \
+                patch('myflames.live.threading.Thread', self._InlineThread), \
+                patch('myflames.live.threading.Timer'):
+            with self.assertRaisesRegex(ConnectorError, 'Capture cancelled or its time limit was reached'):
+                job._run_script(self.conn, 'SELECT 1;', 'marker')
+        popen.assert_not_called()
+        proc.stdin.write.assert_not_called()
+        self.assertIsNone(job.process)
+        self.conn._invocation_defaults.return_value.__exit__.assert_called_once()
+
+    def test_cleanup_leaves_each_live_pipe_worker_owning_its_stream(self):
+        # Simulate one worker still blocked after its bounded join. No actual
+        # thread or subprocess can outlive the test, and finished workers'
+        # streams still need closing by the caller.
+        for blocked_name in ('stdin', 'stdout', 'stderr'):
+            with self.subTest(blocked=blocked_name):
+                job = LiveJob(payload())
+                self.conn._build_argv.return_value = ['mysql', '-e', '']
+                proc = MagicMock()
+                proc.poll.return_value = proc.returncode = 0
+                blocked = getattr(proc, blocked_name)
+                workers = []
+
+                class PipeWorker:
+                    def __init__(self, target, args=(), daemon=None):
+                        self.pipe = args[0] if args else proc.stdin
+                        self.started = False
+                        self.join = MagicMock()
+                        workers.append(self)
+
+                    def start(self):
+                        self.started = True
+
+                    def is_alive(self):
+                        return self.started and self.pipe is blocked
+
+                timer = MagicMock()
+                timer.start.side_effect = job.cancelled.set
+                with patch('myflames.live.subprocess.Popen', return_value=proc), \
+                        patch('myflames.live.threading.Thread', PipeWorker), \
+                        patch('myflames.live.threading.Timer', return_value=timer):
+                    with self.assertRaisesRegex(ConnectorError, 'cancelled|time limit'):
+                        job._run_script(self.conn, 'SELECT 1;', 'marker')
+                self.assertEqual(len(workers), 3)
+                for worker in workers:
+                    worker.join.assert_called_once()
+                    if worker.pipe is blocked:
+                        worker.pipe.close.assert_not_called()
+                    else:
+                        worker.pipe.close.assert_called_once_with()
+                self.assertIsNone(job.process)
+                timer.cancel.assert_called_once_with()
+
     def test_cancel_targets_only_owned_connection_and_process(self):
         job = LiveJob(payload())
         job.connection_id = 42
@@ -451,6 +810,7 @@ class TestCaptureProtocol(unittest.TestCase):
         self.conn._build_argv.return_value = ['mysql', '--raw', '--binary-mode', '-e', '']
         proc = MagicMock()
         proc.stdin = MagicMock()
+        proc.stdin.write.side_effect = len
         proc.stdout = io.BytesIO(captured('marker').encode())
         proc.stderr = io.BytesIO()
         proc.poll.return_value = 0
@@ -481,6 +841,7 @@ class TestCaptureProtocol(unittest.TestCase):
         job = LiveJob(payload())
         self.conn._build_argv.return_value = ['mysql', '-e', '']
         proc = MagicMock()
+        proc.stdin.write.side_effect = len
         proc.stdout = io.BytesIO(captured('marker').encode())
         proc.stderr = io.BytesIO()
         proc.poll.return_value = proc.returncode = 0
@@ -511,7 +872,7 @@ class TestCaptureProtocol(unittest.TestCase):
         self.conn.run.side_effect = lambda sql, timeout=None: events.append(('server', sql))
         proc = MagicMock()
         proc.stdout = io.BytesIO((marker + ':connection\n42\n').encode())
-        proc.stderr.read1.side_effect = KeyboardInterrupt
+        proc.stderr.read.side_effect = KeyboardInterrupt
         proc.poll.return_value = None
         proc.terminate.side_effect = lambda: events.append('terminate')
         proc.kill.side_effect = lambda: events.append('kill client')
@@ -526,6 +887,8 @@ class TestCaptureProtocol(unittest.TestCase):
             self.target(*self.args)
         def join(self, timeout=None):
             pass
+        def is_alive(self):
+            return False
 
     def test_ctrl_c_sends_kill_query_before_the_client_is_ended(self):
         job = LiveJob(payload())
@@ -566,6 +929,7 @@ class TestCaptureProtocol(unittest.TestCase):
         job = LiveJob(payload())
         self.conn._build_argv.return_value = ['mysql', '-e', '']
         proc = MagicMock()
+        proc.stdin.write.side_effect = len
         proc.stdout = io.BytesIO(captured('marker').encode())
         proc.stderr = io.BytesIO()
         proc.poll.return_value = 0
@@ -582,6 +946,7 @@ class TestCaptureProtocol(unittest.TestCase):
         job = LiveJob(payload())
         self.conn._build_argv.return_value = ['mysql', '-e', '']
         proc = MagicMock()
+        proc.stdin.write.side_effect = len
         proc.stdout = io.BytesIO()
         proc.stderr = io.BytesIO(b'Unknown option: unsupported')
         proc.poll.return_value = 1
@@ -594,6 +959,37 @@ class TestCaptureProtocol(unittest.TestCase):
 
 
 class TestCaptureManager(unittest.TestCase):
+    def test_close_has_one_bound_for_stuck_workers_and_refuses_new_jobs(self):
+        from myflames import live
+        manager = LiveJobs()
+        release = threading.Event()
+        entered = threading.Event()
+
+        def stuck(job):
+            job.state = 'running'
+            entered.set()
+            release.wait(5)
+
+        worker = None
+        try:
+            with patch.object(LiveJob, 'run', stuck):
+                result = manager.start(payload())
+            worker = manager.threads[result['id']]
+            self.assertTrue(entered.wait(1))
+            started = time.monotonic()
+            with patch.object(live, '_CLOSE_SECONDS', 0.1):
+                manager.close()
+            self.assertLess(time.monotonic() - started, 0.6)
+            self.assertTrue(manager.jobs[result['id']].cancelled.is_set())
+            self.assertTrue(worker.is_alive())
+            with self.assertRaisesRegex(ValueError, 'closed'):
+                manager.start(payload())
+        finally:
+            release.set()
+            if worker is not None:
+                worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+
     def test_repeat_statistics_do_not_treat_missing_as_zero(self):
         result = measurement_summary([{'total_time_ms': n} for n in (1, None, 9, 5)])
         self.assertEqual(result, {'count': 3, 'median_ms': 5, 'min_ms': 1, 'max_ms': 9, 'stdev_ms': 4})

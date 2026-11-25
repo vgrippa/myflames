@@ -1420,24 +1420,30 @@ export const QueryLab = forwardRef<
     values: Record<string, EditorPrivilegePreview>;
   } | null>(null);
   useEffect(() => {
-    const controller = new AbortController();
-    if (!tab.sql.trim() || rt.running || groupMemberProblem(tab)) return () => controller.abort();
+    let current = true;
+    if (!tab.sql.trim() || rt.running || groupMemberProblem(tab)) return;
     const timer = window.setTimeout(() => {
-      void Promise.all([previewScoped, previewBase].map(async payload => {
+      const requests: Array<[string, Record<string, unknown>]> = [[scopedKey, previewScoped], [allKey, previewBase]];
+      void Promise.all(requests.map(async ([key, payload]) => {
         try {
-          const reply = await api<EditorPrivilegePreview>("editor/preview", payload, controller.signal);
-          return [previewKey(payload), reply] as const;
+          const reply = await api<EditorPrivilegePreview>("editor/preview", payload);
+          return [key, reply] as const;
         } catch (e) {
           const reply: EditorPrivilegePreview = { status: "invalid", statements: [], aggregate: {
             state: "unknown", missing: [], warning: "", reason: `Could not preview privileges: ${(e as Error).message}`,
           } };
-          return [previewKey(payload), reply] as const;
+          return [key, reply] as const;
         }
       })).then(values => {
-        if (!controller.signal.aborted) setPreviews({ generation: previewGeneration, values: Object.fromEntries(values) });
+        if (current) setPreviews({ generation: previewGeneration, values: Object.fromEntries(values) });
       });
     }, 300);
-    return () => { window.clearTimeout(timer); controller.abort(); };
+    // Preview only classifies local text and cached privileges; it opens no
+    // connection. Let dispatched reads finish when the scope changes, while
+    // discarding their replies. Aborting cannot cancel that server-side work
+    // and races replies during session readbacks (for example a refused Close).
+    // Captured keys also keep an old reply from changing the current SQL version.
+    return () => { current = false; window.clearTimeout(timer); };
   }, [previewGeneration]);
   function currentPreview(key: string) {
     return previews?.generation === previewGeneration ? previews.values[key] : undefined;

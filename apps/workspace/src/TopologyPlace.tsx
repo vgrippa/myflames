@@ -745,7 +745,7 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
   const edgeText = (edge: MapEdge) =>
     edge.kind === "alias"
       ? mapEdgeLabel(edge)
-      : `${mapEdgeLabel(edge)}${edge.state ? ` · ${edge.state}` : ""} · ${mapEdgeVerification(edge)}`;
+      : `${mapEdgeLabel(edge)}${edge.state ? ` · ${edge.state}` : ""} · ${mapEdgeVerification(edge)}${edge.reason ? ` · ${edge.reason}` : ""}`;
   // Cap notes explain what the diagram left out, so they sit above it; every
   // note shows once.
   const capNotes = map.notes.filter((note) => /^Map \w+ capped at /.test(note.message));

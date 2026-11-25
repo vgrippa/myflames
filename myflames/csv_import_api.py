@@ -72,10 +72,7 @@ from .connection_groups import ProfileReadError
 from .live import connection_options
 from .perf_common import literal
 from .review_tokens import ReviewTokens
-
-PATHS = ("/api/import/csv/choose", "/api/import/csv/open-path", "/api/import/csv/inspect",
-         "/api/import/csv/plan", "/api/import/csv/apply", "/api/import/csv/progress", "/api/import/csv/stop")
-WRITE_PATHS = ("/api/import/csv/apply",)
+from .ui_routes import CSV_IMPORT_PATHS as PATHS, CSV_IMPORT_WRITE_PATHS as WRITE_PATHS
 PLAN_SCHEMA = "csv-import-plan-1.0"
 RESULT_SCHEMA = "csv-import-result-1.0"
 PROGRESS_SCHEMA = "csv-import-progress-1.0"

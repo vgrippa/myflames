@@ -23,6 +23,7 @@ import { useConnectionReads, type Bound } from "./binding";
 import { useOpenRead } from "./viewOnScreen";
 import {
   copyToClipboard,
+  focusWithoutScroll,
   DataTable,
   Disclosure,
   EmptyState,
@@ -367,7 +368,7 @@ export function InstrumentsView({
     if (!revealRequest) return;
     // Details now replace the list. Focus their Back control after rendering,
     // including when a retained view reveals the same setting a second time.
-    document.querySelector<HTMLButtonElement>(".instruments-panel .detail-back")?.focus();
+    focusWithoutScroll(document.querySelector<HTMLButtonElement>(".instruments-panel .detail-back"));
   }, [revealRequest]);
 
   /** Select a row and reveal its full-width details. */

@@ -36,6 +36,7 @@ from myflames import lifecycle as lc
 from myflames import sysvar_history_mysql
 from myflames import ui
 from myflames import upgrade_targets as ut
+from _tls_servers import TrickleTLSServer, anonymous_contexts
 
 FIXTURES = Path(__file__).parent / 'fixtures' / 'upgrade_targets'
 TODAY = datetime.date(2026, 11, 8)
@@ -863,6 +864,12 @@ class NetworkGuard(Base):
         patch = mock.patch.object(ut, 'time', types.SimpleNamespace(monotonic=clock.monotonic))
         patch.start()
         self.addCleanup(patch.stop)
+        # A synthetic clock cannot schedule a real threading.Timer. These
+        # tests cover between-read checks; socket tests cover the watchdog.
+        watchdog = mock.patch.object(ut, 'Watchdog', return_value=types.SimpleNamespace(
+            expired=False, stop=lambda: None))
+        watchdog.start()
+        self.addCleanup(watchdog.stop)
         return clock
 
     def test_fetch_page_is_the_guarded_reader(self):
@@ -1272,7 +1279,8 @@ class HttpEndpoint(Base):
         self.assertIn(self.PATH, ui._LIFECYCLE_READ_PATHS)
         self.assertIn(self.PATH, ui._CONNECTION_PATHS)
         self.assertNotIn(self.PATH, ui._WRITE_PATHS)
-        self.assertIn('release_reader=fetch_page', inspect.getsource(ui.cmd_ui))
+        self.assertIn('release_reader=_fetch_page', inspect.getsource(ui.cmd_ui))
+        self.assertIn('from .upgrade_targets import fetch_page', inspect.getsource(ui.cmd_ui))
 
     def test_server_without_a_reader_answers_from_the_bundled_catalog(self):
         server = self.serve()
@@ -1383,3 +1391,28 @@ class EmptyVendorPages(Base):
         self.assertIn('8.4.13', [t['version'] for t in report['targets']])
         self.assertTrue(any('could not be read' in n for n in report['notes']))
 
+
+
+class HTTPSDeadline(unittest.TestCase):
+    def test_trickled_headers_and_body_end_at_total_deadline(self):
+        contexts = anonymous_contexts()
+        if contexts is None:
+            self.skipTest('this OpenSSL has no anonymous TLS cipher')
+        server_context, client_context = contexts
+        for part, head, answer in (
+                ('headers', b'', b'HTTP/1.1 200 OK\r\n' + b'X-Slow: 1\r\n' * 100),
+                ('body', b'HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n', b'x')):
+            with self.subTest(part=part):
+                server = TrickleTLSServer(server_context, answer, head=head, interval=0.02)
+                try:
+                    with mock.patch('socket.create_connection', side_effect=server.connect), \
+                            mock.patch.object(ut, 'https_context', return_value=client_context), \
+                            mock.patch.object(ut, 'READ_TIMEOUT', 0.3):
+                        began = time.monotonic()
+                        with self.assertRaisesRegex(ValueError, 'too slow'):
+                            ut._fetch(ut.DOC_INDEX)
+                        self.assertLess(time.monotonic() - began, 1.5)
+                    self.assertIsNotNone(server.wait(2))
+                    self.assertGreaterEqual(server.dripped, 3)
+                finally:
+                    server.close()

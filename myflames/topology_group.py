@@ -6,6 +6,7 @@ in to them; background polling and server writes are not permitted here.
 """
 import json
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
@@ -47,36 +48,39 @@ class _ReadConnection(object):
         if self.failure is not None:
             raise self.failure
 
-    def run(self, sql, **kwargs):
+    def _handle_error(self, exc):
         from .reviewed_writes import client_error
+        message = str(exc)
+        code = dbops.error_code(message)
+        # ProxySQL Admin uses 1045 for unsupported SQL, including the
+        # initial optional version-comment probe. This is a SQL reply.
+        admin_sql_error = code == 1045 and 'proxysql admin error:' in message.lower()
+        sql_reply = (admin_sql_error or re.search(r'\bat line \d+\b', message, re.I) or
+                     getattr(exc, 'guard_markers', ()))
+        # Before any successful statement, a coded failure without SQL
+        # position evidence can be a login refusal outside our inventory.
+        # Later invocations still log in again, so explicit login failures
+        # must also latch after an earlier successful statement.
+        login_refused = not sql_reply and (
+            (code is not None and not self.authenticated) or
+            code in (1040, 1129, 1130, 1251, 1698, 1862, 3118, 3159, 3955, 4151) or
+            (code == 1226 and re.search(r'\bmax_user_connections\b', message, re.I)) or
+            (code in (1044, 1045, 1049) and
+             re.search(r'\bAccess denied for user\b', message, re.I) and
+             not re.search(r'\bto database\b', message, re.I)))
+        # SQL permission/unsupported-feature errors may be optional. A
+        # refused login, client error or timeout must end this member read.
+        if code is None or client_error(code) or login_refused:
+            self.failure = exc
+
+    def run(self, sql, **kwargs):
         self.check()
         try:
             result = self.connection.run(sql, **kwargs)
             self.authenticated = True
             return result
         except ConnectorError as exc:
-            message = str(exc)
-            code = dbops.error_code(message)
-            # ProxySQL Admin uses 1045 for unsupported SQL, including the
-            # initial optional version-comment probe. This is a SQL reply.
-            admin_sql_error = code == 1045 and 'proxysql admin error:' in message.lower()
-            sql_reply = (admin_sql_error or re.search(r'\bat line \d+\b', message, re.I) or
-                         getattr(exc, 'guard_markers', ()))
-            # Before any successful statement, a coded failure without SQL
-            # position evidence can be a login refusal outside our inventory.
-            # Later invocations still log in again, so explicit login failures
-            # must also latch after an earlier successful statement.
-            login_refused = not sql_reply and (
-                (code is not None and not self.authenticated) or
-                code in (1040, 1129, 1130, 1251, 1698, 1862, 3118, 3159, 3955, 4151) or
-                (code == 1226 and re.search(r'\bmax_user_connections\b', message, re.I)) or
-                (code in (1044, 1045, 1049) and
-                 re.search(r'\bAccess denied for user\b', message, re.I) and
-                 not re.search(r'\bto database\b', message, re.I)))
-            # SQL permission/unsupported-feature errors may be optional. A
-            # refused login, client error or timeout must end this member read.
-            if code is None or client_error(code) or login_refused:
-                self.failure = exc
+            self._handle_error(exc)
             raise
 
     def server_version(self):
@@ -215,10 +219,10 @@ def _optional(reader, sql, notes, named=False):
         return None
 
 
-def _identity(conn, member):
+def _identity(conn, member, read_position=True):
     """Identify proxies before asking database-specific identity questions."""
     from . import proxysql
-    conn = conn if isinstance(conn, _ReadConnection) else _ReadConnection(conn)
+    conn = conn if isinstance(conn, (_ReadConnection, dbops.TargetEvidenceConnection)) else _ReadConnection(conn)
     reader = Reader(conn, TAG)
     notes = []
     comment_rows = _optional(reader, 'SELECT @@version_comment', notes)
@@ -248,6 +252,8 @@ def _identity(conn, member):
     version, comment = values.get('version'), values.get('version_comment') or comment
     if not version:
         raise ConnectorError('The member identity could not be read.')
+    if is_readyset_comment(comment):
+        raise ConnectorError('The member identity changed during the read.')
     identity = product_identity(version, comment)
     member.update(engine=identity['engine'], product=identity['product'], version=version,
                   version_comment=comment, server_id=_number(values.get('server_id')),
@@ -255,18 +261,19 @@ def _identity(conn, member):
                   read_only=_read_only(values.get('read_only')),
                   super_read_only=_on(values.get('super_read_only')) if identity['engine'] == 'mysql' else None)
     member['server_uuid'] = _uuid(values.get('server_uuid')) if identity['engine'] == 'mysql' else None
-    # SHOW reads a capped catalog column (MySQL sql/sql_show_status.cc:297;
-    # MariaDB sql/sql_show.cc:10528). Even a valid prefix is not a GTID set.
-    position_name, sql = (('gtid_current_pos', 'SELECT @@GLOBAL.gtid_current_pos')
-                          if identity['engine'] == 'mariadb' else
-                          ('gtid_executed', 'SELECT @@GLOBAL.gtid_executed'))
     values.pop('gtid_executed', None)
     values.pop('gtid_current_pos', None)
-    # XML retains an empty GTID set; the batch reader skips empty rows.
-    position = _optional(reader, sql, notes, named=True)
-    conn.check()
-    values[position_name] = (next(iter(position[0].values()))
-                             if position and len(position) == 1 and len(position[0]) == 1 else None)
+    if read_position:
+        # SHOW reads a capped catalog column (MySQL sql/sql_show_status.cc:297;
+        # MariaDB sql/sql_show.cc:10528). Even a valid prefix is not a GTID set.
+        position_name, sql = (('gtid_current_pos', 'SELECT @@GLOBAL.gtid_current_pos')
+                              if identity['engine'] == 'mariadb' else
+                              ('gtid_executed', 'SELECT @@GLOBAL.gtid_executed'))
+        # XML retains an empty GTID set; the batch reader skips empty rows.
+        position = _optional(reader, sql, notes, named=True)
+        conn.check()
+        values[position_name] = (next(iter(position[0].values()))
+                                 if position and len(position) == 1 and len(position[0]) == 1 else None)
     return values, None
 
 
@@ -542,6 +549,30 @@ def _map_probe(conn, profile, member, variables):
                 'proxysql' if member['product'] == 'ProxySQL Admin' else 'database')
     if probe['kind'] != expected:
         raise ConnectorError('The member identity changed during the topology read.')
+    if probe['kind'] == 'proxysql':
+        # runtime_mysql_servers collapses the pool's replication-lag status
+        # to SHUNNED (ProxySQL MySQL_HostGroups_Manager.h). Match all three
+        # endpoint fields so the same server in another hostgroup cannot
+        # change this route's state. Configuration fallback proves no health.
+        pool = _optional(reader, 'SELECT hostgroup, srv_host, srv_port, status FROM '
+                         'stats_mysql_connection_pool LIMIT %d' % (MAP_ROWS_PER_MEMBER + 1), notes)
+        statuses = {(str(r[0]), str(r[1]), str(r[2])): r[3]
+                    for r in (pool or [])[:MAP_ROWS_PER_MEMBER] if len(r) >= 4}
+        for backend in probe.get('servers', []):
+            if backend.get('status_source') == 'config':
+                continue
+            key = tuple(str(backend.get(k)) for k in ('hostgroup_id', 'hostname', 'port'))
+            status = statuses.get(key)
+            if (backend.get('status') in ('ONLINE', 'SHUNNED') and
+                    status in ('ONLINE', 'SHUNNED', 'SHUNNED_REPLICATION_LAG', 'SHUNNED_AWS_BGD',
+                               'OFFLINE_SOFT', 'OFFLINE_HARD')):
+                backend['status'] = status
+        offline = set()
+        for table in ('runtime_mysql_group_replication_hostgroups', 'runtime_mysql_galera_hostgroups'):
+            rows = _optional(reader, 'SELECT offline_hostgroup FROM %s WHERE active = 1 LIMIT %d'
+                             % (table, MAP_ROWS_PER_MEMBER + 1), notes)
+            offline.update(_number(r[0]) for r in (rows or [])[:MAP_ROWS_PER_MEMBER] if r)
+        probe['offline_hostgroups'] = [hg for hg in offline if isinstance(hg, int)]
     if probe['kind'] != 'database':
         return probe, notes
     if (_uuid(probe.get('server_uuid')) and member['server_uuid'] and
@@ -651,6 +682,8 @@ def _build_map(entries, probes, profiles):
             rows = list(islice(iter(probe.get(key) or []), remaining + 1))
             if len(rows) > remaining:
                 cap(pid, 'Map rows capped at %d per member; some reported topology is omitted.' % MAP_ROWS_PER_MEMBER)
+                if key == 'servers':
+                    bounded[pid]['servers_incomplete'] = True
                 rows = rows[:remaining]
             bounded[pid][key] = rows
             remaining -= len(rows)
@@ -744,14 +777,16 @@ def _build_map(entries, probes, profiles):
             return found['profile_id'], evidence, False
         return peer(host, port, uuid, observer), None, False
 
-    def edge(observer, source, destination, kind, evidence, verified, state, label):
+    def edge(observer, source, destination, kind, evidence, verified, state, label, reason=None, target_key=('', 0)):
         if not source or not destination or source == destination:
             return
-        key = (source, destination, kind, '' if kind == 'replication' else label)
+        key = (source, destination, kind, '' if kind == 'replication' else label, target_key)
         if kind == 'replication' and evidence == 'server_id' and not verified:
             label = 'server ID match, not verified'
         value = dict(**{'from': source, 'to': destination}, kind=kind, evidence=evidence,
                      verified=verified, state=state, label=label)
+        if reason:
+            value['reason'] = reason
         old = edges.get(key)
         if old is None:
             if edge_counts.get(observer, 0) >= MAP_EDGES_PER_MEMBER:
@@ -761,9 +796,14 @@ def _build_map(entries, probes, profiles):
         if old is None or verified and not old['verified']:
             if old is not None and state is None:
                 value['state'] = old['state']
+            if old is not None and 'reason' not in value and 'reason' in old:
+                value['reason'] = old['reason']
             edges[key] = value
-        elif old['state'] is None and state is not None:
-            old['state'] = state
+        else:
+            if old['state'] is None and state is not None:
+                old['state'] = state
+            if reason and 'reason' not in old:
+                old['reason'] = reason
 
     attestations, observations = {}, {}
     for pid, probe in probes.items():
@@ -820,15 +860,46 @@ def _build_map(entries, probes, profiles):
                                                      replica.get('uuid'), replica.get('server_id'))
             edge(pid, pid, destination, 'replication', evidence, verified, None, 'Replication')
         if probe.get('kind') == 'proxysql':
-            for backend in probe.get('servers', []):
-                destination, evidence, verified = target(pid, backend.get('hostname'), backend.get('port'))
+            servers = probe.get('servers', [])
+            states = {}
+            for backend in servers:
+                hg = _number(backend.get('hostgroup_id'))
+                state = None if backend.get('status_source') == 'config' else backend.get('status')
+                states.setdefault(hg, []).append(state)
+            offline = set(probe.get('offline_hostgroups') or [])
+            no_online = {hg for hg, group_states in states.items()
+                         if isinstance(hg, int) and group_states and
+                         all(s in ('SHUNNED', 'SHUNNED_REPLICATION_LAG', 'SHUNNED_AWS_BGD',
+                                   'OFFLINE_SOFT', 'OFFLINE_HARD') for s in group_states)}
+            for backend in servers:
+                raw_host = backend.get('hostname')
+                backend_host = _map_host(raw_host)
+                if backend_host is None:
+                    backend_host = raw_host.strip() if isinstance(raw_host, str) else ''
+                backend_port = _map_port(backend.get('port')) or 0
+                destination, evidence, verified = target(pid, raw_host, backend.get('port'))
                 hostgroup = _number(backend.get('hostgroup_id'))
                 raw_state = None if backend.get('status_source') == 'config' else backend.get('status')
                 state = (raw_state if isinstance(raw_state, str) and (
                     raw_state in ('ONLINE', 'OFFLINE_SOFT', 'OFFLINE_HARD') or
                     re.fullmatch(r'SHUNNED[A-Za-z0-9_]{0,56}', raw_state)) else None)
-                edge(pid, pid, destination, 'proxy_route', evidence, verified, state,
-                     'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?'))
+                reasons = []
+                if state is not None and hostgroup in offline:
+                    reasons.append("In the monitor's offline hostgroup.")
+                    if state == 'ONLINE':
+                        state = 'offline'
+                if state == 'OFFLINE_SOFT':
+                    reasons.append('No new traffic; existing queries and transactions may finish.')
+                elif state == 'OFFLINE_HARD':
+                    reasons.append('ProxySQL has taken this backend out of traffic.')
+                elif state == 'SHUNNED_REPLICATION_LAG':
+                    reasons.append('Shunned for replication lag.')
+                if hostgroup in no_online and not probe.get('servers_incomplete'):
+                    reasons.append('No ONLINE member in this hostgroup.')
+                label = 'hostgroup %s' % (hostgroup if isinstance(hostgroup, int) else '?')
+                edge(pid, pid, destination, 'proxy_route', evidence, verified, state, label,
+                     ' '.join(reasons) if reasons else None,
+                     target_key=(backend_host.lower(), backend_port))
         if probe.get('kind') == 'readyset':
             upstreams = list(probe.get('upstreams') or [])
             if not upstreams:
@@ -1029,18 +1100,20 @@ def read_group(store, group_name, section, active_member_profile_id,
                 transport = _ReadConnection(param_compare.BoundedConnection(
                     member_conn, seconds=min(remaining, request_seconds)))
                 conn = transport
-                variables, exclusion = _identity(conn, entry)
+                preflight, exclusion = _identity(conn, entry, read_position=False)
+                variables = preflight
                 if exclusion is None:
-                    preflight = variables
                     conn = dbops.TargetEvidenceConnection(transport)
-                    variables, exclusion = _identity(conn, entry)
+                    read_position = section in ('members', 'map', 'parameters')
+                    variables, second_exclusion = _identity(conn, entry, read_position=read_position)
                     conn.check()
                     observed = conn.variables or {}
+                    if second_exclusion is not None or is_readyset_comment(observed.get('version_comment') or ''):
+                        raise ConnectorError('The member identity changed during the read.')
                     keys = (('server_id', 'hostname', 'version') if entry['engine'] == 'mariadb'
                             else ('server_uuid',))
-                    if exclusion is not None or any(
-                            str(preflight.get(key)) != str(observed.get(key)) or
-                            str(variables.get(key)) != str(observed.get(key)) for key in keys):
+                    if any(str(preflight.get(key)) != str(observed.get(key)) or
+                           str(variables.get(key)) != str(observed.get(key)) for key in keys):
                         raise ConnectorError('The member identity changed during the read.')
                     notes = _read_routed(conn, entry)
                     if section in ('members', 'map', 'parameters'):
@@ -1088,6 +1161,13 @@ def read_group(store, group_name, section, active_member_profile_id,
         except _NotReached:
             exclusion = entry['message']
         except Exception as exc:
+            if not isinstance(exc, (ConnectorError, ValueError, OSError)):
+                # A programming error belongs to this member, not its peers.
+                # Reuse HTTP traceback redaction, including the saved group
+                # credentials, without exposing exception text in the report.
+                from .ui import _log_unexpected_error
+                _log_unexpected_error('/api/live/topology', sys.exc_info(), route, store)
+                exc = ConnectorError('The connection could not be read.')
             # No observed identity, role or inventory from a rejected read
             # may influence the group summary or another member's comparison.
             entry = _entry(profile)
@@ -1097,8 +1177,18 @@ def read_group(store, group_name, section, active_member_profile_id,
         entry['elapsed_s'] = round(time.monotonic() - began, 3)
         return entry, snapshot, position, exclusion, multi_primary
 
+    from . import read_cancel
+    request_cancel = read_cancel.current()
+    request_guard = read_cancel.current_guard()
+
+    def read_member(profile):
+        # Thread-local request state is intentionally not inherited by pools.
+        # Carry only this read's trusted event, never data from request JSON.
+        with read_cancel.scope(request_cancel, request_guard):
+            return read_one(profile)
+
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
-        results = list(pool.map(read_one, members))
+        results = list(pool.map(read_member, members))
     entries = [result[0] for result in results]
     duplicate_notes = _duplicate_notes(entries, members, facts)
     primary_id, primary_reason = _primary(entries, members, multi_primary=any(result[4] for result in results))

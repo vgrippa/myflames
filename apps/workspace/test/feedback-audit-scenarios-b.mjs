@@ -134,7 +134,7 @@ export const SCENARIOS_B = [
       await page.waitForSelector("dialog.variable-sheet[open]");
       await pause(600);
       const field = await waitVisible(page, "#variable-value-max_connections");
-      await field.click({ clickCount: 3 }); await field.type("300");
+      await field.click({ count: 3 }); await field.type("300");
       await pause(1200);
     },
     target: confirmButton("dialog.variable-sheet[open]"),
@@ -186,7 +186,7 @@ export const SCENARIOS_B = [
       await waitVisible(page, '.server-view[data-view=maintenance] [data-row-key="tool:mysqlsh"]');
       await click(page, "Dump"); await pause(600);
       const input = await waitVisible(page, ".server-view[data-view=maintenance] .ops-folder-input input");
-      await input.click({ clickCount: 3 }); await input.type("/tmp/myflames-audit-dump");
+      await input.click({ count: 3 }); await input.type("/tmp/myflames-audit-dump");
       await pause(300);
     },
     target: named("Start dump…"),

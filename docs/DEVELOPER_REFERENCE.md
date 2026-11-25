@@ -12,6 +12,7 @@ This is the detailed contract per feature; [AGENTS.md](../AGENTS.md) has the rul
   - [Chart runtime](#chart-runtime)
   - [Bundle and lazy loading](#bundle-and-lazy-loading)
   - [Local authentication and request limits](#local-authentication-and-request-limits)
+  - [Live read cancellation and single-flight](#live-read-cancellation-and-single-flight)
   - [Client and local-storage boundaries](#client-and-local-storage-boundaries)
   - [Reviewed actions and session ownership](#reviewed-actions-and-session-ownership)
   - [Shared CLI confirmation](#shared-cli-confirmation)
@@ -314,6 +315,19 @@ extraResources, lock) and `test/test_fetch_mysql_client.py`,
 `test_connector.TestBundledClientResolution` and
 `test_connector.TestVersionAwareClients`.
 Packaged app data is separate from development and CLI data.
+
+**Dependencies.** Desktop and workspace packages are pinned in
+`apps/desktop/package.json` (`electron` 44.11.5, which includes the mitigation
+for the compromised eMudhra intermediate certificates, GHSA-jr5w-w6x2-84p9;
+`electron-builder` 26.18.0) and `apps/workspace/package.json` (`puppeteer`
+25.18.1, which renames the mouse `clickCount` option to `count`). Remaining
+`npm audit` advisories stay intentionally until an upstream change fits our
+bundle and build requirements: `mermaid` 12 (a low KaTeX advisory; assessed and
+not applied because it changes ER diagram layout and adds about 24% to assets),
+Vite dev-server advisories (the shipped workspace and desktop app never run the
+Vite dev server), and `electron-builder`'s transitive `minimatch` chain (cleared
+only by a downgrade or an alpha release).
+
 **Client tool discovery and selection.** `myflames/client_tools.py` is shared
 by query connections and Maintenance. `snapshot` only stats executable regular
 files: every copy of `mysql`, `mariadb`, `mysqldump`, `mariadb-dump`,
@@ -350,11 +364,23 @@ chosen folders. `probe` runs `--version` with an isolated HOME and allowlisted
 environment, no stdin and an 8 s timeout; banners retain at most 4,096 characters.
 Successful recognized versions use a 64-entry LRU keyed by program name,
 realpath, device, inode, size, mtime_ns and ctime_ns, without a time limit.
-Failures and timeouts are not retained, and a file changed during a probe is
-not cached. Concurrent probes of one identity share a flight, including its
-failure; child processes run outside the cache lock. `refresh=True` bypasses
-cached results. Workspace startup warms discovery on a daemon thread without
-blocking the window. `mysqlpump` is presence-only, with null version and
+Failures and timeouts are not retained, and a file replaced or changed during or
+after its probe (`_probe_key` mismatch) is not cached. Concurrent probes of one
+identity share a flight, including its failure (if an owning caller stops via
+`stop` or `CancelledRead`, unrelated waiters retry rather than inheriting the
+cancellation); child processes run outside the cache lock. `snapshot` checks `read_cancel.check()` before scanning and between candidates,
+while `discover` checks `read_cancel.check()` and the explicit `stop` event
+before calling `snapshot`, between returned candidates and before each probe; with `stop` or `read_cancel.current()`
+(combining both in `ProbeCancellation` when both are present, with
+`read_cancel.check()` taking precedence on cleanup), `probe` runs
+`connector._run_bounded(..., kill_tree=True)` so stopping or cancelling a read
+kills and reaps the child process. `refresh=True` bypasses cached results. Workspace startup warms
+discovery on a daemon thread for `client_tools.QUERY_DISCOVERY_NAMES` only
+(no `mysqlsh`; Settings > Client tools, Maintenance and Cluster discover
+MySQL Shell when opened) without blocking the window, and
+`WorkspaceServer.server_close` sets `_tools_warmup_stop` at the start of
+shutdown (before tunnel and session cleanup) before joining `_tools_warmup` bounded at
+`TOOLS_WARMUP_WAIT_SECONDS` (2.0 s). `mysqlpump` is presence-only, with null version and
 version tuple; it is deprecated, never probed, selected or marked used. Shell
 copies are listed separately: the verified managed copy first, then other
 copies newest first. Every discovery re-reads the managed install's pointer
@@ -449,24 +475,55 @@ fallback. Unrelated automatic clients are not probed while a chosen
 installation supplies the connection. If the read discovers an engine with no
 choice, full discovery then supplies that engine's automatic pick.
 
-Concurrent callers share first-contact success or failure. Only a missing
-authentication plugin permits one retry with the other engine's best client;
-login and transport failures propagate without a second connection. A server
-SQL error with `at line N` and a non-2xxx error number leaves the version
-unknown; so do unparseable or unsupported versions such as ProxySQL 2.x.
-Unknown and failed reads are not cached and a later request may retry.
-`client_tools` keeps valid `{engine, version}` facts in a thread-safe 256-entry
-LRU without a time limit. The key is host, port, socket, ssh_host, ssh_user and
-ssh_port (defaults localhost/3306/22); localhost and 127.0.0.1 are distinct,
-and database user, password and TLS are not part of the key. Connector version
-reads, editor handshakes and the client-tools API also remember valid facts.
+Concurrent callers share first-contact success or failure; if the owning caller
+cancels via `CancelledRead`, remaining waiters retry under their own context.
+Only a missing authentication plugin (`ClientAuthPluginError`) on a read permits
+one retry with the other engine's best client, and only after a connection-phase
+`2059` (`_auth_plugin_error`: empty stdout, no `_STATEMENT_ERROR` in stderr, and
+no echoed SQL packet `--------------` separator in stderr), and it is never
+skipped because of cached unidentified status; writes (`_run_write`) are never
+replayed after an authentication-plugin error (the caller must review the
+failure before retrying). Login, ordinary access-denial, transient/session and
+transport failures propagate without a second connection and are never cached.
+An endpoint that answers the first-contact probe with an unsupported identity
+statement (`connector._unsupported_identity_read`: server SQL errors `1064`,
+`1146`, `1193`, `1235`, or ProxySQL Admin's `1045` `'ProxySQL Admin Error:'`)
+or returns an incomplete non-empty reply or unparseable/unsupported version
+(such as ProxySQL 2.x) leaves the version unknown and is remembered as
+unidentified (`None`) in `client_tools`'s 256-entry facts LRU
+(`remember_unidentified_server`, `first_contact_unidentified`), so subsequent
+queries do not repeat `SELECT @@version, @@version_comment`. Empty replies are
+not cached and may retry; later explicit valid facts supersede `None`.
+`client_tools` keeps valid `{engine, version}` facts in that same thread-safe
+256-entry LRU without a time limit. The key is host, port, socket, ssh_host,
+ssh_user and ssh_port (defaults localhost/3306/22); localhost and 127.0.0.1 are
+distinct, and database user, password and TLS are not part of the key.
+Connector version reads, editor handshakes and the client-tools API also
+remember valid facts.
+
+`MySQLConnection` caches its chosen `mysql` or `mariadb` client per connection
+and in a shared 5-second (`_CLIENT_RESOLUTION_SECONDS`), 256-entry LRU
+(`_CLIENT_RESOLUTIONS` in `connector.py`) keyed by Settings choices generation,
+`PATH`, `bundled_client_dir()`, endpoint key, endpoint facts and unidentified
+state, sorted client choices, and `cwd` (never credentials or transport);
+`set_client_choices` clears it. Every reuse rechecks `checked_program` and the
+file's `_probe_key` identity, and a replacement whose `_probe_key` changed before
+cache publication is never cached. ProxySQL digest worker cleanup and
+`connector._run_bounded` process cleanup each share a 1 s bound
+(`WORKER_CLEANUP_TIMEOUT`, `PROCESS_CLEANUP_TIMEOUT`), and `os.killpg` cleanup
+tolerates `PermissionError` / `EPERM` (such as on macOS) and
+`ProcessLookupError` / `ESRCH` while still killing, reaping and joining the
+direct child and pipe workers.
 
 `ClientMissingError` (`ConnectorError`, code `client-missing`) reports no usable
 client or a broken choice. `ClientAuthPluginError` subclasses it with code
-`client-auth-plugin`. Only the first ERROR line of a client connection failure
+`client-auth-plugin`. Only the first ERROR line of a connection-phase failure
 matching `ERROR 2059 (HY000): Authentication plugin '<name>' cannot be loaded`
-(end of line, colon or period after `loaded`, plugin name letters/digits/underscores)
-gets that type. Statement errors (`at line N`) and subsequent ERROR lines do
+(end of line, colon or period after `loaded`) or MariaDB's `ERROR 2059 (HY000):
+Plugin <name> could not be loaded:` (plugin name letters/digits/underscores),
+with empty stdout and no statement error (`at line N`) or echoed SQL packet
+separator (`--------------`), gets that type. Statement errors (`at line N`),
+output-bearing failures and subsequent ERROR lines do
 not. Its text names the program, version, origin and plugin, and directs the
 user to Settings. `client_missing_error` follows causes and only myflames'
 own ConnectorError/ValueError wrapper contexts; unexpected exception contexts
@@ -656,11 +713,18 @@ opens the Software update dialog.
 Every opener (the badge, the menu item, **Download…** in Updates and news and
 in About myflames) goes through `openUpdateDialog` (`updateStatus.ts`), which
 awaits the dialog's lazy chunk (`UpdateDialogView`) before the dialog opens:
-`state.opening` keeps every launching control busy (aria-busy and a spinner,
-the Settings gear included, so the state survives the menu closing) until the
+`state.opening` keeps every launching control busy (`aria-busy` and a spinner,
+the Settings gear included, so the state survives the menu closing, and
+`UpdateBadge` shows the spinner on the 720 px icon rail as well) until the
 dialog is open, and a chunk that cannot be read keeps the dialog closed and
 leaves a dismissible error with **Retry** (`UpdateOpenError`) at the launching
-control instead of the generic lazy-load failure.
+control instead of the generic lazy-load failure. The first four **Retry** attempts each load a separate
+cache-busted `?open-retry` variant (`retryUpdateDialog` in `updateStatus.ts`),
+while later attempts reuse the fourth variant and may require reloading the
+window; **Dismiss**
+returns focus to the launching control, and a failed **Retry** keeps focus on
+**Retry**. `UpdateOpenError` and `useMinuteClock` live in `UpdateBadge.tsx` so
+`UpdateCheck.tsx` stays out of the entry chunk.
 **Download…** appears for a current newer release (unavailable while a check
 runs) and opens the update dialog with the result captured at the click;
 after a reload it checks again first, because the download needs the asset the
@@ -1143,6 +1207,21 @@ the window-open handler always denies a new app window. Tests:
   accessible; verify open/error states at desktop and narrow, short viewports.
   Use `docs/UI_TESTING.md` for the interaction matrix. Check contextual Learn
   links after navigating to a different lesson and returning to the plan.
+
+**Backend lazy module loading and startup import boundary.** `myflames/ui_routes.py`
+holds every feature API module's route tuples as a single source of truth
+(`FEATURE_ROUTES`); `ui.py` reads route tuples from `ui_routes.py` at startup
+and imports feature handler modules only when the first matching request
+arrives, while each `*_api` module (and `baselines.py`) imports its own tuples
+back from `ui_routes.py`. `cli.py` and `cmd_ui` defer renderers, parser
+entry points, `news` and `upgrade_targets` until first use. `editor_session.py`
+scopes its SQL classifier regexes (`_SQL_ID_CLASS`, `_SQL_ID_NO_DOLLAR_CLASS`,
+`_SQL_ID_DOTAT_CLASS`) to negated ASCII identifier character classes with case
+folding scoped to keywords (`(?i:...)` / `(?ai:...)`) rather than wide Unicode
+character-range bitmaps, preserving Python's ASCII whitespace semantics (for
+example non-breaking spaces inside identifiers). `test/test_startup_imports.py`
+verifies route-tuple parity and pins `ui._WRITE_PATHS` against the base
+release.
 
 ### Release sync
 
@@ -1636,9 +1715,20 @@ checks never skip missing output. The separate chart bundle
 
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
-connections, the command palette, the investigation notebook and the shared
-kit (about 480 KB after splitting the Plans screen and Learn, 1.1 MB before
-the original split). Other places and views load their own chunk the
+connections, the investigation notebook, `ClientMissingNotice` (`CLIENT_HINT`)
+and the shared kit (about 451 KB, `451,196` bytes, down from `499,503` bytes in
+3.5.1 and 1.1 MB before the original split, after moving `CommandPalette`,
+`ClientToolsDialog`, the `accountsApi` runtime code, `example.json`,
+`UpdateCheck` controls (`UpdateOpenError` / `useMinuteClock` moved into
+`UpdateBadge.tsx`) and the `readiness` module behind lazy chunks; the shell
+still statically imports `sqlHighlight` and the shared database catalog cache
+in `schemaCatalog.ts`). `CommandPalette` warms on
+toolbar hover/focus and loads in `preloadWhenIdle`; `ClientToolsDialog` warms on
+hover/focus of **Choose client tools…**; `ReadinessFacts` (`readiness.tsx`)
+preloads beside the first screen while `checkReadiness` and `copyReadiness` load
+on demand; `privileges.ts` keeps `/api/live/privileges` inline so
+`accountsApi.ts` loads only with `Accounts` (other shell/Server callers import
+types only); and `example.json` imports dynamically on demand. Other places and views load their own chunk the
 first time they mount, through `lazyComponent` in `src/lazy.tsx` (React.lazy
 with its own Suspense boundary; the fallback shows nothing for 300 ms, then one
 "Loading…" line, and a chunk that cannot be read shows "This part of the
@@ -1711,12 +1801,13 @@ Rules for code that splits:
   heading once it exists.
 - `test/bundle-split.mjs` (`npm run test:bundle-split`) checks that
   `styles.ts` lists every stylesheet in `src/` exactly once with `style.css`
-  followed by `themes.css` last and `main.tsx` importing it first, that no lazily loaded module is
+  followed by `themes.css` last and `main.tsx` importing it first, that only
+  `QueryLab.tsx` and `src/editor/` value-import from `src/editor/`, that no lazily loaded module is
   also imported statically by `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
   `PlanScreen.tsx`,
   that the build in `myflames/ui_assets` has exactly one stylesheet, and that the entry
-  chunk stays under 500,000 bytes (479,634 bytes after extracting Plans and
-  Learn from master ef74ba2d's 508,046-byte entry). The source guard
+  chunk stays under 474,000 bytes (`451,196` bytes in r352-b1, down from 3.5.1's
+  `499,503`-byte entry, keeping about 5% headroom). The source guard
   covers all dynamic imports, including PlanChart and ContextPanel preloads
   beside PlanScreen, and rejects static value and side-effect imports while
   allowing erased type imports. It also requires Plans and Learn chunks and
@@ -1806,6 +1897,104 @@ read deadline, so trickling body bytes cannot extend that deadline. The usual bo
 12 MiB; session save permits 65 MiB for its bounded 64 MiB stored payload.
 Account requests have an additional 256 KiB encoded-data budget.
 
+After explicit refusal and validation errors (`ClientMissingError` /
+`client_missing_error`, `ConnectorError` with `reason`, `ValueError`,
+`ConnectorError`, `EditorError`, `SessionConflict`, `SessionTooLarge`),
+`WorkspaceHandler.do_POST` handles unexpected exceptions by endpoint kind.
+Endpoints in `ui._SQL_OUTCOME_PATHS` (`_WRITE_PATHS` plus
+`/api/table-data/apply`, `/api/table-data/cancel`, `/api/table-data/close`,
+`/api/editor/rollback`, `/api/editor/stop`, `/api/editor/close`,
+`/api/editor/use`, `/api/lifecycle/cancel`, `/api/live/cancel` and
+`/api/import/csv/stop`) can send SQL (including `KILL QUERY`): any unexpected
+exception before the `200` response send begins (including `TypeError`,
+`KeyError`, `AttributeError`, `RecursionError`, `OverflowError`, and socket
+disconnect or timeout errors) logs a redacted traceback and answers HTTP `500`
+with `ui._unexpected_error_message`: `"The request could not be completed. Its
+outcome is unknown. Check the server state before trying again."`, never a
+`4xx` that reads as nothing sent. Once `self._send(200, result)` has begun,
+transport disconnect or timeout errors (`BrokenPipeError`,
+`ConnectionResetError`, `ConnectionAbortedError`, `TimeoutError`,
+`socket.timeout`) end quietly with `close_connection = True`, no unexpected
+error log and no second response. On read and non-SQL-sending endpoints,
+`(BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError,
+socket.timeout)` returns with `close_connection = True` and without writing; malformed-field exceptions (`TypeError`, `KeyError`, `AttributeError`,
+`RecursionError`, `OverflowError`; JSON nesting recursion already maps to
+`ValueError`) answer HTTP `400` with `ui._unexpected_error_message`
+(`_PLAN_PATHS`: `"Could not render this plan. Try another view or the CLI."`;
+`/api/live/*`: `"Could not read this from the server. Try Refresh or the CLI."`;
+others: `"Could not complete the request. Try again or use the CLI."`) and log
+a redacted traceback; any other unexpected exception answers HTTP `500` with
+that neutral sentence and logs a redacted traceback. `ui._log_unexpected_error`
+strips `ui._secret_values(payload, store)` (non-empty string values under any
+request key containing `password` or equal to `secret` through nesting depth
+12, saved passwords of connections naming
+`profile_id` without a password, and saved member passwords of an explicitly
+named `group_name`, in raw, `repr()` and JSON-escaped forms), followed by
+`dbops.redact` over the complete traceback to hide recognized SQL and URL credentials
+absent from the request payload, and caps the logged traceback at 65,536
+characters (`64 * 1024`) before the truncation marker
+(`"\n[traceback truncated]\n"`) and log prefix. Tests:
+`test/test_ui.py`
+(`test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr`,
+`test_unexpected_error_log_redacts_every_password_form`) and
+`test/test_workspace_api.py` (`test_request_shape_errors_are_logged_redacted_400s`,
+`test_other_backend_errors_remain_logged_redacted_500s`,
+`test_write_internal_errors_after_send_are_logged_redacted_500s`,
+`test_cancel_routes_unexpected_error_after_cancel_returns_500_outcome_unknown`,
+`test_sql_outcome_path_disconnect_during_200_send_and_error_before_send`,
+`test_reviewed_executor_readback_error_after_transport_send_is_500`,
+`test_read_with_malformed_field_keeps_logged_400`,
+`test_handler_error_log_redacts_sql_and_url_credentials`,
+`test_handler_error_traceback_is_bounded_after_redaction`).
+
+### Live read cancellation and single-flight
+
+Read-only workspace endpoints in `ui._CANCELLABLE_READ_PATHS` (`_SERVER_VIEW_PATHS`,
+`_REPLICATION_READ_PATHS`, `_CATALOG_PATHS`, `_TABLE_COLUMNS_PATHS`,
+`_OBJECT_SEARCH_PATHS`, `_VARIABLE_READ_PATHS`, `/api/live/topology` and
+`/api/live/readiness`; `WorkspaceHandler.do_POST` also defensively excludes
+`_WRITE_PATHS`, and `live/start`, job controls, persistent editor sessions and
+all writes never take this path) run inside `myflames/read_cancel.py` under
+`WorkspaceHandler._cancellable_read`. After reading the complete request body,
+the handler installs a non-blocking watcher thread (`myflames-read-disconnect`)
+using `selectors.DefaultSelector` (normally `kqueue` on macOS or `epoll` on
+Linux, avoiding `FD_SETSIZE` limits when many clients are open, with the
+platform's available selector on Windows). Every `0.1` s it checks readability and peeks the socket with
+`recv(1, socket.MSG_PEEK)` (never consuming pipelined bytes). An EOF (including
+a TCP write half-close, which the workspace client never uses) sets the
+cancellation event; a watcher `OSError` or `ValueError` returns without
+cancelling the read, and the handler restores the original socket timeout before
+writing any response.
+
+Sampling waits (`read_cancel.wait`, falling back to injected sleeps/clocks in
+tests), `connector._run_bounded` (including process-group waits, tolerating
+`EPERM`/`ESRCH` on `os.killpg` while still killing, reaping and joining the
+direct child and pipe workers), and client discovery/first-contact loops
+(including `client_tools.probe` via `ProbeCancellation`) poll
+`read_cancel.check()` and raise `read_cancel.CancelledRead` (a `BaseException`,
+so broad `except Exception` fallbacks cannot catch it to run more queries or
+emit partial reports). Worker pools propagate `read_cancel.scope(cancel, guard)`
+into worker threads. When `CancelledRead` reaches `do_POST`, no response or
+error is written and `close_connection = True`.
+
+`ui._SINGLE_FLIGHT_READ_PATHS` (`/api/live/health`, `/api/live/waits`,
+`/api/live/io`, `/api/live/memory`, `/api/live/locks`, `/api/live/indexes`,
+`/api/live/tables`), `/api/live/topology` and `/api/live/report` share identical
+in-flight reads through `ui._single_flight_read` and `report.run_single_flight`.
+Keys HMAC-hash (with per-process `report._FLIGHT_SECRET`, never storing
+plaintext passwords) every request field (`report.request_fingerprint`),
+`report.flight_key(options, profile_id, safety)`, the group consent snapshot
+`(group, group_generation)`, the workspace store reference, whether the caller
+is cancellable (`read_cancel.current() is not None`), and for `/api/live/topology`
+the stored member endpoints, group consent fields and private `_stored_ref`
+metadata (leaving per-member password lookup behind consent checks). Non-exclusive
+views include request settings in the key so distinct queries run concurrently
+while identical requests share one worker-thread execution (cancelled only when
+its last caller leaves). `/api/live/report` passes `exclusive=True`, preserving its
+one-analysis-per-connection refusal when settings differ. Group-scoped shared
+reads verify consent (`live_guard` plus `(group, group_generation)`) before and
+after execution. Tests: `test/test_live_cancel.py`.
+
 ### Client and local-storage boundaries
 
 The desktop renderer uses an in-memory session partition, so UI preferences belong in the workspace SQLite store, not localStorage. Theme, sidebar width, Server inspector width, Server view navigation collapse, Health auto-refresh, Diagram wheel zoom speed, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices are persisted through `/api/settings/ui`. Browser development reads legacy localStorage once as a fallback and never promotes it over the backend answer. The renderer's session proof remains origin-scoped localStorage authentication data. Query editor split height remains part of the autosaved `editor_layout` session state.
@@ -1833,7 +2022,16 @@ socket, client-certificate/key, option-file, and initialization overrides do not
 pass through the browser's saved-credential path. CLI connection flags remain
 an explicit local choice. Clone checks the recipient's negotiated TLS before
 sending a remembered donor password, in addition to the reviewed pair and donor
-TLS policy checks.
+TLS policy checks. First-contact endpoint identification remembers an endpoint
+as unidentified (`None`) only on unsupported identity statements (`1064`, `1146`,
+`1193`, `1235`, or ProxySQL Admin `1045` `'ProxySQL Admin Error:'`) or
+incomplete/unparseable non-empty replies; transient, session and ordinary
+access errors are never cached. Writes (`_run_write`) are never replayed after
+an authentication-plugin error; reads retry with the other engine's best
+client only after a connection-phase `2059` with empty stdout, no statement
+error and no echoed SQL packet (`--------------`), and `os.killpg` cleanup
+tolerates `EPERM` (such as on macOS) while still killing, reaping and joining
+the client (see [Local UI](#local-ui)).
 
 Workspace database files and SQLite sidecars, vault directories, keys, and
 locks reject symbolic links and foreign owners before opening or changing
@@ -1846,7 +2044,15 @@ tampering: a removed sidecar needs nothing, a replacement is checked again
 or a wrong file type is refused at once, never retried, before
 `sqlite3.connect`. This applies on POSIX; on Windows, sidecars inherit the store
 folder's owner-only ACL, and the vault also rewrites existing ones. On Windows the vault's ACL update likewise
-skips a sidecar that is gone after a failed call. SQLite connections close if
+skips a sidecar that is gone after a failed call. `secret_store._ensure_windows_owner_only`
+caches successful ACL writes in `_WINDOWS_ACL_CACHE` (256-entry LRU under
+`_WINDOWS_ACL_LOCK`, keyed by normalized path -> `(st_dev, st_ino, directory)`) for
+`_WINDOWS_ACL_CACHE_SECONDS` (60 s), so repeated opens do not rewrite the same
+file's ACL every time while external DACL edits are still repaired after a
+minute. Symlink, owner and file-type validation (`_storage_stat`) still runs on
+every open inside the lock; filesystems without inode identities (`st_ino == 0`)
+and failed writes or replaced files are never cached, and cache hits refresh LRU
+order without extending the write timestamp. SQLite connections close if
 setup fails. Session persistence redacts recognized SQL credential literals
 in editor text as well as password fields; ordinary SELECT drafts are retained.
 History redacts the actual reused editor session's password even when a later
@@ -2058,7 +2264,10 @@ does not revoke an otherwise consenting read.
   `performance_schema` and `information_schema` behind **Show system
   databases**, and **Type a name…** back to the text field with its datalist);
   with `databases_error` it stays a text field with `#connection-schema-hint`
-  saying why. Tests: `test_ui.py`
+  saying why. Saving a connection (`Connections.tsx`) retains the returned
+  profile id (`setEditingId(p.id)`) and refreshes the saved list before loading
+  the optional `./readiness` chunk, so a failed chunk load shows an error
+  without turning a retry into a duplicate saved connection. Tests: `test_ui.py`
   (`test_connection_test_databases_bounded_and_error_path`),
   `test_workspace_api.py` (`test_connection_and_preset_routes`),
   `apps/workspace/test/connections.mjs`.
@@ -2877,7 +3086,10 @@ privileges, target, transaction and XA reads before displaying confirmation.
 Every read packet starts with server identity variables (including provider
 detection), node status and a private marker, followed by the requested read
 bodies. A client `DELIMITER` absent from the payload keeps those statements
-in one COM_QUERY; `--skip-reconnect` prevents reconnecting midway. All packets
+in one COM_QUERY (when server data contains every fixed `_TARGET_DELIMITERS`
+candidate, `TargetEvidenceConnection.run` generates a 15-byte random delimiter
+`__mf_<8 hex>__` via `secrets.token_hex(4)` absent from the packet body);
+`--skip-reconnect` prevents reconnecting midway. All packets
 retain comments: both identity reads and the marker SELECT carry the first
 read's leading `/*myflames:...*/` tag, or `/*myflames:target-evidence*/` when
 that read has no tag. The caller's read bodies keep their original tags.
@@ -3095,7 +3307,11 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   Four readings cover backslash mode times ANSI_QUOTES; MariaDB and unknown
   engines also consider bracket identifiers. Readings whose distinguishing
   characters are absent are scanned once, keeping long unquoted queries
-  linear without dropping an applicable grammar. An unknown mode refuses in the
+  linear without dropping an applicable grammar. Within one `classify` call,
+  readings that share lexer inputs or produce identical scans reuse one cached
+  scan and split result keyed by interned scan identity (`_scan_cache_key`,
+  never shared across calls or requests; the splitter's private `ends`-indexed
+  copies are released after each split). An unknown mode refuses in the
   editor only when readings disagree, so mode-independent dump headers remain
   usable after a nonliteral mode change. `_mode_reading` keeps identifier and
   string spans distinct and compares restored identifier names, including
@@ -3556,6 +3772,13 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   line-comment rule. `--` before a non-whitespace control character is risky because
   the server and client disagree. Newer dollar-body grammar is also compared
   in full, including quoted/commented tags and client DELIMITER arguments.
+  `split_statements` indexes executed-comment intervals and unclosed token
+  ranges with sorted prefix-maxima (`interval_index`, `bisect_left`) and yields
+  issues in original order by position (`issues_between`) rather than scanning
+  every comment and issue per statement, avoiding quadratic work on scripts
+  with many conditional comments; in the client lexer pass,
+  `_client_named_command` also shares comment-prefix landing positions within
+  one `lex_sql` scan.
   `split_statements` returns `code`, `idents`, `token_spans`, `unclosed` and
   `issues` with source text and offsets; each executable semicolon in a
   custom-delimiter unit is classified (`REASON_MULTI`). Decisions:
@@ -3591,7 +3814,9 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   (START/STOP REPLICA|SLAVE|GROUP_REPLICATION|ALL SLAVES, CHANGE, PURGE), CLONE,
   accounts (GRANT, REVOKE, CREATE/ALTER/DROP/RENAME USER|ROLE, SET PASSWORD, SET
   DEFAULT ROLE), LOAD DATA/XML, LOCK TABLES/INSTANCE, FLUSH TABLES, XA
-  COMMIT/ROLLBACK, CALL, EXECUTE, `BEGIN NOT ATOMIC`, INSTALL, SHUTDOWN, and any
+  COMMIT/ROLLBACK, CALL, EXECUTE, `BEGIN NOT ATOMIC`, INSTALL, SHUTDOWN,
+  parenthesized `SET` statements such as `(SET x=1)` or `EXPLAIN (SET x=1)`
+  (`unknown`, `"myflames could not read this SET statement."`), and any
   unknown verb (`unknown`). EXPLAIN ANALYZE and MariaDB `ANALYZE stmt` take the
   inner statement's verdict (they run it); MariaDB `SET STATEMENT ... FOR` too.
   The cautious native-function allowlist treats unqualified, unquoted `SLEEP`,
@@ -3683,19 +3908,112 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   `fail`, `pending`). `fail` after `attempt` finishes the record as `unknown`
   for an interrupt, a client time limit or client error 2013 (`may_have_run`:
   the statement may have reached the server), else `error`. Records left
-  `pending` or finished `unknown` read as `outcome_unknown: true`. `redact` removes literals after IDENTIFIED BY / AS /
-  USING, PASSWORD(...), SET PASSWORD, `*PASSWORD = '...'` (SOURCE_PASSWORD,
-  MASTER_PASSWORD, START REPLICA PASSWORD, CREATE SERVER OPTIONS), REPLACE
-  '...' after a redacted password, and the connection's own password anywhere
-  (also with doubled or backslash-escaped quotes). It also removes URL user-info
-  passwords, including embedded `@` and malformed slash-bearing passwords.
-  A user-info colon must precede any `[` in the authority, so bracketed IPv6
-  hosts are preserved. When the first boundary after that colon is `/`, the
-  scan continues to the last `@` before whitespace or a quote. Database schemes
-  (`mysql`, `mariadb`, `mysqlx`, `postgres`, `postgresql`) fail closed even when
-  the prefix before `/` is numeric: `mysql://app:2024/secret@db` is redacted.
-  This deliberately also redacts `mysql://h:3306/db?mail=a@b` to
-  `mysql://h:[redacted]@b`. Other schemes retain the numeric-port exemption;
+  `pending` or finished `unknown` read as `outcome_unknown: true`. `redact` applies
+  ASCII-only keyword guards (`_SECRET_PATTERN_KEYWORDS`, `'='`, `'://'`, `'0x'`,
+  `'variable'`/`'1231'`, `_may_have_secret_variables`) to skip unused passes on
+  plain scripts (non-ASCII text always runs all passes to preserve `re.I`
+  equivalences). After replacing any supplied connection `password` (raw and
+  doubled/backslash-escaped SQL quotes) and scanning `ER_WRONG_VALUE_FOR_VAR` /
+  `1231` errors, `redact` collects all credential, `SET PASSWORD`, and `SET`
+  secret-variable spans against the same original text under both
+  `NO_BACKSLASH_ESCAPES` interpretations (escapes on and off whenever `\` is
+  present), tagging each span with the 3.5.1 sequential redaction stage that
+  produced it (`0`: `SET PASSWORD` lexical/separator/keyword, `1`: `SET` secret
+  variables, `2..8`: `_SECRET_PATTERNS` and `_REPLACE_FOLLOW`) and the backslash
+  reading bit, and merges them (`_redact_spans` / `_redact_spans_pass`) before
+  replacing anything, so substitutions in one reading never mask assignments or
+  shift boundaries in the other. When overlapping spans disagree on quote
+  boundaries (`_redact_spans_pass`), the overlap context tracker
+  (`_advance_tracker`, `_TRACKER_CONTEXT` / `_TRACKER_CONT`) runs only on a real
+  quote and is bounded to the current overlap group: a later overlapping span
+  that starts right on an earlier string's real closing quote fails closed
+  through the end of the text when it comes from an earlier 3.5.1 stage than the
+  span covering that position, whereas an equal- or later-stage span starting on
+  the real closing quote (agreed under both backslash readings) of a plain or
+  stage-1 charset-introduced (`_SECRET_VALUE_INTRODUCER`) balanced top-level or
+  nested literal (`_balanced_strings`, `_is_balanced_span`, accepted under
+  either backslash reading) and followed by a valid SQL continuation
+  (`_VALID_AFTER_LITERAL`, a proven safe custom delimiter from
+  `_secret_variable_boundary_plan`, or closing at the outer quote) is dropped so
+  valid scripts keep their trailing SQL. An earlier-stage span strictly nested
+  inside an unbalanced later-stage span also fails closed to the end of text,
+  and 3.5.2-only stage-1 spans (`prefix_boundaries` or assignments after an
+  assignment-free `SET` reset) carry `_NO_DROP_FLAG` so overlaps on their
+  closing quote fail closed while keeping stage 1 when overlapping a later
+  stage. A later
+  overlapping span that swallows an earlier span's closing quote extends to that
+  closing quote under both backslash readings (`_extend_swallowed_quote`,
+  tracking the winning quote and advancing a group cursor), or fails closed to
+  the end of the text when an earlier-stage span starts on a different quote
+  character. Whenever a first-pass replacement could change quote, separator or
+  comment structure (`needs_followup`: merging non-identical overlapping spans,
+  removing a semicolon, replacing an unquoted or unclosed value, shortening a
+  literal when `SET PASSWORD` is possible, or replacing a literal matching
+  `_STRUCTURAL_IN_LITERAL`), `redact` runs one bounded follow-up credential pass
+  (`_redact_credential_pass` with `allow_custom_boundaries=False`,
+  `semicolon_only=not overlapped`, `custom_boundaries=remapped` and
+  `pass1_redacted=unquoted_redacted`) without re-running `split_statements` to
+  open new custom delimiter boundaries; proven first-pass custom boundaries
+  carry over (`_remap_custom_boundaries`) only when no overlap or removed
+  semicolon occurred and every shifted boundary remains untouched and still
+  closed outside strings, backticks and comments (while `pass1_redacted`
+  preserves unquoted first-pass `[redacted]` spans for `INSERT` row-alias
+  checks). It removes literals after IDENTIFIED BY / AS / USING,
+  PASSWORD(...), SET PASSWORD (`_BoundedSetPasswordPattern` walks closed quoted
+  account tokens up to 512 characters before `=`, refusing a bare backslash
+  before a quote in backslash-escape mode so malformed prefixes stay linear,
+  retaining `_SET_PASSWORD_LEGACY_LITERAL` for malformed quoted-account
+  diagnostics, accepting introduced, hex and bit values via `_SET_PASSWORD_VALUE`
+  after a valid `[FOR account]` prefix checked by `_is_set_password_account`,
+  and advancing `kept`/`cursor` in `_set_password_separator_spans` and
+  `_set_password_keyword_spans` only on plain `_SET_PASSWORD_LITERAL` matches so
+  inner assignments inside introduced values are still scanned), `*PASSWORD = '...'`
+  (SOURCE_PASSWORD, MASTER_PASSWORD, START REPLICA PASSWORD, CREATE SERVER
+  OPTIONS), REPLACE '...' immediately after a redacted credential (`_REPLACE_FOLLOW`,
+  preserving its arm across quoted account names and comments, and walking each
+  `match.end()` follow-up position at most once in `_secret_literal_spans` so
+  keywords re-found inside an already followed literal cannot restart a chain),
+  and hex/bit/national/charset-introducer
+  credential values (`X'..'`, `0x[0-9a-fA-F]+\b`, `0b[01]+\b`, `N'..'`, `_charset'..'`, plus
+  charset-introduced hex and bit literals `_charset 0x..`, `_charset 0b..`,
+  `_charset X'..'`, `_charset B'..'`, optional `COLLATE` and escaped `\'`/`\"`
+  openers, with `(?<![\w])_[\w]+` word boundaries in `_SECRET_VALUE` and
+  `_SECRET_VALUE_OPENER` so introducers do not backtrack inside words and hex/bit
+  boundaries so identifiers glued to a keyword such as `0x4142SOURCE_PASSWORD`
+  do not swallow the keyword). Because the credential-clause
+  scanner rewrite was reverted (`1b94b68f`), credential clauses require
+  whitespace between the keyword and value (known limit: forms with a comment
+  or no whitespace such as `IDENTIFIED BY'x'` or `IDENTIFIED BY /* c */ 'x'`,
+  MariaDB `IDENTIFIED VIA ... USING`/`AS` chains, and server error echoes that
+  start inside a secret such as `ERROR 1064 ... near '<tail of the secret>'`
+  can still remain unredacted as in 3.5.1; in rare malformed text that 3.5.1
+  also mishandled differently, a server `ERROR 1231` echo whose value is cut
+  before its closing quote, a custom-`DELIMITER` script where a secret
+  variable follows a comma-prefixed assignment after a `DELIMITER` change, or
+  prose with an unmatched apostrophe before credential statements in different
+  quote styles can also leave a secret visible). Inside dynamic SQL strings
+  (`_secret_literal_contexts`), credential clauses and dynamic secret-variable
+  assignments extend through the closing delimiter of the enclosing string; quotes
+  inside ordinary block/line comments or backtick identifiers stay bounded so
+  prose apostrophes cannot open false strings (while executable comments stay
+  transparent and `SET @q = CONCAT(..., QUOTE(@pw))` stays intact), distinct
+  inner/outer quotes keep their own end cleanly, an escaped opener without a
+  known enclosing string fails closed to the end of the text, and after every
+  non-forced match `_secret_literal_spans` resumes at `start + 1` (just inside
+  the matched value, even when the span reached the end of the text) so a
+  credential keyword swallowed by a cut-off, unterminated or dropped phantom
+  literal is still scanned before spans are sorted and unioned.
+  It also removes URL user-info passwords, including embedded `@` and malformed
+  slash-bearing passwords: only a valid bracketed IPv6 literal (`_URL_IPV6_HOST`)
+  directly after `://` turns the colon into a host colon (so `[` inside a user
+  name never disables redaction); when the first boundary after that colon is
+  `/`, the scan continues to the last `@` before whitespace or a quote. Any
+  `+`-separated component of the scheme matching `_URL_DATABASE_SCHEMES`
+  (`mysql`, `mariadb`, `mysqlx`, `postgres`, `postgresql`, including
+  `pool+mysql://`, `mysql+pymysql://`, `postgresql+psycopg2://`) fails closed
+  even when the prefix before `/` is numeric: `mysql://app:2024/secret@db` is
+  redacted (this deliberately also redacts `mysql://h:3306/db?mail=a@b` to
+  `mysql://h:[redacted]@b`). Other schemes retain the numeric-port exemption;
   username-only URL paths stay unchanged. Adjacent and nested URL authorities
   are scanned independently; only the long slash-password scan skips schemes
   it has already covered. Both paths take linear work on long inputs.
@@ -3706,29 +4024,67 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   hide their values, including `wsrep_sst_auth`: bare, GLOBAL, SESSION, PERSIST
   and PERSIST_ONLY forms, scoped or bare `@@` forms, backticked or double-quoted
   name components, case-insensitive names, quoted or unquoted values, and
-  comma-separated assignments. Parenthesized expressions are hidden in full;
-  top-level `WHERE`, `ORDER`, `LIMIT`, `ON`, `RETURNING` and `FOR` end the hidden
-  value so following clauses survive in stored SQL. A new top-level `SET`
-  after an assignment starts fresh even without a semicolon, including scripts
-  with a custom delimiter. A context-free inventory pattern also hides quoted
-  literals after `=` or `:=` in dynamic SQL and server echoes, accepting scoped
-  `@@` forms and quoted names. This applies inside ordinary comments and quoted
-  examples too; ordinary comments do not otherwise change the assignment lexer.
-  Executable comment bodies (`/*!NNNNN ... */`, `/*! ... */`, and
-  `/*M!NNNNNN ... */`) are scanned as SQL, including fragments continuing a
-  surrounding `SET`. Their opening markers consume an optional `-` and at most
-  five version digits; extra digits remain SQL tokens for redaction. This is a
-  conservative redaction rule, not an emulation of engine version gating.
-  A closing `*/` is a marker only inside an executable comment, so a stray
-  closer cannot consume the opener of a following ordinary comment.
-  `ER_WRONG_VALUE_FOR_VAR` diagnostics (`Variable '<name>' can't be set to the
-  value of '<value>'`) also hide the rejected value when the variable belongs
-  to that inventory, including literal apostrophes or newlines in the value
-  and incomplete diagnostics. Adjacent diagnostics for other variables stay intact.
-  Ordinary settings such as `SET GLOBAL max_connections = 500`
-  stay intact. Parameter comparison re-exports the same inventory and
-  `sensitive` predicate; audit records, editor history, saved queries and saved
-  session tabs all use this shared redaction before storage. Retention: 90 days by default
+  comma-separated assignments. `@var` and `@@var` variables parse as atomic
+  tokens (`@where` never acts as a `WHERE` terminator); parenthesized
+  expressions are hidden in full; top-level `WHERE`, `ORDER`, `LIMIT`, `ON`,
+  `RETURNING`, `FOR` and `AS` end the hidden value (`AS` only after an
+  unambiguous value shape in an `INSERT` row alias `_SET_ROW_ALIAS`) so
+  following clauses survive in stored SQL. Custom `DELIMITER` boundaries come
+  from `split_statements` only where both backslash readings agree on
+  unambiguous units (`_secret_variable_boundary_plan`, with
+  `_secret_variable_boundaries` returning its `safe_boundaries` list): it walks
+  units in reverse to keep `safe_boundaries` only after the last unit with an
+  issue or unclosed state, while also collecting clean `prefix_boundaries`
+  before the first bad unit so custom boundaries before a bad unit still
+  separate statements but fail closed (`fail_closed_boundaries=True`) on secret
+  values that reach them (`_secret_variable_boundary_plan`
+  skips custom-delimiter parsing above 2,097,152 characters (`2 * 1024 * 1024`),
+  when `'delimiter'` is absent, when no `DELIMITER` command line declares a
+  usable non-semicolon delimiter, or above 4,096 delimiter lines, 64 distinct
+  declared custom delimiters, or 4,096 total delimiter tokens counting
+  semicolons plus every declared custom delimiter, hiding secret values to the
+  end as in 3.5.1 while `split_statements` itself stays unbounded for Query
+  editor callers);
+  even with a valid custom `DELIMITER`, `_secret_variable_spans` keeps hiding
+  through the end of text (as in 3.5.1) when `fail_closed_boundaries` is set,
+  when parentheses are still open (`depth > 0`), or
+  when the delimiter is followed by
+  non-whitespace, a doubled-quote parity flip, or remaining text matching
+  `_DELIMITER_TAIL_CREDENTIAL`: a credential keyword (`IDENTIFIED`, `USING`,
+  `REPLACE`, `PASSWORD`), a `_SECRET_VARIABLES` name, a URL scheme (`://`), or
+  a client error echo (`ERROR\s+\d{3,5}\b`), including keywords, variable
+  names and `ERROR` echoes immediately after escaped whitespace (`\n`, `\r`, `\t`, `\f`, `\v`). A new top-level
+  `SET` after an assignment starts fresh
+  even without a semicolon unless it is the `SET` of `CHARACTER SET`. A
+  context-free inventory pattern also hides quoted and encoded literals after
+  `=` or `:=` in dynamic SQL and server echoes, accepting scoped `@@` forms and
+  quoted names. This applies inside ordinary comments and quoted examples too;
+  ordinary comments do not otherwise change the assignment lexer. Executable
+  comment bodies (`/*!NNNNN ... */`, `/*! ... */`, `/*M!NNNNNN ... */`, plus
+  MariaDB reversed `/*!!...*/` and `/*M!!...*/` markers) are scanned as SQL,
+  including fragments continuing a surrounding `SET`. Their opening markers
+  consume an optional `-` (or `!`) and at most five version digits; extra digits
+  remain SQL tokens for redaction. This is a conservative redaction rule, not an
+  emulation of engine version gating. A closing `*/` is a marker only inside an
+  executable comment, so a stray closer cannot consume the opener of a following
+  ordinary comment.
+  `_redact_variable_errors` handles both English `ER_WRONG_VALUE_FOR_VAR`
+  diagnostics (`Variable '<name>' can't be set to the value of '<value>'`) and
+  numbered error `1231` diagnostics (`\bERROR\s+1231\b`) in any `lc_messages`
+  language (including non-ASCII labels touching quotes, such as MariaDB Chinese
+  text): it inspects the first quoted token on the first diagnostic line
+  (`_ERROR_QUOTED_NAME`), leaves ordinary recognizable variable names
+  (`_ERROR_VARIABLE_NAME` outside `dbops._SECRET_VARIABLES`) readable, hides
+  secret variable values from `_ERROR_VALUE_OPEN` through the last closing
+  quote before the next `ERROR` diagnostic (preserving embedded
+  apostrophes/newlines and adjacent diagnostics, or hiding to the next `ERROR`
+  diagnostic when quotes are unbalanced), and fails closed to the next `ERROR`
+  diagnostic when the variable name is unrecognizable or preceded by an
+  earlier quote. Ordinary settings such as
+  `SET GLOBAL max_connections = 500` stay intact. Parameter comparison
+  re-exports the same inventory and `sensitive` predicate; audit records,
+  editor history, saved queries and saved session tabs all use this shared
+  redaction before storage. Retention: 90 days by default
   (`settings` table, `audit_retention_days`, 1 to 3650), purged on every insert
   and when the setting changes. `audit-1.0` envelope: `{schema_version,
   retention_days, records[]}`; each record has a nested `connection` object.
@@ -3824,8 +4180,16 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   toolbar place while the log is empty. Tests: `apps/workspace/test/audit.mjs`
   (column order, Type pills, inspector words and hovers, Judged as, local
   times, statement Copy, the ⓘ).
-- Tests: `test/test_dbops.py` (classification table, splitting, both
-  backslash readings, policy matrix, privileges on both engines, redaction,
+- Tests: `test/test_dbops.py` (classification table, `TestClassifyCache`
+  per-call scan cache equivalence, timing and peak-memory checks using smaller
+  inputs by default and full stress sizes under `MYFLAMES_LONG_TESTS=1`,
+  splitting and interval
+  bisect performance, both backslash readings, policy matrix, privileges on
+  both engines, redaction including 2 MiB / 4,096 semicolon bounds,
+  custom-`DELIMITER` fail-closed tails, translated `1231` diagnostics and
+  `test_r352_editor_megabyte_redaction_speed_budget` 1 MiB speed test with
+  generous absolute median caps `< 1.5 s` without secret variable names and
+  `< 4.0 s` with one plus a same-run ratio `without_secret <= 0.40 * with_secret`,
   audit lifecycle with a crash left pending, retention and purge, export,
   migration, CLI and endpoints) and `TestKillAudit` in `test/test_locks.py`.
   Every test that reaches the store uses a temporary HOME (`LockCase.run`
@@ -3939,9 +4303,11 @@ planner, write gate and session engine from the CLI.
   myflames itself stops a script at the first error by sending the next
   statement only after the previous one succeeded. Ended on `/close`,
   connection switch (a request for another identity is refused, so the UI
-  closes first), idle timeout (`EditorSessions.reap`, default 30 minutes,
-  `idle_minutes` 1 to 1440), and server exit (`WorkspaceServer.server_close`
-  calls `EditorSessions.close`; an `atexit` hook kills leftover clients). After
+  closes first), idle timeout (`EditorSessions.reap` via `_reap_loop` waiting on
+  `_reaper_stop` `threading.Event`, default 30 minutes, `idle_minutes` 1 to 1440),
+  and server exit (`WorkspaceServer.server_close` calls `EditorSessions.close`,
+  which sets `_reaper_stop` and joins the reaper thread boundedly (`0.1` s)
+  before ending sessions; an `atexit` hook kills leftover clients). After
   startup, never reconnected: an ended session answers runs with `status: "session_ended"`
   and `SESSION_ENDED_TEXT` until `/close` or `/open`.
 - Client: opening a session uses the connector's per-server choice and keeps the binary paired with its engine-specific option file. The handshake remembers valid endpoint engine/version facts. The tab pins its resolved client for plan and KILL QUERY helpers even after Settings changes; each helper rechecks trust before starting. New sessions use the current choice. Authentication-plugin connection failures preserve `client-auth-plugin`. Tests: `test/test_editor_session.py` (`ProcessTests`, `PinnedClientTrustTests`) and `test/test_connector.py` (`TestVersionAwareClients`, `TestClientSecurityFixes`).
@@ -5344,7 +5710,10 @@ differs from self. Tests: `test_measurement_semantics.TestTreeTotalColumn`,
 
 `python3 -m myflames --type [flamegraph|bargraph|diagram|tree|workbench] explain.json > output.svg`
 
-`parser.parse_explain` rejects (ValueError, exit 2) a plan whose numeric fields
+`parser.parse_explain` refuses plans nested beyond `80` levels
+(`_PLAN_DEPTH_ERROR`, `ValueError`, exit 2), converts invalid field types
+(`TypeError`, `AttributeError`, `KeyError`) in `_normalize_mariadb` and
+`parse_node` into `ValueError` at the parser boundary, and rejects (ValueError, exit 2) a plan whose numeric fields
 (`_PLAN_NUMBER_FIELDS`: `actual_*`, `estimated_*`, MariaDB `r_*`, `rows`, `loops`,
 `cost`, format-1 `rows_examined_per_scan`) hold anything but null or a finite
 number: measured counters up to 2^64, measured times up to 1e15 ms, estimates
@@ -6753,11 +7122,11 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
 
 - `python3 -m myflames upgrade-check --target-version X.Y.Z [--no-shell] [--config-path PATH] [--fail-on error|warning] [--json] [-o PATH] [-q]` (`upgrade-check-1.0`): `lifecycle.upgrade_check`. MySQL Shell (`mysqlsh --defaults-file=<0600> --js -- util check-for-server-upgrade --target-version=... --output-format=JSON`) when installed and the pair is in range (server older than the Shell, target at most the Shell's major.minor; otherwise exit 2 with a `--no-shell` hint); `parse_upgrade_json` reads `errorCount`/`warningCount`/`noticeCount` and `checksPerformed` (the Shell exits 0 with errors). `--no-shell` or no Shell: `_native_upgrade` (`partial: true`, `limitations[]`), every check version gated as source < change <= target: `removed_variables` from `performance_schema.variables_info` excluding COMPILED, DYNAMIC and PERSISTED (error: an unknown option in an option file or on the command line stops mysqld; `my_getopt.cc`), `removed_persisted_variables` (warning: logged and ignored at startup; `persisted_variable.cc`), on 5.7 the running values (warning); `reserved_identifiers` over schema, table, view, column, routine, trigger and event names with `reserved_words(source, target, source_reserved)` from `RESERVED_SINCE` minus the source's own `information_schema.KEYWORDS` (parity test against KEYWORDS read live on 8.0.46, 8.4.11, 9.7.2); `partition_engines` (5.7 sources only, joins TABLES for ENGINE); `utf8mb3` and `zero_date_defaults` in user schemas (notice from 8.0 sources, warning from 5.7); `native_password_users` (`'user'@'host'`, warning for 8.4, error for 9.x). MariaDB: `method: mariadb_upgrade_guidance`, never invokes the Shell; a target below 10 (a MySQL number) or older than the server is refused. Dump with MySQL Shell refuses when the Shell's major is older than the server's and warns for an older minor (`shell_version_gap`, mysql-shell `dumper.cc:5311-5334`); failed tool output is reduced to one line by `tool_error_line` with colour codes stripped. Counts are affected objects per severity; `--fail-on` exits 1. Read-only: endpoint `POST /api/lifecycle/upgrade-check` (`connection`, `target_version`, `prefer_shell`). HTTP `config_path` is rejected before connecting, also on `/api/lifecycle/prepare`; only the CLI accepts `--config-path`.
 - Tools: `detect_tools(server=...)` returns `lifecycle-tools-2.0`, including `default_dump_parent` from `lifecycle.default_dump_parent()` (the real user home from `ssh_tunnel.ssh_home()`, `Documents/myflames dumps` when Documents exists, otherwise `myflames dumps` under home; Windows uses USERPROFILE). Computing the path creates nothing. This field is present with or without a connection, including missing-client replies. Detection uses the shared [client selection and trust rules](#local-ui) after reading the server. `tools[name]` holds the selected copy for each tool, `copies[]` lists every discovered copy with `name`, path, resolved path, version banner/tuple, engine, availability/error, installation, origin/label, reason, warning and `used`; `mysqlpump` has null version/tuple and is never used. A copy is marked `used` by its path whenever any selected client, dump, load, backup or shell role uses it, including an other-engine query client with no load role; its reason and warning come from that role (client takes precedence for a shared path). With server facts, `used` has the same public role/missing/notes shape as `client-tools-1.0`. Without facts, `tools` keeps the first copy per name in discovery order and omits `used`. A stale engine choice leaves its roles unavailable instead of selecting another installation. `offered_tools(server, tools)` determines operations. `POST /api/lifecycle/tools` with a connection reads the server before detecting for it, then adds `server` and `offered`; without a connection it returns inventory only. A typed client failure retains inventory and download links with `server: {}`, `offered: {}` and `server_error: {code: "client-missing", error}`; this route currently uses `client-missing` even for `ClientAuthPluginError`, unlike `/api/client/tools`. Option files (`_credentials`): `[client]`, quoted values or engine-specific TLS switches, 0600 in a 0700 temporary directory, first on argv, removed in `finally`; environment allowlisted (`_clean_env`, no `MYSQL_PWD`). Classic tools use the actual tool engine's TLS mapping described above. SQL and Shell scripts go on stdin. Tests: `test/test_ui.py` (`TestLifecycleToolsAPI`), `test/test_lifecycle.py` (`LifecycleTests`, `MissingClientToolsTests`, `ClientToolTrustTests`).
-- MySQL Shell trust and TLS: MySQL Shell uses `lifecycle._shell_tls_options`: DISABLED writes only ssl-mode; PREFERRED and REQUIRED omit stale ssl-ca, capath, crl and crlpath (Shell rejects them in those modes); VERIFY_CA keeps an explicit CA or writes a validated system-root PEM bundle as `ca-bundle.pem` (0600 in the 0700 temporary directory), refusing before launch when no bundle can be assembled. System roots come from Python's regular default CA file, or the trusted macOS Keychain roots when that file is unavailable; Windows uses `ssl.enum_certificates("ROOT")`, selecting X.509 certificates trusted for TLS server authentication. An empty or unreadable Windows root store refuses before launch. REQUIRED and VERIFY_IDENTITY remain supported for the single-session upgrade check, dump and restore. Shell discovery and launch use `connector.checked_shell_program` without a bundled exemption: the executable and its ancestors, bin and rc scripts, installation share/lib/libexec startup trees, and POSIX `/etc/mysql/mysqlsh` with its rc scripts must be trusted. The recursive check validates symlink owners and resolved targets and walks linked directories, including a linked top-level subtree, without revisiting directory cycles. Windows reparse points, including junctions, count as links. Any walk error or more than 40,000 lstat calls fails closed. Read-only Shell discovery can reuse successful walks for up to five seconds, keyed by the executable realpath and prefix/startup-root metadata (including prefix st_mtime); refresh and every actual launch, including a version probe, require a fresh walk. Descendant changes need not update prefix mtime, so cached inventory never authorizes execution. Windows resolves Shell folders and bundled Python inside the executable's same allowed local root, refusing UNC paths and escaping junctions. An untrusted Shell is listed in skipped and is never version-probed. Shell launches add `--disable-plugins` from 9.0.0 and `--disable-builtin-plugins` from 9.6.0, using the discovered version; unknown and older versions get no unsupported flags. Plugin flags precede the `--` separator in upgrade checks. Every Shell process, including version probes, sets `OPENSSL_CONF=os.devnull` so an ambient OpenSSL configuration is not loaded.
-- Tool release metadata: `tool_updates.enrich_tools`, invoked by `detect_tools(check_updates=True)` only after explicit UI detection/refresh. Each tool adds `download_url` and `update {status, latest_version, checked_at, source_url, message}`. Status is `not_checked`, `available`, `current`, `unknown`, `not_installed` or `deprecated`; current means no newer verified release in the checked series, not a compatibility or support guarantee. MySQL GA download headings and the MariaDB stable-series REST API supply versions. Fixed HTTPS endpoints only, no redirects or ambient proxies, 1 MiB response cap, 5 s socket timeout, 12 s caller budget, at most 8 in-flight workers and 64 cache keys; success TTL 1 hour, failure TTL 1 minute. Unsupported distributions/prereleases, mismatched series, malformed/future metadata and failed checks stay unknown. CLI discovery and lifecycle preflights do not request network checks.
+- MySQL Shell trust and TLS: MySQL Shell uses `lifecycle._shell_tls_options`: DISABLED writes only ssl-mode; PREFERRED and REQUIRED omit stale ssl-ca, capath, crl and crlpath (Shell rejects them in those modes); VERIFY_CA keeps an explicit CA or writes a validated system-root PEM bundle as `ca-bundle.pem` (0600 in the 0700 temporary directory), refusing before launch when no bundle can be assembled. System roots come from Python's regular default CA file, or the trusted macOS Keychain roots when that file is unavailable; Windows uses `ssl.enum_certificates("ROOT")`, selecting X.509 certificates trusted for TLS server authentication. An empty or unreadable Windows root store refuses before launch. REQUIRED and VERIFY_IDENTITY remain supported for the single-session upgrade check, dump and restore. Shell discovery and launch use `connector.checked_shell_program` without a bundled exemption: the executable and its ancestors, bin and rc scripts, installation share/lib/libexec startup trees, and POSIX `/etc/mysql/mysqlsh` with its rc scripts must be trusted. `client_tools.probe` also verifies `mysqlsh` identity from its resolved realname and `--version` banner: a `mysqlsh` symlink pointing to another program (such as `mysql` or `mariadb`, or printing another banner without `mysqlsh`/`MySQL Shell`) is rejected as `'The resolved program is not MySQL Shell.'`. The recursive check validates symlink owners and resolved targets and walks linked directories, including a linked top-level subtree, without revisiting directory cycles. Windows reparse points, including junctions, count as links. Any walk error or more than 40,000 lstat calls fails closed. Read-only Shell discovery can reuse successful walks for up to five seconds, keyed by the executable realpath and prefix/startup-root metadata (including prefix st_mtime); refresh and every actual launch, including a version probe, require a fresh walk. Descendant changes need not update prefix mtime, so cached inventory never authorizes execution. Windows resolves Shell folders and bundled Python inside the executable's same allowed local root, refusing UNC paths and escaping junctions. An untrusted Shell is listed in skipped and is never version-probed. Shell launches add `--disable-plugins` from 9.0.0 and `--disable-builtin-plugins` from 9.6.0, using the discovered version; unknown and older versions get no unsupported flags. Plugin flags precede the `--` separator in upgrade checks. Every Shell process, including version probes, sets `OPENSSL_CONF=os.devnull` so an ambient OpenSSL configuration is not loaded.
+- Tool release metadata: `tool_updates.enrich_tools`, invoked by `detect_tools(check_updates=True)` only after explicit UI detection/refresh. Each tool adds `download_url` and `update {status, latest_version, checked_at, source_url, message}`. Status is `not_checked`, `available`, `current`, `unknown`, `not_installed` or `deprecated`; current means no newer verified release in the checked series, not a compatibility or support guarantee. MySQL GA download headings and the MariaDB stable-series REST API supply versions. Fixed HTTPS endpoints only, no redirects or ambient proxies, 1 MiB response cap, 5 s socket timeout, 12 s caller budget, `tls.Watchdog` + `WatchedHTTPSHandler` enforcing the overall `REQUEST_TIMEOUT` deadline, at most 8 in-flight workers and 64 cache keys; success TTL 1 hour, failure TTL 1 minute. Unsupported distributions/prereleases, mismatched series, malformed/future metadata and failed checks stay unknown. CLI discovery and lifecycle preflights do not request network checks.
 - `POST /api/lifecycle/choose-directory` accepts an empty object through the normal authenticated API. It opens the server host's folder dialog, with a 120 s deadline and one dialog at a time; no client-supplied script or path is executed. Cancel preserves the form path. The selected directory still undergoes normal preflight and empty-directory validation. Native folder selection accepts no command or path input and does not start a backup.
 - Dump folder facts: authenticated `POST /api/lifecycle/dump-info {directory}` accepts only `directory` and needs no connection or saved password. It is registered beside `choose-directory`, with the same authentication, CSRF header and request limits. It returns `{schema_version: "lifecycle-dump-info-1.0", tool: {name, version}, engine, scope: {schemas, tables}, structure_only, remap_allowed: true | false | null, remap_reason}`; `tool.version` is capped at 64 characters. Tool names are `mysqldump`, `mariadb-dump` or `mysqlsh`; engines are `mysql` or `mariadb`. Old manifests without `options.structure_only` report false. `dump_info` and `prepare_restore` share `_restore_input` (absolute/expanded real directory path, completed manifest validation and safe relative file records) and `_restore_sql_scan` with `_restore_remap`. A folder pick stays cheap: `dump_info` reads the manifest without checksumming every file (`verify=False`). For single-schema picked-table SQL dumps, it checks the opened `dump.sql` descriptor is a regular file and its size matches the manifest before reading; scans at most `DUMP_INFO_SCAN_BYTES` (16 MiB) and checks SHA-256. When the manifest record exceeds that cap, it skips the scan and returns `remap_allowed: null` with `remap_reason: "This dump is large; whether it can load into another database is decided when you review the restore."` A size mismatch refuses before any SQL read. Manifests, scanned SQL and preflight files are opened without following links or blocking on FIFOs, and must be regular files before reading. `prepare_restore` verifies every file, including its descriptor size before reading, and the restore file, directory and byte budgets before any restore; it stays the authority and retains its own scan limits. Files named outside the folder are refused by both. Whole-database SQL dumps report that they create their own databases; single-schema picked-table SQL dumps within the folder-pick scan budget scan `dump.sql` for CREATE DATABASE, CREATE SCHEMA, USE and qualified references; single-schema Shell table dumps allow remapping. Missing or unreadable folders/manifests, missing or unreadable scanned SQL, special files and invalid metadata raise `lifecycle.Refused`, using HTTP 400 `{error}` with an actionable sentence. Extra payload keys raise `ValueError` through the same HTTP 400 envelope. No tool, server connection or restore is started. These facts let Restore decide whether to offer a new database when the folder is picked. When reported, remap eligibility is independent of the proposed target name: a qualified reference to another database still refuses even if it spells that proposed name, so scanned folder facts and preflight cannot disagree. Restore preflight still reloads the folder and refuses unsupported remapping; jobs retain fresh validation and reviewed-write checks. Tests: `test/test_lifecycle.py` (folder facts/preflight agreement, SQL and Shell scopes, invalid metadata, traversal, symlinks, FIFO and directory refusal, missing SQL, checksum tampering, scan cap and size checks before reads), `test/test_lifecycle_cli.py` (route registration), `test/test_ui_http.py` (HTTP refusal, payload keys and authentication).
-- Upgrade targets (`myflames/upgrade_targets.py`, `POST /api/lifecycle/upgrade-targets {connection}`, `upgrade-targets-1.0`): read when Maintenance > Upgrade check opens, once per connection, beside the view's other reads (never blocking Check upgrade). It reads `basedir`, `plugin_dir`, `character_sets_dir`, `lc_messages_dir`, `socket`, `version`, `version_comment`, `version_compile_os`, `version_compile_machine`, `build_id` and `hostname` (one `SHOW GLOBAL VARIABLES`), then the vendor's releases. MySQL Community Server: the release notes series the documentation index links (`https://dev.mysql.com/doc/`, then `https://dev.mysql.com/doc/relnotes/mysql/<series>/en/`; on 2026-11-08 the 8.0, 8.4, 9.7 and 26.10 pages, the 9.7 page also listing 9.0 to 9.6 and the 26.10 page 26.7), every "Changes in MySQL X.Y.Z (YYYY-MM-DD)" entry without a pre-GA label (Release Candidate, Development Milestone and similar) or a future date; then each offered target's own release page (`news-X-Y-Z.html`, at most 32 per report, cached per page) is read for Oracle's markers, and a release "no longer available for download" (8.0.38, 8.4.1, 9.0.0) or published as "a Critical Security Patch Update for the MySQL Server docker image, only" (8.4.12, 9.7.3) moves to `unavailable` with its reason, except that a Docker-only release stays (`docker_only: true`) when `install.container` is set; a page that cannot be read, or that has no "Changes in MySQL" heading, leaves its release listed and adds a note; a series page that answers but lists no release makes the read partial (cached for a minute); offline (or a server built without `release_reader`) it falls back to `sysvar_history_mysql.VERSIONS` with `source.kind` `bundled`. Percona Server: `repo.percona.com` package listings of the lines the root lists (`ps-80`, `ps-84-lts`, `ps-97-lts`, `ps-8x-innovation`): the Yum `RPMS/<arch>/` folders of the newest four el releases for an RPM install (a folder missing for this architecture answers 404 and counts as no packages, not an error), else the APT pool (`apt/pool/main/p/percona-server/`); each target carries `repository` and `packages` (codenames or `el8`, `el9`, `el10`), and Percona has no bundled list. Percona XtraDB Cluster and MariaDB get no list (`source.kind` `none`). Network: fixed HTTPS URL patterns (`_ALLOWED`), no redirects or ambient proxy, 2 MiB per response, 5 s per socket read and 10 s per whole response (`READ_TIMEOUT`), 15 s per report for every fetch including the first (pending fetches cancelled at the deadline), 4 worker threads, cache keyed by reader (success 1 hour; a failure or a partly read result 1 minute; at most 256 entries); only `cmd_ui` passes `release_reader=upgrade_targets.fetch_page`, and `upgrade_targets()` without a reader uses `offline`, so test servers never read the network. Server variables lose control and format characters (bidirectional overrides) before they become evidence text. Paths follow the MySQL 9.7 manual, "Upgrade Paths" (Table 3.1): patches in the series (`patch`), the next LTS or bugfix series (`next_lts`; from an Innovation series `lts_after_innovation`), Innovation releases before the next LTS (`innovation`), never skipping an LTS or bugfix series; series kinds come from the bundled catalog's maturity (5.7 and 8.0 bugfix, 8.4 and 9.7 LTS, 8.1-8.3, 9.0-9.6 and 26.x Innovation), and once the next LTS has a release the Innovation series before it are `not_direct`: still a supported path in Table 3.1, but superseded (an Innovation release is supported only until the next release); the step to a bugfix series (5.7 to 8.0) is labeled "next bugfix series". Releases of the server's own series are always `patch` (or `innovation`), even when the catalog does not classify the series. A series the catalog does not know is `unclassified`, never placed on a path. `recommended` is the newest next-LTS release, else the newest patch, else none (an Innovation release is never chosen by default). Each target has `check_version` (Percona's upstream version), `path_label`, `date`, `url` (release notes page) and `shell {ok, needs}` against the detected MySQL Shell (source older than the Shell, target major.minor at most the Shell's). `install {method, label, confidence, evidence[], package, build_id, container}`: `rpm` (`/usr` with `/usr/lib64/mysql/plugin`, INSTALL_LAYOUT=RPM, also the official Docker images), `distro_rpm` (that layout with `version_comment` "Source distribution", what a distribution build such as Fedora's reports), `deb` (`/usr/lib/mysql/plugin`; medium on 32-bit, where RPM uses it too), `ubuntu_deb` (an Ubuntu suffix in `version` or `version_comment` "(Ubuntu)"), `tarball` (every folder under `basedir`; `package` from an archive-named basedir), `windows_msi`, `windows_zip`, `homebrew`, `macos`, `unknown`; `container` when the host name is 12 hex digits and the layout is RPM (the official MySQL and Percona images are RPM builds). `build_id` is evidence only (no public index maps build IDs to packages). `guidance {text, command, url}` names the MySQL Yum or APT repository guide, Ubuntu's package, the generic archive download, or for Percona packages `sudo percona-release enable-only {repository} release` (the client fills in the selected target's line after checking it matches `ps-NN`, `ps-NN-lts` or `ps-Nx-innovation`; `percona-release setup ps-97-lts` enables nothing, per Percona's 9.7 install pages), with "run sudo dnf -y module disable mysql first" on RHEL 8 for RPM installs. UI: the Target version list shows `version · path_label · date` newest first, chooses `recommended`, and `UpgradeTargetNotes` shows the install method, source and read time, the guidance with its command, the chosen target's path, packages, Shell requirement and release notes link (`upgradeLinkUrl`: HTTPS on dev.mysql.com or docs.percona.com only), and **How this was decided** (evidence, `not_direct`, `unclassified`). Tests: `test/test_upgrade_targets.py` over `test/fixtures/upgrade_targets/` (vendor pages captured 2026-11-08, trimmed to the parsed lines; `layout-*.json` read live on 2026-11-08 from the official mysql:8.0.44 and mysql:9.7.2 images and percona/percona-server:8.0 (8.0.46-37), Ubuntu 24.04's mysql-server-8.0 and the generic mysql-8.4.13-linux-glibc2.28-aarch64 archive; the endpoint answered 200 on MySQL 8.0.44, 9.7.2 and Percona 8.0.46-37), browser `apps/workspace/test/maintenance.mjs` with `lifecycle-upgrade-targets-mysql-8.4.json`.
+- Upgrade targets (`myflames/upgrade_targets.py`, `POST /api/lifecycle/upgrade-targets {connection}`, `upgrade-targets-1.0`): read when Maintenance > Upgrade check opens, once per connection, beside the view's other reads (never blocking Check upgrade). It reads `basedir`, `plugin_dir`, `character_sets_dir`, `lc_messages_dir`, `socket`, `version`, `version_comment`, `version_compile_os`, `version_compile_machine`, `build_id` and `hostname` (one `SHOW GLOBAL VARIABLES`), then the vendor's releases. MySQL Community Server: the release notes series the documentation index links (`https://dev.mysql.com/doc/`, then `https://dev.mysql.com/doc/relnotes/mysql/<series>/en/`; on 2026-11-08 the 8.0, 8.4, 9.7 and 26.10 pages, the 9.7 page also listing 9.0 to 9.6 and the 26.10 page 26.7), every "Changes in MySQL X.Y.Z (YYYY-MM-DD)" entry without a pre-GA label (Release Candidate, Development Milestone and similar) or a future date; then each offered target's own release page (`news-X-Y-Z.html`, at most 32 per report, cached per page) is read for Oracle's markers, and a release "no longer available for download" (8.0.38, 8.4.1, 9.0.0) or published as "a Critical Security Patch Update for the MySQL Server docker image, only" (8.4.12, 9.7.3) moves to `unavailable` with its reason, except that a Docker-only release stays (`docker_only: true`) when `install.container` is set; a page that cannot be read, or that has no "Changes in MySQL" heading, leaves its release listed and adds a note; a series page that answers but lists no release makes the read partial (cached for a minute); offline (or a server built without `release_reader`) it falls back to `sysvar_history_mysql.VERSIONS` with `source.kind` `bundled`. Percona Server: `repo.percona.com` package listings of the lines the root lists (`ps-80`, `ps-84-lts`, `ps-97-lts`, `ps-8x-innovation`): the Yum `RPMS/<arch>/` folders of the newest four el releases for an RPM install (a folder missing for this architecture answers 404 and counts as no packages, not an error), else the APT pool (`apt/pool/main/p/percona-server/`); each target carries `repository` and `packages` (codenames or `el8`, `el9`, `el10`), and Percona has no bundled list. Percona XtraDB Cluster and MariaDB get no list (`source.kind` `none`). Network: fixed HTTPS URL patterns (`_ALLOWED`), no redirects or ambient proxy, 2 MiB per response, 5 s per socket read and 10 s per whole response (`READ_TIMEOUT`, enforced with `tls.Watchdog` + `WatchedHTTPSHandler`), 15 s per report for every fetch including the first (pending fetches cancelled at the deadline), 4 worker threads, cache keyed by reader (success 1 hour; a failure or a partly read result 1 minute; at most 256 entries); only `cmd_ui` passes `release_reader=upgrade_targets.fetch_page`, and `upgrade_targets()` without a reader uses `offline`, so test servers never read the network. Server variables lose control and format characters (bidirectional overrides) before they become evidence text. Paths follow the MySQL 9.7 manual, "Upgrade Paths" (Table 3.1): patches in the series (`patch`), the next LTS or bugfix series (`next_lts`; from an Innovation series `lts_after_innovation`), Innovation releases before the next LTS (`innovation`), never skipping an LTS or bugfix series; series kinds come from the bundled catalog's maturity (5.7 and 8.0 bugfix, 8.4 and 9.7 LTS, 8.1-8.3, 9.0-9.6 and 26.x Innovation), and once the next LTS has a release the Innovation series before it are `not_direct`: still a supported path in Table 3.1, but superseded (an Innovation release is supported only until the next release); the step to a bugfix series (5.7 to 8.0) is labeled "next bugfix series". Releases of the server's own series are always `patch` (or `innovation`), even when the catalog does not classify the series. A series the catalog does not know is `unclassified`, never placed on a path. `recommended` is the newest next-LTS release, else the newest patch, else none (an Innovation release is never chosen by default). Each target has `check_version` (Percona's upstream version), `path_label`, `date`, `url` (release notes page) and `shell {ok, needs}` against the detected MySQL Shell (source older than the Shell, target major.minor at most the Shell's). `install {method, label, confidence, evidence[], package, build_id, container}`: `rpm` (`/usr` with `/usr/lib64/mysql/plugin`, INSTALL_LAYOUT=RPM, also the official Docker images), `distro_rpm` (that layout with `version_comment` "Source distribution", what a distribution build such as Fedora's reports), `deb` (`/usr/lib/mysql/plugin`; medium on 32-bit, where RPM uses it too), `ubuntu_deb` (an Ubuntu suffix in `version` or `version_comment` "(Ubuntu)"), `tarball` (every folder under `basedir`; `package` from an archive-named basedir), `windows_msi`, `windows_zip`, `homebrew`, `macos`, `unknown`; `container` when the host name is 12 hex digits and the layout is RPM (the official MySQL and Percona images are RPM builds). `build_id` is evidence only (no public index maps build IDs to packages). `guidance {text, command, url}` names the MySQL Yum or APT repository guide, Ubuntu's package, the generic archive download, or for Percona packages `sudo percona-release enable-only {repository} release` (the client fills in the selected target's line after checking it matches `ps-NN`, `ps-NN-lts` or `ps-Nx-innovation`; `percona-release setup ps-97-lts` enables nothing, per Percona's 9.7 install pages), with "run sudo dnf -y module disable mysql first" on RHEL 8 for RPM installs. UI: the Target version list shows `version · path_label · date` newest first, chooses `recommended`, and `UpgradeTargetNotes` shows the install method, source and read time, the guidance with its command, the chosen target's path, packages, Shell requirement and release notes link (`upgradeLinkUrl`: HTTPS on dev.mysql.com or docs.percona.com only), and **How this was decided** (evidence, `not_direct`, `unclassified`). Tests: `test/test_upgrade_targets.py` over `test/fixtures/upgrade_targets/` (vendor pages captured 2026-11-08, trimmed to the parsed lines; `layout-*.json` read live on 2026-11-08 from the official mysql:8.0.44 and mysql:9.7.2 images and percona/percona-server:8.0 (8.0.46-37), Ubuntu 24.04's mysql-server-8.0 and the generic mysql-8.4.13-linux-glibc2.28-aarch64 archive; the endpoint answered 200 on MySQL 8.0.44, 9.7.2 and Percona 8.0.46-37), browser `apps/workspace/test/maintenance.mjs` with `lifecycle-upgrade-targets-mysql-8.4.json`.
 - Logical dump options: `dump_options.capability_catalog` exposes tool/scope-specific descriptors, each with `group` (one of `groups`: performance, contents, output, compression, the sections of the Dump form) and, for a boolean, `row` (the label its checkbox shares: Chunking, Include, Write, Connection); `encryption` has a one-line `summary` and the full `message`. `normalize` rejects unknown names and invalid values. Shell supports compression default/none/gzip/zstd, levels from Shell 8.4 (gzip 0..9, zstd 0..22), chunking, decimal byte sizes (minimum 128k per chunk) and max rate per thread. SQL tools expose hex blobs, add-drop-table and network compression. Triggers/routines/events follow scope, with no routines/events toggle for Shell table dumps. Local file encryption is unsupported; TLS and connection compression affect transport only. Selected options bind the plan, execution and manifest; CLI flags are unchanged.
 - Plans (`lifecycle-plan-1.0`: `operation, request, server, connection_key, tool, target, commands[], checks[], warnings[], ready, binding`) come from `prepare_dump`, `prepare_restore`, `prepare_clone`; a table dump adds the check `tables`, failed (with `missing`) when a named table or view is not in the schema's catalog read (names match exactly, or without case only when `SELECT @@lower_case_table_names` reads 1 or 2, so a missing `orders` is never taken for an existing `Orders` on a case-sensitive server); endpoint `POST /api/lifecycle/prepare` with `operation` dump|restore|clone (reads only; the Shell's `dryRun` runs here). Dump dry runs use a private temporary destination, and restore dry runs use a private temporary progress file, both removed afterwards; they cannot create the requested output directory or modify the saved load progress before confirmation. Each plan's `tool` retains `name`, `path`, `realpath`, `version`, `version_tuple`, `engine`, `installation`, `origin`, `origin_label`, `reason`, `warning`, `available` and `deprecated` when present, without release-update metadata. Dump, restore, clone, upgrade check and physical backup read the server before selecting tools; job rebuilds pass those fresh server facts through detection. SQL restore and CLONE use the load client from the selected dump installation. An automatic older-than-server dump/load warning is also in `plan.warnings`. A plan is never authority: `_write_job` rebuilds it on a fresh connection and first compares the entire tool record. A mismatch refuses with `The tool for this server changed since the review (Settings > Client tools or an installed program changed). Review it again; nothing was run.` Binding, target and commands must then match, every check must pass, the server identity must be unchanged and the typed target must equal `plan.target`. Lifecycle rechecks trust and the pinned target immediately before executing the resolved program. Tests: `test/test_lifecycle.py` (`LifecycleTests`: per-server copies/choice, tool-change refusal, load installation and older warnings; `ClientToolTrustTests`: launch rechecks).
 - Output directories (`_output_path`, `_empty_directory`): parent links resolved once and bound in the plan (macOS `/tmp`, `/var`), the directory itself must not be a link, a parent swapped for a link after the preflight refuses; absent or empty only. A missing output parent still refuses with `Output parent directory must exist.`, except exactly the backend default dump parent (absolute, realpath-normalized comparison). For that exception, its own parent (Documents or home) must already exist and must not be a symbolic link. Preflight creates nothing, reads free space from that existing parent, and adds an `output_parent` check saying `Creates the folder <path>.`; the creation intent participates in the plan binding, so repeating preflight before Start is stable while a changed intent requires a fresh review. Only the reviewed dump Start creates that one folder with `os.mkdir(..., 0o700)`, then applies the usual output checks. It never creates arbitrary intermediate folders. Dump writes `myflames-manifest.json` (`lifecycle-manifest-1.0`: files with SHA-256, exact `COUNT(*)` of up to 3 tables under 1 MiB, the object catalog, `schema_defaults` keyed by schema with `character_set` and `collation` (including selected empty databases), `complete`); `read_manifest` re-hashes every file before a restore, capped by `MAX_RESTORE_FILES` (10,000), `MAX_RESTORE_BYTES` (10 GiB), and `MAX_RESTORE_DIRECTORIES` (10,000). Exceeding a limit refuses preflight with the limit named. Bytes are counted while reading as well as checked against file size, so growth during hashing also refuses. Successful logical dumps hash files once and reuse those records for verification and the manifest. Interrupted dumps skip further hashing and retain an incomplete manifest. Confirmed dump manifest creation is not capped by these restore preflight limits; larger backups require another restore tool.
@@ -6765,7 +7134,7 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
   When a SQL table restore has a selected target database that does not exist and the dump supplies no CREATE DATABASE/CREATE SCHEMA, `create_database` contains the exact reviewed CREATE DATABASE command before the load command. It uses the source's manifest `schema_defaults`; older manifests without both defaults warn that server defaults will be used. Existing databases need no extra CREATE. The plan binding includes the manifest hash, creation SQL and scan result. Execution creates the database under the same consumed review, policy and audit before starting the client with `--database`; it never creates during preflight or Shell load preparation. Before the load's connection-id marker, failure/cancellation guidance is `Nothing was loaded: the client stopped before running any statement.` After that marker it changes to the SQL or Shell partial-load guidance; database creation is a separate step and is not itself proof of loaded data. Verification: object presence and the recorded row counts (`passed`, `failed`, `not_checked`; a successful child process is never evidence). Tests: `test/test_lifecycle.py` (`LifecycleTests`: missing/existing database, charset quoting/defaults, review failure, remap content and version comments, typed target, SQL/Shell marker guidance and remap endpoint fields).
 - CLONE (MySQL only): `clone_preflight` (engine, version series, plugin on both, BACKUP_ADMIN donor, CLONE_ADMIN recipient or BACKUP_ADMIN with DATA DIRECTORY, platform and character set variables, collations, plugins, `max_allowed_packet`, `clone_valid_donor_list` containing the donor address, different servers; DATA DIRECTORY absolute and not under `@@datadir` as text, existence `not_checked` without a recipient-host probe because the server refuses an existing or in-datadir path before copying). `donor_address` (`--donor-address`) is the donor as the recipient reaches it, used in the statement and the donor-list check. The statement goes on the client's stdin (`clone_statement(..., redact=False)`), shown and audited redacted. Clone plans add `expect` with `donor` and `recipient` objects (`endpoint`, `connection_key`, `type`, `read_only`), `donor_address` and `require_ssl`, all included in the binding. The workspace evaluates both saved profiles with `dbops.connection_safety`; a read-only donor is allowed. Before sending a remembered donor password, it verifies negotiated TLS on the recipient connection. Start checks the reviewed pair before retrieving the saved donor password, and rejects TLS downgrades when the donor profile requires TLS. Both passwords are scrubbed from errors, audit records, logs and manifest free text. Progress: a second connection polls `performance_schema.clone_progress` (job `progress` percent and `detail`). In place: ERROR 3707 (no supervisor, the server shuts down) or a lost connection is expected; the job waits up to `restart_wait` (`--restart-wait`, default `RESTART_WAIT` 180 s) and then reads `clone_status`, tied to this clone by `BEGIN_TIME`, `SOURCE` and `DESTINATION` (the table keeps the previous clone's row); result `needs_restart` when it does not come back, `needs_verification` when the recipient account is refused (it now has the donor's accounts). GTID: donor `gtid_executed` at preflight against `clone_status.GTID_EXECUTED` (empty for DATA DIRECTORY clones, `not_checked`).
 - Jobs (`LifecycleJob`, `lifecycle-job-1.0`: `id, operation, state queued|running|done|failed|refused|cancelled, progress, detail, events[] (last 200), phase, elapsed_s, output, result {status, verification[], partial_state, cancel_error, audit_id}, error`): `progress` is a percent only when the tool printed one (MySQL Shell's `showProgress`); `phase` names the step in words (`LifecycleJob.step`, also a `status` event, never with a percent sign): the repeated preflight, reading the table list, counting rows, dumping with the tool, checksumming, counting again, writing the manifest, and for restore copying to staging, loading and verifying. `elapsed_s` counts from the start of the job and stops when it ends. `output` is set for SQL dumps only (`mysqldump`, `mariadb-dump`, which print no progress): `written_bytes` is the size of `dump.sql`, sampled from its file descriptor every 0.5 s while the tool runs and once after it ends, and `estimated_bytes` the sum of `DATA_LENGTH` of the dumped tables (`BASE TABLE`, and MariaDB's `SYSTEM VERSIONED`) (None when unknown or structure only). On MySQL 8.0.3 and later the sizes are read from the storage engine, not the information_schema cache, in one bounded call (`SET SESSION information_schema_stats_expiry=0` first: information_schema caches table sizes for a day by default and the variable is not settable with `SET_VAR`); on MariaDB, MySQL 5.7 or when that read fails, the catalog's sizes stand. The estimate only feeds a progress bar; the written size can end above or below it. tool output drained on threads, CR progress parsed, ANSI colors stripped, secrets redacted. Cancel: SIGTERM then SIGKILL to the process group (EPERM from a zombie group tolerated), and `KILL QUERY` on the session the job printed on its own stdout (marker line; mysqlsh's `print` needs an explicit line break). `partial_state` names what may remain. `LifecycleJobs` (the workspace's registry: two running at most, never two on one target, finished ones kept an hour, closed with the server). Shutdown: `LifecycleJobs.shutdown()` runs first in `WorkspaceServer.server_close`, before replication loops, table data, live jobs and editor sessions (whose cleanup can block on `KILL QUERY`). It refuses new jobs and preflight runners, cancels every running job and runner, starts `KILL QUERY` on threads with the session id read before the tool stops, sends SIGTERM to every tool process group and SIGKILL after 1 s, then gives jobs 1.5 s to write their audit record (cancelled, outcome unknown, as for Cancel); `close()` finishes the rest. `ToolGroups` lists a tool's process group from just after it starts until the group is gone. Tools start through `ToolGroups.start`, serialized with shutdown (`close_spawning`): a tool being started is listed before shutdown's snapshot, and none starts afterwards. With `MYFLAMES_TOOL_GROUPS_FILE` (set only by the desktop app, in a 0700 directory it owns; a missing or shared directory refuses startup with exit 2) the list is also kept in an owner-only `tool-groups-1.0` file (`{"schema_version", "groups"}`), written before the launch line, replaced atomically and kept (empty) after a clean close. When it cannot be rewritten it is removed, so it never names a group that may have ended, and the desktop treats a missing file after launch as unconfirmed; a tool whose group cannot be recorded is stopped at once and reported as cancelled. Shell dryRun and upgrade check tools run under `LifecycleJobs.runner()`, so shutdown stops them too.
-- Writes: dump, restore and clone are `risky` for `dbops.decide` (a read-only connection refuses, Production and Development confirm). CLI: policy from `--profile` before any prompt or connection; plan and commands on stderr; dump asks `[y/N]`, restore and clone ask to type the target; non-TTY needs `--yes` (plus `--confirm-target TARGET` for restore and clone); `--preflight` prints the plan (exit 0 ready, 1 not); Ctrl+C cancels the job. Exit 0 completed, 1 a started job failed, was cancelled or was not verified, 2 an unsent refusal, decline, bad input or connection failure. Failed-job text names the reason once in the operation heading, omits duplicate or empty `not_checked operation` rows and repeated status words, and retains distinct verification and partial-state guidance; JSON evidence is unchanged. UI: `POST /api/lifecycle/start` (`operation`, `plan`, `typed_target`, `confirmed: true`, `connection`, and `donor` for clone) is in `ui._WRITE_PATHS`: `dbops.gate` first (refused envelope with `audit_id`), then saved passwords (`connection.profile_id`, `donor.profile_id`), then the job; `POST /api/lifecycle/status` and `/api/lifecycle/cancel` take `id` and `connection`. Every attempt has an `AuditTrail` record (`surface` cli or ui; refused, declined, `unknown` after a cancel, `ok` or `error`). `POST /api/lifecycle/jobs` (`connection`; `lifecycle-jobs-1.0`, `_lifecycle_jobs_response`) lists the jobs this workspace holds for the connection's endpoint (`dbops.identity_endpoint`, recorded by `_lifecycle_add` before the job starts and dropped when `LifecycleJobs` lets the job go); it opens no connection and starts nothing (`test/test_lifecycle_cli.py`). Status and cancel check this same owner before looking up or cancelling a job and return “No such job.” for missing, expired or mismatched jobs. They open no connection and read no saved password. A change to type or read-only preserves access to the original job.
+- Writes: dump, restore and clone are `risky` for `dbops.decide` (a read-only connection refuses, Production and Development confirm). CLI: policy from `--profile` before any prompt or connection; plan and commands on stderr; dump asks `[y/N]`, restore and clone ask to type the target; non-TTY needs `--yes` (plus `--confirm-target TARGET` for restore and clone); `--preflight` prints the plan (exit 0 ready, 1 not); Ctrl+C cancels the job. Exit 0 completed, 1 a started job failed, was cancelled or was not verified, 2 an unsent refusal, decline, bad input or connection failure. Failed-job text names the reason once in the operation heading, omits duplicate or empty `not_checked operation` rows and repeated status words, and retains distinct verification and partial-state guidance; JSON evidence is unchanged. UI: `POST /api/lifecycle/start` (`operation`, `plan`, `typed_target`, `confirmed: true`, `connection`, and `donor` for clone) is in `ui._WRITE_PATHS`: `dbops.gate` first (refused envelope with `audit_id`), then saved passwords (`connection.profile_id`, `donor.profile_id`), then the job; `POST /api/lifecycle/status` and `/api/lifecycle/cancel` take `id` and `connection`. Every attempt has an `AuditTrail` record (`surface` cli or ui; refused, declined, `unknown` after a cancel, `ok` or `error`). `POST /api/lifecycle/jobs` (`connection`; `lifecycle-jobs-1.0`, `_lifecycle_jobs_response`) lists the jobs this workspace holds for the connection's endpoint (`dbops.identity_endpoint`, recorded by `_lifecycle_add` before the job starts and dropped when `LifecycleJobs` lets the job go; `_lifecycle_add` also prunes `_lifecycle_owners` entries whose job ID is no longer in `workspace.lifecycle.jobs`); it opens no connection and starts nothing (`test/test_lifecycle_cli.py`). Status and cancel check this same owner before looking up or cancelling a job and return “No such job.” for missing, expired or mismatched jobs. They open no connection and read no saved password. A change to type or read-only preserves access to the original job.
 - Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone. Tools are detected on open through `useOpenRead` (`lifecycle/tools` without `check_updates`; successful version probes use the shared identity-keyed cache without a time limit); the view's Refresh is labeled **Detect again** and shows only on **Tools**; **Check for updates** sends `check_updates: true`. **Used for this server** shows the role selections with program, version, origin and reason; **Change…** opens the same dialog as **Settings > Client tools…**. The table lists every copy with **From**, **Path** and **Used**, and selects rows by path so copies of one program keep distinct inspectors. The review uses the same `toolUseLine` as the dialog; the Dump tool choice names the selected program, version and origin, or the Shell version for Automatic. These are separate from the dialog's **Detect again**, which sends `refresh: true` to `/api/client/tools`. Start dump…, Start restore… and Start clone… run the preflight (it only reads) and open the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s). Failed checks show under the button with a Next step (Choose another folder…, Review fields, Remove <table> from the selection); passed ones fold into a details line. A preflight error clears the old plan; after a field changes, the old checks are labeled as the last preflight's and the planned commands are hidden. Dump's Output folder is suggested (`OpsShared.suggestDumpFolder`: `dumpFolderStem` of the database or connection plus the local date, in the backend reply's `default_dump_parent`, or the last dump's parent when this window already started a dump, `-2`, `-3` past names already listed or reserved this session; never over a typed path); Browse… picks the parent. The dump confirmation is primary-toned (policy, review token and audit unchanged), names its Contents and shows non-routine warnings first. A restore plan with `required_acknowledgement` needs its own checkbox; the workspace sends that exact string as `typed_acknowledgement` only when checked, and `lifecycle.restore_job` compares it with the fresh plan's; Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. A job card (`JobProgress`) shows a bar from `lifecycleProgress`: determinate on the tool's `progress`, else an estimated "≈N%" from `output.written_bytes` over `output.estimated_bytes` (capped at 99, with a title saying it is estimated from table sizes), else indeterminate (also once the written size passes the estimate: "X written, more than the Y estimate"). Under it one facts line: the `phase` while it runs, the bytes written (of about the estimate), a rate from two snapshots on the job's own clock (`elapsed_s`), and "Elapsed m:ss" ("Completed in m:ss" when done). The last log line shows only when it differs from the phase. While a job runs on the connection, the actions row shows `JobSummary` beside the disabled Start button ("Dump running · ≈46% · 120.0 MiB", Show progress); after Start (and after a lost reply is found in the job list) the view switches to the job's task and scrolls to and focuses its card (no smooth scroll under reduced motion). Every job stays mounted across task switches so completion is noticed. A completed dump (`state` done, `result.status` completed) has Open in Finder / Open in File Explorer / Open folder, which reveals `<result.directory>/myflames-manifest.json` through `files/local/reveal` (the dump folder opens with its manifest selected; nothing is run); a dump this mounted view started opens it once by itself (`autoRevealDump`: claimed before the request, never retried by rendering, never for adopted, failed or cancelled jobs, restore or clone, and never on Windows, where File Explorer's `/select,` argument splits a path at commas: security open lead 17). The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
 - Not wired to the CLI or UI yet: `prepare_physical_backup` / `physical_backup_job` (MariaDB `mariadb-backup --backup` then `--prepare`, only with a matching local socket and an explicit same-host confirmation); `clone` on MariaDB prints the `mariadb-backup` steps instead.
 
@@ -6796,14 +7165,14 @@ Overview cards derive health from judged channel statuses. Errors and stopped th
 
 Backend `myflames/replication.py` (contract and evidence: the replication skill and the module docstring), CLI `cmd_replication` in `myflames/workspace_cli.py`, endpoints in `ui.py` (`_replication_*`). Tests: `test/test_replication.py` with live replays `test/fixtures/perf/replication-*.json` (MySQL 8.4.11 with gtid_mode ON, four workers and a second channel `ch80`; MySQL 8.4.11 file and position; MySQL 8.0.46; MariaDB 11.4.13 with a named connection `src1` and the default one; recorded 2026-10-15). Each `*-error` fixture is the status after a duplicate key conflict and the matching `*-skip` is skip_one's re-read, script and read after; `mysql-8.0.21-slave-*` is the 8.0.46 replica answering `SHOW SLAVE STATUS` with the version answer rewritten to 8.0.21 (the naming before 8.0.22 cannot be produced by a current 8.0).
 
-- `python3 -m myflames replication [--channel NAME] [--json] [-o PATH] [-q]` (`replication-1.0`, `read_status`): reads only, tag `/*myflames:replication*/`. `SHOW REPLICA STATUS` (MySQL 8.0.22+), `SHOW SLAVE STATUS` (older), `SHOW ALL SLAVES STATUS` (MariaDB), read by column name from the client's `--xml` output (`perf_common.Reader.named`, shared with `server_checks`). MySQL with Performance Schema on adds `replication_connection_configuration` (heartbeat interval), `replication_applier_configuration` (`ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_TYPE`, 8.0.23+), `replication_connection_status` (heartbeats and the last queued transaction) and `replication_applier_status_by_worker` (worker errors, applying and last applied transactions; zero timestamps become null). For a channel whose applier stopped on an error, `SHOW RELAYLOG EVENTS ... FROM <Relay_Log_Pos>` (MySQL needs REPLICATION SLAVE, MariaDB SLAVE MONITOR) shows the transaction at the applier's position (`channel.relay`: gtid, end_log_pos, tables, complete) and the channel carries `skip_plan`. Envelope: `schema_version, engine, server_version, captured_at, uptime_s, available, message, replica, statement, group_replication_channels[], cluster_hint, gtid {mode, enforce_consistency | slave_pos, current_pos, *_domains, domain_id, strict_mode}, settings, channels[] {name, kind replication|group_replication, judged, source {host, port, uuid, server_id}, io, sql {running, state, error {errno, message, timestamp, table, end_log_pos}, delay_s}, lag_s, lag_notes, lag_signals, position, worker, agat, failing_gtid, relay, status, status_why, skip_plan}, replicas[], topology_tiers, connection_group, capabilities, notes, summary`. Statuses: problem when a thread is stopped or reports an error, watch while connecting, when lag minus SQL_Delay passes `LAG_WATCH_S` (60 s), or when nothing (no event, no heartbeat) arrived for twice the heartbeat interval (at least 60 s); unknown when the lag is NULL with both threads running. Group Replication's own channels (`group_replication_applier`, `group_replication_recovery`, reserved in `M/sql/rpl_msr.cc`) are not asynchronous replication: they are left out of `channels[]` and named in `group_replication_channels[]` (a note names them when other channels exist), so a group member with no other channel has `replica: false` and a message pointing to Cluster. `SHOW REPLICA STATUS` walks only the asynchronous channel map (`M/sql/rpl_replica.cc:3866`, `M/sql/rpl_msr.h:568`), so a member normally reports no channel at all. For a server that is not a replica, `cluster_hint` (`galera`, `group_replication` or null) comes from one more read, `SHOW GLOBAL VARIABLES WHERE Variable_name IN ('group_replication_group_name', 'wsrep_provider')` (a Galera provider other than `none`, or a configured group name; a refused read is no hint), and the message then names Cluster (`myflames cluster`); it is a pointer, never a verdict on the cluster. `POST /api/live/replication` and `cmd_replication` pass `topology_tiers=True`, `request_profiles(store, connection)` and `members(profiles, current)` (`cmd_replication` uses the `--profile` connection's group when its endpoint was not overridden by CLI flags) and call `finish_read(store, report, connection, profiles, current, identity=identity)` to attach `topology_tiers` (`discover_database_tiers` over consenting group members, plus `live_footprint`) and `connection_group` and to record `topology_identity` for the connection in use. No privilege: `available: false` (CLI exit 2). `--channel` that does not exist exits 2. Text output includes each channel's `Retrieved_Gtid_Set` (MySQL) or `Gtid_IO_Pos` (MariaDB) when present, including when the applier is stopped.
+- `python3 -m myflames replication [--channel NAME] [--json] [-o PATH] [-q]` (`replication-1.0`, `read_status`): reads only, tag `/*myflames:replication*/`. `SHOW REPLICA STATUS` (MySQL 8.0.22+), `SHOW SLAVE STATUS` (older), `SHOW ALL SLAVES STATUS` (MariaDB), read by column name from the client's `--xml` output (`perf_common.Reader.named`, shared with `server_checks`). MySQL with Performance Schema on adds `replication_connection_configuration` (heartbeat interval), `replication_applier_configuration` (`ASSIGN_GTIDS_TO_ANONYMOUS_TRANSACTIONS_TYPE`, 8.0.23+), `replication_connection_status` (heartbeats and the last queued transaction) and `replication_applier_status_by_worker` (worker errors, applying and last applied transactions; zero timestamps become null). For a channel whose applier stopped on an error, `SHOW RELAYLOG EVENTS ... FROM <Relay_Log_Pos>` (MySQL needs REPLICATION SLAVE, MariaDB SLAVE MONITOR) shows the transaction at the applier's position (`channel.relay`: gtid, end_log_pos, tables, complete) and the channel carries `skip_plan`. Envelope: `schema_version, engine, server_version, captured_at, uptime_s, available, message, replica, statement, group_replication_channels[], cluster_hint, gtid {mode, enforce_consistency | slave_pos, current_pos, *_domains, domain_id, strict_mode}, settings, channels[] {name, kind replication|group_replication, judged, source {host, port, uuid, server_id}, io, sql {running, state, error {errno, message, timestamp, table, end_log_pos}, delay_s}, lag_s, lag_notes, lag_signals, position, worker, agat, failing_gtid, relay, status, status_why, skip_plan}, replicas[], topology_tiers, connection_group, capabilities, notes, summary`. Statuses: problem when a thread is stopped or reports an error, watch while connecting, when lag minus SQL_Delay passes `LAG_WATCH_S` (60 s), or when nothing (no event, no heartbeat) arrived for twice the heartbeat interval (at least 60 s); unknown when the lag is NULL with both threads running. Group Replication's own channels (`group_replication_applier`, `group_replication_recovery`, reserved in `M/sql/rpl_msr.cc`) are not asynchronous replication: they are left out of `channels[]` and named in `group_replication_channels[]` (a note names them when other channels exist), so a group member with no other channel has `replica: false` and a message pointing to Cluster. `SHOW REPLICA STATUS` walks only the asynchronous channel map (`M/sql/rpl_replica.cc:3866`, `M/sql/rpl_msr.h:568`), so a member normally reports no channel at all. For a server that is not a replica, `cluster_hint` (`galera`, `group_replication` or null) comes from one more read, `SHOW GLOBAL VARIABLES WHERE Variable_name IN ('group_replication_group_name', 'wsrep_provider')` (a Galera provider other than `none`, or a configured group name; a refused read is no hint), and the message then names Cluster (`myflames cluster`); it is a pointer, never a verdict on the cluster. `POST /api/live/replication` and `cmd_replication` pass `topology_tiers=True`, `request_profiles(store, connection)` and `members(profiles, current)` (`cmd_replication` uses the `--profile` connection's group when its endpoint was not overridden by CLI flags) and call `finish_read(store, report, connection, profiles, current, identity=identity)` to attach `topology_tiers` (`discover_database_tiers` over consenting group members with `ssh:<ssh_host>` carried in `local_ident`, `observer_host` and `peer_endpoints` so SSH connections never match local peers as local, plus `live_footprint`) and `connection_group` and to record `topology_identity` for the connection in use. No privilege: `available: false` (CLI exit 2). `--channel` that does not exist exits 2. Text output includes each channel's `Retrieved_Gtid_Set` (MySQL) or `Gtid_IO_Pos` (MariaDB) when present, including when the applier is stopped.
 - Source version (`read_status(conn, source_versions=True, profiles, open_profile, replica_host, current_profile_id, topology_tiers, _identity)`, `@grouped_read` `attach_source_versions`): only the status endpoint and `myflames replication` ask for it, never the skip or loop reads. Every replication channel gets `source_version` (`null` on Group Replication channels, and when not asked; `capabilities.source_version` says it was): `{version, version_comment, engine, provenance saved_connection|relay_log|null, label, profile_id, profile_name, relay_log_file, verified, caveat, reason, hint, attempts[]}`. Order: (a) the relay log, read first because it needs no other login: `SHOW RELAYLOG EVENTS IN '<Relay_Log_File>' LIMIT 4 FOR CHANNEL '<name>'` (MySQL, REPLICATION SLAVE) or `SHOW RELAYLOG '<name>' EVENTS IN '<Relay_Log_File>' LIMIT 3` (MariaDB, SLAVE MONITOR): the last `Format_desc` row after the file's own header whose `Server_id` is the source's, "Server ver: X" (`parse_source_fde`); only type, server ID and a format event's text are kept; label "as recorded in the relay log" with `caveat` (the version that wrote the source binary log being read, which can lag a source upgrade). Source lines are in the replication.py block comment. (b) Only when the relay log gives no version: consenting saved connections in the same non-empty connection group as the connection in use (`connection_groups.members(profiles, current)`, or `saved_profiles(store, current_profile_id)`; never outside the group, never the connection in use itself, and none when the connection in use is unsaved, has no group, or had its endpoint edited) whose host and port are the ones the replica reports (`_host_key`: names ignoring case and a trailing dot, IP addresses in canonical form, so `0:0:0:0:0:0:0:1` is `::1` and `::ffff:127.0.0.1` is `127.0.0.1`), tried in order; 127.0.0.1, localhost and ::1 are one host only when the replica connection itself is on loopback and exactly one saved connection matches that way (another loopback address such as 127.0.0.2 needs an exact match). Before any saved-password lookup or login for a loopback source, the replica must have been reached on loopback AND its `@@hostname`, read on the already-open replica connection, must equal `socket.gethostname()` under `error_log.same_host` (ignoring case and a trailing dot). A tunnel to a remote replica fails this check: no saved connection is prepared or opened, and `attempts` says "The replica is not on this computer, so its loopback source cannot be matched to a saved connection" with both host names. An unknown replica address (`replica_host` None: no match) or an unreadable replica `@@hostname` also opens nothing. Loopback (`_is_loopback`) is localhost and names under `.localhost`, 127.0.0.0/8, ::1, their IPv4-mapped forms, and the unspecified 0.0.0.0 and ::. Only consenting group members with a saved password are read (`profile_opener(store, current_profile_id, expected_current)`: `consent(profile)` re-reads the current and target profiles from `store` before `prepare` and before and after `connection_with_saved_password`, and `conn._login_guard = login_consent` is checked by `MySQLConnection._check_login_consent` before every client login so that both connections are still in the same group and the target's endpoint and saved password (`_stored_fingerprint`) are unchanged, raising `ProfileReadError` if the store is unreadable, the target was deleted, the current profile's endpoint or `group` changed, the target is outside the current group, or the target's endpoint or saved password changed; `MySQLConnection` with `SOURCE_CONNECT_TIMEOUT_S` 2 and `SOURCE_QUERY_TIMEOUT_S` 3, the isolated client, never a prompt, never the replica's credentials); one tagged `SHOW GLOBAL VARIABLES WHERE Variable_name IN ('hostname', 'server_id', 'server_uuid', 'version', 'version_comment')`. Each group member's outcome (`read`, `failed` when an attempted login failed, or `not_reached` when it had no saved password, the budget was reached, or consent failed before or between logins) is recorded in `connection_group.read` through `record_read`, and probe failure messages go through `connection_groups.probe_note` / `safe_problem` so SQL text, credentials and raw client error text never appear in `attempts` or `connection_group.read`. Accepted only when every identity the replica reports (`Source_Server_Id`, `Source_UUID`) is present and equal in the answer, never when the replica has recorded neither, and, as a second guard for a loopback source address, only when the answer's `hostname` equals the replica's `@@hostname` (`SHOW GLOBAL VARIABLES WHERE Variable_name = 'hostname'` on the replica, read once per report before any such login within `SOURCE_QUERY_TIMEOUT_S` and compared with `error_log.same_host`). `verified` is true only when a source UUID was compared; with the server ID alone (MariaDB, or MySQL before `Source_UUID` is known) it is false and the text and UI say "only its server ID could be compared". Label "from the saved connection <name>". Opens are limited per process: results (variables or failures) use a bounded cache (`SOURCE_CACHE_SIZE` 256; the least recently used answers go first, then failures, never a pending read). A separate registry (`SOURCE_ATTEMPT_LIMIT` 1024) retains every attempted `(profile ID, fingerprint)` until the process ends, including successes and failures whose results were evicted. An evicted result returns "Not checked" without another login; at the registry limit, new automatic attempts also return "Not checked" with the reason, while cached results remain available. Pending claims reserve registry slots; only a failure before anything is sent releases its slot. The fingerprint covers the current stored settings and `updated_at` plus a digest of the saved password reference (`secret_ref`, new on every password save) under a per-process random key. `profile_opener(store, current_profile_id, expected_current).prepare` reads that record in one snapshot (`WorkspaceStore._profile(include_updated=True)`), under the claim lock and without reading the secret store; stale caller fields never supply a new claim's fingerprint, and a changed endpoint requires a refresh before matching again. Single-flight is by saved connection ID: a pending read for any fingerprint keeps later callers waiting within their budget. After it completes, they claim again from the current stored profile, so a save during the wait cannot make them reuse an old answer. The password is looked up only by the owner, and a changed stored fingerprint during that lookup aborts before login. So each fingerprint is opened at most once per backend process; a changed profile gets a new attempt within `SOURCE_ATTEMPT_LIMIT`. A later read that uses a kept answer gets `caveat` saying it was read earlier; a kept failure says "Not tried again until the saved connection changes." A failed saved-password lookup (`ValueError`, `sqlite3.Error`, `OSError`) sends no login and is not kept. The CLI is one process per run, so it makes one attempt per run. Time: at most `SOURCE_PROFILE_READS` (4) opens per report, and `SOURCE_READ_BUDGET_S` (5) for all saved connections of one report from its first one; a source is opened only when the time left covers a full `SOURCE_QUERY_TIMEOUT_S`, otherwise it says "Not checked: ..." and gets its turn on a later read. That is checked again after the saved password lookup, which can wait (the Keychain, the vault lock) and cannot be interrupted: when the lookup leaves less than `SOURCE_QUERY_TIMEOUT_S`, the client is closed with nothing sent, the source says "Not checked: looking up the saved password ..." and nothing is kept, so the next read tries again. Otherwise the login and query run under `SOURCE_QUERY_TIMEOUT_S` (connect timeout `SOURCE_CONNECT_TIMEOUT_S`), so nothing is sent to a saved connection after the budget; only a lookup still running at its end can delay the report. (c) `label` "Version unknown", `reason` (why the relay log gave none: no privilege, no relay log file, source server ID not recorded, no source format event at the start of the relay log, the relay log could not be read; followed by the last saved-connection outcome when one was tried) and `hint` "Add a saved connection for host:port to show its version." when no saved connection matched and matching found no problem. Text output: one line per channel, `Source version: 9.7.2 (relay log)`, `(saved connection NAME)`, `(saved connection NAME; only its server ID could be compared)`, or `unknown.` with the reason and hint. Tests: `test/test_replication_source_version.py` over `test/fixtures/perf/replication-*-srcver-*.json` (live, 2026-10-20: MySQL 9.7.2 and MariaDB 11.8.9 replicas sharing their source's network namespace, so the source is 127.0.0.1:<port>; the `@@hostname` answers and this computer's host name are synthetic) and fakes for the cache, the time budget and the loopback host rule; recordings made before that get a synthetic refusal for the relay log head in `test_replication.fixture`, plus `test/test_connection_groups.py`. Browser: `test/replication-source-version.mjs`, `test/topology-groups.mjs`.
 - Skip plans (`plan_skip`): MySQL with a GTID for the failed transaction, gtid_mode not OFF and no AGAT: `SET GTID_NEXT = '<gtid>'; BEGIN; COMMIT; SET GTID_NEXT = 'AUTOMATIC'; START REPLICA SQL_THREAD FOR CHANNEL '<name>'` (`empty_gtid_transaction`; the GTID comes from the error text, the failing worker's text or APPLYING_TRANSACTION, or the relay log). Anonymous transactions or AGAT: `SET GLOBAL sql_replica_skip_counter = 1; START REPLICA SQL_THREAD FOR CHANNEL '<name>'` (`sql_slave_skip_counter` before 8.0.26, `START SLAVE` before 8.0.22), refused when the relay log shows the transaction at the applier's position is not the one that failed. MariaDB: `SET default_master_connection = '<name>'; SET GLOBAL sql_slave_skip_counter = 1; START SLAVE '<name>' SQL_THREAD`; with GTID, `slave_parallel_threads > 0`, a parallel mode and more than one domain in gtid_slave_pos the plan is `available: false` (the server answers 1966; setting gtid_slave_pos is explained, never automated). `identity` (channel, method, error number, message and time, GTID, relay and applied positions, source host, port and UUID) is what the person confirms. Error 3030 (`WORKER_STOPPED_BY_EARLIER`, ER_REPLICA_WORKER_STOPPED_PREVIOUS_THD_ERROR: with replica_preserve_commit_order a worker stopped and rolled back because an earlier transaction failed) is never the transaction skipped: `effective_error` takes the worker that failed first, the plan's `error` and GTID are its, the identity keeps the status as it reads, and the plan is `available: false` when only 3030 workers are visible; the skip loop compares the selected codes with the same error on every read, including both guards inside `skip_one` immediately before sending. If the underlying failure disappears and only 3030 remains, the loop refuses because it cannot tell which transaction to skip. All identity, policy, configuration, restart, receiver and progress guards remain active (`mysql-8.4-mta-3030-error`, recorded live: worker 1 1062 on :15, worker 2 3030 on :16, the status reporting the 3030).
 - `skip_one(conn, channel, expect, audit, decision, confirmed, statements)` (`replication-skip-1.0`): policy first (`dbops.gate`; every skip script is risky, so Production and Development confirm and a read-only connection refuses before any SQL), then a fresh read and plan; refuses (nothing sent) when the channel is gone, has no error, has no safe method, the applier runs again, any identity field changed, or the statements differ from the confirmed ones. The script is sent as one client call, each statement tagged `/*myflames:replication-skip*/` on its own line, with `dbops.WRITE_CLIENT_FLAGS`. Server errors become statuses (`denied` 1044/1045/1095/1142/1227, `refused_by_server` 1198/1966/3086/1781/1782/1790 and other setting errors, `failed`), naming which statements ran before the failing line; a lost connection raises and the audit record is `unknown`. After `SETTLE_S` the channel is read again: `after.passed` checks gtid_executed (GTID method), the domain in the global gtid_slave_pos (MariaDB; the `Gtid_Slave_Pos` column is gtid_current_pos) or the applied position against the transaction's end; a leftover Skip_Counter is reported. Audit operation `replication_skip`.
 - `python3 -m myflames replication skip --channel NAME [--yes] [--json] [-o PATH] [-q]`: policy from `--profile` before any prompt or connection, plan and drift warning on stderr, `[y/N]`, non-TTY needs `--yes`. Exit 0 skipped, 1 a sent skip was denied, failed or was not verified, 2 an unsent refusal, decline, bad input or connection failure. `--channel ''` is the default channel.
 - `SkipLoop` (`replication-skip-loop-1.0`): selected error codes only (none preselected), `max_skips` 1 to 1000 (CLI default 10), optional duration, check interval 1 to 60 s with the wait doubling per consecutive skip up to 60 s. Stops at once (`STOP_REASONS`, `needs_attention`): user stop (wakes a waiting loop), cap, duration, an unselected error, the same transaction failing again, the applier stopped without an error, channel gone or now Group Replication, source host/port/UUID, gtid_mode, AGAT or skip method changed, Uptime went down or the boot-time interval estimated from Uptime and the monotonic clock changed, lost connection, a refused, denied or failed skip. Receiver reconnect monitoring is optional at startup: readable, enabled stage counters capture an epoch and a changed epoch stops with `receiver_reconnected`. If those counters become disabled, absent or unreadable after being enabled, stop with `receiver_unverified`; never silently drop an active guard. When instrumentation is off, absent or denied at startup, or Performance Schema is off, the loop runs with the other guards and keeps reconnect monitoring off for that run. Loop snapshots carry `receiver_guard` (`"on"` or `"off"`), `receiver_guard_reason` (string or null), `receiver_guard_instrument` (exact stage name, null before the engine is known), and `receiver_guard_note` (coverage and enable guidance). `Start` reads the initial receiver identity on the loop's own connection before returning, bounded by the existing connection/query timeouts, so its first snapshot already reports actual coverage and the instrument; pending initialization is never reported as disabled instrumentation. `receiver_guard_plan(conn, report)` reads this coverage for a confirmation without changing instrumentation; the workspace replication response includes these fields at the report level and on each `skip_plan`. The confirmation and running status should display the note and reason. Echo `receiver_guard` to `skip-loop/start`: `"on"` requires coverage from the first loop read, so losing it after confirmation also stops. `replication_receiver` in Instruments maps `events_stages_summary_by_thread_by_event_name`, `threads`, `global_instrumentation`, `thread_instrumentation` and the engine-specific `stage/sql/Checking source version` (MySQL) or `stage/sql/Checking master version` (MariaDB). Both stages are off by default; counts suffice without timing, and receiver background threads do not depend on `setup_actors`. myflames never enables instruments. Each skip goes through `skip_one` with the loop's decision and is one audit record (`replication_skip_loop`). Workspace loops reload the profile from the store before every skip and recheck at the send boundary. A changed policy, deleted profile or moved endpoint stops with `policy_changed`; editing a profile to read-only or deleting it also signals its registered loops immediately. `WorkspaceServer.server_close` stops and joins all loops. Status and Stop remain usable after a policy change. In memory only: nothing resumes after a restart.
 - `python3 -m myflames replication skip-loop --channel NAME --errors 1062,1032 [--max N] [--max-minutes M] [--interval S] [--yes] [--json] [-o PATH] [-q]`: runs in the foreground and prints each live event on stderr (suppressed by `-q`); writes the final JSON snapshot of a started loop, or the final message without `--json` to stdout or `-o`, with identical payload bytes for either destination; Ctrl+C stops it. Exit 0 stopped by Ctrl+C, `--max` or `--max-minutes`, 1 a started loop stopped on a condition that needs attention, 2 an unsent refusal, decline, bad input or connection failure (also a lost connection).
-- An unexpected exception in any endpoint answers 500 with a neutral sentence that never carries the cause (`ui._unexpected_error_message`: plan endpoints "Could not render this plan. Try another view or the CLI."; `/api/live/*` "Could not read this from the server. Try Refresh or the CLI."; others "Could not complete the request. Try again or use the CLI.") and writes the traceback to stderr with every password replaced by `[redacted]`: values under any request key containing `password`, and the saved password of a connection that sends `profile_id` without one, also in their repr and JSON-escaped forms (`ui._log_unexpected_error`). Tests `test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr` and `test_unexpected_error_log_redacts_every_password_form` in `test/test_ui.py`.
+- Wrong-shape request errors (`TypeError`, `KeyError`, `AttributeError`, `RecursionError`, `OverflowError`; JSON nesting recursion already maps to `ValueError`) answer HTTP 400 on read and non-SQL-sending endpoints with `ui._unexpected_error_message`, whereas endpoints in `ui._SQL_OUTCOME_PATHS` (including `replication/skip` and `skip-loop/start`) answer HTTP 500 with `"The request could not be completed. Its outcome is unknown. Check the server state before trying again."` for any unexpected exception (`ui._log_unexpected_error` strips `ui._secret_values`, runs `dbops.redact` for SQL/URL credentials, and caps tracebacks at 65,536 characters before the truncation marker and log prefix; see [Local authentication and request limits](#local-authentication-and-request-limits)). Tests: `test/test_ui.py` and `test/test_workspace_api.py`.
 - Every 400 answer of `do_POST` (ValueError and friends, and ConnectorError) goes through `ui.request_error_text`. A common connection error leads with plain words and what to check (`dbops.connection_error_text`), then the client's line from `ERROR n` on, with the `mysql client exited N:` wrapper dropped and anything after the line (an SSH tunnel note) kept. 2002/2003: "Could not connect to the server. Check that it is running and that the host and port are right." ("… the socket path is right." for a socket failure; MariaDB's client reports a refused TCP connection as 2002). 2005: "Could not find the server's host name. Check the host for a typing error, or use its IP address." 2006/2013: "Lost the connection to the server. Check that it is still running: it may have restarted, or a network or time limit ended the connection." followed by the whole original message, so a write's context ("Could not end connection 41: …") stays. 1045 only when the text says Access denied: "The server refused the user name or password. Check both, and that the account may connect from your address." ("The server refused the login, and no password was sent. Enter the password, or check the user name." for `(using password: NO)`); a 1045 without Access denied gets no password hint. For 2002, 2003, 2005 and 1045 no session was opened, so a reader's context before the error ("Could not read the server status: ") is dropped. Other messages keep their words; only one that does not start with "Could not ", "Cannot ", "Can't ", "Unable to " or "Failed to " gets "Could not complete the request: ", and a ConnectorError without a mapped code passes through unchanged. The neutral 500 text is unchanged. Codes come from `include/errmsg.h` (texts checked in MySQL's `libmysql/errmsg.cc` and MariaDB's `sql-common/errmsg.c`). The CLI still prints its own context ("Could not read the server status: ERROR 2003 …"), and Cluster's `failureText` keeps its one sentence. Tests: `TestConnectionErrorText` in `test/test_dbops.py`; `test_failed_reads_lead_with_plain_words_on_every_server_view` and `test_a_reader_context_and_the_generic_prefix_never_stack` in `test/test_ui_http.py`.
 - Saved passwords are bound to the exact `ENDPOINT_FIELDS` (`host`, `port`, `user`, `ssl_mode`, `ssl_ca`): a profile saved without `ssl_mode` means the client's own default (not PREFERRED for every client, for example MariaDB 11.4+ verifies by default), so a request that names PREFERRED is refused until the profile is saved with it (`test_saved_password_binds_to_the_exact_tls_mode`). `scripts/ga-matrix.sh profiles` saves `ssl_mode` PREFERRED for that reason; an endpoint mismatch also shows the connection as Production in the picker (`connectionSafety`).
 - Endpoints: `POST /api/live/replication` (status; `_CONNECTION_PATHS`, saved-password helper), `POST /api/live/replication/skip` (`channel`, `expect`, `statements`, `confirmed: true`; `_WRITE_PATHS`: policy, then the saved password, then `skip_one`), `POST /api/live/replication/skip-loop/start` (`channel`, `codes`, `max_skips`, `max_minutes`, `poll_s`, `confirmed: true`; same order; the loop keeps its own connection and closes it when it stops), `.../skip-loop/status` (`job_id` or every loop of this connection) and `.../skip-loop/stop` (`job_id`). Loops live in `workspace.replication_loops` (`SkipLoopRegistry`) keyed by `dbops.connection_identity` and matched by its endpoint (`dbops.identity_endpoint`: saved connection id, host, port, user, TLS), so status and stop from another connection are refused while a change of the connection's type or read-only flag keeps them (one loop per channel and endpoint); status and stop open no connection. A refused or unconfirmed request is audited.
@@ -7428,7 +7797,7 @@ The Readyset place reads a Readyset SQL adapter (`3307`) or Admin SQL (`6036`) l
   - `report.findings` is `[{id, status: "watch"|"problem", title, text, tab}]`, sorted worst first (`problem` before `watch`, stable order within a severity). Finding IDs: `upstream_unreachable` (`problem`, `topology`), `controller_unavailable` (`problem`, `topology`), `replication_error` (`problem`, `topology`; fires when `replication.last_error` is set or `status_fields.replication_status == "Error"`, though current Readyset reports `Replication Status` only as `Running`, `Stopped` or `Disabled`, a value added in Readyset in 2026-03), `upstream_down:<index>` (`problem` when `active_cdc`, `watch` otherwise, `topology`), `table_errors` (`problem`, `tables`), `maintenance_mode` (`watch`, `topology`), `snapshot_in_progress` (`watch`, `topology`), `replication_stopped` (`watch`, `topology`), `replication_disabled` (`watch`, `topology`; only when deep caches exist, staying `ok` when no deep caches exist), `replication_status` (`watch`, `topology`; any reported status outside `Running`, `Online`, `Unknown`, `Stopped`, `Disabled`, `Error`), `replication_heartbeat_stale` (`watch`, `topology`; `heartbeat_staleness_s > 60.0` while `Running`), `shallow_refresh_capped` (`watch`, `caches`; `dropped_refreshes > 0` or any `over_cap`), `read_failed:status|caches|tables` (`read_failed:status` is `problem` on `topology`; `read_failed:caches` on `caches` and `read_failed:tables` on `tables` are `watch`), `status_unreported` (`watch`, `topology`; `SHOW READYSET STATUS` succeeded without a `Status` field), and `replication_status_unreported` (`watch`, `topology`; `SHOW READYSET STATUS` succeeded without a `Replication Status` field and no `replication_error` fired). The heartbeat finding describes measured staleness, not a definite delay of replicated data or deep caches, and asks the user to check consume lag, replication, heartbeat writes and clock skew between the upstream and Readyset hosts (`public/replicators/src/replication_lag_reporter.rs:507-523`). `report.status` is the worst finding (`"ok"` only when `findings` is empty, so a report with missing status fields or failed core reads is never `"ok"`); `status_why` is the list of finding titles; CLI/MCP `format_text` prints finding titles only.
   - A state or statistic Readyset did not report stays `null`: `status_fields.status`, `status_fields.replication_status`, and `topology.this_server.status` are `null` when `SHOW READYSET STATUS` did not report them (never defaulted to `"Online"` or `"ok"`), shown as `"Not read"` (`replication.status` falls back to `"Unknown"`, shown as `"Not read"` in the UI). Unread telemetry virtual tables (`cached_query_stats`, `upstream_query_stats`, `shallow_caches`, `shallow_cache_refresh_stats`, `shallow_cache_coalesce_stats`) leave their counts and derived figures (`cached_share_pct`, `shallow_hit_rate_pct`, `upstream_saved_ms`) `null`: workspace tiles show `"Not read"` when the counts are `null` and `"No traffic yet"` when read as zero, while `format_text` prints `"not read"` / `"cached share not read"` vs `"no traffic yet"`. Failed `SHOW CACHES` (`read_failed:caches`) shows `"Not read"` in the **Active caches** tile, omits the **Caches** tab count, shows `"Caches not read"` in the empty state, `"caches not read"` in the summary line and `"Caches not read"` on the topology card; failed `SHOW READYSET ALL TABLES` (`read_failed:tables`) omits the **Tables** tab count, shows `"Tables not read"` in the empty state and shows `"Tables not read"` on the **Base replication** tile hint when no error, stopped status or consume lag applies.
   - Display safety and redaction: `_display` drops Unicode control (`Cc`) and format (`Cf`) characters and Unicode line/paragraph separators and caps server values in finding titles and action reasons at 80 characters; `last_replicator_error` appears only in the `replication_error` finding's `text` (never in the title), capped at 2,000 characters. `_review_text` escapes `Cc` and `Cf` characters visibly (`\uXXXX` / `\UXXXXXXXX`) in review display fields (`eyebrow`, `title`, `confirm_label`, `description`, `target_text`, `facts`, `warnings`, `changes`, `undo`, `next`, `verified`, `checks`) while keeping `statements`, `typed_guard` and `expect` byte-exact, and `_finish_plan` adds `"The name starts or ends with a space: type it exactly, spaces included."` to `warnings` whenever `typed_guard` has leading or trailing spaces. `dbops.redact` (database URL passwords, SQL credential clauses, and the connection's password) covers `identify` errors (`SELECT @@version_comment` and `SHOW READYSET VERSION`), `status_fields.raw` and `status_fields`, `connections[].upstream`, `tables[].description`, `caches[].query`, `proxied_queries[].query`, `deep_reason`, `shallow_reason`, `replication.last_error`, finding server values, explain `query`, `reason` and `raw_support`, and exported query text in `caches[].statement` and `sql`. `identify()` also redacts the complete Readyset version with the connection password before `_display` removes control/format characters and line separators and caps it at 80 characters; that same safe version reaches the report, topology, explain result, plan facts and expectations, audit `server_version`, text output and export header. Identity and EXPLAIN CREATE CACHE errors redact the complete error text before shortening it to 200 characters; non-Readyset `@@version_comment` values are redacted first, made single-line with `_display`, then capped at 60 characters.
-- Dry-run precheck and cache DDL export: `explain_cache(conn, query_or_id, cache_type)` (`POST /api/live/readyset/explain-cache`, `readyset-explain-1.0`, `_SERVER_VIEW_PATHS`) validates a single `SELECT` (`live.bind_query`) or `q_<hex>` query ID without mutating state, preserving whitespace inside single-quoted literals and backticked identifiers while normalizing unquoted whitespace, runs `EXPLAIN CREATE SHALLOW CACHE` and/or `EXPLAIN CREATE DEEP CACHE` (redacting `query`, `reason` and `raw_support` with `dbops.redact`), refuses with `ActionUnavailable` when `port_role` is `None`, and checks `SHOW CACHES` for duplicate query IDs (`collisions[]`, preserving the exact reported cache name, including whitespace and literal backticks, as `read_status` does). `export_caches(conn)` (`POST /api/live/readyset/export-caches`, `readyset-export-1.0`) runs `EXPLAIN ALL CACHES` and falls back to `EXPLAIN CACHES` on `ERROR 1064` (older Readyset releases prior to `ALL`), returning `caches[].statement` and joined `sql` with database `USE` statements generated by the exporter. Before redaction, a single leading `USE` with one backticked identifier token from `dbops.lex_sql` and a semicolon is removed only when the remainder passes the single-`CREATE CACHE` check. The parsed database name takes precedence over the `database` column, preserves doubled backticks and spaces inside the identifier, and is re-quoted with `_rs_ident_server`; consecutive definitions on the same database emit `USE` once. A definition is runnable only when it is a single `CREATE [SHALLOW|DEEP] CACHE` statement after redaction, with no lexer issues, unclosed tokens, executable comments, extra statement, backslash command or line break outside string literals, and starting with `CREATE` (so a client `delimiter` command, which acts only as the first word of a line or statement, cannot occur; the word as a column or alias stays runnable) under both server and mysql-client readings (with and without backslash escapes). For each server/client lexer mode, token kinds and spans must be identical with and without backslash escapes. Outside ordinary single- or double-quoted strings, dollars are accepted only as `$` followed by one or more ASCII digits whose next character is neither a letter, digit, underscore, dollar, `swe7` identifier character (`[`, `\`, `]`, `^`, `{`, `}`, `~`) nor non-ASCII character. This preserves Readyset's `$N` placeholders while refusing dollar-quote tags such as `$$`, `$a$` and `$1$` (and `swe7` forms such as `$1^$2`, `$1[$2]`, `$1{` and `$1~$2`, while keeping `$1 ^ $2` and `($1)` runnable); the same boundary rule applies to identifiers and `USE` database names, and dollars inside ordinary quoted literals remain runnable. A backslash or backtick immediately preceded by a non-ASCII character makes the definition non-runnable: clients using gbk, big5, cp932, sjis or gb18030 can consume that ASCII byte as part of a multibyte character and change quote tracking. This check also covers `USE` prefixes and generated `USE` lines, including their closing backtick. Unicode control (`Cc`) and format (`Cf`) characters and U+2028/U+2029 line/paragraph separators anywhere in a definition, even inside a string, identifier or `USE` prefix, make it non-runnable. Disabled definitions and `USE` lines render these characters as visible `\uXXXX` / `\UXXXXXXXX` escapes with `_review_text`, including line breaks. Each non-runnable definition is emitted as one `-- ` comment line in both formats, under `-- This definition was not exported as runnable SQL: a non-ASCII character comes right before a backtick or backslash, which some client character sets read differently. Load it with --default-character-set=utf8mb4 after checking it.` in `sql` when disabled solely by `_EXPORT_CHARSET_AMBIGUITY`, or under `-- This definition was not exported as runnable SQL: it is not a single CREATE CACHE statement.` for every other reason (including when both apply); malformed or unquoted `USE` prefixes, repeated `USE` statements and prefixes followed by anything other than one accepted `CREATE CACHE` remain commented out in full. Export redaction applies `dbops.redact` to the whole definition with quoted identifiers masked by same-length, quote-free text, then restores identifiers that do not contain the connection password, so credential keywords and their literals are redacted together. Identifier tokens containing the connection password (also after collapsing doubled backticks) are replaced with `` `[redacted]` `` before masking. The whole-definition `dbops.redact` call receives the connection password, covering bare words, aliases and executable comments as well; a final literal replacement prevents identifier restoration from reassembling a password split across tokens in malformed SQL. An export-only linear-time URL pattern covers passwords containing `/` or `@`, ending at the last `@` before whitespace, a quote, a backtick or the end, with the password scan bounded to 1,024 characters. Quoted SQL string literals (`'...'` or `"..."`) and SQL comments containing the connection password have the whole literal or comment content replaced with `[redacted]`, checking the original token before URL redaction. Parsed `USE` names and the `database` column receive the same password and character checks: secret database names become `[redacted]` in metadata and are commented out in SQL, and definitions for unsafe or redacted databases are also commented out. An unsafe database does not change the last runnable database used for grouping. A database name that cannot be quoted emits `-- Database name could not be exported as runnable SQL.` with exactly one comment prefix. A detected connection password marks the definition changed even when it equals `[redacted]` and replacement leaves identical text. Server-supplied values in export comments, including the version, are redacted before `_display` removes control/format characters and line separators and caps them at 80 characters; the SQL header includes `-- Recognized credentials in query text are shown as [redacted].`, and any definition changed by redaction is emitted with every line prefixed `-- ` in both `caches[].statement` and `sql`, beneath `-- Credentials in this definition are shown as [redacted]; it will not run as is.` in `sql`. These definitions cannot execute accidentally: callers must restore the redacted values and deliberately uncomment them before reuse.
+- Dry-run precheck and cache DDL export: `explain_cache(conn, query_or_id, cache_type)` (`POST /api/live/readyset/explain-cache`, `readyset-explain-1.0`, `_SERVER_VIEW_PATHS`) validates a single `SELECT` (`live.bind_query`) or `q_<hex>` query ID without mutating state, preserving whitespace inside single-quoted literals and backticked identifiers while normalizing unquoted whitespace, runs `EXPLAIN CREATE SHALLOW CACHE` and/or `EXPLAIN CREATE DEEP CACHE` (redacting `query`, `reason` and `raw_support` with `dbops.redact`), refuses with `ActionUnavailable` when `port_role` is `None`, and checks `SHOW CACHES` for duplicate query IDs (`collisions[]`, preserving the exact reported cache name, including whitespace and literal backticks, as `read_status` does). `export_caches(conn)` (`POST /api/live/readyset/export-caches`, `readyset-export-1.0`) runs `EXPLAIN ALL CACHES` and falls back to `EXPLAIN CACHES` on `ERROR 1064` (older Readyset releases prior to `ALL`), returning `caches[].statement` and joined `sql` with database `USE` statements generated by the exporter. Before redaction, a single leading `USE` with one backticked identifier token from `dbops.lex_sql` and a semicolon is removed only when the remainder passes the single-`CREATE CACHE` check. The parsed database name takes precedence over the `database` column, preserves doubled backticks and spaces inside the identifier, and is re-quoted with `_rs_ident_server`; consecutive definitions on the same database emit `USE` once. A definition is runnable only when it is a single `CREATE [SHALLOW|DEEP] CACHE` statement after redaction, with no lexer issues, unclosed tokens, executable comments, extra statement, backslash command or line break outside string literals, and starting with `CREATE` (so a client `delimiter` command, which acts only as the first word of a line or statement, cannot occur; the word as a column or alias stays runnable) under both server and mysql-client readings (with and without backslash escapes). For each server/client lexer mode, token kinds and spans must be identical with and without backslash escapes. Outside ordinary single- or double-quoted strings, dollars are accepted only as `$` followed by one or more ASCII digits whose next character is neither a letter, digit, underscore, dollar, `swe7` identifier character (`[`, `\`, `]`, `^`, `{`, `}`, `~`) nor non-ASCII character. This preserves Readyset's `$N` placeholders while refusing dollar-quote tags such as `$$`, `$a$` and `$1$` (and `swe7` forms such as `$1^$2`, `$1[$2]`, `$1{` and `$1~$2`, while keeping `$1 ^ $2` and `($1)` runnable); the same boundary rule applies to identifiers and `USE` database names, and dollars inside ordinary quoted literals remain runnable. A backslash or backtick immediately preceded by a non-ASCII character no longer disables runnability or comments out a definition (`_split_export_use` and `_runnable_export_sql` pass `check_charset=False`); instead, whenever any runnable definition or safe emitted `USE` line (including its closing backtick) matches `_EXPORT_CHARSET_AMBIGUITY`, `export_caches` inserts `-- Import with a mysql-compatible client; use UTF-8 for these definitions.` followed by `charset utf8mb4` right after the two header comment lines. Unicode control (`Cc`) and format (`Cf`) characters and U+2028/U+2029 line/paragraph separators anywhere in a definition, even inside a string, identifier or `USE` prefix, still make it non-runnable. Disabled definitions and `USE` lines render these characters as visible `\uXXXX` / `\UXXXXXXXX` escapes with `_review_text`, including line breaks. Each non-runnable definition is emitted as one `-- ` comment line in both formats, under `-- This definition was not exported as runnable SQL: it is not a single CREATE CACHE statement.` in `sql`; malformed or unquoted `USE` prefixes, repeated `USE` statements and prefixes followed by anything other than one accepted `CREATE CACHE` remain commented out in full. Export redaction (`_redact_export_sql`) evaluates all three credential sources on the original definition (`raw_sql`) under both `NO_BACKSLASH_ESCAPES` readings (`scan1`, `scan2`) before replacing anything: `_merge_export_literal_spans` locates connection-password `'...'` / `"..."` string literals and `/*...*/`, `--`, `#` comments (`_redact_export_literal_passwords`, `_decode_export_sql_escapes`; identifiers, keywords, bare SQL words and database names are never redacted for equaling the connection password), `_export_url_spans` scans URL credentials linearly through the last `@` across broken quotes or nested URL tokens (skipping URLs strictly inside complete backticked identifiers, precomputing identifier `rfind('@')`, and extending across unclosed tokens, with no 1,024-character limit), and `_mask_export_identifiers` masks complete backticked identifiers with same-length private-use characters so `dbops.redact(masked)` runs without passing `conn.password`, identifiers are restored, and `_extract_redact_spans` recovers the SQL credential and secret-variable spans on `masked`. When both readings agree and every URL credential span passes `_export_url_spans_safe` under both backslash readings (never overlapping a closed backticked identifier, and lying strictly inside one closed string or comment token or strictly inside one code token free of quote, comment, newline, backslash or separator syntax matching `_EXPORT_URL_CODE_UNSAFE`), `_merge_export_all_spans` merges literal-password, URL and credential spans (collapsing overlaps so literal edits cannot erase a credential keyword or shift quote parity) and `_apply_export_spans` applies them in one pass (already-redacted `dbops.REDACTED` text triggers `changed` only when `_has_export_redacted_credential` shows it sits in a credential clause). When a URL span fails `_export_url_spans_safe` under either reading (for example when a URL password holds a quote or backtick or breaks its token), when `_has_uncovered_url_prefix` finds a URL prefix skipped before `scanned` in `_export_url_spans` that lies outside every yielded span, or when the two readings disagree on credentials (or on URL spans alongside literal edits, existing `[redacted]` markers, or unsafe URL bytes in `_EXPORT_URL_UNSAFE_CHARS`, or when `_extract_redact_spans` cannot align safely), `_redact_export_sql` replaces the definition with `_EXPORT_AMBIGUOUS_COMMENT` (`"-- This definition was hidden because its credentials depend on the server's quote mode."`), emitted commented out in both `caches[].statement` and `sql` under `_EXPORT_UNSAFE_COMMENT` and `_EXPORT_REDACTED_COMMENT` (known limit: a definition with stray unbalanced quotes can still show a literal that 3.5.1 hid). Parsed `USE` names and the `database` column keep names equal to the connection password while still passing `_export_db_safe` (unsafe dollars, `\`, controls, line breaks): unsafe databases stay commented out without changing `last_db`, while safe emitted `USE` lines participate in the `_EXPORT_CHARSET_AMBIGUITY` check for `charset utf8mb4`. A database name that cannot be quoted emits `-- Database name could not be exported as runnable SQL.` with one comment prefix. Server-supplied values in export comments, including the version, are redacted before `_display` removes control/format characters and line separators and caps them at 80 characters; the SQL header includes `-- Recognized credentials in query text are shown as [redacted].`, and any definition changed by redaction is emitted with every line prefixed `-- ` in both `caches[].statement` and `sql`, beneath `-- Credentials in this definition are shown as [redacted]; it will not run as is.` in `sql` (with `_EXPORT_AMBIGUOUS_COMMENT` already prefixed `-- `). These definitions cannot execute accidentally: callers must restore the redacted values and deliberately uncomment them before reuse.
 - Multi-tier topology and group consent (`myflames/topology_links.py`, `myflames/connection_groups.py`): `discover_readyset_topology` (`@grouped_read` `readyset.read_status`), `discover_proxy_backends` (`@grouped_read` `proxysql.read_status`) and `discover_database_tiers` (`@grouped_read` `cluster.attach_topology_tiers`, `@grouped_read` `replication.read_status` with `topology_tiers=True`) assemble end-to-end `ProxySQL -> Readyset -> MySQL/MariaDB (Standalone, Replicas, or Galera/PXC/InnoDB Cluster)` topologies across `Readyset`, `ProxySQL`, `Replication` and `Cluster`, with `Use <connection>` switching and cross-place navigation (`Open Readyset`, `Open ProxySQL`, `Open Replication`, `Open Cluster`). Only saved connections in the same non-empty `group` as the connection in use (`connection_groups.members(profiles, current)`, never the connection in use itself, and none when unsaved, ungrouped, or when the request edited any `ENDPOINT_FIELDS` of the saved profile) may be opened with saved passwords (`open_profile` from `replication.profile_opener`, guarded by `GroupScope.opener` and `conn._login_guard = login_consent` before every client login: each statement of a probe starts its own client login, and if either connection's group, the target's endpoint or its saved password changes before a statement, `ProfileReadError` stops the rest of that probe and the member is reported in `connection_group.read` as `not_reached`, while an attempt that already started a login keeps its attempt slot). `_filter_tier_candidates` considers every consenting group member with a host (excluding known local and peer database endpoints), never filtering or probing outside the group by connection name or port. Up to `PROFILE_READ_LIMIT` (6) consenting saved connections with a saved password (`remember_password` or `has_saved_password`) are probed per read within `PROFILE_BUDGET_S` (5.0 s, with `QUERY_TIMEOUT_S` 2 s per query; `_probe_cache` keeps `CACHE_SIZE` 64 LRU entries keyed by connection fingerprint with no TTL, and `_probe_attempts` caps per-process attempts at `ATTEMPT_LIMIT` 128), recording each group member's outcome (`read`, `failed`, `not_reached`) through `record_read` into `report["connection_group"]["read"]`, while probe notes (`probe_note`, `safe_problem`) use fixed wording and never include SQL text, credentials or raw client error text. ProxySQL probe rows carry `status_source` (`"runtime"` or `"config"`), and `build_readyset_topology` leaves `proxysql_nodes[].backend_status` `null` when `status_source == "config"` so config-only rows show `"Not read"` and never draw a running link; in `upstreams`, an unknown `active_cdc` remains `null` (rendered `"Not read"`, never `false`/`"No"`), and a fallback CDC row built from `CDC Server` when `upstream_servers` is empty leaves `health` `null` (`"Not read"` on the topology card) rather than inferring host health from the aggregate `Database Connection`; async replica peers matched by replication channel host/port set `evidence: "channel_source"` while UUID matches set `evidence: "server_uuid"`, and `matchEvidenceLabel` labels only `server_uuid` as `"Verified"` (`"Verified connection"` / `"Verified engine"`), rendering `"Matched by address"` for `channel_source`, `endpoint`, `hostname_port` and `mysql_servers`. Both `match_database_endpoint` and `_database_matches_target` reject an address match when both sides report non-empty, non-nil UUIDs that differ (`_contrary_uuid`, where the nil UUID `00000000-0000-0000-0000-000000000000` counts as unreported; Galera and PXC cluster members pass `uuid_field="wsrep_node_uuid"` to `match_database_endpoint`). The Topology place **Map** (`TopologyMap.tsx`, `myflames/topology_group.py`) is a separate static diagram with no stage motion and uses its own labels (`"verified"`, `"server ID match, not verified"`, `"address match, not verified"`, `"State not reported"`); see [Topology: Group connection reads and rolling changes](#topology-group-connection-reads-and-rolling-changes). ProxySQL `"readyset"` hostgroup comment matching in `discover_database_tiers` only activates when ProxySQL already links to the inspected database tier (`links_db`). Live client footprint (`read_live_client_footprint(conn, performance_schema=None)` in `topology_links.py`, stored at `topology_tiers.live_footprint` on `Cluster` and `Replication` reports) joins `performance_schema.session_connect_attrs a JOIN performance_schema.threads t ON t.PROCESSLIST_ID = a.PROCESSLIST_ID` (tagged `/*myflames:topology*/`, `ATTR_NAME IN ('_program_name', 'program_name', '_client_name')`, `LIMIT 50`) and checks `information_schema.TABLES` for `_readyset._readyset_heartbeat`. ProxySQL's backend connections identify themselves (`program_name` `"proxysql"`); for Readyset only its helper connections do (names starting `READYSET`, such as the shallow refresher, ACL pooler and query sampler), while its ordinary upstream and replication connections send no program name, so seeing no Readyset client does not mean Readyset is not connected. It returns `{known, clients, readyset_connected, readyset_programs, readyset_heartbeat_table, proxysql_connected, notes}`: `known` is `True` when `performance_schema` is not `False` and the attribute query succeeded (`False` when `performance_schema` is `False` or the query failed, in which case `notes` carries `"The live client footprint is unknown because Performance Schema is off or its connection attributes could not be read."`), and `clients` lists `{"program": <ATTR_VALUE>, "host": <PROCESSLIST_HOST>}` for each matching session (also used by `connection_groups.describe` to suggest matching saved connections with evidence `address_named_by_this_server`).
 - Action catalog (`available_actions`, `attach_actions`):
   - Every action is always listed as `{id, label, scope, tone, danger, description, enabled, why_not, fix}` (`danger` equals the pre-catalog `tone == "danger"` set `_DANGER_ACTIONS`; `tone` is kept for one release). Server scope sits in `report.actions` (19 actions); row scope sits in `caches[].actions` (`flush_cache`, `drop_cache`), `tables[].actions` (`resnapshot_table`), `proxied_queries[].actions` (`create_cache`), and per allowlist kind in `report.allowlist_actions.{functions,variables,schemas}` (`add_shallow_allowed`, `drop_shallow_allowed`); `report.allowlist_item_actions.{functions,variables,schemas}` is parallel to `shallow_allowlists`, entry `i` the `drop_shallow_allowed` entry computed for item `i`'s name, so one unusable name is disabled with its own reason while the other items stay enabled.
@@ -7579,7 +7948,8 @@ stays beside it, with Import and Export. `relationshipPath` in
 `schemaDiagramModel.ts` breaks a horizontal line where it crosses another
 relationship's vertical line, so crossings do not read as junctions. Canvas
 and SVG export use that same helper.
-`test/schema-diagram.mjs` covers browser behavior (`npm run test:diagram`), and
+`test/schema-diagram.mjs` covers browser behavior (`npm run test:diagram`),
+`test/test_schema_diagram.py` covers backend SQL/Mermaid export escaping, and
 `apps/workspace/test/mermaid-export.mjs` parses and renders the export cases with
 the real Mermaid library.
 
@@ -7612,7 +7982,7 @@ aliases, attributes, symbolic cardinalities, and reads column names and
 nullability back. Conceptual relationships never fabricate executable SQL
 foreign keys. SQL export revalidates retained original DDL; without reusable
 DDL it emits a structural subset with warnings. Mermaid export uses Mermaid
-entity escaping (`#quot;`, `#39;`) rather than HTML entities, readable sanitized
+entity escaping (`#quot;`, `#39;`, `#36;`) rather than HTML entities (`$` escapes to `#36;` so labels containing `$$` cannot render as KaTeX math in Mermaid preview), readable sanitized
 types (`int_unsigned`, `decimal(15-5)`), `PK`, `FK` and single-column `UK`
 markers, readable column aliases with the original name in a comment, and
 comments only where information would otherwise be lost (enum or set values,
@@ -8141,14 +8511,32 @@ compare`, `accounts export`) and the `parameter_snapshot_*` methods of
 existing `config_report(..., parameters=True)` projection and copies
 `parameters-1.0.notes` (not the configuration review's notes; validation also
 removes that boilerplate from older snapshots). `account_compare.capture(conn,
-server=None)` uses `accounts.list_accounts` and `accounts.read_account(...,
-include_catalog=False)` plus one SELECT of User, Host, ssl_type and the HEX of
-ssl_cipher, x509_issuer and x509_subject from `mysql.user`; no new SQL selects
-a credential field, and SHOW CREATE USER text is never exported. Each side
-opens a fresh `MySQLConnection` with the isolated client environment and the
-saved-password endpoint checks, at most 30 s per query and 120 s per side
-(`BoundedConnection`, role expansion included); the two sides are read one
-after the other. Accounts: at most 1,000, with an incomplete note beyond.
+server=None)` uses `accounts.list_accounts(..., include_tls=True,
+include_role_details=False)`, `accounts.read_account(...,
+include_catalog=False)` and one batched read of `SHOW GRANTS FOR` and
+`SHOW CREATE USER` for up to 50 accounts per batch (`_build_batch_plan`, using
+independent per-marker `uuid4().hex` tokens so earlier markers never disclose
+later terminators), plus the reused `mysql.user` TLS columns (`User`, `Host`,
+`ssl_type` and HEX of `ssl_cipher`, `x509_issuer`, `x509_subject`), reading
+`partial_revokes` once and reusing the cached version comment. No new SQL
+selects a credential field, and `SHOW CREATE USER` text is never exported. Each
+side opens a fresh `MySQLConnection` with the isolated client environment and
+saved-password endpoint checks wrapped in `BoundedConnection` (at most 30 s per
+query and 120 s per side, role expansion included) inside
+`dbops.TargetEvidenceConnection` (or reuses an existing `TargetEvidenceConnection`
+from Group reads, never downgrading its identity guarantees): if `server_version()`
+raises `identity_unavailable` on Compare servers, it preserves the previous read
+within the same budget and appends `'Accounts were read without the
+single-server check.'` to `notes`. Group evidence packets use the member's
+remaining budget (`per_query=False`); script mode uses the per-query timeout and
+retries smaller chunks after client timeouts within the deadline. When account
+names leave no fixed evidence-packet delimiter, batches split recursively, and
+a single-account packet that exhausts fixed candidates uses a random 15-byte
+`__mf_<8 hex>__` delimiter in `TargetEvidenceConnection.run`; statement errors in
+evidence-mode batches trigger per-account fallback for that batch, while
+script-mode batches retain per-statement account errors when their framing
+remains valid. The two sides are read one after the
+other. Accounts: at most 1,000, with an incomplete note beyond.
 Parameter files and snapshots: at most 10,000 items and 8 MiB
 (`MAX_FILE_BYTES`; CLI files are read in binary, refused before decoding when
 larger).
@@ -8439,14 +8827,18 @@ client errors (`reviewed_writes.client_error(code)`), and login refusals
 `"to database"`) so a failed login costs at most one client invocation per
 member; authenticated SQL errors (with SQL position evidence, `guard_markers`,
 or ProxySQL Admin `1045` `proxysql admin error:`) do not latch so optional
-probes stay optional. Non-excluded members run a second `_identity` and
+probes stay optional. `accounts` and `plugins` skip the GTID position read. Non-excluded members run a second `_identity` and
 subsequent section reads inside `dbops.TargetEvidenceConnection`, refusing
 `"The member identity changed during the read."` if `server_uuid` (MySQL) or
 `('server_id', 'hostname', 'version')` (MariaDB) drifts, and re-checking
 `conn.check()` and `transport.check()` at the end so optional readers cannot
 mask identity or transport failures. Member errors pass through
 `connection_groups.probe_note` and `safe_problem` (never echoing raw SQL,
-server text or passwords).
+server text or passwords); an unexpected exception on one member (`Exception`
+other than `ConnectorError`/`ValueError`/`OSError`) logs a redacted traceback
+via `ui._log_unexpected_error('/api/live/topology', ...)` (similarly in
+`/api/connect`) and marks only that member failed (`'The connection could not
+be read.'`) rather than failing the whole group read or connect response.
 
 **Consent (`open_group_member` and `_group_login_guard`)**: `read_group` and
 `topology_change` derive membership, endpoints and `group_generation` solely
@@ -8629,7 +9021,9 @@ logs in.
     (`contrary_uuid`, `contrary_sid`). Under
     `topology_links._endpoint_matches_profile`, canonical host keys
     (`topology_links._host_key`, shared with `replication._host_key`) collapse
-    IPv4-mapped IPv6 addresses to IPv4, compress IPv6, strip brackets and
+    IPv4-mapped IPv6 addresses to IPv4, canonicalize shorthand, zero-padded, hex
+    (`0x...`) and octal (`0...`) IPv4 spellings via `_parse_numeric_ipv4` (matching
+    BSD/POSIX `inet_aton`), compress IPv6, strip brackets and
     trailing dots, and compare case-insensitively. Loopback classification
     (`topology_links.is_loopback`, shared with `replication._is_loopback`)
     covers `localhost` and `.localhost` names, `127.0.0.0/8`, `::1` in any
@@ -8638,14 +9032,32 @@ logs in.
     match a saved member only when both the observer and the saved member are
     direct on this computer (`observer_host` is direct and loopback, not
     `"ssh:..."`, and the candidate has no `ssh_host`), never through SSH (the
-    same rule as `replication.match_source_profiles`). Address-only matches
+    same rule as `replication.match_source_profiles`; remote loopback peers
+    reported over SSH or across computers never filter local saved connections).
+    Address-only matches
     (`'endpoint'`, `'hostname_port'`, proxy routes, Readyset upstreams) have
     `verified: false`.
     ProxySQL `proxy_route` edge `state` comes only from runtime rows
-    (`status_source` `"config"` gives `state: None`), keeping `ONLINE` (`ok`),
-    `OFFLINE_SOFT` (`watch`), `OFFLINE_HARD` (`problem`) and every `SHUNNED*`
-    value (`SHUNNED[A-Za-z0-9_]{0,56}`, drawn as `problem` in `TopologyMap.tsx`
-    `stateTone`).
+    (`status_source` `"config"` gives `state: None`), reading
+    `stats_mysql_connection_pool` and monitors' `offline_hostgroup` columns in
+    `_map_probe`. Map edges deduplicate on `(source, destination, kind, '' for
+    replication or label, target_key)`, where `target_key` is `('', 0)` except
+    for `proxy_route` edges, which include `(normalized_host.lower(), port)`
+    so distinct backends in the same hostgroup that resolve to the same saved
+    server keep separate edges with their own `state` and `reason`. The drawn `label` stays short (`"hostgroup N"` or
+    `"hostgroup ?"`; `docs/schemas/topology-group-1.0.json`), while any
+    explanation travels in the optional `reason` field (omitted when healthy;
+    joined sentences for `"In the monitor's offline hostgroup."`,
+    `"No new traffic; existing queries and transactions may finish."` for
+    `OFFLINE_SOFT`, `"ProxySQL has taken this backend out of traffic."` for
+    `OFFLINE_HARD`, `"Shunned for replication lag."` for
+    `SHUNNED_REPLICATION_LAG`, and `"No ONLINE member in this hostgroup."` when
+    `servers_incomplete` is false and no `ONLINE` member exists in that
+    hostgroup). A runtime `ONLINE` route in a monitor's offline hostgroup
+    becomes `state: "offline"` (`problem`). `TopologyMap.tsx` `stateTone` maps
+    `ONLINE` (`ok`), `connecting` and `recovering` (`watch`), and
+    `OFFLINE_SOFT`, `OFFLINE_HARD`, `offline`, and every `SHUNNED*` value
+    (`SHUNNED[A-Za-z0-9_]{0,56}`) to `problem`.
 - `parameters`: `param_compare.capture(conn, server=entry,
   full_provider_options=True)` + `param_compare.compare_many(snapshots,
   role_settings=..., active_clusters=...)`. Re-reads
@@ -8721,8 +9133,14 @@ logs in.
     `quoted=False`, a linear scan without credential length limits) stay redacted and `'missing'`. ProxySQL
     Admin and Readyset members appear in `not_compared`.
 - `accounts`: `account_compare.capture` + `account_compare.compare_many`.
-  Uses `ACCOUNTS_REQUEST_SECONDS = 300`; when a member read takes `>=
-  QUERY_SECONDS` (30 s), its message notes `"Accounts are read one at a time;
+  Batches `SHOW GRANTS FOR` and `SHOW CREATE USER` for up to 50 accounts per
+  `TargetEvidenceConnection` packet (`_build_batch_plan`, independent per-marker
+  `uuid4().hex` tokens, remaining member budget `per_query=False`), splitting
+  batches when account names leave no fixed packet delimiter (a single-account
+  packet that exhausts fixed candidates uses a random 15-byte `__mf_<8 hex>__`
+  delimiter in `TargetEvidenceConnection.run`) and falling back to per-account
+  reads on any statement error in that batch. Uses `ACCOUNTS_REQUEST_SECONDS = 300`; when a member read takes `>=
+  QUERY_SECONDS` (30 s), its message still includes `"Accounts are read one at a time;
   %d accounts took %.1f s on this server."`. Captures up to `MAX_ACCOUNTS =
   1000` accounts (`complete=False` beyond 1,000; incomplete or error inventories
   go to `not_compared`). In `accounts._strip_account_credentials`, grant lines
@@ -8975,10 +9393,14 @@ logs in.
   keeps its line but omits its label (`data-label-omitted`), with one note
   under the diagram ("Some link labels did not fit; every link is listed
   below."), and a `paint-order: stroke` halo in `--surface` keeps label
-  text clear of the lines it crosses) above the accessible text view (Servers, `Not in this group` peers
-  with `seen_by`, Links showing `from -> to` and `"verified"` / `"server ID
+  text clear of the lines it crosses; drawn ProxySQL route labels show only
+  the short `hostgroup N` label and state, while `edge.reason` is appended in
+  the diagram link's `title` tooltip, the node inspector's Links fields
+  (`mapEdgeText`), and the Links list below via `edgeText`) above the
+  accessible text view (Servers, `Not in this group` peers
+  with `seen_by`, Links showing `from -> to`, `"verified"` / `"server ID
   match, not verified"` / `"address match, not verified"` / `"Same server
-  (alias)"`, Clusters, Notes; **Links** pages by 200 via **Show 200 more** and
+  (alias)"`, and any `edge.reason`, Clusters, Notes; **Links** pages by 200 via **Show 200 more** and
   retains all links past the 600-link diagram cap, while **Servers** and
   **Not in this group** peers stay complete up to 500 entries and page by 200
   when over 500, resetting on each new report). **Members** renders
@@ -9757,6 +10179,10 @@ measurements. The file stays out of `test/`: `test_misestimate_marks.py` and
 `parity.mjs` read every top-level `test/*.json` as a plan fixture. Skips whose reason full-matches
 no pattern in the allowlist are listed as unexpected;
 `MYFLAMES_SKIP_BUDGET=1` turns unexpected skips into a failure.
+`MYFLAMES_LONG_TESTS=1` runs the classifier cache stress tests
+(`TestClassifyCache` in `test/test_dbops.py`) at full size; the default run uses
+smaller inputs that still separate the cached and uncached paths and peak-memory
+bounds.
 Parallel runs add an inventory check: a probe in its own process asks
 unittest's own loader which modules it discovers and how many cases each
 holds, and each module's count is then compared with what its own worker
@@ -9845,7 +10271,9 @@ Pass runner flags after npm's `--`, for example
   references the path is left alone. Group cleanup is allowed only when
   every current member still proves that ownership. A stalled inspection
   (a busy machine can keep `ps` or `lsof` past its 15 s spawn timeout) is
-  tried once more before it counts. There is no blind
+  tried once more before it counts; both `ps` and `lsof` run asynchronously
+  (`await inspect(...)`) so process cleanup never blocks the Node event loop.
+  There is no blind
   process-group fallback when inspection fails: cleanup errors fail the
   run. A warning naming the suite reports leftover processes as a suite
   bug, even when cleanup succeeds. Windows retains `taskkill /F /T`, without
@@ -9897,8 +10325,15 @@ Pass runner flags after npm's `--`, for example
 Each build and suite receives a fresh temporary HOME/USERPROFILE and a
 private TMPDIR (also TMP/TEMP), with `MYFLAMES_SECRET_BACKEND=vault`. These
 directories are removed afterwards. The worker environment passes only
-PATH, CI, PYTHON, MYFLAMES_NO_SANDBOX, MYFLAMES_BROWSER_ARGS and PUPPETEER_* from the
-parent, plus Windows system executable variables where needed. Headless
+PATH, CI, PYTHON, MYFLAMES_NO_SANDBOX, MYFLAMES_BROWSER_ARGS, MYFLAMES_CPU_THROTTLE
+and PUPPETEER_* from the parent, plus Windows system executable variables where
+needed. In `apps/workspace/test/perf-harness.mjs`, `MYFLAMES_CPU_THROTTLE=N`
+(`N > 1`, off by default) calls `page.emulateCPUThrottling(N)` for stress runs;
+`launchBrowser` starts Chrome detached in its own process group on POSIX so
+`killBrowserTree` (`closeBrowser`'s bounded force path) terminates the whole
+browser tree (`kill(-pid, "SIGKILL")`, or Windows `taskkill /F /T`). Suites run
+against Puppeteer 25.18.1 (using `{ count }` instead of `clickCount` in mouse
+calls). Headless
 Chrome may report no hover-capable pointer (on the Linux runners), where the
 touch-screen CSS (`@media (hover: none)`) shows row actions that the desktop
 hides; suites that check hover-only controls read `matchMedia("(hover: hover)")`
@@ -10244,8 +10679,21 @@ compatibility wrapper; the UI exposes one Visual Explain tab. Preserve reported
 `join_type` for Venn shading, and keep MariaDB synthetic joins explicitly unknown.
 Join cards have their own height; edges must attach to the actual card bounds.
 Wheel input uses normalized deltas with bounded animation (`workbench.js`, `charts/core/zoom.ts`). See `docs/WORKBENCH_VIEW.md`.
+During a wheel gesture on the workspace canvas (`wheelTransform: true`), `zoom.ts`
+promotes `willChange = "transform"` at rest and scales the existing SVG via a
+CSS `transform` (`translate(...) scale(...)`) without re-laying out nodes per
+frame, updating the zoom readout (`paintReadout`) at most every `READOUT_MS`
+(120 ms) during the gesture and committing the exact `viewBox` once when the
+gesture settles (`commitGesture`; reports keep per-frame `viewBox` updates); a
+programmatic `zoom()` first settles any active wheel gesture (`stopWheel()`) so
+its transform never scales the new `viewBox`, and `zoom.ts` falls back to
+`Date.now()` when `Performance` is absent (`apps/workspace/test/zoom.mjs`).
 Update the zoom percentage and directional button limits in the shared paint
-path so button, wheel, fit, and reset actions stay synchronized.
+path so button, wheel, fit, and reset actions stay synchronized. Inspector
+open/close, full-width detail views and Back move keyboard focus via
+`focusWithoutScroll` (`kit.tsx`: `focus({ preventScroll: true })`, scrolling
+with `block: "nearest"` only when outside the viewport) so page scroll stays
+undisturbed.
 Fit keeps text readable: `MIN_TEXT_PX = 11` in `charts/core/zoom.ts`;
 `createZoom` takes `smallestTextPx`, which `workbench.ts` passes as
 `SMALLEST_TEXT_PX = 11` (the smallest font size in `WORKBENCH_CSS`,
@@ -10338,12 +10786,27 @@ statement in the inspector is copy-only.
   comments have the same boundaries with and without backslash escapes: the
   mysql client splits the script itself and honors NO_BACKSLASH_ESCAPES, so
   `'it\'s'` is refused (write `'it''s'`), while `'a\nb'` and `'C:\\x'` pass.
-  Unclosed strings and comments are refused. The script runs without `--force`,
+  Unclosed strings and comments are refused. `live.TOKEN`,
+  `live.TOKEN_NO_BACKSLASH` and `collectors._TOKENS` wrap their comment and
+  quoted-token regexes in `collectors._SQLTokenScanner`, which keeps the
+  original patterns' matches and replacement callbacks while stopping retries of
+  an opener kind (`/*`, `#`, `'`, `"`, `` ` ``) after its first failure (tested
+  for exact match/substitution equivalence and linear time on unterminated
+  comments and quotes in `test/test_collectors.py` and `test/test_live.py`).
+  The script runs without `--force`,
   so a failed `SET SESSION TRANSACTION READ ONLY` or `START TRANSACTION READ ONLY`
   stops it before the query; nothing before the query may fail on a supported
   server (`explain_json_format_version` is set only on MySQL 8.3+). Ctrl+C in
   `_run_script` sends KILL QUERY (while the connection ID and password are known)
-  before the client is ended. The client defaults file (`connector.py`) is
+  before the client is ended. `LiveJob._run_script` streams SQL to an unbuffered
+  client pipe (`bufsize=0`) from a daemon worker thread, checks
+  `self.cancelled` after opening a connection (and `LiveJob.run` skips setup if
+  cancelled before starting), `_stop_client` terminates with bounded `SIGTERM`
+  grace (`_TERM_GRACE_SECONDS = 0.25` s) then `SIGKILL` (`_REAP_SECONDS = 1.0` s)
+  while leaving any surviving worker thread's pipe unclosed past
+  `_WORKER_JOIN_SECONDS = 1.0` s, and `LiveJobs.close()` signals cancellation
+  and joins both capture and cancellation workers within `_CLOSE_SECONDS = 3.0` s.
+  The client defaults file (`connector.py`) is
   created by `mkstemp` (0600 on POSIX; no `os.fchmod` on Windows) and removed if
   writing it fails.
 
@@ -11273,3 +11736,11 @@ size, preserves keyboard focus, and suppresses empty menus. View actions precede
 standard copy actions. Resizers clear drag state and listeners on pointercancel
 and lostpointercapture. Full analysis start time belongs to its read owner in
 Server; Tuning uses it across remounts and uses ExportMenu for both exports.
+`Popover` in `kit.tsx` portals panels opened outside `dialog`, `.popover` and
+`.editor-options-popover` to `document.body` so they render above the sticky
+compact toolbar in every place, carrying `panelClassName`, inheriting local
+custom properties, font, direction and stale-report dimming, and closing when
+the trigger becomes hidden or disabled; in `Config.tsx` / `config.css`,
+`.set-value > .set-value-popover` and `.set-value-summary` keep `min-width: 0`
+so a long staged set value truncates instead of sliding the members button under
+**Discard**.

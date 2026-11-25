@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import selectors
 import socket
 import socketserver
 import sqlite3
@@ -21,6 +22,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .connector import ConnectorError, client_missing_error
 from .connection_groups import ProfileReadError
+from . import read_cancel
 from .parser import analyze_plan
 # Compatibility exports for one release; validation is independent of HTTP.
 from .plan_input import MAX_PLAN, _plan
@@ -267,20 +269,92 @@ def _report_response(payload, options, schemas, workspace=None):
     password = options.get("password")
     interval = payload.get("interval", report_module.DEFAULT_INTERVAL)
     limit = None if payload.get("all_schemas") is True else ALL_SCHEMAS_TABLE_LIMIT
-    # Only requests that would authenticate the same way share a run: the
-    # profile, every connection and TLS setting, and a password fingerprint.
     connection = payload.get("connection") if isinstance(payload.get("connection"), dict) else {}
-    key = report_module.flight_key(options, connection.get("profile_id"),
-                                   {"type": connection.get("type"), "read_only": connection.get("read_only")})
-    settings = (interval, tuple(schemas or ()), limit)
 
     def work():
         with _group_guarded_connection(options, connection, getattr(workspace, "store", None)) as conn:
             return report_module.analysis_report(conn, interval, schemas=schemas, require_choice_above=limit)
     try:
-        return report_module.run_single_flight(key, settings, work)
+        return _single_flight_read("/api/live/report", payload, workspace, work,
+                                   options=options, exclusive=True)
     except (ValueError, ConnectorError) as exc:
         _reraise_redacted(exc, password)
+
+
+def _single_flight_read(path, payload, workspace, work, options=None, exclusive=False):
+    """Share only identical reads within one workspace and consent snapshot.
+
+    Resolve ordinary view credentials before this call. Topology instead
+    binds the stored credential references (rotated on every password save),
+    leaving secret lookup behind its per-member consent checks.
+    Every request field participates,
+    even fields a view currently ignores, so adding a parameter cannot silently
+    broaden sharing. Hash request data with the process secret, never retain a
+    plaintext password in a registry key. Saved profile snapshots also bind
+    peer endpoints, credential references and group incarnations.
+    """
+    from . import report as report_module
+    from .accounts_api import _group_login_guard
+    from .connection_groups import members, request_profiles
+    from .live import connection_options
+    connection = payload.get("connection") or {}
+    options = connection_options(connection) if options is None else options
+    store = getattr(workspace, "store", None)
+    profiles, current = request_profiles(store, connection)
+    live_guard = _group_login_guard(store, connection)
+    guard = None
+    if live_guard is not None:
+        if current is None:
+            raise ProfileReadError("This saved connection is outside the current connection group.")
+        consent = (current.get("group"), current.get("group_generation"))
+
+        def guard():
+            # Bind the read to the key's original consent snapshot, even if
+            # the live guard was constructed after a group recreation. Read
+            # consent deliberately does not bind type or read-only policy.
+            live_guard()
+            _profiles, fresh = request_profiles(store, connection)
+            if fresh is None or (fresh.get("group"), fresh.get("group_generation")) != consent:
+                raise ProfileReadError("The connection group changed. Refresh before reading it again.")
+
+        guard()
+    peers = members(profiles, current)
+    credentials = []
+    if path == "/api/live/topology":
+        from .workspace_store import _same_endpoint, _stored_ref
+        # Public profile projections deliberately omit secret_ref. Read only
+        # private metadata here, never the vault/keychain password. A save
+        # rotates this reference even when its public timestamp is unchanged.
+        for profile in [current] + peers:
+            stored = store._profile(profile["id"])
+            if (not isinstance(stored, dict) or not _same_endpoint(profile, stored)
+                    or stored.get("group") != profile.get("group")
+                    or stored.get("group_generation") != profile.get("group_generation")):
+                raise ProfileReadError("The connection group changed. Refresh before reading it again.")
+            credentials.append((profile["id"], stored.get("remember_password"),
+                                stored.get("secret_backend"), _stored_ref(profile["id"], stored)))
+    scope = report_module.request_fingerprint([current, peers, credentials])
+    # Direct in-process callers retain their injected timing hooks. A socket
+    # request must own a cancellable flight, not join that synchronous work.
+    key = ("live-read", path, store, scope, read_cancel.current() is not None,
+           report_module.flight_key(options, connection.get("profile_id"),
+                                    {"type": connection.get("type"), "read_only": connection.get("read_only")}))
+    settings = report_module.request_fingerprint(payload)
+    # Full analysis retains its existing one-analysis-per-connection refusal.
+    # Ordinary views allow different settings to run independently.
+    if not exclusive:
+        key += (settings,)
+
+    def checked_work():
+        with read_cancel.scope(read_cancel.current(), guard):
+            if guard is not None:
+                guard()
+            return work()
+
+    result = report_module.run_single_flight(key, settings, checked_work, cancel=read_cancel.current())
+    if guard is not None:
+        guard()
+    return result
 
 
 def _export_response(payload):
@@ -956,12 +1030,19 @@ def _lifecycle_add(workspace, job, target, connection):
     owners = _lifecycle_owners(workspace)
     with _LIFECYCLE_OWNERS_LOCK:
         owners[job.id] = _lifecycle_owner(connection)
-    try:
-        return workspace.lifecycle.add(job, target)
-    except Exception:
-        with _LIFECYCLE_OWNERS_LOCK:
+        try:
+            result = workspace.lifecycle.add(job, target)
+        except Exception:
             owners.pop(job.id, None)
-        raise
+            raise
+        # add() expires finished jobs. Prune every owner's entries here, even
+        # if no page ever polls /jobs, without racing another registration.
+        with workspace.lifecycle.lock:
+            live = set(workspace.lifecycle.jobs)
+        for job_id in list(owners):
+            if job_id not in live:
+                del owners[job_id]
+        return result
 
 
 def _lifecycle_jobs_response(payload, workspace):
@@ -1360,6 +1441,8 @@ _SERVER_VIEW_PATHS = ("/api/live/sessions/history", "/api/live/index-suggestion"
                       "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql",
                       "/api/live/proxysql/digests", "/api/live/readyset", "/api/live/readyset/explain-cache",
                       "/api/live/readyset/export-caches", "/api/live/digest-histogram", "/api/live/digest-tables")
+_SINGLE_FLIGHT_READ_PATHS = ("/api/live/health", "/api/live/waits", "/api/live/io", "/api/live/memory",
+                            "/api/live/locks", "/api/live/indexes", "/api/live/tables")
 #: /api/live/kill is the one write: a confirmed KILL of one session (locks.kill_session).
 #: It fills the saved password itself, after the connection's write policy.
 #: The Query editor's run and commit (editor_session.py) are writes too: the
@@ -1413,18 +1496,22 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _CATALOG_PATHS + _TABLE_COLUMNS_PATHS
 _OBJECT_SEARCH_PATHS = ("/api/live/object-search",)
 _CONNECTION_PATHS = _CONNECTION_PATHS + _OBJECT_SEARCH_PATHS
 
-from .schema_diagram_api import PATHS as _DIAGRAM_PATHS, READ_PATH as _DIAGRAM_READ_PATH  # noqa: E402
+#: The route tables live in ui_routes.py so this module knows every path
+#: without importing the feature handler modules at startup; those load on
+#: the first request that needs them (see api_response).
+from .ui_routes import DIAGRAM_PATHS as _DIAGRAM_PATHS, DIAGRAM_READ_PATH as _DIAGRAM_READ_PATH
 _CONNECTION_PATHS = _CONNECTION_PATHS + (_DIAGRAM_READ_PATH,)
 #: Schema versions (schema_versions_api.py). Save and compare read live
 #: databases; each side fills its own connection's saved password, so they
 #: are not in _CONNECTION_PATHS (which fills only the top-level connection).
-from .schema_versions_api import PATHS as _SCHEMA_VERSION_PATHS, LARGE_PATHS as _SCHEMA_VERSION_LARGE  # noqa: E402
-from .compare_api import PATHS as _COMPARE_PATHS  # noqa: E402
+from .ui_routes import (SCHEMA_VERSION_PATHS as _SCHEMA_VERSION_PATHS,
+                        SCHEMA_VERSION_LARGE_PATHS as _SCHEMA_VERSION_LARGE)
+from .ui_routes import COMPARE_PATHS as _COMPARE_PATHS
 #: Baselines (baselines.py): a Health reading or Query digest totals kept on
 #: this computer. List and save read the server's identity through the
 #: connection (its saved password filled for that read); get and delete open
 #: no connection.
-from .baselines import PATHS as _BASELINE_PATHS  # noqa: E402
+from .ui_routes import BASELINE_PATHS as _BASELINE_PATHS
 
 
 #: Parameter version catalogs (param_versions.py): answers from the generated
@@ -1451,7 +1538,7 @@ _WRITE_PATHS = _WRITE_PATHS + ('/api/live/topology/variable/apply',)
 #: plan only read: they get the saved password like the views. Apply is a
 #: write: the connection's policy runs first, then the saved password is
 #: filled, and every attempt is audited.
-from .accounts_api import READ_PATHS as _ACCOUNT_READ_PATHS, WRITE_PATHS as _ACCOUNT_WRITE_PATHS  # noqa: E402
+from .ui_routes import ACCOUNT_READ_PATHS as _ACCOUNT_READ_PATHS, ACCOUNT_WRITE_PATHS as _ACCOUNT_WRITE_PATHS
 _ACCOUNT_PATHS = _ACCOUNT_READ_PATHS + _ACCOUNT_WRITE_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _ACCOUNT_WRITE_PATHS
 _CONNECTION_PATHS = _CONNECTION_PATHS + _ACCOUNT_PATHS
@@ -1475,8 +1562,8 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _ACTION_PATHS
 #: audited, before any connection opens), the review token must match the
 #: whole plan, then the saved password is filled. The handler fills passwords
 #: itself, so none of these is in _CONNECTION_PATHS.
-from .csv_import_api import PATHS as _CSV_IMPORT_PATHS, WRITE_PATHS as _CSV_IMPORT_WRITE_PATHS  # noqa: E402
-from .slowlog_api import PATHS as _SLOW_LOG_PATHS  # noqa: E402
+from .ui_routes import CSV_IMPORT_PATHS as _CSV_IMPORT_PATHS, CSV_IMPORT_WRITE_PATHS as _CSV_IMPORT_WRITE_PATHS
+from .ui_routes import SLOW_LOG_PATHS as _SLOW_LOG_PATHS
 _WRITE_PATHS = _WRITE_PATHS + _CSV_IMPORT_WRITE_PATHS
 #: Files uses SSH credentials in its own endpoint-bound namespace. These
 #: host-level file operations are independent of database write policy.
@@ -1491,6 +1578,12 @@ _FILES_PATHS = ("/api/files/remote/list", "/api/files/remote/mkdir", "/api/files
 #: (reviewed_writes.Progress by the action request's progress_id). No
 #: connection, no SQL, no credentials: phases and statement states only.
 _ACTION_PROGRESS_PATH = "/api/live/action/progress"
+
+# A positive allowlist: live/start, job controls and all reviewed writes keep
+# their existing lifetime. The handler also checks _WRITE_PATHS defensively.
+_CANCELLABLE_READ_PATHS = (_SERVER_VIEW_PATHS + _REPLICATION_READ_PATHS + _CATALOG_PATHS
+                         + _TABLE_COLUMNS_PATHS + _OBJECT_SEARCH_PATHS + _VARIABLE_READ_PATHS
+                         + ("/api/live/topology", "/api/live/readiness"))
 _ACTION_PROGRESS_LOCK = threading.Lock()
 #: Maximum database names returned by /api/connection/test.
 _TEST_DATABASES_LIMIT = 1000
@@ -1677,9 +1770,11 @@ def _connect_response(payload, workspace):
             try:
                 _report, facts = open_member(profile, True)
                 return profile["id"], facts, True
-            except Exception:
+            except Exception as exc:
+                if not isinstance(exc, (ConnectorError, ValueError, OSError)):
+                    _log_unexpected_error('/api/connect', sys.exc_info(), active_route, store)
                 # A member that cannot be read is reported unreachable; its
-                # error (and any secret in it) leaves this process nowhere.
+                # response contains neither the error nor any secret in it.
                 return profile["id"], None, False
 
         with ThreadPoolExecutor(max_workers=_CONNECT_PROBE_CONCURRENCY) as pool:
@@ -1832,7 +1927,7 @@ def _client_settings_response(path, payload, workspace):
                 server = lc.read_server(conn, options)
                 client_tools.remember_server(client_tools.endpoint_key(options), server['engine'], server['version'])
             result['server'] = {k: server[k] for k in ('engine', 'version', 'product')}
-        except Exception as exc:
+        except (ConnectorError, ValueError, OSError) as exc:
             missing = connector.client_missing_error(exc)
             result['server_error'] = dict(code=missing.code if missing else 'server-read',
                                          error=lc._safe(str(missing or exc), passwords))
@@ -2586,9 +2681,9 @@ def api_response(path, payload, workspace=None):
         _profiles, current = connection_groups.request_profiles(workspace.store, connection)
         if current is None:
             raise ValueError("This saved connection is outside the current connection group.")
-        return topology_group.read_group(workspace.store, connection["group_name"], section, current["id"],
-                                         expected_current=current,
-                                         expected_generation=current.get("group_generation"))
+        return _single_flight_read(path, payload, workspace, lambda: topology_group.read_group(
+            workspace.store, connection["group_name"], section, current["id"],
+            expected_current=current, expected_generation=current.get("group_generation")))
     if path in _TOPOLOGY_CHANGE_PATHS:
         if workspace is None:
             raise ValueError("This operation requires a running workspace.")
@@ -2790,6 +2885,9 @@ def api_response(path, payload, workspace=None):
             return topology_change.share_progress(workspace.store, _action_progress(workspace)).get(
                 payload.get('progress_id'))
         if path in _SERVER_VIEW_PATHS:
+            if path in _SINGLE_FLIGHT_READ_PATHS:
+                return _single_flight_read(path, payload, workspace,
+                                           lambda: _discover_response(path, payload, workspace=workspace))
             return _discover_response(path, payload, workspace=workspace)
         raise ValueError("Unknown workspace operation.")
     if path.startswith("/api/teach/"):
@@ -2932,7 +3030,7 @@ class WorkspaceServer(ThreadingHTTPServer):
     #: their own process groups, and the desktop's backend entry kills this
     #: process five seconds after it was asked to stop.
     TUNNEL_CLOSE_SECONDS = 3.0
-    #: How long close waits for the start-up client probes (each is bounded).
+    #: Bounded wait for the startup client probe warm-up thread when closing.
     TOOLS_WARMUP_WAIT_SECONDS = 2.0
 
     def __init__(self, port=0, store_path=None, no_restore=False, tool_groups_file=None, news_reader=None,
@@ -2981,10 +3079,18 @@ class WorkspaceServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), WorkspaceHandler)
         self.origin = "http://127.0.0.1:%s" % self.server_address[1]
         self.launch_url = self.origin + "/#launch=" + self.bootstrap_secret
-        # Warm cached version probes without delaying startup or recovery;
-        # started last so a construction that fails leaves no probe running.
+        # Warm cached version probes of the query tools (the same names the
+        # connection layer probes, connector.py) without delaying startup or
+        # recovery; started last so a construction that fails leaves no probe
+        # running. MySQL Shell is not probed here: Settings > Client tools
+        # (client_tools.discover_choices), Maintenance (lifecycle.detect_tools)
+        # and Cluster (cluster_shell) discover it when they are opened.
         from . import client_tools
-        self._tools_warmup = threading.Thread(target=client_tools.discover, daemon=True)
+        self._tools_warmup_stop = threading.Event()
+        self._tools_warmup = threading.Thread(target=client_tools.discover,
+                                              kwargs={"names": client_tools.QUERY_DISCOVERY_NAMES,
+                                                      "stop": self._tools_warmup_stop},
+                                              daemon=True)
         self._tools_warmup.start()
 
 
@@ -3053,6 +3159,10 @@ class WorkspaceServer(ThreadingHTTPServer):
             self._worker_slots.release()
 
     def server_close(self):
+        # Stop startup probes before cleanup that can wait for remote servers.
+        warmup_stop = getattr(self, "_tools_warmup_stop", None)
+        if warmup_stop is not None:
+            warmup_stop.set()
         # SSH tunnels close after the cleanup below (its KILL QUERY and
         # session ends may go through them), but never later than
         # TUNNEL_CLOSE_SECONDS from now, and also when that cleanup fails.
@@ -3091,6 +3201,7 @@ class WorkspaceServer(ThreadingHTTPServer):
             # Waits for a close the deadline already started.
             TUNNELS.close_all()
             TUNNELS.detach_groups(self.lifecycle.groups)
+            # Join the stopped warm-up boundedly before returning from cleanup.
             warmup = getattr(self, "_tools_warmup", None)
             if warmup is not None:
                 warmup.join(self.TOOLS_WARMUP_WAIT_SECONDS)
@@ -3191,9 +3302,19 @@ class _HeaderDeadlineReader(io.RawIOBase):
 #: server, a store or a job, so the plan wording would mislead there.
 _PLAN_PATHS = ("/api/analyze", "/api/render", "/api/report", "/api/compare")
 
+#: Error reporting only: persistent-session actions and job/import cancel
+#: routes have their own handling rather than the generic _WRITE_PATHS dispatch.
+#: They can still send SQL, including KILL QUERY while ending a session or job.
+_SQL_OUTCOME_PATHS = _WRITE_PATHS + ("/api/table-data/apply", "/api/table-data/cancel", "/api/table-data/close",
+                                     "/api/editor/rollback", "/api/editor/stop", "/api/editor/close",
+                                     "/api/editor/use", "/api/lifecycle/cancel", "/api/live/cancel",
+                                     "/api/import/csv/stop")
+
 
 def _unexpected_error_message(path):
     """The neutral 500 text for *path*. The response never carries the cause."""
+    if path in _SQL_OUTCOME_PATHS:
+        return "The request could not be completed. Its outcome is unknown. Check the server state before trying again."
     if path in _PLAN_PATHS:
         return "Could not render this plan. Try another view or the CLI."
     if path.startswith("/api/live/"):
@@ -3249,6 +3370,22 @@ def _secret_values(value, store=None, found=None, depth=0):
                 saved = None
             if isinstance(saved, str) and saved:
                 found.add(saved)
+        # Group probes have only group_name and active_member_profile_id in
+        # their request. A failure can originate in any saved member, whose
+        # password must be hidden too. Read only the explicitly named group;
+        # this opens no server connection and never scans unrelated secrets.
+        group = value.get("group_name")
+        if store is not None and isinstance(group, str) and group:
+            try:
+                from .workspace_store import ENDPOINT_FIELDS
+                for profile in store.list("profile"):
+                    if not isinstance(profile, dict) or profile.get("group") != group:
+                        continue
+                    member = {key: profile.get(key) for key in ENDPOINT_FIELDS}
+                    member["profile_id"] = profile.get("id")
+                    _secret_values(member, store, found, depth + 1)
+            except Exception:
+                pass
     elif isinstance(value, (list, tuple)):
         for item in value:
             _secret_values(item, store, found, depth + 1)
@@ -3257,8 +3394,9 @@ def _secret_values(value, store=None, found=None, depth=0):
 
 def _log_unexpected_error(path, exc_info, payload=None, store=None):
     """Write the traceback of an unexpected error to stderr, never to the
-    response, with the request's passwords (typed or saved) removed."""
+    response, with request passwords and SQL/URL credentials removed."""
     import traceback
+    from .dbops import redact
     try:
         text = "".join(traceback.format_exception(*exc_info))
         variants = set()
@@ -3267,6 +3405,11 @@ def _log_unexpected_error(path, exc_info, payload=None, store=None):
             variants.update((secret, repr(secret)[1:-1], json.dumps(secret)[1:-1]))
         for secret in sorted(variants, key=len, reverse=True):
             text = text.replace(secret, "[redacted]")
+        # Redact complete literals before truncating, including credentials
+        # that cross the log limit and are absent from the request payload.
+        text = redact(text)
+        if len(text) > 64 * 1024:
+            text = text[:64 * 1024] + "\n[traceback truncated]\n"
         sys.stderr.write("myflames: unexpected error in POST %s\n%s" % (path, text))
         sys.stderr.flush()
     except Exception:
@@ -3443,6 +3586,50 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         self._send(200, {"token": self.server.token}, cookie="%s=%s; Path=/api/; HttpOnly; SameSite=Strict" %
                    (self.server.cookie_name, self.server.session_secret))
 
+    def _cancellable_read(self, payload):
+        """Watch EOF only after the complete body has been read.
+
+        MSG_PEEK never consumes bytes, including a pipelined request. The
+        socket is nonblocking until the watcher is joined; response writes
+        begin only after its original timeout has been restored.
+        TCP write half-close also looks like EOF; the workspace client never
+        half-closes its requests, so it is treated as a disconnected caller.
+        """
+        cancel, stopped = threading.Event(), threading.Event()
+        timeout = self.connection.gettimeout()
+
+        def watch():
+            try:
+                # kqueue/epoll avoid select()'s FD_SETSIZE limit when many
+                # database clients or workspace requests are open.
+                with selectors.DefaultSelector() as selector:
+                    selector.register(self.connection, selectors.EVENT_READ)
+                    while not stopped.wait(0.1):
+                        try:
+                            if selector.select(0) and self.connection.recv(1, socket.MSG_PEEK) == b"":
+                                cancel.set()
+                                return
+                        except (BlockingIOError, InterruptedError):
+                            continue
+            except (OSError, ValueError):
+                # A failed watcher is not evidence of a disconnect. Leave
+                # the read running under its ordinary query deadline.
+                return
+
+        watcher = threading.Thread(target=watch, name="myflames-read-disconnect", daemon=True)
+        self.connection.setblocking(False)
+        try:
+            watcher.start()
+            with read_cancel.scope(cancel):
+                result = api_response(self.path, payload, self.server)
+                read_cancel.check()
+                return result
+        finally:
+            stopped.set()
+            if watcher.ident is not None:
+                watcher.join()
+            self.connection.settimeout(timeout)
+
     def do_POST(self):
         if not self._local_request():
             return
@@ -3502,6 +3689,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
         session = self.path == "/api/session/save"
         large = session or self.path in _SCHEMA_VERSION_LARGE
         payload = None
+        sending = False
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= (MAX_SESSION_BODY if large else MAX_BODY) or self.headers.get("Transfer-Encoding"):
@@ -3509,9 +3697,23 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                                  if session and size > 0 else "Request must be between 1 byte and %s."
                                  % ("64 MiB" if large else "12 MiB")})
                 return
-            payload = json.loads(self._read_body(size).decode("utf-8"))
-            result = api_response(self.path, payload, self.server)
+            try:
+                payload = json.loads(self._read_body(size).decode("utf-8"))
+            except RecursionError:
+                # Decoder limits describe malformed input. A RecursionError
+                # from endpoint code still reaches the logged response below.
+                raise ValueError("Request JSON is too deeply nested.") from None
+            if (self.path in _CANCELLABLE_READ_PATHS and self.path not in _WRITE_PATHS
+                    and hasattr(self, "connection")):
+                result = self._cancellable_read(payload)
+            else:
+                result = api_response(self.path, payload, self.server)
+            sending = True
             self._send(200, result)
+        except read_cancel.CancelledRead:
+            # The caller has gone away. No response and no error/fallback read.
+            self.close_connection = True
+            return
         except SessionConflict as exc:
             self._send(409, {"error": str(exc), "code": "session_conflict", "revision": exc.revision})
         except SessionTooLarge as exc:
@@ -3521,22 +3723,45 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
             self._send(409 if exc.code in ("busy", "identity_mismatch", "too_many_sessions") else 400,
                        {"error": str(exc), "code": exc.code})
         except Exception as exc:
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                                TimeoutError, socket.timeout)) and (sending or payload is None):
+                # The 200 response send already began, or the client went away
+                # while its request body was being read (payload is None, so
+                # api_response never ran and no SQL was sent): end quietly with
+                # no log and no response on the closed or written socket.
+                self.close_connection = True
+                return
             # SSH failures (sftp.py) name their reason; other exceptions with a
             # reason attribute (UnicodeError, SSLError, URLError) are not codes.
             reason = getattr(exc, "reason", None) if isinstance(exc, ConnectorError) else None
             missing = (client_missing_error(exc) if isinstance(
-                exc, (ConnectorError, ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError))
+                exc, (ConnectorError, ValueError))
                 else None)
             if missing is not None:
                 self._send(400, {"error": str(missing), "code": missing.code})
             elif isinstance(reason, str) and reason:
                 self._send(400, {"error": request_error_text(exc, prefix=False), "code": reason})
-            elif isinstance(exc, (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError)):
+            elif isinstance(exc, ValueError):
                 self._send(400, {"error": request_error_text(exc)})
             elif isinstance(exc, ConnectorError):
                 self._send(400, {"error": request_error_text(exc, prefix=False)})
-            elif isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            elif self.path in _SQL_OUTCOME_PATHS:
+                # An internal error can follow a successful SQL send (for
+                # example during read-back). Only explicit refusals above
+                # establish a 4xx outcome; an unexpected write failure is
+                # uncertain, including malformed-field exception types.
+                _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+                self._send(500, {"error": _unexpected_error_message(self.path)})
+            elif isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+                                  TimeoutError, socket.timeout)):
+                self.close_connection = True
                 return
+            elif isinstance(exc, (TypeError, KeyError, AttributeError, RecursionError, OverflowError)):
+                # Handlers may detect malformed request fields by indexing
+                # or using their expected type. Preserve the 400 contract,
+                # while logging redacted diagnostics for possible code bugs.
+                _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+                self._send(400, {"error": _unexpected_error_message(self.path)})
             else:
                 _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
                 self._send(500, {"error": _unexpected_error_message(self.path)})
@@ -3562,13 +3787,20 @@ def cmd_ui(argv):
         parser.error("--port must be between 0 and 65535")
     if not (ASSET_DIR / "index.html").is_file():
         parser.exit(2, "UI assets are missing. Run `npm ci` and `npm run build` in apps/workspace, or reinstall myflames.\n")
-    try:
+    def _fetch_feed(*args, **kwargs):
         from .news import fetch_feed  # Home news: the only server that reads feeds
+        return fetch_feed(*args, **kwargs)
+
+    def _fetch_page(*args, **kwargs):
         from .upgrade_targets import fetch_page
+        return fetch_page(*args, **kwargs)
+
+    try:
         # Set only by the desktop app: a file in its private runtime directory.
+        # The readers import news and upgrade_targets on first use, not here.
         server = WorkspaceServer(args.port, no_restore=args.no_restore,
                                  tool_groups_file=os.environ.get("MYFLAMES_TOOL_GROUPS_FILE") or None,
-                                 news_reader=fetch_feed, release_reader=fetch_page)
+                                 news_reader=_fetch_feed, release_reader=_fetch_page)
     except ValueError as exc:
         parser.exit(2, "Cannot start the UI: %s\n" % exc)
     except OSError as exc:

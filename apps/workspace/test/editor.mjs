@@ -473,6 +473,11 @@ try {
   assert.equal(JSON.stringify(body).includes("password"), false, "no credentials in an export");
   await page.locator(".result-export button ::-p-text(Export)").click();
   await page.waitForSelector(".popover .export-binary");
+  assert.deepEqual(await page.$$eval('.result-export-panel fieldset', fields => fields.map(field => {
+    const style = getComputedStyle(field);
+    return [style.borderTopWidth, style.borderTopStyle, style.paddingTop, style.paddingRight, style.marginTop];
+  })), [['1px', 'solid', '8px', '12px', '8px'], ['1px', 'solid', '8px', '12px', '8px']],
+    'result export fieldsets keep their panel-scoped border and spacing');
   await page.locator(".popover label ::-p-text(Treat data as binary)").click();
   // The SQL INSERT target starts as the one table the statement read; it stays editable.
   assert.deepEqual(await page.$$eval(".popover .export-sql input", (els) => els.map((e) => e.value)), ["orders", "shop"]);
@@ -787,7 +792,7 @@ try {
   assert.equal(await disabledConfirm(), true);
   await page.type(targetInput, "camel");
   assert.equal(await disabledConfirm(), true);
-  await page.click(targetInput, { clickCount: 3 });
+  await page.click(targetInput, { count: 3 });
   await page.keyboard.press("Backspace");
   await page.type(targetInput, "Camel");
   assert.equal(await disabledConfirm(), false);
@@ -1008,11 +1013,11 @@ try {
   assert.equal(calls("/api/live/catalog").at(-1).prefix, "archive");
   assert.equal(calls("/api/live/catalog").at(-1).after, null, "a new prefix starts at the first page");
   assert.equal((await page.$$(".tree-row.kind-table")).length, 1);
-  await page.click(prefixField, { clickCount: 3 });
+  await page.click(prefixField, { count: 3 });
   await page.keyboard.type("%_");
   await treeRow("table", "%_literal");
   assert.equal(calls("/api/live/catalog").at(-1).prefix, "%_");
-  await page.click(prefixField, { clickCount: 3 });
+  await page.click(prefixField, { count: 3 });
   await page.keyboard.press("Backspace");
   await treeRow("table", "users");
   assert.equal((await page.$$(".tree-row.kind-table")).length, 2, "clearing the prefix restores all loaded pages");

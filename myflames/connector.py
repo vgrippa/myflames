@@ -26,6 +26,7 @@ single source of truth.
 """
 from contextlib import contextmanager
 import collections
+import errno
 import ntpath
 import os
 import re
@@ -43,6 +44,8 @@ from .server_info import detect_flavor, server_version_tuple
 # Bound both pipes independently: stderr can be large even for a tiny result.
 MAX_STDOUT_BYTES = 64 * 1024 * 1024
 MAX_STDERR_BYTES = 1024 * 1024
+# One shared budget for reaping the killed client and joining its pipe workers.
+PROCESS_CLEANUP_TIMEOUT = 1.0
 
 # Keep client byte encoding independent of the locale. SET NAMES also fixes
 # MariaDB 10.11's server-default fallback when a MySQL client negotiates an
@@ -140,7 +143,7 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
 
     A separate stdin writer prevents a large script from blocking output
     drainage. On timeout, overflow or interruption, kill and reap the client
-    and join every pipe worker before returning to the caller. A read-only
+    and join pipe workers within a shared cleanup deadline. A read-only
     caller may give (raw marker row, seconds) to start a separate tail budget
     once that complete row arrives. Only that mode retains stdout on timeout.
     Its optional on_tail_start callback runs once in the stdout reader at
@@ -148,6 +151,8 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     Probes opt into a private process group so descendants holding a pipe
     cannot extend the deadline after the original process exits.
     """
+    from . import read_cancel
+    read_cancel.check()
     stdout_limit = MAX_STDOUT_BYTES if stdout_limit is None else stdout_limit
     stderr_limit = MAX_STDERR_BYTES if stderr_limit is None else stderr_limit
     tail_marker = (re.compile(rb'(?:^|\n)' + re.escape(tail_timeout[0].encode('ascii')) + rb'\r?\n')
@@ -159,6 +164,7 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
             process_options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             process_options['start_new_session'] = True
+    read_cancel.check()
     proc = subprocess.Popen(argv, stdin=subprocess.PIPE if input is not None else None,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, bufsize=0,
                             **process_options)
@@ -166,6 +172,7 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     failed = []
     buffers = [bytearray(), bytearray()]
     workers = []
+    pipe_workers = {}
     tail_deadline = []
     timed_out = None
 
@@ -219,15 +226,18 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     try:
         for args in ((proc.stdout, 0, stdout_limit, "stdout"),
                      (proc.stderr, 1, stderr_limit, "stderr")):
-            worker = threading.Thread(target=drain, args=args)
+            worker = threading.Thread(target=drain, args=args, daemon=True)
             worker.start()
             workers.append(worker)
+            pipe_workers[args[0]] = worker
         if input is not None:
-            worker = threading.Thread(target=send)
+            worker = threading.Thread(target=send, daemon=True)
             worker.start()
             workers.append(worker)
+            pipe_workers[proc.stdin] = worker
         while True:
             changed.clear()
+            read_cancel.check()
             if failed:
                 raise failed[0]
             remaining = (tail_deadline[0] if tail_deadline else deadline) - time.monotonic()
@@ -259,18 +269,30 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
             else:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                except (ProcessLookupError, PermissionError):
+                    pass  # The group may be gone or not yet signalable on macOS.
+                except OSError as exc:
+                    if exc.errno not in (errno.EPERM, errno.ESRCH):
+                        raise
+                # A failed group kill must still reach the direct-child kill,
+                # reap and pipe-worker joins below.
         if proc.poll() is None:
             proc.kill()
-        proc.wait()
+        cleanup_deadline = time.monotonic() + PROCESS_CLEANUP_TIMEOUT
+        try:
+            proc.wait(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass  # A killed child can still be stuck in an OS operation.
         for worker in workers:
-            worker.join()
+            worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
-            if pipe is not None:
+            worker = pipe_workers.get(pipe)
+            # Closing a buffered stream while another thread holds its lock
+            # can block too. Each worker closes its own pipe when it exits.
+            if pipe is not None and (worker is None or not worker.is_alive()):
                 pipe.close()
         if timed_out is not None and tail_timeout is not None:
-            # The child is reaped and readers joined before exposing output.
+            # Preserve only the bounded output captured before cleanup ends.
             timed_out.output = bytes(buffers[0])
 
 #: A statement error the client prints in batch mode: "ERROR 1146 (42S02) at line 3: ...".
@@ -352,6 +374,11 @@ def client_missing_error(exc):
 _CLIENT_CHOICES = {'mysql': None, 'mariadb': None}
 _CLIENT_CHOICES_LOCK = threading.RLock()
 _CLIENT_CHOICES_GENERATION = 0
+# Selection metadata only, never credentials or transport. New connections
+# refresh inventory after five seconds even when PATH has not changed (for
+# example, after installing another client in an existing search directory).
+_CLIENT_RESOLUTIONS = collections.OrderedDict()
+_CLIENT_RESOLUTION_SECONDS = 5.0
 _CONTACT_LOCK = threading.Lock()
 _CONTACT_FLIGHTS = {}
 
@@ -364,6 +391,7 @@ def set_client_choices(choices):
         if values != _CLIENT_CHOICES:
             _CLIENT_CHOICES = values
             _CLIENT_CHOICES_GENERATION += 1
+            _CLIENT_RESOLUTIONS.clear()
 
 
 def client_choices():
@@ -378,9 +406,17 @@ class ClientAuthPluginError(ClientMissingError):
     code = 'client-auth-plugin'
 
 
-def _auth_plugin_error(stderr, binary, used=None):
-    """Recognize the client error number, never a server SQL error mentioning it."""
-    first = re.search(r'^ERROR[^\r\n]*', stderr, re.M)
+def _auth_plugin_error(stderr, binary, used=None, stdout=None):
+    """Recognize a connection-phase diagnostic, never output from executed SQL."""
+    if stdout or _STATEMENT_ERROR.search(stderr):
+        return None
+    # An echoed SQL packet means authentication already completed. Its text
+    # can contain both fake ERROR lines and fake closing separators, so no
+    # diagnostic after an echo can safely authorize replaying the statements.
+    diagnostic = stderr.replace('\r\n', '\n')
+    if re.search(r'^--------------(?:\n|\Z)', diagnostic, re.M):
+        return None
+    first = re.search(r'^ERROR[^\r\n]*', diagnostic, re.M)
     # Connector/C errmsg.h: CR_AUTH_PLUGIN_CANNOT_LOAD is 2059. MariaDB
     # words this as "Plugin <name> could not be loaded: <reason>".
     match = (re.match(r"ERROR 2059 \(HY000\): (?:Authentication plugin '([A-Za-z0-9_]+)' cannot be loaded(?:$|:|\.)"
@@ -398,9 +434,9 @@ def _auth_plugin_error(stderr, binary, used=None):
                                        used.get('origin_label') or 'Explicit client', plugin))
 
 
-def _client_auth_error(stderr, binary, used=None):
+def _client_auth_error(stderr, binary, used=None, stdout=None):
     """Describe even the unprobed fast-path client, only after a 2059 failure."""
-    if _auth_plugin_error(stderr, binary, used) is None:
+    if _auth_plugin_error(stderr, binary, used, stdout=stdout) is None:
         return None
     if used and os.path.realpath(used['path']) != os.path.realpath(binary):
         used = None
@@ -411,7 +447,7 @@ def _client_auth_error(stderr, binary, used=None):
                      for g in found['installations'] for name, program in g['programs'].items()
                      if name in ('mysql', 'mariadb') and
                      os.path.realpath(program['path']) == os.path.realpath(binary)), None)
-    return _auth_plugin_error(stderr, binary, used)
+    return _auth_plugin_error(stderr, binary, used, stdout=stdout)
 
 
 _MACOS_ADMIN_GID = 80
@@ -802,12 +838,36 @@ def _server_read_error(stderr):
     return error is not None and not 2000 <= int(error.group(1)) <= 2999
 
 
+def _unsupported_identity_read(exc):
+    """Only an unsupported identity statement can become an endpoint fact.
+
+    MySQL share/messages_to_clients.txt: ER_PARSE_ERROR (1064),
+    ER_NO_SUCH_TABLE (1146), ER_UNKNOWN_SYSTEM_VARIABLE (1193),
+    ER_NOT_SUPPORTED_YET (1235). ProxySQL Admin uses 1045 for SQLite
+    refusals with its own prefix (proxysql.py's _NO_SUCH_TABLE comment).
+    Ordinary access denial, session state and transient failures say nothing
+    about this endpoint's support for @@version/@@version_comment.
+    """
+    message = re.sub(r'\Amysql client exited -?\d+: ', '', str(exc), count=1)
+    diagnostic = re.search(r'^ERROR[^\r\n]*', message, re.M)
+    if diagnostic is None:
+        return False
+    match = re.match(r'ERROR\s+(\d+)(?:\s+\([^)]*\))? at line \d+:\s*(.*)\Z',
+                     diagnostic.group())
+    if match is None:
+        return False
+    code = int(match.group(1))
+    return (code in (1064, 1146, 1193, 1235) or
+            (code == 1045 and match.group(2).startswith('ProxySQL Admin Error:')))
+
+
 class _InvocationDefaults(str):
     """Keep an option file paired with the client whose engine it describes."""
-    def __new__(cls, path, binary, client_engine=None):
+    def __new__(cls, path, binary, client_engine=None, used=None):
         value = str.__new__(cls, path)
         value.binary = binary
         value.client_engine = client_engine
+        value.client_use = dict(used) if used is not None else None
         return value
 
 
@@ -866,6 +926,10 @@ class MySQLConnection:
         self._binary_override = binary
         self._binary_cached = None
         self._binary_generation = None
+        self._binary_lock = threading.RLock()
+        self._binary_context = None
+        self._binary_candidate = None
+        self._binary_identity = None
         self._defaults_file_path = None
         self._version_cache = None
         self._version_comment_cache = None
@@ -882,25 +946,97 @@ class MySQLConnection:
         from . import client_tools
         return client_tools.endpoint_key(vars(self))
 
+    @staticmethod
+    def _other_auth_client(used, discovered, keys, choices, errors):
+        """Select one alternate for a missing plugin, preserving Settings.
+
+        Account-specific authentication failures never change endpoint facts
+        or a shared client's selection. Discovery and execution retain their
+        ordinary trust and login-consent checks.
+        """
+        from . import client_tools
+        other = 'mariadb' if used['engine'] == 'mysql' else 'mysql'
+        if choices.get(other) and not keys.get(other):
+            raise ClientMissingError(errors[other])
+        # Chosen-only discovery skips PATH probes until an automatic other
+        # engine is actually needed by a missing authentication plugin.
+        retry_discovered = (client_tools.discover(names=client_tools.QUERY_DISCOVERY_NAMES)
+                            if any(choices.values()) and not choices.get(other)
+                            else discovered)
+        candidates = dict(retry_discovered, installations=[
+            group for group in retry_discovered['installations'] if group['engine'] == other])
+        alternate = client_tools.select(candidates, dict(engine=other, version='5.7.0'), keys)['client']
+        if alternate is not None:
+            program = next(group['programs'][alternate['program']]
+                           for group in candidates['installations'] if group['key'] == alternate['installation'])
+            alternate['_identity'] = program.get('_identity')
+        return alternate
+
+    def _unidentified_auth_retry(self, client_engine):
+        """Resolve one read's alternate without caching it for the endpoint."""
+        from . import client_tools, read_cancel
+        if (self._binary_override or client_engine not in ('mysql', 'mariadb') or
+                not client_tools.first_contact_unidentified(self._endpoint_key())):
+            return None
+        while True:
+            read_cancel.check()
+            with _CLIENT_CHOICES_LOCK:
+                generation, choices = _CLIENT_CHOICES_GENERATION, dict(_CLIENT_CHOICES)
+            try:
+                discovered = client_tools.discover_choices(
+                    choices, automatic=not any(choices.values()), names=client_tools.QUERY_DISCOVERY_NAMES)
+                keys, errors = client_tools.choice_keys(discovered, choices)
+                alternate = self._other_auth_client(dict(engine=client_engine), discovered, keys, choices, errors)
+                if alternate is not None:
+                    identity = alternate.get('_identity')
+                    path = self._checked_client(alternate, keys)
+                    if identity is not None and client_tools._probe_key(
+                            alternate['program'], alternate['path']) != identity:
+                        continue
+            except ClientMissingError:
+                with _CLIENT_CHOICES_LOCK:
+                    if generation != _CLIENT_CHOICES_GENERATION or choices != _CLIENT_CHOICES:
+                        continue
+                raise
+            # As with normal resolution, a Settings edit during discovery or
+            # the last trust check invalidates the entire selection.
+            with _CLIENT_CHOICES_LOCK:
+                if generation != _CLIENT_CHOICES_GENERATION or choices != _CLIENT_CHOICES:
+                    continue
+            read_cancel.check()
+            return (path, alternate) if alternate is not None else None
+
     def _first_contact(self, discovered, keys, choices, errors):
         """Single flight per endpoint, using this object's credentials/transport.
 
-        Only valid server facts persist. All waiters share failures as well as
-        successes, and a later request may retry an unknown or failed endpoint.
+        Valid facts and answered but unidentified replies persist in the LRU.
+        All waiters share failures; later requests retry transport/login errors.
         """
-        from . import client_tools
+        from . import client_tools, read_cancel
         endpoint = self._endpoint_key()
-        with _CONTACT_LOCK:
-            facts = client_tools.server_facts(endpoint)
-            if facts is not None:
-                return facts
-            flight = _CONTACT_FLIGHTS.get(endpoint)
-            owner = flight is None
+        while True:
+            read_cancel.check()
+            with _CONTACT_LOCK:
+                facts = client_tools.server_facts(endpoint)
+                if facts is not None:
+                    return facts
+                if client_tools.first_contact_unidentified(endpoint):
+                    return None
+                flight = _CONTACT_FLIGHTS.get(endpoint)
+                owner = flight is None
+                if owner:
+                    flight = {'done': threading.Event(), 'facts': None, 'error': None}
+                    _CONTACT_FLIGHTS[endpoint] = flight
             if owner:
-                flight = {'done': threading.Event(), 'facts': None, 'error': None}
-                _CONTACT_FLIGHTS[endpoint] = flight
-        if not owner:
-            flight['done'].wait()
+                break
+            while not flight['done'].wait(0.05):
+                read_cancel.check()
+            read_cancel.check()
+            if isinstance(flight['error'], read_cancel.CancelledRead):
+                # Discovery is shared across otherwise unrelated reads and
+                # writes. A departing owner's cancellation is not our own:
+                # retry with this caller's credentials and request context.
+                continue
             if flight['error'] is not None:
                 raise flight['error']
             return flight['facts']
@@ -919,37 +1055,29 @@ class MySQLConnection:
                 except ClientAuthPluginError:
                     if attempt:
                         raise
-                    other = 'mariadb' if used['engine'] == 'mysql' else 'mysql'
-                    if choices.get(other) and not keys.get(other):
-                        raise ClientMissingError(errors[other])
-                    # Chosen-only discovery deliberately skips PATH probes.
-                    # On a plugin failure, an automatic other engine needs its
-                    # own lazy discovery with the normal pre-probe trust checks.
-                    retry_discovered = (client_tools.discover(names=client_tools.QUERY_DISCOVERY_NAMES)
-                                        if any(choices.values()) and not choices.get(other)
-                                        else discovered)
-                    # The other engine's pure ranking selects its best copy.
-                    candidates = dict(retry_discovered, installations=[
-                        g for g in retry_discovered['installations'] if g['engine'] == other])
-                    used = client_tools.select(candidates, dict(engine=other, version='5.7.0'), keys)['client']
+                    used = self._other_auth_client(used, discovered, keys, choices, errors)
                     if used is None:
                         raise
                 except ConnectorError as exc:
-                    # Login/transport errors must not cause a second connection.
-                    # SQL errors mean this endpoint cannot answer this read.
-                    # Both clients print "at line" only after a statement
-                    # starts (client/mysql.cc put_info). Client 2xxx failures
-                    # such as a lost connection remain connection failures.
-                    if re.search(r'\bERROR\s+(?!2\d{3}\b)\d+(?:\s+\([^)]*\))? at line \d+', str(exc)):
-                        return None
+                    if _unsupported_identity_read(exc):
+                        client_tools.remember_unidentified_server(endpoint)
+                        flight['facts'] = client_tools.server_facts(endpoint)
+                        return flight['facts']
                     raise
             row = text.strip().split('\n')[0].split('\t') if text.strip() else []
             if len(row) >= 2:
                 version, comment = (self._unescape_mysql(v) for v in row[:2])
                 client_tools.remember_server(endpoint, detect_flavor(version, comment), version)
                 flight['facts'] = client_tools.server_facts(endpoint)
-                if flight['facts'] is not None:
+                if flight['facts'] is not None and flight['facts']['version'] == version:
                     self._version_cache, self._version_comment_cache = version, comment
+            if flight['facts'] is None and text.strip():
+                # ProxySQL Admin can accept the SELECT but return only one
+                # column (or an unsupported ProxySQL version). It answered;
+                # retrying cannot improve client selection. Keep its engine
+                # unknown and allow later explicit valid facts to supersede it.
+                client_tools.remember_unidentified_server(endpoint)
+                flight['facts'] = client_tools.server_facts(endpoint)
             return flight['facts']
         except BaseException as exc:
             flight['error'] = exc
@@ -969,11 +1097,63 @@ class MySQLConnection:
         if self._binary_override:
             self._binary_cached = self._binary_override
             return self._binary_cached
+        # Query execution remains concurrent. Only selection/cache publication
+        # is serialized so a shared connection cannot mix two choices' metadata.
+        with self._binary_lock:
+            return self._resolve_automatic_binary()
+
+    def _resolution_context(self, generation):
         from . import client_tools
+        endpoint = self._endpoint_key()
+        return (generation, os.environ.get('PATH'), bundled_client_dir(), endpoint,
+                client_tools.server_facts(endpoint), client_tools.first_contact_unidentified(endpoint),
+                tuple(sorted(client_choices().items())), os.getcwd())
+
+    def _resolve_automatic_binary(self):
+        from . import client_tools, read_cancel
         while True:
+            read_cancel.check()
             with _CLIENT_CHOICES_LOCK:
                 generation = _CLIENT_CHOICES_GENERATION
                 choices = dict(_CLIENT_CHOICES)
+            context = self._resolution_context(generation)
+            cache_key = context[:4] + (tuple(sorted(context[4].items())) if context[4] else None,) + context[5:]
+            if self._binary_context != context:
+                with _CLIENT_CHOICES_LOCK:
+                    shared = _CLIENT_RESOLUTIONS.get(cache_key)
+                    if shared is not None:
+                        if time.monotonic() - shared[0] < _CLIENT_RESOLUTION_SECONDS:
+                            _CLIENT_RESOLUTIONS.move_to_end(cache_key)
+                            self._binary_cached = shared[1]
+                            self._binary_candidate = dict(shared[2])
+                            self._binary_identity = shared[3]
+                            self._client_use = dict(shared[4]) if shared[4] is not None else None
+                            self._binary_context = context
+                            self._binary_generation = generation
+                        else:
+                            _CLIENT_RESOLUTIONS.pop(cache_key, None)
+            if (self._binary_cached and self._binary_generation == generation
+                    and self._binary_context == context):
+                candidate = self._binary_candidate
+                try:
+                    path = self._checked_client(candidate, {})
+                except ClientMissingError:
+                    # Automatic selection may find another trusted client;
+                    # a broken explicit Settings choice still fails below.
+                    self._binary_context = None
+                else:
+                    identity = client_tools._probe_key(candidate['program'], candidate['path'])
+                    if identity is not None and identity == self._binary_identity:
+                        with _CLIENT_CHOICES_LOCK:
+                            if context == self._resolution_context(_CLIENT_CHOICES_GENERATION):
+                                read_cancel.check()
+                                return path
+                        continue
+                self._binary_cached = None
+                with _CLIENT_CHOICES_LOCK:
+                    _CLIENT_RESOLUTIONS.pop(cache_key, None)
+            facts = context[4]
+            contact_attempted = False
             candidates = [c for c in client_tools.snapshot(names=client_tools.QUERY_DISCOVERY_NAMES)
                           if c['name'] in ('mysql', 'mariadb') and not c.get('trust_error')]
             if not any(choices.values()) and len(candidates) <= 1:
@@ -981,7 +1161,9 @@ class MySQLConnection:
                 if not candidates:
                     raise ClientMissingError()
                 candidate = candidates[0]
+                identity = candidate.get('identity') or client_tools._probe_key(candidate['name'], candidate['path'])
                 path = checked_program(candidate['path'], candidate['realpath'], candidate['bundled'])
+                checked_candidate = dict(candidate, program=candidate['name'])
                 used = None
             else:
                 discovered = (client_tools.discover_choices(choices, automatic=False, names=client_tools.QUERY_DISCOVERY_NAMES)
@@ -1003,6 +1185,7 @@ class MySQLConnection:
                                     for name, p in g['programs'].items() if name in ('mysql', 'mariadb')} |
                                    {c['realpath'] for c in candidates})
                 if facts is None and (any(errors.values()) or max(len(candidates), client_count) >= 2):
+                    contact_attempted = True
                     facts = self._first_contact(discovered, keys, choices, errors)
                 if facts and errors[facts['engine']]:
                     raise ClientMissingError(errors[facts['engine']])
@@ -1020,6 +1203,11 @@ class MySQLConnection:
                     used = client_tools.first_contact_client(discovered, keys)
                 if used is None:
                     raise ClientMissingError()
+                # Discovery records identity before its version probe. It is
+                # distinct from the final stat that validates publication.
+                program = next(group['programs'][used['program']]
+                               for group in discovered['installations'] if group['key'] == used['installation'])
+                identity = program.get('_identity') or client_tools._probe_key(used['program'], used['path'])
                 try:
                     path = self._checked_client(used, keys)
                 except ClientMissingError:
@@ -1027,12 +1215,42 @@ class MySQLConnection:
                         if generation != _CLIENT_CHOICES_GENERATION:
                             continue
                     raise
+                checked_candidate = used
+            # Facts may have become known during first contact. Everything
+            # else must still describe the environment that chose this client.
+            resolved_context = self._resolution_context(generation)
+            if (context[:4] != resolved_context[:4] or context[6:] != resolved_context[6:]
+                    or facts != resolved_context[4]):
+                continue
+            # Empty successful replies still retry. An unidentified endpoint
+            # evicted during selection must also be probed again.
+            cacheable = not contact_attempted or facts is not None or resolved_context[5]
+            if client_tools._probe_key(checked_candidate['program'], checked_candidate['path']) != identity:
+                # A replacement must be selected and probed on the next pass;
+                # never cache its identity with this file's earlier metadata.
+                continue
+            cacheable = cacheable and identity is not None
+            read_cancel.check()
             with _CLIENT_CHOICES_LOCK:
                 if generation != _CLIENT_CHOICES_GENERATION:
                     continue
                 self._binary_generation = generation
                 self._binary_cached = path
+                self._binary_context = resolved_context if cacheable else None
+                self._binary_candidate = checked_candidate
+                self._binary_identity = identity
                 self._client_use = used
+                # Share only endpoints retained by the facts LRU, including
+                # answered but unidentified endpoints; empty replies retry.
+                if cacheable and (resolved_context[4] is not None or resolved_context[5]):
+                    cache_key = (resolved_context[:4] +
+                                 (tuple(sorted(facts.items())) if facts else None,) + resolved_context[5:])
+                    _CLIENT_RESOLUTIONS[cache_key] = (
+                        time.monotonic(), path, dict(checked_candidate), identity,
+                        dict(used) if used is not None else None)
+                    _CLIENT_RESOLUTIONS.move_to_end(cache_key)
+                    while len(_CLIENT_RESOLUTIONS) > 256:
+                        _CLIENT_RESOLUTIONS.popitem(last=False)
                 return path
 
     def _build_defaults_file_content(self, endpoint=None, client_engine=None):
@@ -1173,13 +1391,15 @@ class MySQLConnection:
         invocation holds the tunnel until it ends."""
         self._check_login_consent()
         binary = binary or self._resolve_binary()
+        used = used or getattr(self, '_client_use', None)
+        used = (dict(used) if used and os.path.realpath(used['path']) == os.path.realpath(binary) else None)
         engine, client_engine = self._client_engine_facts(binary, used)
         lease = self._acquire_tunnel() if getattr(self, "ssh_host", None) else None
         try:
             path = self._create_defaults_file(None if lease is None else ("127.0.0.1", lease.port),
                                               client_engine=engine)
             try:
-                yield _InvocationDefaults(path, binary, client_engine)
+                yield _InvocationDefaults(path, binary, client_engine, used)
             finally:
                 try:
                     os.unlink(path)
@@ -1313,9 +1533,15 @@ class MySQLConnection:
         Only the trusted profile opener installs the guard. Check before
         acquiring transport and again at spawn, after any setup that can wait.
         """
+        from . import read_cancel
+        read_cancel.check()
+        request_guard = read_cancel.current_guard()
+        if request_guard is not None:
+            request_guard()
         guard = getattr(self, '_login_guard', None)
         if guard is not None:
             guard()
+        read_cancel.check()
 
     def _run_client(self, argv, **options):
         """Check immediately before spawning, and retain sent probe attempts."""
@@ -1345,6 +1571,7 @@ class MySQLConnection:
         validate against the markers. Optional on_tail_start runs at that
         marker, even if the tail fails.
         """
+        automatic = binary is None and not self._binary_override
         started = time.monotonic()
         try:
             binary = binary or self._resolve_binary()
@@ -1374,8 +1601,18 @@ class MySQLConnection:
             ) from e
         if proc.returncode != 0:
             stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-            auth = _client_auth_error(stderr, argv[0], used or getattr(self, '_client_use', None))
+            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', used),
+                                      stdout=proc.stdout)
             if auth is not None:
+                # An unidentified statement says nothing about another
+                # account's plugins. Retry a genuine failed handshake once;
+                # the explicit binary prevents another retry on this call.
+                retry = (self._unidentified_auth_retry(getattr(defaults_path, 'client_engine', None))
+                         if automatic else None)
+                if retry is not None:
+                    return self._run_with_binary(
+                        sql, retry[0], extra_flags, timeout, tail_timeout, on_tail_start,
+                        used=retry[1], retain_partial_stdout=retain_partial_stdout)
                 raise auth
             if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
                 raise ConnectorError(EXPIRED_PASSWORD_MESSAGE + self._tunnel_note(started))
@@ -1404,8 +1641,11 @@ class MySQLConnection:
         such a line (a refused login) raises. ``--skip-reconnect`` keeps the
         session settings made at the start of the script from vanishing.
         """
+        return self._run_script_with_binary(sql, extra_flags, timeout)
+
+    def _run_script_with_binary(self, sql, extra_flags, timeout, binary=None, used=None):
         try:
-            with self._invocation_defaults() as defaults_path:
+            with self._invocation_defaults(binary, used) as defaults_path:
                 argv = [getattr(defaults_path, "binary", None) or self._resolve_binary(), "--defaults-file=" + defaults_path,
                         "--local-infile=0",
                         "--batch", "--skip-column-names", "--silent", "--skip-reconnect", "--force",
@@ -1424,8 +1664,13 @@ class MySQLConnection:
             raise ConnectorError("Cannot execute MySQL client binary: {}".format(e)) from e
         stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
         if proc.returncode != 0:
-            auth = _client_auth_error(stderr, argv[0], getattr(self, '_client_use', None))
+            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', used),
+                                      stdout=proc.stdout)
             if auth is not None:
+                retry = (self._unidentified_auth_retry(getattr(defaults_path, 'client_engine', None))
+                         if binary is None else None)
+                if retry is not None:
+                    return self._run_script_with_binary(sql, extra_flags, timeout, retry[0], retry[1])
                 raise auth
         if proc.returncode != 0 and not _STATEMENT_ERROR.search(stderr):
             if not stderr.strip() and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):
@@ -1489,6 +1734,8 @@ class MySQLConnection:
 
     def _run_write(self, sql, extra_flags, timeout):
         with self._invocation_defaults() as defaults_path:
+            # Never replay writes, even for an apparent authentication error.
+            # The caller must review the failure before choosing to retry.
             return self._run_write_with_defaults(sql, extra_flags, timeout, defaults_path)
 
     def _run_write_with_defaults(self, sql, extra_flags, timeout, defaults_path):
@@ -1507,7 +1754,8 @@ class MySQLConnection:
                                 timeout=timeout or self.query_timeout, env=env)
         if proc.returncode != 0:
             stderr = (proc.stderr or b"").decode("utf-8", errors="replace").strip()
-            auth = _client_auth_error(stderr, argv[0], getattr(self, '_client_use', None))
+            auth = _client_auth_error(stderr, argv[0], getattr(defaults_path, 'client_use', None),
+                                      stdout=proc.stdout)
             if auth is not None:
                 raise auth
             if not stderr and _EXPIRED_PASSWORD_HINT in _client_text(proc.stdout):

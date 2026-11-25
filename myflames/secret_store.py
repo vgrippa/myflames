@@ -31,6 +31,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 
 SERVICE = 'myflames'
@@ -51,6 +53,10 @@ LABELS = {
 }
 
 _LOCK = threading.Lock()
+_WINDOWS_ACL_CACHE_SIZE = 256
+_WINDOWS_ACL_CACHE_SECONDS = 60
+_WINDOWS_ACL_CACHE = OrderedDict()
+_WINDOWS_ACL_LOCK = threading.Lock()
 
 
 class _VaultLock(object):
@@ -136,11 +142,51 @@ def _storage_fd(path, fd, directory=False):
     return info
 
 
+def _reset_windows_acl_cache():
+    """Forget this process's successful ACL updates (also used by tests)."""
+    with _WINDOWS_ACL_LOCK:
+        _WINDOWS_ACL_CACHE.clear()
+
+
+def _ensure_windows_owner_only(path, directory=False):
+    """Skip only a recent ACL write for a previously protected path and identity.
+
+    Keep validation on every call, inside the lock: a waiter must stat the
+    current object, not reuse the identity it saw before another request ran.
+    The lock also makes concurrent first opens apply each ACL just once.
+    Unavailable inode identities cannot be cached; successful writes expire
+    after a minute so external DACL changes are repaired on the next access.
+    """
+    cache_path = os.path.normcase(os.path.abspath(str(path)))
+    with _WINDOWS_ACL_LOCK:
+        # Taking the entry out both refreshes LRU order and forgets it if any
+        # check or ACL update below fails. Never retain a failed application.
+        previous = _WINDOWS_ACL_CACHE.pop(cache_path, None)
+        info = _storage_stat(path, directory)
+        if info is None:
+            raise SecretStoreError('Private storage changed while it was being protected: %s' % path)
+        identity = (info.st_dev, info.st_ino, directory)
+        if (not info.st_ino or previous is None or previous[0] != identity or
+                time.monotonic() - previous[1] >= _WINDOWS_ACL_CACHE_SECONDS):
+            _windows_owner_only(path, directory=directory)
+            current = _storage_stat(path, directory)
+            if current is None or (current.st_dev, current.st_ino) != identity[:2]:
+                # SetNamedSecurityInfoW works by name. Do not remember a
+                # replacement that might not have received the ACL we set.
+                raise SecretStoreError('Private storage changed while it was being protected: %s' % path)
+            previous = (identity, time.monotonic())
+        if info.st_ino:
+            # Reads refresh LRU order, never the last successful ACL-write time.
+            _WINDOWS_ACL_CACHE[cache_path] = previous
+            if len(_WINDOWS_ACL_CACHE) > _WINDOWS_ACL_CACHE_SIZE:
+                _WINDOWS_ACL_CACHE.popitem(last=False)
+
+
 def _protect_private_path(path, mode, directory=False):
     if _storage_stat(path, directory) is None:
         return
     if sys.platform == 'win32':
-        _windows_owner_only(path, directory=directory)
+        _ensure_windows_owner_only(path, directory=directory)
         return
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
     if directory:
@@ -188,7 +234,7 @@ def _open_private_file(path, flags, create=False, protect=True):
         info = _storage_fd(path, fd)
         if protect:
             if sys.platform == 'win32':
-                _windows_owner_only(path)
+                _ensure_windows_owner_only(path)
             elif os.name == 'posix' and stat.S_IMODE(info.st_mode) != 0o600:
                 os.fchmod(fd, 0o600)
     except BaseException:
@@ -542,7 +588,7 @@ class Vault(object):
             if _storage_stat(path) is not None and sys.platform == 'win32':
                 # Explicit grants on existing files need their own ACL update.
                 try:
-                    _windows_owner_only(path)
+                    _ensure_windows_owner_only(path)
                 except SecretStoreError:
                     # SQLite removes its sidecars during other connections'
                     # transactions: one that is gone needs no ACL. Every other
@@ -577,7 +623,7 @@ class Vault(object):
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as handle:
                 if sys.platform == 'win32':
-                    _windows_owner_only(temp)
+                    _ensure_windows_owner_only(temp)
                 elif os.name == 'posix':
                     os.fchmod(handle.fileno(), 0o600)
                 json.dump(data, handle, indent=1, sort_keys=True)
@@ -624,7 +670,7 @@ class Vault(object):
             with os.fdopen(fd, 'wb') as handle:
                 fd = None
                 if sys.platform == 'win32':
-                    _windows_owner_only(self.key_path)
+                    _ensure_windows_owner_only(self.key_path)
                 handle.write(raw)
                 handle.flush()
                 os.fsync(handle.fileno())

@@ -558,7 +558,7 @@ try {
     }
   });
   // Clearing the search lists the saved investigations again, without the deleted capture.
-  await page.click('[aria-label="Search investigations"]', { clickCount: 3 });
+  await page.click('[aria-label="Search investigations"]', { count: 3 });
   await page.keyboard.press("Backspace");
   await page.waitForFunction(() => document.querySelector(".library-detail h2")?.textContent?.includes("Index investigation"));
   assert.equal(await page.$$eval(".library-item", (els) => els.filter((e) => e.textContent.includes("prod-eu")).length), 0);

@@ -59,7 +59,7 @@ from .server_info import product_identity
 from .workspace_store import BASELINE_KINDS, BASELINE_MAX_PER_SERVER, _baseline_fields
 
 PREFIX = '/api/baselines/'
-PATHS = tuple(PREFIX + operation for operation in ('list', 'save', 'get', 'delete'))
+from .ui_routes import BASELINE_PATHS as PATHS
 #: Statements carry the myflames prefix so Top statements and Query digest
 #: leave them out (discover.CAPTURE_TAG).
 TAG = '/*myflames:baselines*/ '

@@ -6,6 +6,7 @@ real; only the MySQL client process boundary is replaced in consent tests.
 import ast
 import copy
 import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -89,6 +90,9 @@ if evidence:
     identity = dict(variables)
     if cfg.get('evidence_variables') and (not cfg.get('switch_on') or cfg['switch_on'] in sql):
         identity.update(cfg.get('evidence_variables', {}))
+    if cfg.get('switch_evidence_body') and cfg.get('evidence_variables') and (
+            not cfg.get('switch_on') or cfg['switch_on'] in sql):
+        variables = dict(variables, **cfg.get('evidence_variables', {}))
     names = ('server_uuid', 'server_id', 'hostname', 'port', 'version', 'version_comment',
              'wsrep_on', 'wsrep_provider', 'wsrep_node_name')
     emit(['Variable_name', 'Value'], [[name, identity[name]] for name in names if name in identity])
@@ -104,109 +108,161 @@ def fail(message):
     sys.stderr.write(message + '\n')
     sys.exit(1)
 
-text = re.sub(r'^/\*myflames:[^*]*\*/\s*', '', sql).rstrip(';')
-lower = text.lower()
-if cfg.get('error_on') and cfg['error_on'].lower() == lower:
-    fail(cfg.get('query_error', 'ERROR 1045 (28000): Refused login secret_payload'))
-if lower == 'select @@version_comment':
-    comment = 'Readyset' if cfg.get('probe_readyset') and not sql.lstrip().startswith('/*') else variables['version_comment']
-    emit(['@@version_comment'], [[comment]])
-elif lower == 'select @@version':
-    emit(['@@version'], [[variables['version']]])
-elif lower.startswith('select @@global.'):
-    name = lower[len('select @@global.'):]
-    if cfg.get('exact_denied'):
-        fail('ERROR 1227 (42000): Access denied for exact variable read')
-    value = cfg.get('exact_variables', {}).get(name, variables.get(name))
-    emit(['@@GLOBAL.' + name], [[value]])
-elif "variable_name = 'admin-version'" in lower:
-    rows = [[variables['version']]] if cfg.get('proxy') == 'proxysql' else []
-    emit(['variable_value'], rows)
-elif lower == 'show readyset version':
-    emit(['name', 'value'], [['release version', 'stable-test']])
-elif lower == 'show readyset status':
-    emit(['name', 'value'], [['Status', 'Online'], ['CDC Server', cfg.get('cdc_server')]])
-elif 'from replication_status limit 0' in lower:
-    emit([], [])
-elif 'from readyset.upstream_servers' in lower or 'from upstream_servers' in lower:
-    rows = cfg.get('upstreams', [])
-    columns = list(rows[0]) if rows else []
-    emit(columns, [[row.get(name) for name in columns] for row in rows])
-elif lower == 'show caches':
-    emit(['query_id', 'query'], [['q_secret', 'SELECT secret_sql FROM secret_table']])
-elif 'from runtime_mysql_servers' in lower or 'from mysql_servers' in lower:
-    rows = cfg.get('servers', [])
-    columns = list(rows[0]) if rows else []
-    emit(columns, [[row.get(name) for name in columns] for row in rows])
-elif 'from runtime_mysql_query_rules' in lower or 'from mysql_query_rules' in lower:
-    emit(['rule_id', 'comment'], [['1', 'secret_rule_sql']])
-elif lower.startswith('show global variables'):
-    names = re.findall(r"'([^']+)'", text)
-    if 'report_host' in names and 'probe_uuid' in cfg:
-        variables = dict(variables, server_uuid=cfg['probe_uuid'])
-    rows = [[name, variables[name]] for name in names if name in variables]
-    emit(['Variable_name', 'Value'], rows)
-elif 'from performance_schema.replication_group_members' in lower:
-    if cfg.get('no_gr_role') and 'member_role' in lower:
-        fail('ERROR 1054 (42S22): Unknown column MEMBER_ROLE')
-    role = cfg.get('role')
-    state = cfg.get('state', 'ONLINE')
-    present = role or cfg.get('has_gr')
-    if lower.startswith('select member_id'):
-        rows = cfg.get('gr_members', [])
-        columns = ['MEMBER_ID', 'MEMBER_HOST', 'MEMBER_PORT', 'MEMBER_STATE']
-        if 'member_role' in lower:
-            columns.append('MEMBER_ROLE')
-        emit(columns, [row[:len(columns)] for row in rows])
-    elif lower.startswith('select member_state'):
-        emit(['MEMBER_STATE'], [[state]] if present else [])
-    else:
-        emit(['MEMBER_ROLE', 'MEMBER_STATE'], [[role, state]] if present else [])
-elif 'from performance_schema.replication_group_member_stats' in lower:
-    emit(['COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE'], [[cfg.get('queue', 0)]])
-elif 'from performance_schema.session_connect_attrs' in lower:
-    if cfg.get('attrs_error'):
-        fail(cfg['attrs_error'])
-    routed = cfg.get('routed')
-    count = routed if isinstance(routed, int) and not isinstance(routed, bool) else (1 if routed else 0)
-    emit(['COUNT(*)'], [[count]])
-elif lower.startswith('show global status'):
-    values = cfg.get('status', {})
-    names = re.findall(r"'([^']+)'", text)
-    emit(['Variable_name', 'Value'], [[name, values[name]] for name in names if name in values])
-elif lower in ('show replica status', 'show slave status', 'show all slaves status'):
-    channels = cfg.get('channels', [])
-    columns = list(channels[0]) if channels else []
-    emit(columns, [[row.get(name) for name in columns] for row in channels])
-elif lower in ('show replicas', 'show slave hosts'):
-    rows = cfg.get('replicas', [])
-    if rows and isinstance(rows[0], dict):
-        columns = list(rows[0])
+def run_one(part_sql):
+    text = re.sub(r'^/\*myflames:[^*]*\*/\s*', '', part_sql.strip()).rstrip(';')
+    lower = text.lower()
+    if cfg.get('error_on') and cfg['error_on'].lower() == lower:
+        fail(cfg.get('query_error', 'ERROR 1045 (28000): Refused login secret_payload'))
+    if lower == 'select @@version_comment':
+        comment = 'Readyset' if cfg.get('probe_readyset') and not part_sql.lstrip().startswith('/*') else variables['version_comment']
+        emit(['@@version_comment'], [[comment]])
+    elif lower == 'select @@version':
+        emit(['@@version'], [[variables['version']]])
+    elif lower.startswith('select @@global.'):
+        name = lower[len('select @@global.'):]
+        if cfg.get('exact_denied'):
+            fail('ERROR 1227 (42000): Access denied for exact variable read')
+        value = cfg.get('exact_variables', {}).get(name, variables.get(name))
+        emit(['@@GLOBAL.' + name], [[value]])
+    elif "variable_name = 'admin-version'" in lower:
+        rows = [[variables['version']]] if cfg.get('proxy') == 'proxysql' else []
+        emit(['variable_value'], rows)
+    elif lower == 'show readyset version':
+        emit(['name', 'value'], [['release version', 'stable-test']])
+    elif lower == 'show readyset status':
+        emit(['name', 'value'], [['Status', 'Online'], ['CDC Server', cfg.get('cdc_server')]])
+    elif 'from replication_status limit 0' in lower:
+        emit([], [])
+    elif 'from readyset.upstream_servers' in lower or 'from upstream_servers' in lower:
+        rows = cfg.get('upstreams', [])
+        columns = list(rows[0]) if rows else []
         emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif lower == 'show caches':
+        emit(['query_id', 'query'], [['q_secret', 'SELECT secret_sql FROM secret_table']])
+    elif 'from runtime_mysql_servers' in lower or 'from mysql_servers' in lower:
+        rows = cfg.get('servers', [])
+        columns = list(rows[0]) if rows else []
+        emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif 'from stats_mysql_connection_pool' in lower:
+        rows = cfg.get('pool', [])
+        columns = ['hostgroup', 'srv_host', 'srv_port', 'status']
+        emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif any('from ' + table in lower for table in (
+            'runtime_mysql_group_replication_hostgroups', 'runtime_mysql_galera_hostgroups')):
+        table = re.search(r'from\s+(runtime_mysql_\w+_hostgroups)', lower).group(1)
+        rows = cfg.get(table, [])
+        if re.search(r'\bwhere\s+active\s*=\s*1', lower):
+            rows = [row for row in rows if str(row.get('active', 1)) == '1']
+        columns = ['offline_hostgroup']
+        emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif 'from runtime_mysql_query_rules' in lower or 'from mysql_query_rules' in lower:
+        emit(['rule_id', 'comment'], [['1', 'secret_rule_sql']])
+    elif lower.startswith('show global variables'):
+        names = re.findall(r"'([^']+)'", text)
+        if 'report_host' in names and 'probe_uuid' in cfg:
+            local_vars = dict(variables, server_uuid=cfg['probe_uuid'])
+        else:
+            local_vars = variables
+        rows = [[name, local_vars[name]] for name in names if name in local_vars]
+        emit(['Variable_name', 'Value'], rows)
+    elif lower.startswith('set session print_identified_with_as_hex'):
+        return
+    elif lower.startswith("select '") and text.endswith("'") and text.count("'") == 2:
+        emit(['m'], [[text[8:-1]]])
+    elif 'from mysql.user order by user, host' in lower:
+        accts = cfg.get('accounts', [])
+        include_tls = 'ssl_type' in lower
+        inline_granted = 'from mysql.role_edges' in lower
+        rows = []
+        for a in accts:
+            row = [a['name'], a['host'], 'caching_sha2_password', 'N', 'N', None, None, '0', '0']
+            if include_tls:
+                row.extend(['', '', '', ''])
+            if inline_granted:
+                row.append('0')
+            rows.append(row)
+        emit(['User'] * (len(rows[0]) if rows else 0), rows)
+    elif lower.startswith('show grants for '):
+        target = text[len('SHOW GRANTS FOR '):].strip()
+        for a in cfg.get('accounts', []):
+            if ('`%s`@`%s`' % (a['name'], a['host'])) == target:
+                if a.get('grants_error'):
+                    fail(a['grants_error'])
+                emit(['Grants'], [[g] for g in a.get('grants', [])])
+                return
+        fail('ERROR 1141 (42000): There is no such grant defined for user')
+    elif lower.startswith('show create user '):
+        target = text[len('SHOW CREATE USER '):].strip()
+        for a in cfg.get('accounts', []):
+            if ('`%s`@`%s`' % (a['name'], a['host'])) == target:
+                emit(['CREATE USER'], [[a['create']]])
+                return
+        fail('ERROR 1396 (HY000): Operation SHOW CREATE USER failed')
+    elif 'from performance_schema.replication_group_members' in lower:
+        if cfg.get('no_gr_role') and 'member_role' in lower:
+            fail('ERROR 1054 (42S22): Unknown column MEMBER_ROLE')
+        role = cfg.get('role')
+        state = cfg.get('state', 'ONLINE')
+        present = role or cfg.get('has_gr')
+        if lower.startswith('select member_id'):
+            rows = cfg.get('gr_members', [])
+            columns = ['MEMBER_ID', 'MEMBER_HOST', 'MEMBER_PORT', 'MEMBER_STATE']
+            if 'member_role' in lower:
+                columns.append('MEMBER_ROLE')
+            emit(columns, [row[:len(columns)] for row in rows])
+        elif lower.startswith('select member_state'):
+            emit(['MEMBER_STATE'], [[state]] if present else [])
+        else:
+            emit(['MEMBER_ROLE', 'MEMBER_STATE'], [[role, state]] if present else [])
+    elif 'from performance_schema.replication_group_member_stats' in lower:
+        emit(['COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE'], [[cfg.get('queue', 0)]])
+    elif 'from performance_schema.session_connect_attrs' in lower:
+        if cfg.get('attrs_error'):
+            fail(cfg['attrs_error'])
+        routed = cfg.get('routed')
+        count = routed if isinstance(routed, int) and not isinstance(routed, bool) else (1 if routed else 0)
+        emit(['COUNT(*)'], [[count]])
+    elif lower.startswith('show global status'):
+        values = cfg.get('status', {})
+        names = re.findall(r"'([^']+)'", text)
+        emit(['Variable_name', 'Value'], [[name, values[name]] for name in names if name in values])
+    elif lower in ('show replica status', 'show slave status', 'show all slaves status'):
+        channels = cfg.get('channels', [])
+        columns = list(channels[0]) if channels else []
+        emit(columns, [[row.get(name) for name in columns] for row in channels])
+    elif lower in ('show replicas', 'show slave hosts'):
+        rows = cfg.get('replicas', [])
+        if rows and isinstance(rows[0], dict):
+            columns = list(rows[0])
+            emit(columns, [[row.get(name) for name in columns] for row in rows])
+        else:
+            emit(['Server_id', 'Host', 'Port'], rows)
+    elif 'from mysql.wsrep_cluster_members' in lower:
+        emit(['node_uuid', 'node_name', 'node_incoming_address'], cfg.get('wsrep_members', []))
+    elif 'from performance_schema.pxc_cluster_view' in lower:
+        emit(['HOST_NAME', 'UUID', 'STATUS', 'LOCAL_INDEX', 'SEGMENT'], cfg.get('pxc_members', []))
+    elif 'from information_schema.schemata' in lower:
+        emit(['SCHEMA_NAME'], [['mysql_innodb_cluster_metadata']] if cfg.get('innodb_cluster') else [])
+    elif 'from mysql_innodb_cluster_metadata' in lower:
+        rows = cfg.get('cluster_metadata', [])
+        columns = list(rows[0]) if rows else []
+        emit(columns, [[row.get(name) for name in columns] for row in rows])
+    elif 'from information_schema.plugins' in lower:
+        emit(['PLUGIN_NAME', 'PLUGIN_STATUS', 'PLUGIN_TYPE', 'PLUGIN_VERSION', 'PLUGIN_LIBRARY', 'LOAD_OPTION'],
+             cfg.get('plugins', [['auth', 'ACTIVE', 'AUTHENTICATION', '1.0', None, 'ON']]))
+    elif 'from mysql.component' in lower:
+        if cfg.get('component_denied'):
+            fail('ERROR 1142 (42000): SELECT command denied for user secret_component_user on mysql.component')
+        else:
+            emit(['component_urn'], [[value] for value in cfg.get('components', [])])
+    elif lower == 'select 1':
+        emit(['1'], [['1']])
     else:
-        emit(['Server_id', 'Host', 'Port'], rows)
-elif 'from mysql.wsrep_cluster_members' in lower:
-    emit(['node_uuid', 'node_name', 'node_incoming_address'], cfg.get('wsrep_members', []))
-elif 'from performance_schema.pxc_cluster_view' in lower:
-    emit(['HOST_NAME', 'UUID', 'STATUS', 'LOCAL_INDEX', 'SEGMENT'], cfg.get('pxc_members', []))
-elif 'from information_schema.schemata' in lower:
-    emit(['SCHEMA_NAME'], [['mysql_innodb_cluster_metadata']] if cfg.get('innodb_cluster') else [])
-elif 'from mysql_innodb_cluster_metadata' in lower:
-    rows = cfg.get('cluster_metadata', [])
-    columns = list(rows[0]) if rows else []
-    emit(columns, [[row.get(name) for name in columns] for row in rows])
-elif 'from information_schema.plugins' in lower:
-    emit(['PLUGIN_NAME', 'PLUGIN_STATUS', 'PLUGIN_TYPE', 'PLUGIN_VERSION', 'PLUGIN_LIBRARY', 'LOAD_OPTION'],
-         cfg.get('plugins', [['auth', 'ACTIVE', 'AUTHENTICATION', '1.0', None, 'ON']]))
-elif 'from mysql.component' in lower:
-    if cfg.get('component_denied'):
-        fail('ERROR 1142 (42000): SELECT command denied for user secret_component_user on mysql.component')
-    else:
-        emit(['component_urn'], [[value] for value in cfg.get('components', [])])
-elif lower == 'select 1':
-    emit(['1'], [['1']])
-else:
-    fail('ERROR 1064 (42000): unexpected synthetic read')
+        fail('ERROR 1064 (42000): unexpected synthetic read')
+
+for part in sql.split('\n;\n'):
+    if part.strip():
+        run_one(part)
 '''
 
 
@@ -638,6 +694,51 @@ class MemberLoginTests(GroupCase):
         self.assertEqual(helper.call_count, 1)
         self.assertEqual(_FakeMemberConn.logins, ['active.example'])
 
+    def test_connect_member_failure_keeps_siblings_and_logs_only_unexpected_errors(self):
+        self.save('healthy', 'G')
+        secret = "synthetic-'member\\key"
+        self.member = self.store.save('profile', dict(self.member), 'member',
+                                      password=secret, remember=True)
+        original = ui._member_live_facts
+        for error_type in (KeyError, connector.ConnectorError):
+            with self.subTest(error=error_type.__name__):
+                _FakeMemberConn.reset(uuids={'active.example': UUID_A, 'healthy.example': UUID_C})
+
+                def facts(conn):
+                    if conn.host == 'member.example':
+                        raise error_type('synthetic member failure ' + secret)
+                    return original(conn)
+
+                stderr = io.StringIO()
+                with mock.patch.object(connector, 'MySQLConnection', _FakeMemberConn), \
+                        mock.patch.object(ui, '_member_live_facts', side_effect=facts), \
+                        mock.patch.object(ui, '_log_unexpected_error', wraps=ui._log_unexpected_error) as logger, \
+                        contextlib.redirect_stderr(stderr):
+                    result = ui.api_response('/api/connect', {
+                        'group_name': 'G', 'active_member_profile_id': 'active', 'probe_members': True},
+                        types.SimpleNamespace(store=self.store))
+                members = {row['profile_id']: row for row in result['group_connection']['members']}
+                self.assertTrue(members['active']['reachable'])
+                self.assertTrue(members['healthy']['reachable'])
+                self.assertEqual(members['healthy']['server_uuid'], UUID_C)
+                self.assertFalse(members['member']['reachable'])
+                self.assertIsNone(members['member']['server_uuid'])
+                self.assertEqual(result['schemas'], ['app'])
+                self.assertNotIn(secret, json.dumps(result))
+                logged = stderr.getvalue()
+                self.assertNotIn(secret, logged)
+                self.assertNotIn(repr(secret)[1:-1], logged)
+                self.assertNotIn(json.dumps(secret)[1:-1], logged)
+                if error_type is KeyError:
+                    self.assertEqual(logger.call_count, 1)
+                    self.assertEqual(logged.count('myflames: unexpected error'), 1)
+                    self.assertIn('KeyError', logged)
+                    self.assertIn('[redacted]', logged)
+                else:
+                    logger.assert_not_called()
+                    self.assertEqual(logged, '')
+                self.assertEqual(_FakeMemberConn.active, 0)
+
 
 class TopologyEndpointTests(GroupCase):
     def setUp(self):
@@ -804,6 +905,48 @@ class TopologyReadTests(GroupCase):
         return [json.loads(line) for path in paths if path.exists()
                 for line in path.read_text(encoding='utf-8').splitlines()]
 
+    def test_member_unexpected_error_keeps_siblings_and_logs_one_redacted_traceback(self):
+        broken = self.save('broken', 'G')
+        self.save('healthy', 'G')
+        secret = "synthetic-'member\\key"
+        self.store.save('profile', dict(broken), 'broken', password=secret, remember=True)
+        fixtures = {'active.example': member_fixture(UUID_A),
+                    'broken.example': member_fixture(UUID_B),
+                    'healthy.example': member_fixture(UUID_C)}
+        for error_type in (KeyError, connector.ConnectorError):
+            with self.subTest(error=error_type.__name__):
+                def fail_one(host):
+                    if host == 'broken.example':
+                        raise error_type('synthetic member failure ' + secret)
+
+                stderr = io.StringIO()
+                with self.clients(fixtures, after_spawn=fail_one), \
+                        mock.patch.object(ui, '_log_unexpected_error', wraps=ui._log_unexpected_error) as logger, \
+                        contextlib.redirect_stderr(stderr):
+                    report = self.read()
+                members = {row['profile_id']: row for row in report['members']}
+                self.assertEqual(members['active']['outcome'], 'read')
+                self.assertEqual(members['healthy']['outcome'], 'read')
+                self.assertEqual(members['healthy']['server_uuid'], UUID_C)
+                self.assertEqual(members['broken']['outcome'], 'failed')
+                self.assertIsNone(members['broken']['server_uuid'])
+                self.assertEqual(report['summary']['read'], 2)
+                self.assertEqual(report['summary']['failed'], 1)
+                self.assertIn('the connection could not be read.', members['broken']['message'])
+                self.assertNotIn(secret, json.dumps(report))
+                logged = stderr.getvalue()
+                self.assertNotIn(secret, logged)
+                self.assertNotIn(repr(secret)[1:-1], logged)
+                self.assertNotIn(json.dumps(secret)[1:-1], logged)
+                if error_type is KeyError:
+                    self.assertEqual(logger.call_count, 1)
+                    self.assertEqual(logged.count('myflames: unexpected error'), 1)
+                    self.assertIn('KeyError', logged)
+                    self.assertIn('[redacted]', logged)
+                else:
+                    logger.assert_not_called()
+                    self.assertEqual(logged, '')
+
     def test_topology_has_no_custom_client_process_path(self):
         tree = ast.parse((ROOT / 'myflames/topology_group.py').read_text(encoding='utf-8'))
         for node in ast.walk(tree):
@@ -873,7 +1016,7 @@ class TopologyReadTests(GroupCase):
         member = next(row for row in report['members'] if row['profile_id'] == 'replica')
         self.assertEqual(member['behind']['value'], 100)
         sql = self.statements(observed)
-        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in statement for statement in sql), 4)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in statement for statement in sql), 2)
         self.assertFalse(any("'gtid_executed'" in statement for statement in sql))
 
     def test_mariadb_gtid_reads_full_global_position(self):
@@ -889,7 +1032,81 @@ class TopologyReadTests(GroupCase):
             report = self.read()
         member = next(row for row in report['members'] if row['profile_id'] == 'replica')
         self.assertEqual(member['behind']['value'], 10)
-        self.assertEqual(sum('SELECT @@GLOBAL.gtid_current_pos' in sql for sql in self.statements(observed)), 4)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_current_pos' in sql for sql in self.statements(observed)), 2)
+
+    def test_identity_runs_preflight_and_evidence_bound_and_always_probes_proxysql(self):
+        with self.clients({'active.example': member_fixture(UUID_A)}) as observed:
+            report = self.read('plugins')
+        self.assertEqual(report['summary']['read'], 1)
+        sql = self.statements(observed)
+        # Base identity flow: preflight on raw transport + second _identity inside TargetEvidenceConnection.
+        self.assertEqual(sum('SELECT @@version_comment' in s for s in sql), 2)
+        self.assertEqual(sum("variable_name = 'admin-version'" in s for s in sql), 2)
+        self.assertEqual(sum("'group_replication_group_name'" in s for s in sql), 2)
+        # GTID position is skipped for plugins (and accounts).
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in s for s in sql), 0)
+        # Stale cached database facts must never skip ProxySQL Admin identification.
+        proxy = member_fixture(proxy='proxysql')
+        proxy['variables'].update(version='3.0.11', version_comment='MySQL Community Server - GPL')
+        from myflames import client_tools
+        stale_member = topology_group._entry({'id': 'm1', 'name': 'm1'})
+        stale_member.update(engine='mysql', product='MySQL', version='8.4.11',
+                            version_comment='MySQL Community Server - GPL')
+        with mock.patch('myflames.proxysql.identify', return_value=(True, '3.0.11')) as probe:
+            conn = mock.Mock()
+            conn._version_cache = '8.4.11'
+            conn._endpoint_key = lambda: ('stale-proxy-test.example', 6032, None, None, None)
+            conn.run.return_value = 'MySQL Community Server - GPL\n'
+            client_tools.remember_server(conn._endpoint_key(), 'mysql', '8.4.11')
+            values, exclusion = topology_group._identity(conn, stale_member, read_position=False)
+        probe.assert_called_once()
+        self.assertEqual(values, {})
+        self.assertEqual(exclusion, 'ProxySQL Admin is read for identity only.')
+        self.assertEqual(stale_member['product'], 'ProxySQL Admin')
+        self.assertEqual(stale_member['role'], 'proxy')
+
+    def test_preflight_vs_evidence_full_node_switch_is_refused(self):
+        # Router switches completely to another node between preflight and TargetEvidenceConnection:
+        # both the evidence prefix and body of the second _identity report UUID_B, while preflight saw UUID_A.
+        fixture = member_fixture(UUID_A, evidence_variables={'server_uuid': UUID_B}, switch_evidence_body=True)
+        with self.clients({'active.example': fixture}) as observed:
+            report = self.read('plugins')
+        self.assertEqual(report['summary']['failed'], 1, report)
+        self.assertEqual(report['plugins']['compared'], [])
+        self.assertEqual(report['plugins']['rows'], [])
+        self.assertIsNone(report['members'][0]['server_uuid'])
+        self.assertFalse(any('FROM information_schema.PLUGINS' in s for s in self.statements(observed)))
+
+    def test_accounts_chunked_identity_change_fails_member_like_base(self):
+        accts = [{
+            'name': 'u%03d' % i, 'host': '%',
+            'grants': ['GRANT SELECT ON *.* TO `u%03d`@`%%`' % i],
+            'create': "CREATE USER `u%03d`@`%%` IDENTIFIED WITH 'caching_sha2_password' REQUIRE NONE PASSWORD EXPIRE DEFAULT ACCOUNT UNLOCK" % i,
+        } for i in range(55)]
+        # Healthy 55-account group read succeeds in 2 evidence-bound chunk packets and skips GTID read.
+        healthy = member_fixture(UUID_A, accounts=accts)
+        with self.clients({'active.example': healthy}) as observed:
+            ok_report = self.read('accounts')
+        self.assertEqual(ok_report['summary']['read'], 1, ok_report)
+        self.assertEqual(ok_report['accounts']['compared'], ['active'])
+        self.assertEqual(len(ok_report['accounts']['rows']), 55)
+        ok_sql = self.statements(observed)
+        self.assertEqual(sum('SELECT @@GLOBAL.gtid_executed' in s for s in ok_sql), 0)
+        self.assertEqual(sum('SHOW GRANTS FOR ' in s for s in ok_sql), 2)
+        # Identity switch on chunk 2 (contains u050) fails the member identically to base.
+        switching = member_fixture(UUID_A, accounts=accts, switch_on='u050',
+                                   evidence_variables={'server_uuid': UUID_B})
+        with self.clients({'active.example': switching}) as observed:
+            bad_report = self.read('accounts')
+        self.assertEqual(bad_report['summary']['failed'], 1, bad_report)
+        self.assertEqual(bad_report['accounts']['compared'], [])
+        self.assertEqual(bad_report['accounts']['rows'], [])
+        member = bad_report['members'][0]
+        self.assertIsNone(member['server_uuid'])
+        self.assertIsNone(member['engine'])
+        bad_sql = self.statements(observed)
+        # Only the 2 chunk packets ran (chunk 1 ok, chunk 2 failed identity) — no per-account fallback.
+        self.assertEqual(sum('SHOW GRANTS FOR ' in s for s in bad_sql), 2)
 
     def test_failed_exact_gtid_read_never_falls_back_to_show(self):
         fixture = member_fixture(role='PRIMARY', gtid=UUID_A + ':1-100', exact_denied=True)
@@ -2633,7 +2850,131 @@ class TopologyReadTests(GroupCase):
                             edge['verified'] is False and edge['evidence'] == 'endpoint'
                             for edge in edges.values()))
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
-        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED'))
+        self.assertNotIn('reason', edges['a'])
+        self.assertEqual(edges['b']['state'], 'SHUNNED')
+        self.assertEqual(edges['b']['label'], 'hostgroup 20')
+        self.assertIn('No ONLINE member', edges['b']['reason'])
+
+    def test_map_proxysql_offline_runtime_rows_keep_reason_and_ignore_online_pool(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        for status in ('OFFLINE_SOFT', 'OFFLINE_HARD'):
+            with self.subTest(status=status):
+                proxy = member_fixture(proxy='proxysql', servers=[
+                    {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': status},
+                    {'hostgroup_id': '10', 'hostname': 'b.example', 'port': '3306', 'status': 'ONLINE'},
+                ], pool=[
+                    {'hostgroup': '10', 'srv_host': 'a.example', 'srv_port': '3306', 'status': 'ONLINE'},
+                    {'hostgroup': '10', 'srv_host': 'b.example', 'srv_port': '3306', 'status': 'ONLINE'},
+                ])
+                proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+                with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                                   'b.example': member_fixture(UUID_C)}):
+                    report = self.read('map')
+                self.assert_map_schema(report)
+                edges = {edge['to']: edge for edge in report['map']['edges']}
+                self.assertEqual(edges['a']['state'], status)
+                self.assertEqual(edges['a']['label'], 'hostgroup 10')
+                self.assertNotIn('No ONLINE member', edges['a']['reason'])
+                self.assertRegex(edges['a']['reason'].lower(), 'no new traffic|out of traffic|stops using')
+                self.assertEqual((edges['b']['state'], edges['b']['label']), ('ONLINE', 'hostgroup 10'))
+                self.assertNotIn('reason', edges['b'])
+
+    def test_map_proxysql_monitor_offline_hostgroup_is_offline_even_with_online_row(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        for table in ('runtime_mysql_group_replication_hostgroups', 'runtime_mysql_galera_hostgroups'):
+            with self.subTest(table=table):
+                proxy = member_fixture(proxy='proxysql', servers=[
+                    {'hostgroup_id': '40', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
+                    {'hostgroup_id': '10', 'hostname': 'b.example', 'port': '3306', 'status': 'ONLINE'},
+                ])
+                proxy[table] = [{'offline_hostgroup': '40', 'active': '1'}]
+                proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+                with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                                   'b.example': member_fixture(UUID_C)}) as observed:
+                    report = self.read('map')
+                self.assert_map_schema(report)
+                self.assertTrue(any('FROM ' + table in sql for sql in self.statements(observed, 'active.example')))
+                edges = {edge['to']: edge for edge in report['map']['edges']}
+                self.assertEqual(edges['a']['state'], 'offline')
+                self.assertEqual(edges['a']['label'], 'hostgroup 40')
+                self.assertIn('offline hostgroup', edges['a']['reason'])
+                self.assertEqual((edges['b']['state'], edges['b']['label']), ('ONLINE', 'hostgroup 10'))
+
+    def test_map_proxysql_pool_lag_reason_and_hostgroup_health_are_scoped_per_route(self):
+        self.save('a', 'G')
+        self.save('b', 'G')
+        proxy = member_fixture(proxy='proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
+            {'hostgroup_id': '20', 'hostname': 'a.example', 'port': '3306', 'status': 'SHUNNED'},
+            {'hostgroup_id': '20', 'hostname': 'b.example', 'port': '3306', 'status': 'OFFLINE_HARD'},
+        ], pool=[
+            {'hostgroup': '10', 'srv_host': 'a.example', 'srv_port': '3306', 'status': 'ONLINE'},
+            {'hostgroup': '20', 'srv_host': 'a.example', 'srv_port': '3306', 'status': 'SHUNNED_REPLICATION_LAG'},
+            {'hostgroup': '20', 'srv_host': 'b.example', 'srv_port': '3306', 'status': 'ONLINE'},
+        ])
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
+                           'b.example': member_fixture(UUID_C)}) as observed:
+            report = self.read('map')
+        self.assert_map_schema(report)
+        self.assertTrue(any('FROM stats_mysql_connection_pool' in sql
+                            for sql in self.statements(observed, 'active.example')))
+        edges = report['map']['edges']
+        self.assertEqual(len(edges), 3)
+        online = next(edge for edge in edges if edge['label'] == 'hostgroup 10')
+        lagged = next(edge for edge in edges if edge['to'] == 'a' and edge['label'] == 'hostgroup 20')
+        offline = next(edge for edge in edges if edge['to'] == 'b')
+        self.assertEqual(online['state'], 'ONLINE')
+        self.assertNotIn('reason', online)
+        self.assertEqual(lagged['state'], 'SHUNNED_REPLICATION_LAG')
+        self.assertIn('Shunned for replication lag', lagged['reason'])
+        self.assertIn('No ONLINE member', lagged['reason'])
+        self.assertEqual(offline['state'], 'OFFLINE_HARD')
+        self.assertIn('No ONLINE member', offline['reason'])
+
+    def test_map_proxysql_pool_online_recovers_runtime_shunned_backend(self):
+        self.save('a', 'G')
+        proxy = member_fixture(proxy='proxysql', servers=[
+            {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'SHUNNED'},
+        ], pool=[
+            {'hostgroup': '10', 'srv_host': 'a.example', 'srv_port': '3306', 'status': 'ONLINE'},
+        ])
+        proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+        with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B)}):
+            report = self.read('map')
+        self.assert_map_schema(report)
+        self.assertEqual(len(report['map']['edges']), 1)
+        edge = report['map']['edges'][0]
+        self.assertEqual((edge['to'], edge['state'], edge['label']), ('a', 'ONLINE', 'hostgroup 10'))
+
+    def test_map_proxysql_same_hostgroup_keeps_distinct_backend_endpoints_separate(self):
+        self.save('a', 'G', host='192.0.2.10')
+        db = member_fixture(UUID_B)
+        db['variables']['hostname'] = 'db.internal'
+        rows = (
+            {'hostgroup_id': '10', 'hostname': '192.0.2.10', 'port': '3306', 'status': 'ONLINE'},
+            {'hostgroup_id': '10', 'hostname': 'db.internal', 'port': '3306', 'status': 'OFFLINE_HARD'},
+        )
+        for servers in (rows, tuple(reversed(rows))):
+            with self.subTest(first=servers[0]['hostname']):
+                proxy = member_fixture(proxy='proxysql', servers=list(servers))
+                proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
+                with self.clients({'active.example': proxy, '192.0.2.10': db}):
+                    report = self.read('map')
+                self.assert_map_schema(report)
+                edges = report['map']['edges']
+                self.assertEqual(len(edges), 2)
+                self.assertTrue(all(edge['from'] == 'active' and edge['to'] == 'a'
+                                    and edge['kind'] == 'proxy_route' and edge['label'] == 'hostgroup 10'
+                                    for edge in edges))
+                by_state = {edge['state']: edge for edge in edges}
+                self.assertEqual(set(by_state), {'ONLINE', 'OFFLINE_HARD'})
+                self.assertNotIn('reason', by_state['ONLINE'])
+                self.assertIn('out of traffic', by_state['OFFLINE_HARD']['reason'])
+                self.assertEqual((by_state['ONLINE']['evidence'], by_state['OFFLINE_HARD']['evidence']),
+                                 ('endpoint', 'hostname_port'))
 
     def test_map_proxysql_address_routes_with_router_alias_and_ambiguous_members(self):
         self.save('router', 'G', port=6446)
@@ -2682,7 +3023,9 @@ class TopologyReadTests(GroupCase):
             servers=[
                 {'hostgroup_id': '10', 'hostname': 'a.example', 'port': '3306', 'status': 'ONLINE'},
                 {'hostgroup_id': '20', 'hostname': 'b.example', 'port': '3306', 'status': 'SHUNNED_REPLICATION_LAG'},
-            ])
+            ], pool=[
+                {'hostgroup': '20', 'srv_host': 'b.example', 'srv_port': '3306', 'status': 'SHUNNED_REPLICATION_LAG'},
+            ], runtime_mysql_group_replication_hostgroups=[{'offline_hostgroup': '10', 'active': '1'}])
         proxy['variables'].update(version='3.0.11', version_comment='ProxySQL Admin')
         with self.clients({'active.example': proxy, 'a.example': member_fixture(UUID_B),
                            'b.example': member_fixture(UUID_C)}) as observed:
@@ -2713,7 +3056,10 @@ class TopologyReadTests(GroupCase):
         edges = {edge['to']: edge for edge in report['map']['edges']}
         self.assertEqual(set(edges), {'a', 'b'})
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
-        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED_REPLICATION_LAG'))
+        self.assertEqual(edges['b']['state'], 'SHUNNED_REPLICATION_LAG')
+        self.assertEqual(edges['b']['label'], 'hostgroup 20')
+        self.assertIn('Shunned for replication lag', edges['b']['reason'])
+        self.assertIn('No ONLINE member', edges['b']['reason'])
 
     def test_map_proxysql_runtime_keeps_shunned_aws_bgd_and_config_drops_it(self):
         self.save('a', 'G')
@@ -2728,7 +3074,9 @@ class TopologyReadTests(GroupCase):
         self.assert_map_schema(report)
         edges = {edge['to']: edge for edge in report['map']['edges']}
         self.assertEqual((edges['a']['label'], edges['a']['state']), ('hostgroup 10', 'ONLINE'))
-        self.assertEqual((edges['b']['label'], edges['b']['state']), ('hostgroup 20', 'SHUNNED_AWS_BGD'))
+        self.assertEqual(edges['b']['state'], 'SHUNNED_AWS_BGD')
+        self.assertEqual(edges['b']['label'], 'hostgroup 20')
+        self.assertIn('No ONLINE member', edges['b']['reason'])
 
         proxy_cfg = member_fixture(
             proxy='proxysql',
@@ -2903,6 +3251,37 @@ class MapBoundsTests(unittest.TestCase):
 
     def route(self, host='mf-galera-2', hostgroup=10):
         return {'hostname': host, 'port': '3306', 'hostgroup_id': str(hostgroup), 'status': 'ONLINE'}
+
+    def test_unknown_backend_state_prevents_no_online_hostgroup_claim(self):
+        profile = {'id': 'proxy', 'host': 'proxy.example', 'port': 6032}
+        for unknown in ({'status': None}, {'status': 'FUTURE_STATE'},
+                        {'status': 'ONLINE', 'status_source': 'config'}):
+            with self.subTest(unknown=unknown):
+                servers = [dict(self.route('shunned.example'), status='SHUNNED'),
+                           dict(self.route('unknown.example'), **unknown)]
+                result = self.build([profile], {'proxy': {'kind': 'proxysql', 'servers': servers}})
+                self.assertEqual(len(result['edges']), 2)
+                self.assertFalse(any('No ONLINE member' in edge.get('reason', '') for edge in result['edges']))
+                states = {edge['to']: edge['state'] for edge in result['edges']}
+                self.assertEqual(states['peer:shunned.example:3306'], 'SHUNNED')
+                self.assertIsNone(states['peer:unknown.example:3306'])
+
+    def test_truncated_backends_prevent_no_online_hostgroup_claim(self):
+        profile = {'id': 'proxy', 'host': 'proxy.example', 'port': 6032}
+        # An ONLINE member beyond the shared traversal cap cannot justify
+        # reporting every visible SHUNNED route's hostgroup as unavailable.
+        # A preceding channel can consume part of that shared row budget.
+        for preceding_rows in (0, 1):
+            with self.subTest(preceding_rows=preceding_rows):
+                servers = [dict(self.route(), status='SHUNNED')
+                           for unused in range(topology_group.MAP_ROWS_PER_MEMBER - preceding_rows)]
+                servers.append(self.route('online-after-cap.example'))
+                probe = {'kind': 'proxysql', 'servers': servers, 'channels': [{}] * preceding_rows}
+                result = self.build([profile], {'proxy': probe})
+                self.assertEqual(len(result['edges']), 1)
+                self.assertEqual(result['edges'][0]['state'], 'SHUNNED')
+                self.assertNotIn('No ONLINE member', result['edges'][0].get('reason', ''))
+                self.assertTrue(any('rows capped' in note['message'] for note in result['notes']))
 
     def test_ssh_loopback_proxy_route_cannot_match_a_local_saved_server(self):
         profiles = [{'id': 'proxy', 'host': '127.0.0.1', 'port': 6032, 'ssh_host': 'remote.example'},
