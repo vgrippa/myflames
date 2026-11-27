@@ -17,6 +17,7 @@ Every test that reaches the workspace database runs with a temporary HOME
 and MYFLAMES_SECRET_BACKEND=vault.
 """
 import datetime
+from contextlib import ExitStack
 import io
 import json
 import os
@@ -316,6 +317,23 @@ class ReaperShutdownTests(unittest.TestCase):
         worker.join(2)
 
     def test_close_waits_for_inflight_start_run_and_never_publishes_after_end(self):
+        # Events establish the ordering. Allow slow runners time to schedule
+        # each participant and write the real SQLite audit record; the tests
+        # below check close()'s production shutdown budget separately.
+        wait_timeout = 30
+
+        def finish_case(registry, session, release, workers):
+            try:
+                session.end("closed")
+            finally:
+                release.set()
+                for worker in workers:
+                    if worker.ident is not None:
+                        worker.join(wait_timeout)
+                registry.close(timeout=wait_timeout)
+            for worker in workers:
+                self.assertFalse(worker.is_alive(), "%s did not exit during cleanup" % worker.name)
+
         class ObservedLock(object):
             def __init__(self, inner, on_wait, on_release):
                 self._inner = inner
@@ -356,15 +374,17 @@ class ReaperShutdownTests(unittest.TestCase):
 
         # Case 1: write run paused inside audit.attempt() (after ended check,
         # before publishing self.run).
-        with self.subTest(case="write_audit"):
+        with self.subTest(case="write_audit"), ExitStack() as cleanup:
+            directory = cleanup.enter_context(tempfile.TemporaryDirectory())
             registry = ed.EditorSessions(reap_every=0)
-            self.addCleanup(registry.close)
-            temp = tempfile.TemporaryDirectory()
-            self.addCleanup(temp.cleanup)
-            store = WorkspaceStore(Path(temp.name) / "workspace.sqlite3")
+            store = WorkspaceStore(Path(directory) / "workspace.sqlite3")
             session = make_session("tab-write")
             entered_attempt = threading.Event()
             release_attempt = threading.Event()
+            workers = []
+            # Join all audit users before TemporaryDirectory removes SQLite,
+            # including when an assertion fails before the paused start resumes.
+            cleanup.callback(finish_case, registry, session, release_attempt, workers)
             drain_waiting = threading.Event()
             close_returned = threading.Event()
             history_called = threading.Event()
@@ -388,7 +408,7 @@ class ReaperShutdownTests(unittest.TestCase):
             def paused_attempt(*args, **kwargs):
                 result = real_attempt(*args, **kwargs)
                 entered_attempt.set()
-                self.assertTrue(release_attempt.wait(5), "test timed out waiting to release audit.attempt")
+                release_attempt.wait()
                 return result
 
             def observed_complete(*args, **kwargs):
@@ -410,13 +430,14 @@ class ReaperShutdownTests(unittest.TestCase):
                     starter_errors.append(exc)
 
             def run_close():
-                registry.close()
+                registry.close(timeout=wait_timeout)
                 record("close_returned")
                 close_returned.set()
 
             starter = threading.Thread(target=run_start, daemon=True)
+            workers.append(starter)
             starter.start()
-            self.assertTrue(entered_attempt.wait(2), starter_errors)
+            self.assertTrue(entered_attempt.wait(wait_timeout), starter_errors)
             self.assertIsNone(session.run)
             self.assertTrue(session.run_lock.locked())
             self.assertTrue(audit.pending)
@@ -427,14 +448,15 @@ class ReaperShutdownTests(unittest.TestCase):
                           "held run_lock must retain removed session while start_run is in flight")
 
             closer = threading.Thread(target=run_close, daemon=True)
+            workers.append(closer)
             closer.start()
-            self.assertTrue(drain_waiting.wait(2), "close() did not wait on held run_lock")
+            self.assertTrue(drain_waiting.wait(wait_timeout), "close() did not wait on held run_lock")
             self.assertFalse(close_returned.is_set(), "close() returned while start_run was still in flight")
 
             release_attempt.set()
-            self.assertTrue(close_returned.wait(2), "close() did not finish after start_run unwound")
-            starter.join(2)
-            closer.join(2)
+            self.assertTrue(close_returned.wait(wait_timeout), "close() did not finish after start_run unwound")
+            starter.join(wait_timeout)
+            closer.join(wait_timeout)
             self.assertFalse(starter.is_alive())
             self.assertFalse(closer.is_alive())
             self.assertEqual(len(starter_errors), 1)
@@ -452,9 +474,8 @@ class ReaperShutdownTests(unittest.TestCase):
 
         # Case 2: read run paused during SQL re-validation (no audit), plus
         # verifying _draining prunes once run_lock is released.
-        with self.subTest(case="read_validation"):
+        with self.subTest(case="read_validation"), ExitStack() as cleanup:
             registry = ed.EditorSessions(reap_every=0)
-            self.addCleanup(registry.close)
             session = make_session("tab-read")
             entered_validate = threading.Event()
             release_validate = threading.Event()
@@ -486,7 +507,7 @@ class ReaperShutdownTests(unittest.TestCase):
 
             def paused_plan_statements(*args, **kwargs):
                 entered_validate.set()
-                self.assertTrue(release_validate.wait(5), "test timed out waiting to release plan_statements")
+                release_validate.wait()
                 return real_plan_statements(*args, **kwargs)
 
             def run_start():
@@ -496,30 +517,34 @@ class ReaperShutdownTests(unittest.TestCase):
                     starter_errors.append(exc)
 
             def run_close():
-                registry.close()
+                registry.close(timeout=wait_timeout)
                 record("close_returned")
                 close_returned.set()
 
-            with mock.patch.object(ed, "plan_statements", side_effect=paused_plan_statements):
-                starter = threading.Thread(target=run_start, daemon=True)
-                starter.start()
-                self.assertTrue(entered_validate.wait(2), starter_errors)
-                self.assertIsNone(session.run)
-                self.assertTrue(session.run_lock.locked())
+            cleanup.enter_context(mock.patch.object(ed, "plan_statements", side_effect=paused_plan_statements))
+            workers = []
+            cleanup.callback(finish_case, registry, session, release_validate, workers)
+            starter = threading.Thread(target=run_start, daemon=True)
+            workers.append(starter)
+            starter.start()
+            self.assertTrue(entered_validate.wait(wait_timeout), starter_errors)
+            self.assertIsNone(session.run)
+            self.assertTrue(session.run_lock.locked())
 
-                session.end("closed")
-                registry.remove("tab-read", session)
-                self.assertIn(session, registry._draining)
+            session.end("closed")
+            registry.remove("tab-read", session)
+            self.assertIn(session, registry._draining)
 
-                closer = threading.Thread(target=run_close, daemon=True)
-                closer.start()
-                self.assertTrue(drain_waiting.wait(2))
-                self.assertFalse(close_returned.is_set())
+            closer = threading.Thread(target=run_close, daemon=True)
+            workers.append(closer)
+            closer.start()
+            self.assertTrue(drain_waiting.wait(wait_timeout))
+            self.assertFalse(close_returned.is_set())
 
-                release_validate.set()
-                self.assertTrue(close_returned.wait(2))
-                starter.join(2)
-                closer.join(2)
+            release_validate.set()
+            self.assertTrue(close_returned.wait(wait_timeout))
+            starter.join(wait_timeout)
+            closer.join(wait_timeout)
 
             self.assertFalse(starter.is_alive())
             self.assertFalse(closer.is_alive())

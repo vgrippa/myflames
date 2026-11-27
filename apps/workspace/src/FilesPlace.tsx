@@ -10,9 +10,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Profile } from "./api";
 import { FileBrowser } from "./FileBrowser";
 import { HostKeySheet, SshConnectionList, SshConnectionSheet, targetLabel } from "./SshConnections";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import {
   ConfirmSheet,
-  copyToClipboard,
   EmptyState,
   errorText,
   Notice,
@@ -128,8 +128,8 @@ export function FilesPlace({ profiles }: { profiles: Profile[] }) {
     const text = targetLabel(c);
     if (!text) return;
     setRowActionId(c.id);
-    void copyToClipboard(text).then((ok) =>
-      rowAction.show(ok ? "done" : "failed", ok ? `Copied ${text}.` : "Could not copy to the clipboard."),
+    void copyToClipboardResult(text).then((res) =>
+      rowAction.show(res.ok ? "done" : "failed", res.ok ? copyFeedback(`Copied ${res.text}.`, res.removed) : "Could not copy to the clipboard."),
     );
   };
 

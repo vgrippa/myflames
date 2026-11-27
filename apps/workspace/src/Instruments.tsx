@@ -22,7 +22,7 @@ import type { ServerKind } from "./session";
 import { useConnectionReads, type Bound } from "./binding";
 import { useOpenRead } from "./viewOnScreen";
 import {
-  copyToClipboard,
+  // DataTable rowContextMenu copy helper replaces direct copyToClipboard.
   focusWithoutScroll,
   DataTable,
   Disclosure,
@@ -812,7 +812,7 @@ export function InstrumentsView({
               multiSelection={{ keys: instrumentNames.map(name => `instrument:${name}`), select: keys => setInstrumentNames(keys.map(key => key.slice(11))) }}
               onActivate={row => reveal(`instrument:${row.name}`)}
               rowAttrs={row => ({ "data-row": `instrument:${row.name}` })}
-              rowContextMenu={row => [
+              rowContextMenu={(row, { copy }) => [
                 {
                   label: "Enable instrument",
                   icon: "check",
@@ -847,7 +847,7 @@ export function InstrumentsView({
                 {
                   label: `Copy instrument name (${row.name})`,
                   icon: "copy",
-                  onClick: () => void copyToClipboard(row.name),
+                  onClick: () => void copy(row.name, "Copied instrument name"),
                 },
                 ...(onOpenSql ? [
                   {
@@ -864,7 +864,7 @@ export function InstrumentsView({
               rowKey={c => c.id} selection={selection} selectionHighlight="always"
               multiSelection={{ keys: consumerNames.map(name => `consumer:${name}`), select: keys => setConsumerNames(keys.map(key => key.slice(9))) }}
               onActivate={c => reveal(c.id)} rowAttrs={c => ({ "data-row": c.id, id: rowDomId(c.id) })}
-              rowContextMenu={c => [
+              rowContextMenu={(c, { copy }) => [
                 {
                   label: "Enable consumer",
                   icon: "check",
@@ -886,7 +886,7 @@ export function InstrumentsView({
                 {
                   label: `Copy consumer name (${c.name})`,
                   icon: "copy",
-                  onClick: () => void copyToClipboard(c.name),
+                  onClick: () => void copy(c.name, "Copied consumer name"),
                 },
                 ...(onOpenSql ? [
                   {

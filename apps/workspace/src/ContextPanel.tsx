@@ -11,6 +11,13 @@ import { severityText } from "./compareText";
  * ANALYZE TABLE statement to copy (myflames never runs it). */
 function RowEstimate({ mark }: { mark: Misestimate }) {
   const evidence = mark.evidence;
+  // The ANALYZE TABLE statement is built from the server's schema.table
+  // (advisor.statistics_evidence, one dot separator); the copy is refused
+  // with the reason on click unless both names are safe to paste into the
+  // mysql client.
+  const dot = evidence ? evidence.table.indexOf(".") : -1;
+  const evidenceNames = !evidence ? undefined
+    : dot < 0 ? [evidence.table] : [evidence.table.slice(0, dot), evidence.table.slice(dot + 1)];
   return (
     <InspectorSection title="Row estimate" info={mark.reason}>
       <p className="misestimate-verdict">
@@ -25,7 +32,7 @@ function RowEstimate({ mark }: { mark: Misestimate }) {
           ["Rows in statistics", evidence.n_rows === null ? "Not recorded" : number(evidence.n_rows)],
           ["Histograms", evidence.histograms.length ? <bdi>{evidence.histograms.join(", ")}</bdi> : "None"],
         ]} />
-        <CopySql sql={evidence.statement} label="ANALYZE TABLE statement" />
+        <CopySql sql={evidence.statement} label="ANALYZE TABLE statement" names={evidenceNames} />
       </>}
     </InspectorSection>
   );

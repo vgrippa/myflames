@@ -293,6 +293,48 @@ class GrantLines(unittest.TestCase):
         self.assertIs(p.has(m, 'SELECT', 'column', database='d.b', table='t t', columns=['a,b']), True)
         self.assertIsNone(p.has(m, 'SELECT', 'column', database='d.b', table='t t', columns=['missing']))
 
+    def test_malformed_column_lists_make_the_whole_grant_unknown(self):
+        # The first line is the reviewer's injection payload, unchanged.
+        lines = ['GRANT SELECT (a) ; DROP USER root ; -- ) ON d.t TO app@%']
+        malformed = (
+            '()', '(,a)', '(a,)', '(a,,b)', '((a))', '(a(b))',
+            '(a) (b)', '(a) junk (b)', '(;)', '(.)', '(*)', '(@)',
+            '(a b)', '(a + b)', '(a+b)', '(a/b)', '(#x)', '(=)',
+            '(`a` junk)', '(`unclosed)', '("unclosed)', "('unclosed)",
+            '(123)', '(0xFF)', '(0b101)', '(1e2)', '(1E2suffix)', '(``)', '("")', "('')",
+        )
+        # A valid privilege earlier on the same line must not survive a
+        # malformed column group and become a usable authorization result.
+        lines.extend('GRANT INSERT, SELECT %s ON d.t TO app@%%' % columns for columns in malformed)
+        for engine in ('mysql', 'mariadb'):
+            for line in lines:
+                with self.subTest(engine=engine, line=line):
+                    model = self.model([line], engine)
+                    self.assertEqual(model['unparsed'], [line])
+                    for bucket in ('global', 'dynamic', 'schemas', 'tables', 'columns', 'restrictions'):
+                        self.assertEqual(model[bucket], [], bucket)
+                    self.assertIsNone(p.has(model, 'SELECT', 'column', database='d', table='t', columns=['a']))
+                    self.assertIsNone(p.has(model, 'INSERT', 'table', database='d', table='t'))
+                    self.assertEqual(p.can(model, 'insert', database='d', table='t')['state'], 'unknown')
+                    adapted = dbops.parse_grants([line], engine)
+                    self.assertEqual(adapted['unparsed'], [line])
+                    self.assertEqual(adapted['model']['columns'], [])
+
+    def test_column_identifier_lists_keep_quoted_punctuation_and_plain_names(self):
+        plain = ['a', 'b_2', '$c', '2nd', 'caf\u00e9', '1a', '1\u00e9', '1e_name', '0xg', '0XFF']
+        quoted = ['a,b', 'x)y', '(x', '*', '.', '@', ';', 'a+b', 'a/b', '#x', '=', 'a`b', '123', '0xFF', '1e2']
+        columns = ', '.join(plain + [p.quote_identifier(name) for name in quoted])
+        line = 'GRANT SELECT (%s), UPDATE (`u`), CREATE VIEW ON d.t TO app@%% WITH GRANT OPTION' % columns
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                model = self.model([line], engine)
+                self.assertEqual(model['unparsed'], [])
+                self.assertEqual(model['columns'][0]['columns'], plain + quoted)
+                self.assertEqual(model['columns'][1]['columns'], ['u'])
+                self.assertEqual(model['tables'][0]['privs'], ['CREATE VIEW'])
+                self.assertIs(p.has(model, 'SELECT', 'column', database='d', table='t',
+                                    columns=plain + quoted, grantable=True), True)
+
     def test_package_library_and_role_lines_are_kept(self):
         m = self.model(['GRANT EXECUTE ON PACKAGE `shop`.`pkg` TO `app`@`%`',
                         'GRANT ALTER ROUTINE ON PACKAGE BODY `shop`.`pkg` TO `app`@`%`',

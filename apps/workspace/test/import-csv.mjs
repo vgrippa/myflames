@@ -190,7 +190,7 @@ const extra = {
     if (applyMode === "refused-audited") { pendingApply = null; return { status: 400, body: { error: "The file changed since the check (size or modification time). Nothing was sent. Check the import again.", audit_id: "audit-refused" } }; }
     if (applyMode === "slow") setTimeout(() => respondApply(200, result("done")), 12500);
     if (applyMode === "new-failed") setTimeout(() => respondApply(200, result("failed", { failed_at: { line: 4, message: "Bad value." }, table_created: true,
-      table_rows_after: 0, drop_hint: "DROP TABLE `shop`.`orders_2026`;", warnings: { count: 2, items: [{ level: "Warning", code: 1265, message: "Data truncated for column 'note' at row 2" }, { level: "Note", code: 1003, message: "Second note" }] } })), 800);
+      table_rows_after: 0, drop_hint: "DROP TABLE `shop`.`orders_2026`;\n\\! echo pwned", warnings: { count: 2, items: [{ level: "Warning", code: 1265, message: "Data truncated for column 'note' at row 2" }, { level: "Note", code: 1003, message: "Second note" }] } })), 800);
     return null;
   },
   // The Audit log as the backend keeps a stopped import: status ok, outcome stopped.
@@ -910,6 +910,12 @@ try {
   assert.match(newFailed, /Copy/);
   assert.match(newFailed, /Server warnings2/);
   await shoot("step5-result-new-table-failed");
+  // A copied statement holding a client command: CopySql shows the note beside
+  // the button (R3-3), and the shared notice mounts inside the open sheet.
+  await page.locator(`${sheet} .perf-sql button[aria-label="Copy: DROP TABLE statement"]`).click();
+  await page.waitForFunction((s) => /Note: this text may contain a mysql client command \(\\!\)/.test(
+    document.querySelector(`${s} .perf-sql [role=status]`)?.textContent || ""), {}, sheet);
+  assert.ok(await page.$(`${sheet} #myflames-copy-notice`), "the copy notice mounts inside the open sheet");
   await closeSheet();
   await page.locator(".query-lab .import-csv-status button ::-p-text(Dismiss)").click();
 

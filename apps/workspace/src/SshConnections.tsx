@@ -24,12 +24,13 @@ import {
   type SshConnectionDraft,
   type SshTarget,
 } from "./filesApi";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import {
   ActionButton,
   ActionStatus,
   ConfirmSheet,
   ContextMenu,
-  copyToClipboard,
+  // clipboard helpers imported from ./clipboard
   errorText,
   FormGrid,
   FormRow,
@@ -803,6 +804,8 @@ export function HostKeyReview(props: {
   trust: ActionState & { pending: boolean };
 }): JSX.Element {
   const { scan, scanning, scanError, onRetry, trust } = props;
+  const [copied, setCopied] = useState("");
+  useEffect(() => setCopied(""), [scan]);
   return (
     <>
       {scanning && (
@@ -829,11 +832,16 @@ export function HostKeyReview(props: {
               <li key={`${key.type}-${key.fingerprint}`}>
                 <span className="hostkey-kind">{key.type}{key.bits ? ` (${key.bits} bits)` : ""}</span>
                 <code className="hostkey-fingerprint">{key.fingerprint}</code>
-                <button type="button" className="text-button hostkey-copy" onClick={() => void copyToClipboard(key.fingerprint)}
+                <button type="button" className="text-button hostkey-copy" onClick={() => {
+                  void copyToClipboardResult(key.fingerprint).then((res) =>
+                    setCopied(res.ok ? copyFeedback("Copied.", res.removed) : "Select the fingerprint to copy it."),
+                  );
+                }}
                   aria-label={`Copy the ${key.type} fingerprint`}>Copy</button>
               </li>
             ))}
           </ul>
+          {copied && <p className="hint" role="status">{copied}</p>}
         </>
       )}
       <ActionStatus state={trust} />

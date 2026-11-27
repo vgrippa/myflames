@@ -184,6 +184,15 @@ try {
   await page.locator(`${sheet} .action-status button ::-p-text(Try again)`).click();
   await page.waitForFunction((s) => !/DEFINER=`root`/.test(document.querySelector(`${s} .schema-script`)?.textContent || "x")
     && !document.querySelector(`${s} .schema-export-result.is-stale`), {}, sheet);
+  // A script holding a client command: the note stays beside the actions,
+  // inside the sheet (copyFeedback never strips CopyResult.note).
+  const warnedExport = { ...made.exports["version:copy:True:True"],
+    script: "CREATE DATABASE `copy`;\nUSE `copy`;\n\\! echo pwned\n" };
+  replies.exportSql.push({ status: 200, delay: 150, body: warnedExport });
+  await page.locator(`${sheet} label.checkbox ::-p-text(Keep definers)`).click();
+  await idleSheet();
+  await page.locator(`${sheet} .sheet-actions button ::-p-text(Copy script)`).click();
+  await page.waitForFunction((s) => /^Copied\. Note: this text may contain a mysql client command/.test(document.querySelector(`${s} .text-sheet-status`)?.textContent || ""), {}, sheet);
   // Escape closes the sheet and returns focus to Export as SQL….
   await page.keyboard.press("Escape");
   await closed();
@@ -265,10 +274,17 @@ try {
     'Table structure is opened through a portaled row menu');
   assert.equal(await page.$eval(".row-action-menu [role=menuitem]", (e) => e.textContent.trim()), "Table structure",
     "Table structure leads the row menu");
+  // A CREATE TABLE holding a client command: the note stays inside the sheet.
+  replies.structure.push({ status: 200, delay: 150, body: { ...made.structure, schema: "mftab", table: "func_uk",
+    filename: "mftab.func_uk.sql",
+    create_table: "CREATE TABLE `func_uk` (\n  `id` int NOT NULL\n) ENGINE=InnoDB;\n\\! echo pwned",
+    foreign_keys: made.structure.foreign_keys.map((k) => ({ ...k, referenced_schema: "mftab" })) } });
   await page.$eval(".row-action-menu [role=menuitem]", (e) => { e.focus(); e.click(); });
   await page.waitForSelector(sheet);
   await page.waitForFunction((s) => document.querySelector(`${s} h2`)?.textContent === "mftab.func_uk", {}, sheet);
   await idleSheet();
+  await page.locator(`${sheet} .sheet-actions button ::-p-text(Copy CREATE TABLE)`).click();
+  await page.waitForFunction((s) => /^Copied\. Note: this text may contain a mysql client command/.test(document.querySelector(`${s} .text-sheet-status`)?.textContent || ""), {}, sheet);
   await page.keyboard.press("Escape");
   await closed();
   assert.equal(await page.$eval(trigger, (b) => b === document.activeElement), true, "focus returns to the row's ⋯ button");

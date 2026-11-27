@@ -8,7 +8,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { download, type Connection } from "./api";
 import { connectionLabel } from "./binding";
-import { ActionStatus, Checkbox, Disclosure, FormGrid, FormRow, Pill, Select, copyToClipboard, useAction } from "./kit";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
+import { ActionStatus, Checkbox, Disclosure, FormGrid, FormRow, Pill, Select, useAction } from "./kit";
 import { TextSheet } from "./TableStructure";
 import {
   exportSql, TYPE_LABELS, TYPE_ORDER, TYPE_PLURALS, versionTitle,
@@ -112,7 +113,7 @@ export function SchemaExportSheet({ source, onOpenSql, onClose }: {
       status={copied}
       actions={<>
         <button type="button" className="button" disabled={!current} title={notReady || "Copy the script"}
-          onClick={() => { if (current && result) void copyToClipboard(result.script).then((ok) => setCopied(ok ? "Copied." : "Select the text to copy it.")); }}>
+          onClick={() => { if (current && result) void copyToClipboardResult(result.script).then((res) => setCopied(res.ok ? copyFeedback("Copied.", res.removed, res.note) : "Select the text to copy it.")); }}>
           Copy script
         </button>
         <button type="button" className="button" disabled={!current} title={notReady || (result ? `Save ${result.filename}` : "")}

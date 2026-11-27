@@ -3,6 +3,7 @@ import { appliedThemeBase } from "./themes";
 import { api, type Connection } from "./api";
 import { connectionKey, connectionLabel, nextGeneration, useConnectionReads } from "./binding";
 import { useSchemaCatalog } from "./PerfShared";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import { ActionButton, ActionStatus, useSince, ConfirmSheet, Disclosure, EmptyState, Fields, InspectorSection, Popover, SearchField, Segmented, Select, SummaryLine,
   ViewLayout, ViewStatus, closePopovers, type InspectorContent, type Selection } from "./kit";
 import { autoLayout, boundedCoordinate, COLUMN_HEIGHT, conceptualRelationship, diagramBounds, diagramPositions, diagramSvg,
@@ -91,7 +92,7 @@ function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
   const [svg, setSvg] = useState<{text:string; width:number; height:number} | null>(null);
   const [dark, setDark] = useState(() => appliedThemeBase() === "dark");
   const [template, setTemplate] = useState<string>("auto");
-  const [copied, setCopied] = useState(false), [copyError, setCopyError] = useState("");
+  const [copied, setCopied] = useState(""), [copyError, setCopyError] = useState("");
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [size, setSize] = useState({width:800,height:500});
   const frame = useRef<HTMLDivElement>(null);
@@ -115,7 +116,7 @@ function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
   }, []);
   useEffect(() => {
     const controller = new AbortController();
-    setFile(null); setError(""); setCopied(false); setCopyError("");
+    setFile(null); setError(""); setCopied(""); setCopyError("");
     const timer = window.setTimeout(() => {
       void api<{text:string;warnings:string[]}>("schema-diagram/export", {format:"mermaid",diagram}, controller.signal)
         .then(result => {
@@ -233,8 +234,9 @@ function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
   async function copy() {
     if (!file) return;
     setCopyError("");
-    try { await navigator.clipboard.writeText(file.text); setCopied(true); }
-    catch(e) { setCopyError((e as Error).message || "Could not copy Mermaid code."); }
+    const res = await copyToClipboardResult(file.text);
+    if (res.ok) setCopied(copyFeedback("Copied", res.removed));
+    else setCopyError("Could not copy Mermaid code.");
   }
   return <div className="diagram-mermaid">
     <section className="diagram-mermaid-panel" aria-label="Mermaid preview" data-theme={dark?"dark":"default"}>
@@ -291,7 +293,7 @@ function MermaidDiagram({ diagram }: { diagram: SchemaDiagram }) {
         <button className="button" disabled={!file} onClick={()=>void copy()}>Copy</button>
         <button className="button" disabled={!file} onClick={()=>file&&download(file)}>Download .mmd</button>
       </div></div>
-      {copied&&<p className="hint" role="status">Copied</p>}
+      {copied&&<p className="hint" role="status">{copied}</p>}
       <ViewStatus error={error||copyError}/>
       <pre className="diagram-mermaid-code" tabIndex={0} aria-label="Mermaid source"><code>{file?.text || (error?"":"Preparing Mermaid…")}</code></pre>
       {!!file?.warnings.length&&<Disclosure title={`Export notes (${file.warnings.length})`}><ul>{file.warnings.map((w,i)=><li key={i}>{w}</li>)}</ul></Disclosure>}

@@ -42,7 +42,7 @@ import { loopActive, NOT_A_REPLICA, readSkipLoops, replicationNav, stopSkipLoop,
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
 import { NOT_A_READYSET, readysetNav, type ReadysetFailure, type ReadysetReport } from "./readysetApi";
-import { NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
+import { loadClip, NavMarker, WindowStatusBar, WindowStatusProvider } from "./kit";
 import { MAC, shortcut } from "./platform";
 import { ViewOnScreenContext } from "./viewOnScreen";
 import { PLACES, Sidebar, SidebarToggle, type Place } from "./Sidebar";
@@ -110,6 +110,7 @@ const QueryLab = lazyComponent(() => import("./QueryLab").then((m) => m.QueryLab
 // Start loading it now, alongside sign-in and the session read, so it is
 // usually ready when the first screen renders.
 void QueryLab.preload().catch(() => {});
+void loadClip(); // Every successful clipboard load installs its selection listener.
 const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));

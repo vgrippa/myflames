@@ -474,6 +474,20 @@ try {
   // inspector and context menu. A review is declined in every case.
   await page.setViewport({ width: 1440, height: 1000 });
   await h.server(); await h.view("indexes");
+  // A paste-safe name copies through the same menu the hostile row refuses.
+  await list("unused");
+  const safeRow = `${view} [aria-label="Unused indexes"] tbody tr[data-index="customers.k_country_created"]`;
+  await page.waitForSelector(safeRow);
+  await page.evaluate(() => { window.__safeCopies = []; navigator.clipboard.writeText = text => { window.__safeCopies.push(text); return Promise.resolve(); }; });
+  await page.click(safeRow, { button: "right" });
+  await page.waitForSelector(".context-menu [role=menuitem]");
+  await page.$$eval(".context-menu [role=menuitem]", (items) => {
+    const item = items.find(item => item.textContent.trim() === "Copy DROP INDEX SQL");
+    if (!item) throw new Error("Missing menu action Copy DROP INDEX SQL");
+    item.click();
+  });
+  await page.waitForFunction(() => (window.__safeCopies || []).length === 1);
+  assert.deepEqual(await page.evaluate(() => window.__safeCopies), ["ALTER TABLE `mfshop`.`customers` DROP INDEX `k_country_created`;"]);
   const odd = { schema: "s`name", table: "t`name", index: "i`'\\name" };
   const qTable = "`s``name`.`t``name`", qIndex = "`i``'\\name`";
   const toggle = `ALTER TABLE ${qTable} ALTER INDEX ${qIndex} INVISIBLE`;
@@ -520,8 +534,26 @@ try {
   await contextAction("Update index statistics (Analyze)…"); await expectReview(`ANALYZE TABLE ${qTable}`);
   await contextAction("Rebuild index / table (Optimize)…"); await expectReview(`OPTIMIZE TABLE ${qTable}`);
   await page.evaluate(() => { window.__indexCopies = []; navigator.clipboard.writeText = text => { window.__indexCopies.push(text); return Promise.resolve(); }; });
-  await contextAction("Copy DROP INDEX SQL");
-  assert.deepEqual(await page.evaluate(() => window.__indexCopies), [drop + ";"]);
+  // Copies built from these names are refused: the backslash in the index
+  // name fails the paste-safety allowlist, so each copy stays visible but
+  // aria-disabled with the reason, and clicking writes nothing.
+  for (const label of ["Copy index name (`i`'\\name`)", "Copy DROP INDEX SQL"]) {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.click(oddRow, { button: "right" });
+    await page.waitForSelector(".context-menu [role=menuitem]");
+    const refused = await page.$$eval(".context-menu [role=menuitem]", (items, label) => {
+      const item = items.find(item => item.textContent.trim().startsWith(label));
+      if (!item) throw new Error(`Missing menu action ${label}`);
+      const state = { aria: item.getAttribute("aria-disabled"), title: item.getAttribute("title") || "" };
+      item.click();
+      return state;
+    }, label);
+    assert.equal(refused.aria, "true", `${label} stays visible but off`);
+    assert.match(refused.title, /not printable ASCII or contains a backslash/, `${label} shows the reason`);
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".context-menu[role=menu]", { hidden: true });
+  }
+  assert.deepEqual(await page.evaluate(() => window.__indexCopies), [], "a refused copy never reaches the clipboard");
   await contextAction("Show index definition (SHOW INDEX)");
   await page.waitForSelector('[aria-label="SQL editor"]');
   assert.equal(await page.$eval('[aria-label="SQL editor"]', editor => editor.value),

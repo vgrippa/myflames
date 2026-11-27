@@ -88,7 +88,7 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
 """
 import datetime
 
-from . import cluster
+from . import cluster, privileges
 from .connector import ConnectorError
 from .ps_instruments import BUILTIN_MEMORY
 from .perf_common import (Reader, Server, _bytes_text as _bytes, _count_text, _duration_text, _number, base_report,
@@ -379,8 +379,30 @@ def _on(value):
 
 
 def account_name(user, host):
-    """'user'@'host' as SQL text (quotes doubled)."""
+    """Account label for display only, never for building SQL."""
     return "'%s'@'%s'" % ((user or "").replace("'", "''"), (host or "").replace("'", "''"))
+
+
+def _account_action(account, text, sql):
+    """Quote account SQL independently of sql_mode; retain raw copy-guard names.
+
+    Refuse names outside the advisory SQL allowlist too: consumers such as the
+    scorecard do not all retain the metadata needed by the UI copy guard.
+    Refused accounts still get advice and a reason, without failing the report.
+    """
+    names = list(account)
+    action = {"text": text, "names": names}
+    try:
+        quoted = privileges.quote_account(*names)
+    except ValueError as exc:
+        action["text"] += " Suggested SQL is not offered: %s" % exc
+    else:
+        if any(privileges._UNSAFE_GRANT_SQL.search(name) for name in names):
+            action["text"] += (" Suggested SQL is not offered: a name is not printable ASCII or contains a "
+                               "backslash, which can act as editing keys or client commands in the mysql client.")
+        else:
+            action["sql"] = sql.format(account=quoted)
+    return action
 
 
 def _first(row, *names):
@@ -526,42 +548,45 @@ def _accounts(server, raw):
             continue
         if not lock_known and (user, host) == ("mariadb.sys", "localhost"):
             continue
-        name = account_name(user, host)
+        account = (user or "", host or "")
         if (empty or "").strip() == "1" and (plugin or "").lower() in plugins:
-            no_password.append(name)
+            no_password.append(account)
         if user == "":
-            anonymous.append(name)
+            anonymous.append(account)
         if user == "root" and host == "%":
-            root_any.append(name)
+            root_any.append(account)
     lock_note = "" if lock_known else (" The lock state is not readable without SELECT on mysql.global_priv, so "
                                        "locked accounts may be listed.")
 
     def listed(names):
-        return [_number_item("Account", n) for n in names[:MAX_ACCOUNTS]] + (
+        return [_number_item("Account", account_name(*n)) for n in names[:MAX_ACCOUNTS]] + (
             [_number_item("More", "%d more" % (len(names) - MAX_ACCOUNTS))] if len(names) > MAX_ACCOUNTS else [])
 
-    first = no_password[0] if no_password else "'user'@'host'"
     out = [_check(
         "no_password", "security", "Accounts without a password", "problem" if no_password else "ok",
         ("%d account%s accept%s a login without a password: %s" % (
             len(no_password), "" if len(no_password) == 1 else "s", "s" if len(no_password) == 1 else "",
-            ", ".join(no_password[:MAX_ACCOUNTS])) if no_password else "No unlocked account has an empty password")
+            ", ".join(account_name(*n) for n in no_password[:MAX_ACCOUNTS]))
+         if no_password else "No unlocked account has an empty password")
         + lock_note, "no_password", explain=explain,
         caveat="Find the applications that use the account first: a new password or a lock breaks their logins.",
-        action={"text": "Set a password, or lock the account if nothing uses it. Each statement needs the "
-                        "db-operations confirmation.",
-                "sql": "ALTER USER %s IDENTIFIED BY '<new password>';\n-- or: ALTER USER %s ACCOUNT LOCK;"
-                       % (first, first)} if no_password else None,
+        action=_account_action(
+            no_password[0], "Set a password, or lock the account if nothing uses it. Each statement needs the "
+            "db-operations confirmation.",
+            "ALTER USER {account} IDENTIFIED BY '<new password>';\n-- or: ALTER USER {account} ACCOUNT LOCK;")
+        if no_password else None,
         numbers=listed(no_password), sources=sources, value=str(len(no_password)))]
     out.append(_check(
         "anonymous", "security", "Anonymous accounts", "watch" if anonymous else "ok",
         ("%d anonymous account%s (empty user name), which accept%s any user name from %s: %s" % (
             len(anonymous), "" if len(anonymous) == 1 else "s", "s" if len(anonymous) == 1 else "",
-            "its host" if len(anonymous) == 1 else "their hosts", ", ".join(anonymous[:MAX_ACCOUNTS]))
+            "its host" if len(anonymous) == 1 else "their hosts",
+            ", ".join(account_name(*n) for n in anonymous[:MAX_ACCOUNTS]))
          if anonymous else "No unlocked anonymous account") + lock_note, "anonymous", explain=explain,
         caveat="Some old installations rely on an anonymous account for local tools; check before dropping it.",
-        action={"text": "Drop anonymous accounts that nothing needs; it needs the db-operations confirmation.",
-                "sql": "DROP USER %s;" % anonymous[0]} if anonymous else None,
+        action=_account_action(
+            anonymous[0], "Drop anonymous accounts that nothing needs; it needs the db-operations confirmation.",
+            "DROP USER {account};") if anonymous else None,
         numbers=listed(anonymous), sources=sources, value=str(len(anonymous))))
     out.append(_check(
         "root_any_host", "security", "root from any host", "watch" if root_any else "ok",
@@ -571,11 +596,14 @@ def _accounts(server, raw):
         caveat=("Container images often create 'root'@'%' by default. Create root (or a named administrator) for "
                 "the hosts administrators connect from and check that it works before dropping 'root'@'%', or "
                 "you can lock yourself out."),
-        action={"text": "Limit root to the hosts that administer the server; each statement needs the "
-                        "db-operations confirmation.",
-                "sql": "CREATE USER 'root'@'<admin host>' IDENTIFIED BY '<password>';\n"
-                       "GRANT ALL ON *.* TO 'root'@'<admin host>' WITH GRANT OPTION;\n"
-                       "-- after checking the new account works:\nDROP USER 'root'@'%';"} if root_any else None,
+        action=_account_action(
+            root_any[0], "Limit root to the hosts that administer the server; each statement needs the "
+            "db-operations confirmation.",
+            "CREATE USER %s IDENTIFIED BY '<password>';\n"
+            "GRANT ALL ON *.* TO %s WITH GRANT OPTION;\n"
+            "-- after checking the new account works:\nDROP USER {account};" % (
+                privileges.quote_account("root", "<admin host>"), privileges.quote_account("root", "<admin host>")))
+        if root_any else None,
         numbers=listed(root_any), sources=sources, value=str(len(root_any))))
     return out
 
