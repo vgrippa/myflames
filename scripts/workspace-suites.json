@@ -1100,6 +1100,12 @@
       "timeout": 180,
       "reason": "Shared SQL identifier builders executed without a browser, server or emitted assets."
     },
+    "sql-paste-safety-unit.mjs": {
+      "kind": "suite",
+      "script": "test:sql-paste-safety-unit",
+      "timeout": 180,
+      "reason": "Unit contracts for sqlPasteSafety.ts (name allowlist, mysql client command detector) via esbuild; run directly with Node."
+    },
     "sql-select-unit.mjs": {
       "kind": "suite",
       "script": null,

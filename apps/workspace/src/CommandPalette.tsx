@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "./components";
 import { useFocusScope } from "./kit";
+import { buildWorkspaceCommands, type WorkspaceActions } from "./workspaceCommands";
 import "./command-palette.css";
 
 /** Only existing navigation and local document actions enter this palette.
@@ -12,8 +13,9 @@ export type WorkspaceCommand = {
 /** The object search's state while a query is typed (2+ characters). */
 export type PaletteObjectStatus = { searching: boolean; error: string; truncated: boolean };
 
-export function CommandPalette({ commands, recent = [], objects = [], objectStatus, onQueryChange, onClose }: {
-  commands: WorkspaceCommand[];
+export function CommandPalette({ actions, recent = [], objects = [], objectStatus, onQueryChange, onClose }: {
+  /** The shell's navigation and dialog actions the commands run. */
+  actions: WorkspaceActions;
   /** The last views visited, first while the search is empty. */
   recent?: WorkspaceCommand[];
   /** Schema objects matching the typed text (cached catalog, then the server). */
@@ -27,6 +29,9 @@ export function CommandPalette({ commands, recent = [], objects = [], objectStat
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const listId = useId();
+  // The command list builds here, with the typed text, so it lives in this
+  // chunk instead of the entry (workspaceCommands.ts).
+  const commands = buildWorkspaceCommands(actions, query);
   const words = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
   // Commands whose label holds every word come first ("innodb" opens the
   // InnoDB view before the Cluster place, which only has it as a keyword);

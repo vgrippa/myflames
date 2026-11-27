@@ -36,6 +36,7 @@ import {
   type PinnedResult,
 } from "./resultFilter";
 import { MAC } from "./platform";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import { ACTION_ELAPSED_AFTER_MS, ActionButton, ActionStatus, ContextMenu, DataTable, IconButton, Popover, StatusPill, closePopovers, sortRows,
   useElapsed, useFocusScope, useSince, type Column, type SortState, type Tone } from "./kit";
 import "./result-grid.css";
@@ -98,25 +99,6 @@ export function tsv(rows: (string | null)[][]) {
   const field = (v: string | null) =>
     v === null ? "" : /[\t"\r\n]/.test(v) || v === "" ? `"${v.replace(/"/g, '""')}"` : v;
   return rows.map((r) => r.map(field).join("\t")).join("\r\n");
-}
-
-async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // Fallback for pages without clipboard permission.
-    const area = document.createElement("textarea");
-    area.value = text;
-    area.setAttribute("readonly", "");
-    area.style.position = "fixed";
-    area.style.opacity = "0";
-    document.body.appendChild(area);
-    area.select();
-    const ok = document.execCommand("copy");
-    area.remove();
-    return ok;
-  }
 }
 
 /** One value as text: NULL a token, "" an empty cell, binary hex with its size. */
@@ -513,7 +495,8 @@ function ResultGrid({ result, filteredRows, isFiltered, onAddChip, label, onCopi
   }
   async function copy(text: string, said: string) {
     setMenu(null);
-    if (await copyText(text)) onCopied(said);
+    const res = await copyToClipboardResult(text);
+    if (res.ok) onCopied(copyFeedback(said, res.removed));
     else onCopied("The browser did not allow copying.");
   }
   async function copySelection() {
@@ -648,8 +631,10 @@ function RowValue({ value, column, onCopied }: { value: string | null; column: E
     return (
       <div className="row-panel-json-block">
         <pre className="row-panel-json" aria-label={`${column.name} as JSON`}>{json}</pre>
-        <button type="button" className="button small row-panel-copy" onClick={async () =>
-          onCopied((await copyText(json)) ? `JSON of ${column.name} copied.` : "The browser did not allow copying.")}>
+        <button type="button" className="button small row-panel-copy" onClick={async () => {
+          const res = await copyToClipboardResult(json);
+          onCopied(res.ok ? copyFeedback(`JSON of ${column.name} copied.`, res.removed) : "The browser did not allow copying.");
+        }}>
           <Icon name="copy" size={14} />
           Copy JSON
         </button>
@@ -790,9 +775,10 @@ function ExportMenu({
         options: format === "csv" ? { header: true, formula_guard: guard } : {},
       });
       if (format === "tsv") {
+        const res = await copyToClipboardResult(reply.content);
         onDone(
-          (await copyText(reply.content))
-            ? `Result ${n} copied as tab-separated text (${rowsText(result.rows.length)}${isFiltered ? " filtered" : ""}).`
+          res.ok
+            ? copyFeedback(`Result ${n} copied as tab-separated text (${rowsText(result.rows.length)}${isFiltered ? " filtered" : ""}).`, res.removed)
             : "The browser did not allow copying.",
         );
       } else {

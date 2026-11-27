@@ -12,6 +12,7 @@ import { api, safePreview, type Plan } from "./api";
 import { availableViews, mount, type ChartHandle } from "./charts";
 import type { MetricName } from "./charts/core/types";
 import { bindFrameAppearance, themeFrame } from "./charts/core/appearance";
+import { withFrameCopySanitizer } from "./clipboard";
 import { PlanStats } from "./PlanStats";
 import { MIN_WORKSPACE_WIDTH as BAR_MIN_WIDTH } from "./charts/bargraph";
 import { MIN_WORKSPACE_WIDTH as TREE_MIN_WIDTH } from "./charts/tree";
@@ -457,7 +458,7 @@ function FrameChart({
       controller.signal,
     )
       .then((r) => {
-        if (!controller.signal.aborted) setHtml(safePreview(themeFrame(r.html)));
+        if (!controller.signal.aborted) setHtml(safePreview(withFrameCopySanitizer(themeFrame(r.html))));
       })
       .catch((e) => {
         if (!controller.signal.aborted) setError(e.message);

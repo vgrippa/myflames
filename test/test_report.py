@@ -231,6 +231,33 @@ class TestServerViewRegressions(unittest.TestCase):
 
 
 class TestAdvisoryFeatures(unittest.TestCase):
+    def test_index_findings_bind_the_names_of_the_statement_they_offer(self):
+        # A report also consumes older indexes-1.0 rows without names metadata.
+        # Names shown only as other candidates or covering indexes must not
+        # disable a statement that does not embed them.
+        for field in ('schema', 'table', 'index'):
+            for name in ('slash\\name', 'caf\u00e9', 'control\x1b', "tick`'name"):
+                with self.subTest(field=field, name=name):
+                    first = {'schema': 'shop', 'table': 'orders', 'index': 'k_a', 'verdict': 'candidate',
+                             'dominant': 'other\\index', 'columns': 'a', 'reason': 'is a leftmost prefix of',
+                             'caveat': 'Observe a complete business cycle.'}
+                    first[field] = name
+                    schema, table, index = (first[k] for k in ('schema', 'table', 'index'))
+                    first['test_sql'] = 'ALTER TABLE `%s`.`%s` ALTER INDEX `%s` INVISIBLE;' % tuple(
+                        n.replace('`', '``') for n in (schema, table, index))
+                    first['drop_sql'] = 'ALTER TABLE `%s`.`%s` DROP INDEX `%s`;' % tuple(
+                        n.replace('`', '``') for n in (schema, table, index))
+                    other = dict(first, schema='later\\schema', table='later', index='later')
+                    rep = {'available': True, 'uptime_s': 90000, 'unused': [first, other],
+                           'redundant': [first, other], 'full_scans': []}
+                    findings = {f['id']: f for f in report._indexes_findings(rep, None)}
+                    for fid in ('indexes.unused', 'indexes.redundant'):
+                        action = findings[fid]['action']
+                        self.assertEqual(action['names'], [schema, table, index])
+                        self.assertEqual(action['sql'], first['test_sql'])
+                        self.assertNotIn('other\\index', action['names'])
+                        self.assertNotIn('later\\schema', action['names'])
+
     def test_an_advisory_feature_never_makes_views_not_ready(self):
         # The replication receiver guard is optional: off by default on both
         # engines, so it must not turn instruments.views into watch.
@@ -677,10 +704,10 @@ class TestServerChecks(unittest.TestCase):
         self.assertEqual(checks['no_password']['status'], 'problem')
         self.assertEqual([n['text'] for n in checks['no_password']['numbers']],
                          ["'nopass'@'%'", "''@'localhost'", "'o''hara'@'%'"])
-        self.assertIn("ALTER USER 'nopass'@'%' IDENTIFIED BY", checks['no_password']['action']['sql'])
+        self.assertIn("ALTER USER `nopass`@`%` IDENTIFIED BY", checks['no_password']['action']['sql'])
         self.assertEqual(checks['anonymous']['status'], 'watch')
         self.assertEqual(checks['root_any_host']['status'], 'watch')
-        self.assertIn("DROP USER 'root'@'%';", checks['root_any_host']['action']['sql'])
+        self.assertIn("DROP USER `root`@`%`;", checks['root_any_host']['action']['sql'])
         clean = self.checks(accounts=rows[:1])
         self.assertEqual([clean[k]['status'] for k in ('no_password', 'anonymous', 'root_any_host')], ['ok'] * 3)
         many = self.checks(accounts=[['u%d' % i, '%', 'caching_sha2_password', '1', 'N', 'N'] for i in range(14)])
@@ -693,6 +720,85 @@ class TestServerChecks(unittest.TestCase):
         self.assertEqual([n['text'] for n in maria['no_password']['numbers']], ["'native'@'%'", "'old'@'%'"])
         unreadable = self.checks(accounts=None, accounts_error='denied')
         self.assertEqual({unreadable[k]['status'] for k in ('no_password', 'anonymous', 'root_any_host')}, {'unknown'})
+
+    def test_anonymous_account_with_a_client_command_is_refused_with_its_reason(self):
+        host = "\\' /*M! \" */; system touch MARK; #"
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                checks = self.checks(engine=engine, accounts=[
+                    ['', host, 'mysql_native_password', '1', 'N', 'N']])
+                action = checks['anonymous']['action']
+                self.assertEqual(action['names'], ['', host])
+                self.assertNotIn('sql', action)
+                self.assertNotIn('DROP USER', json.dumps(action))
+                self.assertIn('not printable ASCII or contains a backslash', action['text'])
+                self.assertEqual(checks['no_password']['action']['names'], ['', host])
+                self.assertNotIn('sql', checks['no_password']['action'])
+                findings = report._check_findings('checks', checks.values(), {})
+                self.assertEqual(next(f for f in findings if f['id'] == 'checks.anonymous')['action'], action)
+
+    def test_account_actions_quote_punctuation_and_bind_only_the_first_account(self):
+        for engine in ('mysql', 'mariadb'):
+            for user, host in (("o'`hara", "host`'name"), ('', "host`'; system touch MARK; #"),
+                               ('name{account}', 'host%_')):
+                with self.subTest(engine=engine, user=user, host=host):
+                    checks = self.checks(engine=engine, accounts=[
+                        [user, host, 'mysql_native_password', '1', 'N', 'N'],
+                        ['later', 'other\\host', 'mysql_native_password', '1', 'N', 'N'],
+                        ['root', '%', 'mysql_native_password', '0', 'N', 'N']])
+                    action = checks['no_password']['action']
+                    quoted = '`' + user.replace('`', '``') + '`@`' + host.replace('`', '``') + '`'
+                    self.assertEqual(action['names'], [user, host])
+                    self.assertEqual(action['sql'], "ALTER USER %s IDENTIFIED BY '<new password>';\n"
+                                     "-- or: ALTER USER %s ACCOUNT LOCK;" % (quoted, quoted))
+                    # Real server/client classification must agree across the
+                    # destination's unknown backslash-escape mode.
+                    actions = [action]
+                    if user == '':
+                        anonymous = checks['anonymous']['action']
+                        self.assertEqual(anonymous['sql'], 'DROP USER %s;' % quoted)
+                        actions.append(anonymous)
+                    for mode in ('', 'NO_BACKSLASH_ESCAPES'):
+                        for offered in actions:
+                            parsed = dbops.classify(offered['sql'], engine=engine, sql_mode=mode)
+                            self.assertEqual(parsed['count'], 1)
+                            self.assertFalse(parsed['ambiguous'])
+                    root = checks['root_any_host']['action']
+                    self.assertEqual(root['names'], ['root', '%'])
+                    self.assertIn("CREATE USER `root`@`<admin host>`", root['sql'])
+                    self.assertTrue(root['sql'].endswith('DROP USER `root`@`%`;'))
+
+    def test_unsafe_names_in_either_account_part_never_produce_advisory_sql(self):
+        for engine in ('mysql', 'mariadb'):
+            for bad in ('slash\\name', 'caf\u00e9', 'control\x1b', 'delete\x7f', 'next\u0085line',
+                        'line\u2028separator', 'paragraph\u2029separator', 'format\u200dmark'):
+                for user, host in ((bad, 'localhost'), ('app', bad), ('', bad)):
+                    with self.subTest(engine=engine, user=user, host=host):
+                        checks = self.checks(engine=engine, accounts=[
+                            [user, host, 'mysql_native_password', '1', 'N', 'N']])
+                        keys = ('no_password', 'anonymous') if user == '' else ('no_password',)
+                        for key in keys:
+                            action = checks[key]['action']
+                            self.assertEqual(action['names'], [user, host])
+                            self.assertNotIn('sql', action)
+                            self.assertIn('Suggested SQL is not offered', action['text'])
+                            self.assertIn('not printable ASCII or contains a backslash', action['text'])
+
+    def test_unquotable_account_keeps_the_report_and_explains_missing_sql(self):
+        for engine in ('mysql', 'mariadb'):
+            for bad in ('bad\0host', 'bad\rhost', 'bad\nhost'):
+                for user, host in (('', bad), (bad, 'localhost')):
+                    with self.subTest(engine=engine, user=user, host=host):
+                        checks = self.checks(engine=engine, accounts=[
+                            [user, host, 'mysql_native_password', '1', 'N', 'N']])
+                        self.assertEqual(checks['no_password']['status'], 'problem')
+                        keys = ('no_password', 'anonymous') if user == '' else ('no_password',)
+                        for key in keys:
+                            action = checks[key]['action']
+                            self.assertNotIn('sql', action)
+                            self.assertEqual(action['names'], [user, host])
+                            self.assertIn('Suggested SQL is not offered', action['text'])
+                            self.assertIn('Names cannot contain NUL or line breaks', action['text'])
 
     def test_account_sql_never_selects_a_password_hash(self):
         for sql in server_checks._ACCOUNT_SQL.values():

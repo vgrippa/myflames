@@ -1715,20 +1715,74 @@ checks never skip missing output. The separate chart bundle
 
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
-connections, the investigation notebook, `ClientMissingNotice` (`CLIENT_HINT`)
-and the shared kit (about 451 KB, `451,196` bytes, down from `499,503` bytes in
-3.5.1 and 1.1 MB before the original split, after moving `CommandPalette`,
-`ClientToolsDialog`, the `accountsApi` runtime code, `example.json`,
-`UpdateCheck` controls (`UpdateOpenError` / `useMinuteClock` moved into
-`UpdateBadge.tsx`) and the `readiness` module behind lazy chunks; the shell
-still statically imports `sqlHighlight` and the shared database catalog cache
-in `schemaCatalog.ts`). `CommandPalette` warms on
-toolbar hover/focus and loads in `preloadWhenIdle`; `ClientToolsDialog` warms on
-hover/focus of **Choose client tools…**; `ReadinessFacts` (`readiness.tsx`)
-preloads beside the first screen while `checkReadiness` and `copyReadiness` load
-on demand; `privileges.ts` keeps `/api/live/privileges` inline so
-`accountsApi.ts` loads only with `Accounts` (other shell/Server callers import
-types only); and `example.json` imports dynamically on demand. Other places and views load their own chunk the
+connections, the investigation notebook, `ClientMissingNotice` (`CLIENT_HINT`),
+the shared kit, the shared database catalog cache in `schemaCatalog.ts`
+(re-exported through `PerfShared.tsx` for command-palette object search, while
+`sqlHighlight.ts` stays out of the entry chunk), and two parts that
+intentionally stay eager (about 467 KB, `466,695` bytes measured by
+`npm run build && node test/bundle-split.mjs` in `apps/workspace`, down from
+`499,503` bytes in 3.5.1 and 1.1 MB before the original split, after moving
+`CommandPalette`, `ClientToolsDialog`, the `accountsApi` runtime code,
+`example.json`, `UpdateCheck` controls (`UpdateOpenError` and `useMinuteClock`
+moved into `UpdateBadge.tsx`), the `readiness` module, `WhyDisabled` (behind
+`whyDisabledBus.ts`), the Import dialog (`ImportPlanDialog.tsx`), the palette's
+workspace command list (`workspaceCommands.ts`) and the skip-loop polling of
+restored workspaces and other members (`loopPolling.ts`) behind lazy chunks).
+What stays eager in `main.tsx` and why:
+- Other-member skip-loop **Stop** (`stopOtherLoop` in `main.tsx`) calls
+  `stopSkipLoop` and `readSkipLoops` (`opsApi.ts`) directly rather than
+  importing `loopPolling.ts`, so Stop sends at once and keeps working even if
+  the polling chunk is unavailable or fails to load (showing `"Could not send
+  Stop..."` or `"Stop sent, but status was not refreshed..."` on the member's
+  banner on failure).
+- The startup theme listener in `themes.ts` (`import "./themes";` in
+  `main.tsx`) registers `subscribeUiPreferences` at startup so late backend UI
+  preference answers (including `"system"` clearing a legacy `data-theme`
+  attribute or custom themes such as `"fire"`) paint `document.documentElement`
+  immediately without loading `SettingsPage` or `CommandPalette`;
+  `theme-picker.ts` keeps picker credits and swatches in the lazy Settings
+  chunk.
+
+How the split shell modules load and handle chunk errors:
+- `ImportPlanDialog.tsx` (`ImportDialog`): wrapped in `lazyComponent` with four
+  `?open-retry` cache-busted `import.meta.glob` variants (matching
+  `UpdateDialogView` in `updateStatus.ts`; the already-lazy `Library.tsx`
+  imports it statically) and started beside the first screen via
+  `ImportDialog.preload()`. Every shell opener (`openImport` in `main.tsx`)
+  awaits `ImportDialog.preload()` before opening so a missing chunk never
+  replaces the modal with an inert fallback. While waiting, `#main` shows
+  `"Opening Import plan…"` with **Cancel** (and **Escape** cancels the pending
+  open and returns focus to the launcher); a dialog that opened while the
+  chunk loads (for example the Save investigation notebook) keeps the screen:
+  the pending open is cancelled instead of closing the newer modal. On
+  preload failure, `#main` shows a
+  dismissible alert (`"The Import plan window could not be loaded."`,
+  `.import-open-error`) with **Retry** (retrying through the next cache-busted
+  variant) and **Dismiss** (returning focus to the launcher).
+- `loopPolling.ts` (`pollRestoredMembers`, `startRestoreRetry`,
+  `startOtherLoopPoll`): **not** preloaded beside the first screen; `main.tsx`
+  imports `./loopPolling` on demand only when restored other-member loops or
+  active other-member loops exist. A failed chunk import (unless aborted) sets
+  `loopPollingFailed` to render the shell alert `"Status not refreshed:
+  skip-loop polling could not be loaded."` with **Reload**, marks affected
+  other-member endpoints stale (`"Status not refreshed"` on their banners), and
+  preserves restored `failedMembers` while resolving restore pending (`reset`) so
+  later loop and session updates still sync (the restore note says `"Status not
+  refreshed ... Reload the workspace to check again."`).
+- `workspaceCommands.ts`: `CommandPalette.tsx` imports
+  `buildWorkspaceCommands` so the workspace command list builds inside the lazy
+  `CommandPalette` chunk from the shell's `WorkspaceActions` and typed query
+  (`main.tsx` imports only `type WorkspaceCommand`). `CommandPalette` warms on
+  toolbar hover/focus (`warmCommandPalette`) and loads in `preloadWhenIdle`.
+- `ClientToolsDialog` warms on hover/focus of **Choose client tools…**;
+  `ReadinessFacts` (`readiness.tsx`) preloads beside the first screen while
+  `checkReadiness`, `copyReadiness`, `readinessLine` and `readinessHint` load
+  on demand; `privileges.ts` keeps `/api/live/privileges` inline so
+  `accountsApi.ts` loads only with `Accounts` (other shell/Server callers import
+  types only), while `WhyDisabled` preloads via `preloadWhyDisabled` in
+  `preloadWhenIdle`; and `example.json` imports dynamically on demand.
+
+Other places and views load their own chunk the
 first time they mount, through `lazyComponent` in `src/lazy.tsx` (React.lazy
 with its own Suspense boundary; the fallback shows nothing for 300 ms, then one
 "Loading…" line, and a chunk that cannot be read shows "This part of the
@@ -1738,7 +1792,9 @@ workspace did not load." with Reload):
   loading with sign-in and the session read, and calls to its handle made
   before it mounts wait in `withLab`), Query digest, Server (with Workload,
   Tuning and Database diagram),
-  Replication, Cluster, Investigations, the Audit log, Plans and Learn.
+  Topology, Replication, Cluster, ProxySQL, Readyset, File transfer, Schema
+  versions, `GroupEditorSheet`, Investigations, the Audit log, Settings, Plans
+  and Learn.
   `PlanScreen.tsx` holds Explore and Compare; the shell keeps their state,
   imports, exports, session restore, navigation and the investigation notebook.
   The notebook opens immediately from Plans or Investigations, even if a Plans
@@ -1756,9 +1812,10 @@ workspace did not load." with Reload):
   Learn mounts on its first visit and stays mounted afterward in a hidden container, like the other lazy places, so its
   lesson survives a trip to another place and its chunk's loading or failure
   text shows only while Learn is open; a session reset starts it over. Once the first screen
-  is up, `preloadWhenIdle` loads Server, Replication, Cluster and the other
-  frequently opened places in idle time, one chunk at a time, followed by
-  Plans and its chart and execution context. This fetches code without
+  is up, `preloadWhenIdle` loads `CommandPalette`, Server, Replication,
+  Topology, Cluster, ProxySQL, Readyset, File transfer, Query digest, Schema
+  versions, `WhyDisabled` (`preloadWhyDisabled`) and Plans (with its chart and
+  execution context) in idle time, one chunk at a time. This fetches code without
   mounting a place or reading a server.
 - `PlanScreen.tsx`: the Plans chart and execution context use their own lazy
   boundaries, retaining the same fallback while their chunks arrive (fetched
@@ -1788,9 +1845,11 @@ Rules for code that splits:
   Cluster mount on first visit and stay mounted, views read on open only while on
   screen, Back keeps the mounted list) and `QueryLab`'s ref handle is
   forwarded.
-- Import a lazily loaded module only through `lazyComponent` (type imports are
-  fine); one static value import puts it back in the entry chunk. The shell
-  reads the lists of Server and Workload views from `serverViews.ts`.
+- Import a lazily loaded React component through `lazyComponent` and a
+  non-component lazy module through dynamic `import()` (type imports are fine);
+  one static value or side-effect import in the shell puts it back in the entry
+  chunk. The shell reads the lists of Server and Workload views from
+  `serverViews.ts`.
 - Styles are not split. `src/styles.ts` imports every stylesheet in cascade
   order (`style.css`, then `themes.css` last) and `main.tsx` imports it first, so the order never
   depends on which chunk loads first; the built stylesheet is identical to the
@@ -1799,26 +1858,61 @@ Rules for code that splits:
   wait for them: the Server toolbar measurement in `main.tsx` watches for the
   strip to appear, and `focusWhenMounted` in `Server.tsx` focuses a view's
   heading once it exists.
-- `test/bundle-split.mjs` (`npm run test:bundle-split`) checks that
-  `styles.ts` lists every stylesheet in `src/` exactly once with `style.css`
-  followed by `themes.css` last and `main.tsx` importing it first, that only
-  `QueryLab.tsx` and `src/editor/` value-import from `src/editor/`, that no lazily loaded module is
-  also imported statically by `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
-  `PlanScreen.tsx`,
-  that the build in `myflames/ui_assets` has exactly one stylesheet, and that the entry
-  chunk stays under 474,000 bytes (`451,196` bytes in r352-b1, down from 3.5.1's
-  `499,503`-byte entry, keeping about 5% headroom). The source guard
-  covers all dynamic imports, including PlanChart and ContextPanel preloads
-  beside PlanScreen, and rejects static value and side-effect imports while
-  allowing erased type imports. It also requires Plans and Learn chunks and
-  checks that their view text stays out of the entry. Home, the sidebar, the
-  notebook and the shell stay eager; a place or view belongs in a lazy chunk.
-  The chart runtime has its own 80 KB budget (`test_chart_data.py`).
-- `test/investigation.mjs` (`npm run test:investigation`) intercepts Plans,
-  chart and context chunk requests to delay or reject them. It covers persistent
-  failure/Reload, repeated notebook opening from Plans and Investigations,
-  independent screen loading, modal focus ownership, navigation cancellation
-  and importing a file dropped before the empty Plans component mounts.
+- `test/bundle-split.mjs` (`npm run test:bundle-split`) guards these split and
+  eager contracts:
+  - **Stylesheets**: `styles.ts` lists every `.css` file under `src/` (walked
+    recursively) exactly once with `style.css` followed by `themes.css` last;
+    every `.css` import in `src/` is listed in `styles.ts`; `main.tsx` imports
+    `./styles` first; and the build in `myflames/ui_assets` has exactly one
+    stylesheet.
+  - **Eager startup theme listener**: `main.tsx` keeps `import "./themes";`,
+    and transpiling and running `themes.ts` proves it registers its
+    `subscribeUiPreferences` listener at startup, clears a legacy `data-theme`
+    when the backend answers `"system"`, and paints a late theme answer (such as
+    `"fire"`) without loading Settings or the palette.
+  - **Editor isolation and static-import guard**: only `QueryLab.tsx` and
+    `src/editor/` value-import or side-effect-import from `src/editor/`. No
+    dynamically imported module in `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
+    `PlanScreen.tsx` (including sibling preloads `PlanChart` and `ContextPanel`
+    beside `PlanScreen`, plus `ImportPlanDialog` and `loopPolling`) may also be
+    imported statically as a value or side-effect import, while erased `import
+    type` / `import { type ... }` forms remain allowed. `main.tsx` must load
+    `PlanScreen`, `Teach` and `ImportDialog` (`loadImportDialog`) through
+    `lazyComponent`, and dynamically import `PlanScreen`, `Teach`,
+    `ImportPlanDialog` and `loopPolling`.
+  - **Polling failure, eager Stop, aborts and empty restores**: extracts the
+    real TypeScript handlers (`startOtherLoopPoll`, `pollRestoredMembers`,
+    `startRestoreRetry` and `stopOtherLoop` from `main.tsx`, plus
+    `pollRestoredMembers` from `loopPolling.ts`) and runs them against a
+    rejecting `import("./loopPolling")` to verify that failed polling imports
+    mark affected endpoints stale, preserve restored `failedMembers`, resolve
+    restore pending (`reset`), set `loopPollingFailed` to expose the shell alert
+    (`className="notice loop-polling-error" role="alert"`, `"Status not
+    refreshed: skip-loop polling could not be loaded"` with Reload) unless
+    aborted, handle empty restore polls as complete without re-arming, and keep
+    `stopOtherLoop` working directly through `stopSkipLoop` and `readSkipLoops`
+    while `loopPolling` is unavailable (including Stop and status-refresh error
+    messages).
+  - **Built entry budget and chunk markers**: in `myflames/ui_assets`, the entry
+    chunk stays under 474,000 bytes (`466,695` bytes measured on this build,
+    keeping `7,305` bytes or about 1.5% headroom, down from 3.5.1's
+    `499,503`-byte entry), keeps CodeMirror (`.cm-content`, `.cm-editor`) and
+    `PlanScreen`/`Teach` markers out of the entry, emits `PlanScreen`, `Teach`,
+    `QueryLab` and `engineWords` chunks, and keeps generated `engineWords`
+    (`mysql-26.10.0`) out of both the entry and `QueryLab`. Home, the sidebar,
+    the notebook, the shell's Stop and startup theme handling stay eager; a
+    place or view belongs in a lazy chunk. The chart runtime has its own 80 KB
+    budget (`test_chart_data.py`).
+- `test/investigation.mjs` (`npm run test:investigation`) intercepts `PlanScreen`,
+  `PlanChart`, `ContextPanel` and `ImportPlanDialog` chunk requests to delay or
+  reject them. It covers persistent failure/Reload, repeated notebook opening
+  from Plans and Investigations, independent screen loading, modal focus
+  ownership, navigation cancellation, importing a file dropped before the empty
+  Plans component mounts, awaiting `ImportPlanDialog` preload (`"Opening Import
+  plan…"`) without mounting an inert modal or shell column, Escape cancelling a
+  pending open without focus theft or late reopening, and `.import-open-error`
+  with **Dismiss** and **Retry** (cache-busted chunk) while **Save
+  investigation** remains openable.
 
 Large tables: `DataTable` and `PaginatedReportTable` sort and measure only when
 their rows change. `useStableRows` (`kit.tsx`) keeps the previous array while
@@ -2057,6 +2151,123 @@ setup fails. Session persistence redacts recognized SQL credential literals
 in editor text as well as password fields; ordinary SELECT drafts are retained.
 History redacts the actual reused editor session's password even when a later
 request supplies no password.
+
+Every workspace Copy button and menu routes through `clipboard.ts` (also loaded
+lazily by `kit.tsx`'s `loadClip`, `copyToClipboard` and `DataTable`'s
+`copyWithFeedback` so the entry chunk stays within budget; if loading the
+clipboard chunk fails, `loadClip` resolves to `null` with no unhandled
+rejection, `copyToClipboard` returns `false`, and `copyWithFeedback` shows
+`Could not copy to clipboard`). At startup, `main.tsx` calls `loadClip()` once
+and registers one document-level `copy` listener (`installCopySanitizer`) so
+manual selection copies (`Cmd+C`, `Ctrl+C`, **Edit** > **Copy**) outside
+CodeMirror (`.cm-editor` / `.cm-content`) also write sanitized `text/plain`
+via `clipboardData.setData` and `preventDefault()` when `clean !== raw` (with no
+status banner or toast), leaving clean selections, password inputs,
+already-prevented events, and selections touching CodeMirror (via event target,
+selection anchor/focus node, or active element) untouched; if the startup chunk
+load fails, `main.tsx` does not retry registration later. Because the three
+sandboxed `srcDoc` frames (`PlanChart.tsx` fallback `/api/render` chart frame,
+`Library.tsx` baseline comparison frame, `Teach.tsx` lesson frame) run with an
+opaque origin and `safePreview`'s CSP (`default-src 'none'; script-src
+'unsafe-inline'; ...`), they cannot import `clipboard.ts` and instead inject an
+inline `copy` listener (`withFrameCopySanitizer`) that enforces the same
+synchronous sanitization on selections and non-password form fields inside the
+frame. Every clipboard path runs the same sanitizer rules (`sanitizeClipboardText`)
+before calling `navigator.clipboard.writeText`, the textarea `execCommand("copy")`
+fallback, or `clipboardData.setData`: only CRLF (`\r\n`) normalizes to LF (`\n`);
+TAB (`\t`) and LF (`\n`) stay; lone CR (`\r`), all other C0 controls
+(`U+0000`–`U+0008`, `U+000B`–`U+001F`), DEL (`U+007F`), C1 controls
+(`U+0080`–`U+009F`), Unicode line and paragraph separators (`U+2028`, `U+2029`),
+and bidirectional controls and marks (`U+061C`, `U+200E`, `U+200F`,
+`U+202A`–`U+202E`, `U+2066`–`U+2069`) are each replaced with a single ASCII
+space (`U+0020`) rather than deleted or turned into line breaks, keeping SQL
+comment boundaries, TSV rows and JSON string literals intact. Every character
+replaced with a space is counted in `removed` (CRLF to LF normalization is not
+counted). When `removed > 0`, `copyFeedback` appends a plain-language count (for
+example `Copied. Removed 2 control characters.`) to button/menu status
+confirmations. File downloads (`download(...)`) are not passed through
+`sanitizeClipboardText`.
+
+Name gating (`sqlPasteSafety.isPasteSafeName` / `unsafeNamesReason`, allowing
+only printable ASCII without backslash `^[\x20-\x5b\x5d-\x7e]*$`, matching
+`privileges._UNSAFE_GRANT_SQL`, because without a UTF-8 locale the mysql
+client's libedit line editor reads bytes `0x80`–`0xFF` as editing keys and a
+backslash can start a client command) is enforced only at callers that pass
+names: `Tables.tsx` row context menu copies (Copy table name, Copy SELECT
+query, Copy SELECT COUNT(*), checking `[schema, table]`) and `Tables.tsx`
+missing-primary-key / online-rebuild `CopySql` calls (checking `[schema, table]`
+only, not column or index names interpolated inside missing-PK statements), and
+`Indexes.tsx` row context menu (`Copy index name` on `[index]`; `Copy DROP INDEX
+SQL` / `Copy DROP PRIMARY KEY SQL` on `[schema, table, index]`) and unused-index
+`CopySql` calls (`[schema, table, index]`). Row-menu items disable via
+`disabled` + `hint`; `PerfShared.tsx` `CopySql` sets `aria-disabled` and opens
+`WhyDisabled` on click. Account SQL suggested in the report and Config is built
+with `privileges.quote_account`, and its copies check the raw user and host
+names passed through `action.names` to `CopySql`. Other `CopySql` callers
+(including `IndexSuggestion.tsx` and `ContextPanel.tsx` `ANALYZE TABLE`
+statements), `TableStructure.tsx`,
+`SchemaVersions.tsx`, `Locks.tsx` and `ServerCompare.tsx` do not run
+`unsafeNamesReason`.
+
+Client-command warning (`sqlPasteSafety.findMysqlClientCommand`,
+`clientCommandNote`, `copyNote`): `copyToClipboardResult` scans the sanitized
+text once, so every copy through either clipboard helper and every selection
+copy (`handleSelectionCopy`) carries the note in `CopyResult.note`, and a
+successful copy with a note also shows it in the shared status
+(`#myflames-copy-notice`, `role="status"`, `aria-live="polite"`, twelve
+seconds). The status mounts inside the last open `dialog[open]` in document
+order when one is open (a `showModal()` sheet makes the rest of the page inert,
+so a notice on `document.body` would be hidden and unsounded), else on
+`document.body`.
+Callers that keep their own confirmation (`PerfShared.tsx` `CopySql`,
+`SchemaExport.tsx`, `TableStructure.tsx`, the row menus of `Tables.tsx` and
+`Indexes.tsx`, `SchemaVersions.tsx`, `Locks.tsx`, `ServerCompare.tsx`) pass
+`CopyResult.note` to `copyFeedback`, which appends it once and strips any
+legacy inline copy (`withoutClientCommandNote`), so the warning never
+doubles. Copies inside sandboxed frames (plan fallback, Library comparisons,
+lessons) are sanitized but never scanned, and `Download .sql` exports do not
+copy at all.
+
+The scan runs in passes and warns when any pass flags. A first-word pass
+flags a line whose first word names a client command (the union of the MySQL
+and MariaDB COMMANDS tables: `source`, `system`, `delimiter`, `use` and the
+rest), even when a quote, a comment or a nonempty client buffer might
+suppress it. Separate lexical passes for each client family then look for a
+backslash command (`\` plus one character of `?!#.cCdeGghnPpqQRrstTuWwx-`,
+excluding `\N`) or a named command at a line or statement start outside
+quotes in that pass. Both client families run with and without backslash
+escapes (`NO_BACKSLASH_ESCAPES`). MySQL runs with dollar quoting on and off
+for each backslash mode, giving four passes. MariaDB runs with `ANSI_QUOTES`
+off for both backslash modes and with `ANSI_QUOTES` on when backslash escapes
+are on, giving three passes: when backslash escapes are off, `ANSI_QUOTES`
+has no additional effect on this scanner's quote handling. The first match
+in any pass produces the note; quotes hiding a command in another pass do
+not suppress it.
+
+The passes retain their own client's comment rules: MySQL clears executable
+comment and hint state at a newline, while MariaDB retains it; MariaDB also
+accepts `--` without following whitespace when the SQL buffer is empty.
+Plain `/* ... */` comments hide commands, while `/*! ... */` bodies are
+scanned, as are `/*M! ... */` bodies in MariaDB passes. Optimizer hints
+(`/*+ ... */`) ignore quotes and line-comment markers, but a nested `/*!`
+switches to conditional-comment parsing. Closing a `/*! ... */` or
+`/*+ ... */` comment opened at a line or statement start restores the named
+command check, matching MySQL 8.4+ skipping leading comments before command
+lookup. MySQL dollar-quote passes recognize an opening tag at an identifier
+boundary and require the exact closing tag; the passes without dollar quoting
+still warn about commands inside such text.
+
+`findMysqlClientCommand` is a lexical **warning heuristic, not a guarantee**,
+with three accepted limits: a `sql_mode` change inside the copied script itself
+(`SET sql_mode='NO_BACKSLASH_ESCAPES'` before a backslash-quoted string) can
+hide a later command, because each pass scans one mode and never combines
+modes mid-script; the client's DELIMITER prefix rule (such as `delimiterX`)
+is not recognized, although `delimiter;` and a spaced `DELIMITER` command
+already warn; and a delimiter set in the destination client before the paste
+is unknown, so it can change quote and statement boundaries that these passes
+assume. `CopySql` also runs the scan on option-file (`my.cnf`)
+snippets where Windows backslash paths can trigger a false warning.
+Contracts: `apps/workspace/test/sql-paste-safety-unit.mjs`.
 
 ### Reviewed actions and session ownership
 
@@ -6996,6 +7207,8 @@ Numeric configuration literals use exact fixed-point text (for example `10` and 
 
 Health diagnostic findings preserve the optional `state` from `health-1.0` (`string | null`, absent in older reports). Tuning reads this state through `findingItem`, keeping `room` measured and `not_applicable` excluded just as when consuming Health directly. This is an additive `report-1.0` field; other finding types retain their existing shape.
 
+Finding actions optionally carry `names` (an array of strings containing the raw server names embedded in the suggested SQL), which the workspace copy guard uses to refuse copying when any name contains a backslash or is not printable ASCII.
+
 `python3 -m myflames report [--interval N] [--schema NAME ...] [--all-schemas] [--json | --markdown | --html | --digest] [--fail-on problem|watch] [-o PATH] [-q]` (`report-1.0`, `myflames/report.py`; endpoints `POST /api/live/report` and `POST /api/report/export`). One read-only run of every Server view on one connection: `report.preflight` (tag `/*myflames:report*/`; each subprocess owns its own temporary option file) and the all-schemas table count (`perf_common.require_choice`, `ALL_SCHEMAS_TABLE_LIMIT`; above it Indexes and Tables are `skipped` with a note unless `--all-schemas` / `all_schemas: true`), then `health`, `waits`, `io` (windowed, `--interval` 2 to 60, default 10, submitted first), `config`, `innodb`, `sessions`, `instruments`, `checks` (`server_checks.py`), `tables`, `indexes` (capped at `LIST_LIMIT` 50 each), at most `MAX_WORKERS` (3) at a time in a `ThreadPoolExecutor` (`_run_all`; wrapped in a `_Guarded` connection where Ctrl+C sets the cancel event that windowed sleeps wait on, cancels queued views, and does not wait for running ones), then the attribution (`discover.top_report` with `full_join`, and `no_index` + table for up to `ATTRIBUTION_TABLES` (3) tables read mostly without an index, `ATTRIBUTION_LIMIT` 5 rows each). The attribution jobs share one `_AttributionContext`: the metadata and coverage statements every `top_report` sends (version and Performance Schema state, the two digest consumers, `performance_schema_max_sql_text_length`, the digest overflow row, `Uptime` and `Performance_schema_digest_lost`, matched by their exact text) are read once per analysis, an error included, and each filter still reads its own digest rows: 9 client calls instead of 24 on the MySQL recordings, 8 instead of 20 on MariaDB. A failing view is caught per view (`_timed`; its error is redacted of the password) and listed in `header.failures`; the sections it feeds say what is missing. Never add SQL or thresholds to `report.py`: each family's rule lives in its module (`health.RULES`, `config_review.RULES`, `innodb_status`, `sessions`, `schema_health`, `server_checks.RULES`), and the report only maps items to findings (`_health_findings`, `_check_findings`, `_innodb_findings`, ...).
   Envelope: `schema_version`, `myflames_version`, `engine`, `server_version`, `taken_at`, `uptime_s`, `performance_schema`, `header {server {engine, version, version_comment, uptime_s, performance_schema}, started_at, elapsed_s, interval, scope {schemas, all_user_schemas, text}, views [{key, label, status ok|limited|failed|skipped, schema_version, started_at, taken_at, elapsed_s, error, notes}], failures [{view, label, status, error}]}`, `summary {problem, watch, unknown, info, ok, findings, status, text}`, `look_first` (a finding id or null), `findings[]`, `sections[] {key, title, status, summary, counts, findings (ids), views, notes}` in `SECTIONS` order (memory, redo, connections, temp_sorts, caches, query_cache, indexes, schema, waits, io, innodb, replication, security, observability), `attribution {available, gate (one sentence when unavailable), fix, label, caveats, coverage, health_window, full_joins {order, statements, taken_at}, full_scans [{schema, table, label, rows_without_index, fetch_ms_without_index, share_time, statements, capped, error}], notes}`, `checklist {covered, not_checked}`, `health_metrics` (every Health metric of the window with its status, the health-1.0 fields minus link, learn, sources and sparkline; `report.health_metrics`; empty when Health did not run; absent in older reports), `notes`. A finding: `id` (`<view>.<key>`), `family` (a section key), `status` (problem, watch, unknown, info, ok), `title`, `headline`, `verdict` (what this server shows, without the rule), `why`, `rule`, `caveat`, `action {text, sql, config}` (never applied), `numbers [{label, text, value?, unit?}]`, `settings`, `links [{view, label, key? | order?, table?}]` (views are the Server tab keys; `top` links carry `order` and `table` for attribution), `source {view, kind, key}`, `learn`, `impact`, `attribution` (`full_joins` or `full_scans`). Ranking is one function, `rank_findings`: status (problem, watch, unknown, info, ok), then `FAMILY_RANK` (replication, redo, memory, connections, innodb, security, temp_sorts, caches, schema, indexes, query_cache, io, waits, observability), then `impact`; `look_first` is the first problem, else the first watch. Sections and `summary.status` aggregate with problem > watch > unknown > info > ok (`_worst`, `summarize`): an unknown finding, or a view that failed or was skipped, never reads as ok, and the summary text counts unknowns. A finding that could not be judged (a privilege, Performance Schema off, tablespaces not readable for fragmentation, NULL replica lag with both threads running) is `unknown`, and every human format lists unknown findings with their reason (NOT JUDGED / Not judged). `coverage_lines` is the one projection of the attribution's scope (cumulative digest counters vs Health's window, uptime and the oldest FIRST_SEEN, the overflow row, `Performance_schema_digest_lost`, list caps) used by text, Markdown, HTML and the digest, and a table whose lookup failed shows its error, never an empty match. `at_or_worse` drives `--fail-on` (exit 1; 0 otherwise; 2 on bad input or when the server cannot be read, including when every attempted view fails). Total view failure prints the reasons on stderr, emits no payload and preserves any output file. Partial view failure keeps the report and existing exit code, and prints one warning line naming the failed views on stderr, including with `--json` or `-q`. Outputs are generated from the JSON only (`export(report, fmt)`): `format_text` (default; notes on stderr), `format_digest` (one line per non-ok finding with its numbers and rule, ok counted), `format_markdown` (`md` escapes HTML as entities and Markdown punctuation, `md_code` fences longer than any backtick run), `format_html` (static, `output_html_report._CSS`, every string through `html.escape`, the JSON embedded as `application/json` with `<`, `>`, `&` escaped, no script runs); every text format passes through `connector.terminal_text`. `/api/live/report` takes `connection`, `interval`, `schemas` (or `schema`), `all_schemas`; it uses the saved-password helper (`_SERVER_VIEW_PATHS`), `query_timeout` 60, and `run_single_flight` keyed by `report.flight_key` (the profile id, every effective connection and TLS setting, and an HMAC-SHA256 of the password under a per-process random key, never stored): only requests that would authenticate the same way share a run; an identical one joins it and gets the same report, one with other settings for the same connection is refused. `/api/report/export` takes `{report, format: json|text|digest|markdown|html, source?}` and returns `{format, content, mime, filename}`; `source` (`report.normalize_source`: label, host, port, user, `type` production or development; any other field, a password included, is dropped) is the connection the report was read from, added as the optional top-level `source` and named on a "Connection:" line in every human format.
   `server_checks.py` (`checks-1.0`, internal to the report; tag `/*myflames:checks*/`): replication from `SHOW REPLICA STATUS` (MySQL 8.0.22+), `SHOW SLAVE STATUS` (older), `SHOW ALL SLAVES STATUS` (MariaDB), read by column name from the client's `--xml` output (the connector's `--batch --silent` prints no column names), statuses from `REPLICA_LAG_S` (60 / 600 s, rules of thumb), threads not running and error numbers, plus `replica_read_only` on a replica (Group Replication's `group_replication_applier` / `_recovery` channels are skipped: a member is not an asynchronous replica); privilege text by version (MariaDB 10.11 also accepts SUPER, 11.0+ needs SLAVE MONITOR; MariaDB's `read_only` modes beyond ON/OFF exist from 12.0.1); accounts from `mysql.user` (MySQL) or `mysql.global_priv` then the `mysql.user` view (MariaDB), comparing `authentication_string` with `''` on the server so no hash is read, skipping locked accounts and roles (`no_password` problem only for plugins that accept an empty password: MySQL native, caching_sha2 and sha256; MariaDB native, old and an empty plugin name, never ed25519 or parsec; `anonymous` and `root_any_host` watch); the query cache on MariaDB (watch when on; hit share is `Qcache_hits / (Qcache_hits + Com_select)`); binary log expiry (watch when the binary log is on and nothing purges it: no expiry period, automatic purge off on MySQL, and no `max_binlog_total_size` / `binlog_space_limit` size limit). Every check needs only what it reads; without the privilege it is `unknown` with the grant to add.
@@ -7159,7 +7372,7 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
 - CLONE (MySQL only): `clone_preflight` (engine, version series, plugin on both, BACKUP_ADMIN donor, CLONE_ADMIN recipient or BACKUP_ADMIN with DATA DIRECTORY, platform and character set variables, collations, plugins, `max_allowed_packet`, `clone_valid_donor_list` containing the donor address, different servers; DATA DIRECTORY absolute and not under `@@datadir` as text, existence `not_checked` without a recipient-host probe because the server refuses an existing or in-datadir path before copying). `donor_address` (`--donor-address`) is the donor as the recipient reaches it, used in the statement and the donor-list check. The statement goes on the client's stdin (`clone_statement(..., redact=False)`), shown and audited redacted. Clone plans add `expect` with `donor` and `recipient` objects (`endpoint`, `connection_key`, `type`, `read_only`), `donor_address` and `require_ssl`, all included in the binding. The workspace evaluates both saved profiles with `dbops.connection_safety`; a read-only donor is allowed. Before sending a remembered donor password, it verifies negotiated TLS on the recipient connection. Start checks the reviewed pair before retrieving the saved donor password, and rejects TLS downgrades when the donor profile requires TLS. Both passwords are scrubbed from errors, audit records, logs and manifest free text. Progress: a second connection polls `performance_schema.clone_progress` (job `progress` percent and `detail`). In place: ERROR 3707 (no supervisor, the server shuts down) or a lost connection is expected; the job waits up to `restart_wait` (`--restart-wait`, default `RESTART_WAIT` 180 s) and then reads `clone_status`, tied to this clone by `BEGIN_TIME`, `SOURCE` and `DESTINATION` (the table keeps the previous clone's row); result `needs_restart` when it does not come back, `needs_verification` when the recipient account is refused (it now has the donor's accounts). GTID: donor `gtid_executed` at preflight against `clone_status.GTID_EXECUTED` (empty for DATA DIRECTORY clones, `not_checked`).
 - Jobs (`LifecycleJob`, `lifecycle-job-1.0`: `id, operation, state queued|running|done|failed|refused|cancelled, progress, detail, events[] (last 200), phase, elapsed_s, output, result {status, verification[], partial_state, cancel_error, audit_id}, error`): `progress` is a percent only when the tool printed one (MySQL Shell's `showProgress`); `phase` names the step in words (`LifecycleJob.step`, also a `status` event, never with a percent sign): the repeated preflight, reading the table list, counting rows, dumping with the tool, checksumming, counting again, writing the manifest, and for restore copying to staging, loading and verifying. `elapsed_s` counts from the start of the job and stops when it ends. `output` is set for SQL dumps only (`mysqldump`, `mariadb-dump`, which print no progress): `written_bytes` is the size of `dump.sql`, sampled from its file descriptor every 0.5 s while the tool runs and once after it ends, and `estimated_bytes` the sum of `DATA_LENGTH` of the dumped tables (`BASE TABLE`, and MariaDB's `SYSTEM VERSIONED`) (None when unknown or structure only). On MySQL 8.0.3 and later the sizes are read from the storage engine, not the information_schema cache, in one bounded call (`SET SESSION information_schema_stats_expiry=0` first: information_schema caches table sizes for a day by default and the variable is not settable with `SET_VAR`); on MariaDB, MySQL 5.7 or when that read fails, the catalog's sizes stand. The estimate only feeds a progress bar; the written size can end above or below it. tool output drained on threads, CR progress parsed, ANSI colors stripped, secrets redacted. Cancel: SIGTERM then SIGKILL to the process group (EPERM from a zombie group tolerated), and `KILL QUERY` on the session the job printed on its own stdout (marker line; mysqlsh's `print` needs an explicit line break). `partial_state` names what may remain. `LifecycleJobs` (the workspace's registry: two running at most, never two on one target, finished ones kept an hour, closed with the server). Shutdown: `LifecycleJobs.shutdown()` runs first in `WorkspaceServer.server_close`, before replication loops, table data, live jobs and editor sessions (whose cleanup can block on `KILL QUERY`). It refuses new jobs and preflight runners, cancels every running job and runner, starts `KILL QUERY` on threads with the session id read before the tool stops, sends SIGTERM to every tool process group and SIGKILL after 1 s, then gives jobs 1.5 s to write their audit record (cancelled, outcome unknown, as for Cancel); `close()` finishes the rest. `ToolGroups` lists a tool's process group from just after it starts until the group is gone. Tools start through `ToolGroups.start`, serialized with shutdown (`close_spawning`): a tool being started is listed before shutdown's snapshot, and none starts afterwards. With `MYFLAMES_TOOL_GROUPS_FILE` (set only by the desktop app, in a 0700 directory it owns; a missing or shared directory refuses startup with exit 2) the list is also kept in an owner-only `tool-groups-1.0` file (`{"schema_version", "groups"}`), written before the launch line, replaced atomically and kept (empty) after a clean close. When it cannot be rewritten it is removed, so it never names a group that may have ended, and the desktop treats a missing file after launch as unconfirmed; a tool whose group cannot be recorded is stopped at once and reported as cancelled. Shell dryRun and upgrade check tools run under `LifecycleJobs.runner()`, so shutdown stops them too.
 - Writes: dump, restore and clone are `risky` for `dbops.decide` (a read-only connection refuses, Production and Development confirm). CLI: policy from `--profile` before any prompt or connection; plan and commands on stderr; dump asks `[y/N]`, restore and clone ask to type the target; non-TTY needs `--yes` (plus `--confirm-target TARGET` for restore and clone); `--preflight` prints the plan (exit 0 ready, 1 not); Ctrl+C cancels the job. Exit 0 completed, 1 a started job failed, was cancelled or was not verified, 2 an unsent refusal, decline, bad input or connection failure. Failed-job text names the reason once in the operation heading, omits duplicate or empty `not_checked operation` rows and repeated status words, and retains distinct verification and partial-state guidance; JSON evidence is unchanged. UI: `POST /api/lifecycle/start` (`operation`, `plan`, `typed_target`, `confirmed: true`, `connection`, and `donor` for clone) is in `ui._WRITE_PATHS`: `dbops.gate` first (refused envelope with `audit_id`), then saved passwords (`connection.profile_id`, `donor.profile_id`), then the job; `POST /api/lifecycle/status` and `/api/lifecycle/cancel` take `id` and `connection`. Every attempt has an `AuditTrail` record (`surface` cli or ui; refused, declined, `unknown` after a cancel, `ok` or `error`). `POST /api/lifecycle/jobs` (`connection`; `lifecycle-jobs-1.0`, `_lifecycle_jobs_response`) lists the jobs this workspace holds for the connection's endpoint (`dbops.identity_endpoint`, recorded by `_lifecycle_add` before the job starts and dropped when `LifecycleJobs` lets the job go; `_lifecycle_add` also prunes `_lifecycle_owners` entries whose job ID is no longer in `workspace.lifecycle.jobs`); it opens no connection and starts nothing (`test/test_lifecycle_cli.py`). Status and cancel check this same owner before looking up or cancelling a job and return “No such job.” for missing, expired or mismatched jobs. They open no connection and read no saved password. A change to type or read-only preserves access to the original job.
-- Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone. Tools are detected on open through `useOpenRead` (`lifecycle/tools` without `check_updates`; successful version probes use the shared identity-keyed cache without a time limit); the view's Refresh is labeled **Detect again** and shows only on **Tools**; **Check for updates** sends `check_updates: true`. **Used for this server** shows the role selections with program, version, origin and reason; **Change…** opens the same dialog as **Settings > Client tools…**. The table lists every copy with **From**, **Path** and **Used**, and selects rows by path so copies of one program keep distinct inspectors. The review uses the same `toolUseLine` as the dialog; the Dump tool choice names the selected program, version and origin, or the Shell version for Automatic. These are separate from the dialog's **Detect again**, which sends `refresh: true` to `/api/client/tools`. Start dump…, Start restore… and Start clone… run the preflight (it only reads) and open the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s). Failed checks show under the button with a Next step (Choose another folder…, Review fields, Remove <table> from the selection); passed ones fold into a details line. A preflight error clears the old plan; after a field changes, the old checks are labeled as the last preflight's and the planned commands are hidden. Dump's Output folder is suggested (`OpsShared.suggestDumpFolder`: `dumpFolderStem` of the database or connection plus the local date, in the backend reply's `default_dump_parent`, or the last dump's parent when this window already started a dump, `-2`, `-3` past names already listed or reserved this session; never over a typed path); Browse… picks the parent. The dump confirmation is primary-toned (policy, review token and audit unchanged), names its Contents and shows non-routine warnings first. A restore plan with `required_acknowledgement` needs its own checkbox; the workspace sends that exact string as `typed_acknowledgement` only when checked, and `lifecycle.restore_job` compares it with the fresh plan's; Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. A job card (`JobProgress`) shows a bar from `lifecycleProgress`: determinate on the tool's `progress`, else an estimated "≈N%" from `output.written_bytes` over `output.estimated_bytes` (capped at 99, with a title saying it is estimated from table sizes), else indeterminate (also once the written size passes the estimate: "X written, more than the Y estimate"). Under it one facts line: the `phase` while it runs, the bytes written (of about the estimate), a rate from two snapshots on the job's own clock (`elapsed_s`), and "Elapsed m:ss" ("Completed in m:ss" when done). The last log line shows only when it differs from the phase. While a job runs on the connection, the actions row shows `JobSummary` beside the disabled Start button ("Dump running · ≈46% · 120.0 MiB", Show progress); after Start (and after a lost reply is found in the job list) the view switches to the job's task and scrolls to and focuses its card (no smooth scroll under reduced motion). Every job stays mounted across task switches so completion is noticed. A completed dump (`state` done, `result.status` completed) has Open in Finder / Open in File Explorer / Open folder, which reveals `<result.directory>/myflames-manifest.json` through `files/local/reveal` (the dump folder opens with its manifest selected; nothing is run); a dump this mounted view started opens it once by itself (`autoRevealDump`: claimed before the request, never retried by rendering, never for adopted, failed or cancelled jobs, restore or clone, and never on Windows, where File Explorer's `/select,` argument splits a path at commas: security open lead 17). The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
+- Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone. Tools are detected on open through `useOpenRead` (`lifecycle/tools` without `check_updates`; successful version probes use the shared identity-keyed cache without a time limit); the view's Refresh is labeled **Detect again** and shows only on **Tools**; **Check for updates** sends `check_updates: true`. **Used for this server** shows the role selections with program, version, origin and reason; **Change…** opens the same dialog as **Settings > Client tools…**. The table lists every copy with **From**, **Path** and **Used**, and selects rows by path so copies of one program keep distinct inspectors. The review uses the same `toolUseLine` as the dialog; the Dump tool choice names the selected program, version and origin, or the Shell version for Automatic. These are separate from the dialog's **Detect again**, which sends `refresh: true` to `/api/client/tools`. Start dump…, Start restore… and Start clone… run the preflight (it only reads) and open the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s). For SQL dump and restore tools (`mysqldump`, `mariadb-dump`, `mysql`, `mariadb`), `lifecycle.py` formats the displayed commands with `shlex.quote` and appends a warning noting POSIX shell syntax (on Windows, naming a POSIX shell such as WSL or Git Bash rather than Command Prompt), and `Maintenance.tsx` labels both **Planned commands** and **Exact commands** as POSIX shell commands (adding the WSL/Git Bash note when `WINDOWS` is true). Failed checks show under the button with a Next step (Choose another folder…, Review fields, Remove <table> from the selection); passed ones fold into a details line. A preflight error clears the old plan; after a field changes, the old checks are labeled as the last preflight's and the planned commands are hidden. Dump's Output folder is suggested (`OpsShared.suggestDumpFolder`: `dumpFolderStem` of the database or connection plus the local date, in the backend reply's `default_dump_parent`, or the last dump's parent when this window already started a dump, `-2`, `-3` past names already listed or reserved this session; never over a typed path); Browse… picks the parent. The dump confirmation is primary-toned (policy, review token and audit unchanged), names its Contents and shows non-routine warnings first. A restore plan with `required_acknowledgement` needs its own checkbox; the workspace sends that exact string as `typed_acknowledgement` only when checked, and `lifecycle.restore_job` compares it with the fresh plan's; Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. A job card (`JobProgress`) shows a bar from `lifecycleProgress`: determinate on the tool's `progress`, else an estimated "≈N%" from `output.written_bytes` over `output.estimated_bytes` (capped at 99, with a title saying it is estimated from table sizes), else indeterminate (also once the written size passes the estimate: "X written, more than the Y estimate"). Under it one facts line: the `phase` while it runs, the bytes written (of about the estimate), a rate from two snapshots on the job's own clock (`elapsed_s`), and "Elapsed m:ss" ("Completed in m:ss" when done). The last log line shows only when it differs from the phase. While a job runs on the connection, the actions row shows `JobSummary` beside the disabled Start button ("Dump running · ≈46% · 120.0 MiB", Show progress); after Start (and after a lost reply is found in the job list) the view switches to the job's task and scrolls to and focuses its card (no smooth scroll under reduced motion). Every job stays mounted across task switches so completion is noticed. A completed dump (`state` done, `result.status` completed) has Open in Finder / Open in File Explorer / Open folder, which reveals `<result.directory>/myflames-manifest.json` through `files/local/reveal` (the dump folder opens with its manifest selected; nothing is run); a dump this mounted view started opens it once by itself (`autoRevealDump`: claimed before the request, never retried by rendering, never for adopted, failed or cancelled jobs, restore or clone, and never on Windows, where File Explorer's `/select,` argument splits a path at commas: security open lead 17). The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
 - Not wired to the CLI or UI yet: `prepare_physical_backup` / `physical_backup_job` (MariaDB `mariadb-backup --backup` then `--prepare`, only with a matching local socket and an explicit same-host confirmation); `clone` on MariaDB prints the `mariadb-backup` steps instead.
 
 ### Replication: status, skip, skip-loop
@@ -7239,7 +7452,7 @@ Backend `myflames/replication.py` (contract and evidence: the replication skill 
 - Every 400 answer of `do_POST` (ValueError and friends, and ConnectorError) goes through `ui.request_error_text`. A common connection error leads with plain words and what to check (`dbops.connection_error_text`), then the client's line from `ERROR n` on, with the `mysql client exited N:` wrapper dropped and anything after the line (an SSH tunnel note) kept. 2002/2003: "Could not connect to the server. Check that it is running and that the host and port are right." ("… the socket path is right." for a socket failure; MariaDB's client reports a refused TCP connection as 2002). 2005: "Could not find the server's host name. Check the host for a typing error, or use its IP address." 2006/2013: "Lost the connection to the server. Check that it is still running: it may have restarted, or a network or time limit ended the connection." followed by the whole original message, so a write's context ("Could not end connection 41: …") stays. 1045 only when the text says Access denied: "The server refused the user name or password. Check both, and that the account may connect from your address." ("The server refused the login, and no password was sent. Enter the password, or check the user name." for `(using password: NO)`); a 1045 without Access denied gets no password hint. For 2002, 2003, 2005 and 1045 no session was opened, so a reader's context before the error ("Could not read the server status: ") is dropped. Other messages keep their words; only one that does not start with "Could not ", "Cannot ", "Can't ", "Unable to " or "Failed to " gets "Could not complete the request: ", and a ConnectorError without a mapped code passes through unchanged. The neutral 500 text is unchanged. Codes come from `include/errmsg.h` (texts checked in MySQL's `libmysql/errmsg.cc` and MariaDB's `sql-common/errmsg.c`). The CLI still prints its own context ("Could not read the server status: ERROR 2003 …"), and Cluster's `failureText` keeps its one sentence. Tests: `TestConnectionErrorText` in `test/test_dbops.py`; `test_failed_reads_lead_with_plain_words_on_every_server_view` and `test_a_reader_context_and_the_generic_prefix_never_stack` in `test/test_ui_http.py`.
 - Saved passwords are bound to the exact `ENDPOINT_FIELDS` (`host`, `port`, `user`, `ssl_mode`, `ssl_ca`): a profile saved without `ssl_mode` means the client's own default (not PREFERRED for every client, for example MariaDB 11.4+ verifies by default), so a request that names PREFERRED is refused until the profile is saved with it (`test_saved_password_binds_to_the_exact_tls_mode`). `scripts/ga-matrix.sh profiles` saves `ssl_mode` PREFERRED for that reason; an endpoint mismatch also shows the connection as Production in the picker (`connectionSafety`).
 - Endpoints: `POST /api/live/replication` (status; `_CONNECTION_PATHS`, saved-password helper), `.../skip/review` and `.../skip-loop/review` (read-only on-demand reviews described above), `POST /api/live/replication/skip` (`channel`, `expect`, `statements`, `review_token`, `confirmed: true`; `_WRITE_PATHS`: policy, then the saved password, then `skip_one`), `POST /api/live/replication/skip-loop/start` (`channel`, `expect`, `first_failure`, `statements`, `codes`, `max_skips`, `max_minutes`, `poll_s`, `receiver_guard`, `review_token`, `confirmed: true`; same order; the loop keeps its own connection and closes it when it stops), `.../skip-loop/status` (`job_id` or every loop of this connection) and `.../skip-loop/stop` (`job_id`). Loops live in `workspace.replication_loops` (`SkipLoopRegistry`) keyed by `dbops.connection_identity` and matched by its endpoint (`dbops.identity_endpoint`: saved connection id, host, port, user, TLS), so status and stop from another connection are refused while a change of the connection's type or read-only flag keeps them (one loop per channel and endpoint); status and stop open no connection. A refused or unconfirmed write request is audited.
-- Workspace UI (`ReplicationPlace.tsx`, `ReplicationTopology.tsx` and `Replication.tsx`, the standalone Replication place): `ConnectionGroupBar` (`ConnectionGroupBar.tsx`) sits above the topology on the Topology tab (and above `.view-empty` when `replica` is false and `connection_group` is present) and re-reads `/api/live/replication` after a group change; `ReplicationTopology.tsx` renders `report.topology_tiers` above the channels via `UpstreamTopologyTiers.tsx` on the shared `TopologyTiers.tsx` tier module (Cluster card anatomy, labelled `ProxySQL routing tier` and `Readyset cache tier` rows with `Open ProxySQL` / `Open Readyset` jump links, `Use <connection>` only when the backend set `profile_id` under group consent, vertical stem links with screen-reader-readable label plates beside the line; ProxySQL cards show `"Matched by address"` from `evidence: "mysql_servers"` when no QueryPilot rules exist, and read `"Not read"` with an `"unread"` link because this view reads only the database tier; Readyset tier items carry `database_connection` and `replication_error`, marking `"problem"` with detached cards, broken stems, and `"error"` links (`"Replication error or upstream unreachable · query fallback"`) when `replication_error` is true, `database_connection` is `"Unreachable"`, `status` contains `"unavail"`, or `replication_status` is `"Error"`, `"watch"` with `"stopped"` links (`"Replication stopped · query fallback"` / `"Replication disabled · query fallback"`) on `"Stopped"` or `"Disabled"`, `"running"` (`"CDC binlog stream & query fallback"`) only when every Readyset tier reports `"Running"` without a problem, and `"unread"` (`"Replication not read · query fallback"`) when unreported or `"Unknown"`); the channel table and inspector; Skip this transaction and Skip until stopped re-read the failure before their sheets open, show the tagged statements, plan again (nothing sent) when the identity or statements changed or the sheet is older than `PLAN_TTL_MS` (60 s), and call `audit/declined` on Cancel and Escape. Loop status is read once a replica report is shown, while a loop runs, and after Start or Stop; a running loop's line (with Stop) also sits above other Server views. Server's persistent status area lists the running loops and maintenance jobs (dump, restore, clone) of every member of the active Group connection (a loop's bound key is in scope when its profile id is a group member, its endpoint matches the member on screen or the member the Replication place reads, or it is a restored same-group member after a reload), so switching members never hides one. The shell polls `/api/live/replication/skip-loop/status` (registry only, no database login) every `LOOP_POLL_MS` (2 s) for each active loop whose endpoint is not the Replication place's current endpoint through the Stop resolver, stopping when the loop ends or leaves scope; when a target cannot be resolved on a tick (for example, while saved connections fail to load) or a status poll fails, the poller re-arms instead of stopping and marks the row `"Status not refreshed"` until a later poll succeeds. `Server` polls `/api/lifecycle/status` (registry only, no database login) every `JOB_POLL_MS` (1.5 s) the same way for active maintenance jobs on other members, re-arming and marking unresolved rows `"Status not refreshed"` until refreshed. Stop and Cancel rebuild a connection for the member the loop or job runs on (`loopMemberRequest`, which after a reload before the group is opened again resolves a saved connection in the same saved group as the connection in use) and send when `endpointKey(connectionKey(c)) === endpointKey(boundKey)` (matching the backend's `dbops.identity_endpoint` rule across plain-to-group opens, group renames and policy edits); when no matching endpoint exists (for example, the saved connections list could not be read, the saved connection's address or TLS settings changed, or it was deleted or removed from the group), nothing is sent and the banner shows the refusal reason (saying the saved connections list could not be read while that list read is failing rather than claiming the member left the group), while request failures stay in that member's own view (the banner stays quiet). The session keeps `slow.replication_loop_active` with every running loop member's saved-connection id in `slow.replication_loop_members` (deduplicated, capped at 64, each up to 200 characters; `slow.replication_loop_member` stays as the first id for older snapshots), so a restored workspace mounts Server and Replication, polls each same-group member's loop registry through `loopMemberRequest` once saved connections load (no database login), and keeps the active member's own restore poll when its id is listed (or when no member ids were stored for an unsaved connection). A failed restore status read (or a failed recheck when an outside-group member becomes reachable again) keeps the member id saved, notes `"Status not refreshed"` for that member, and re-reads every `LOOP_POLL_MS` (2 s) through `loopMemberRequest` until one read succeeds (or the saved connection leaves the group or is deleted). Ids outside the active connection's saved group get no read: a saved member id is dropped only when its saved connection was deleted (leaving a group or deleting the group does not stop a running loop on the backend, because `decision_reader` keeps its policy, and a failing saved-connections list read never drops an id). When the saved connection still exists (whether it belongs to another group, the active connection moved or was deleted, it left its group or was removed from the active group by a refresh while its loop was running, or it is a plain or typed unsaved connection that was never in a group), the workspace keeps the flag and saved id and shows a note naming that member (distinguishing members that left a group, plain connections never in a group, and a failing saved-connections list read) until the user opens it or its group; running maintenance jobs (`dump`, `restore`, `clone`) whose member leaves the active group stay named in a note in `Server`'s status area the same way, kept in memory only (not saved with the workspace, so a reload drops them), and are never polled or cancelled from the note. "Stopped when myflames restarted" shows only on a restored member's endpoint when its registry is empty, and a restore never starts a loop. Both views take `missingPrivileges` (`opsApi.MissingPrivileges`, "Requires CLONE_ADMIN") to grey an action with its reason once a privilege context passes it; absent means unknown and the server decides. Browser suite `apps/workspace/test/replication.mjs`, `topology-groups.mjs`.
+- Workspace UI (`ReplicationPlace.tsx`, `ReplicationTopology.tsx` and `Replication.tsx`, the standalone Replication place): `ConnectionGroupBar` (`ConnectionGroupBar.tsx`) sits above the topology on the Topology tab (and above `.view-empty` when `replica` is false and `connection_group` is present) and re-reads `/api/live/replication` after a group change; `ReplicationTopology.tsx` renders `report.topology_tiers` above the channels via `UpstreamTopologyTiers.tsx` on the shared `TopologyTiers.tsx` tier module (Cluster card anatomy, labelled `ProxySQL routing tier` and `Readyset cache tier` rows with `Open ProxySQL` / `Open Readyset` jump links, `Use <connection>` only when the backend set `profile_id` under group consent, vertical stem links with screen-reader-readable label plates beside the line; ProxySQL cards show `"Matched by address"` from `evidence: "mysql_servers"` when no QueryPilot rules exist, and read `"Not read"` with an `"unread"` link because this view reads only the database tier; Readyset tier items carry `database_connection` and `replication_error`, marking `"problem"` with detached cards, broken stems, and `"error"` links (`"Replication error or upstream unreachable · query fallback"`) when `replication_error` is true, `database_connection` is `"Unreachable"`, `status` contains `"unavail"`, or `replication_status` is `"Error"`, `"watch"` with `"stopped"` links (`"Replication stopped · query fallback"` / `"Replication disabled · query fallback"`) on `"Stopped"` or `"Disabled"`, `"running"` (`"CDC binlog stream & query fallback"`) only when every Readyset tier reports `"Running"` without a problem, and `"unread"` (`"Replication not read · query fallback"`) when unreported or `"Unknown"`); the channel table and inspector; Skip this transaction and Skip until stopped re-read the failure before their sheets open, show the tagged statements, plan again (nothing sent) when the identity or statements changed or the sheet is older than `PLAN_TTL_MS` (60 s), and call `audit/declined` on Cancel and Escape. Loop status is read once a replica report is shown, while a loop runs, and after Start or Stop; a running loop's line (with Stop) also sits above other Server views. Server's persistent status area lists the running loops and maintenance jobs (dump, restore, clone) of every member of the active Group connection (a loop's bound key is in scope when its profile id is a group member, its endpoint matches the member on screen or the member the Replication place reads, or it is a restored same-group member after a reload), so switching members never hides one. The shell polls `/api/live/replication/skip-loop/status` (registry only, no database login) every `LOOP_POLL_MS` (2 s) for each active loop whose endpoint is not the Replication place's current endpoint through the Stop resolver, stopping when the loop ends or leaves scope; when a target cannot be resolved on a tick (for example, while saved connections fail to load) or a status poll fails, the poller re-arms instead of stopping and marks the row `"Status not refreshed"` until a later poll succeeds. Those restored and other-member pollers (`loopPolling.ts`) load on demand rather than with the entry chunk; if the polling chunk fails to load, the shell preserves restored member ids, marks affected endpoints `"Status not refreshed"` and shows `"Status not refreshed: skip-loop polling could not be loaded."` with **Reload**, while Stop (`stopOtherLoop` in `main.tsx`) stays eager and calls `stopSkipLoop` and `readSkipLoops` directly ([Bundle and lazy loading](#bundle-and-lazy-loading)). `Server` polls `/api/lifecycle/status` (registry only, no database login) every `JOB_POLL_MS` (1.5 s) the same way for active maintenance jobs on other members, re-arming and marking unresolved rows `"Status not refreshed"` until refreshed. Stop and Cancel rebuild a connection for the member the loop or job runs on (`loopMemberRequest`, which after a reload before the group is opened again resolves a saved connection in the same saved group as the connection in use) and send when `endpointKey(connectionKey(c)) === endpointKey(boundKey)` (matching the backend's `dbops.identity_endpoint` rule across plain-to-group opens, group renames and policy edits); when no matching endpoint exists (for example, the saved connections list could not be read, the saved connection's address or TLS settings changed, or it was deleted or removed from the group), nothing is sent and the banner shows the refusal reason (saying the saved connections list could not be read while that list read is failing rather than claiming the member left the group), and other-member Stop and status-refresh failures show as alerts on the member's banner row (`stopOtherLoop` records them in `otherLoopErrors`, which `ReplicationLoopBanner` renders with `role="alert"`: `"Could not send Stop. Check the connection and try again."` when Stop was not sent, or `"Stop sent, but status was not refreshed. Check this member's status."` when it was). The session keeps `slow.replication_loop_active` with every running loop member's saved-connection id in `slow.replication_loop_members` (deduplicated, capped at 64, each up to 200 characters; `slow.replication_loop_member` stays as the first id for older snapshots), so a restored workspace mounts Server and Replication, polls each same-group member's loop registry through `loopMemberRequest` once saved connections load (no database login), and keeps the active member's own restore poll when its id is listed (or when no member ids were stored for an unsaved connection). A failed restore status read (or a failed recheck when an outside-group member becomes reachable again) keeps the member id saved, notes `"Status not refreshed"` for that member, and re-reads every `LOOP_POLL_MS` (2 s) through `loopMemberRequest` until one read succeeds (or the saved connection leaves the group or is deleted). Ids outside the active connection's saved group get no read: a saved member id is dropped only when its saved connection was deleted (leaving a group or deleting the group does not stop a running loop on the backend, because `decision_reader` keeps its policy, and a failing saved-connections list read never drops an id). When the saved connection still exists (whether it belongs to another group, the active connection moved or was deleted, it left its group or was removed from the active group by a refresh while its loop was running, or it is a plain or typed unsaved connection that was never in a group), the workspace keeps the flag and saved id and shows a note naming that member (distinguishing members that left a group, plain connections never in a group, and a failing saved-connections list read) until the user opens it or its group; running maintenance jobs (`dump`, `restore`, `clone`) whose member leaves the active group stay named in a note in `Server`'s status area the same way, kept in memory only (not saved with the workspace, so a reload drops them), and are never polled or cancelled from the note. "Stopped when myflames restarted" shows only on a restored member's endpoint when its registry is empty, and a restore never starts a loop. Both views take `missingPrivileges` (`opsApi.MissingPrivileges`, "Requires CLONE_ADMIN") to grey an action with its reason once a privilege context passes it; absent means unknown and the server decides. Browser suite `apps/workspace/test/replication.mjs`, `topology-groups.mjs`.
 
 ### Cluster: Galera, Percona XtraDB Cluster, InnoDB Cluster
 
@@ -8766,7 +8979,14 @@ role a chosen account needs must be chosen too. Protected accounts such as
 root are ordinary export candidates. A missing chosen account, an unreadable
 detail or dependency, unparsed grant syntax, an inconsistent default-role
 grant, or an incomplete inventory without a choice refuses before any output
-file is written.
+file is written. Names entering exported statements follow
+`privileges._UNSAFE_GRANT_SQL` (printable ASCII `0x20`–`0x7E` without
+backslash, decoding only `SHOW GRANTS` `\_` and `\%` wildcard escapes in
+database-level `ON <schema>.*` patterns): any account, role, default role or
+grant statement whose user, host, role or object name fails that allowlist is
+not emitted, and the exported `.sql` text (for both **Copy** and **Download
+.sql**) adds a printable-ASCII `-- Left out ...` comment (escaping unsafe code
+points as `<U+XXXX>`) naming the account and why it was left out.
 
 **Snapshots.** The store's `parameter_snapshots` table holds zlib-compressed
 JSON with a summary, an exact UUID `id`, `label` (at most 200 characters),

@@ -695,7 +695,7 @@ try {
     "S-F1: focus never moves onto the newly enabled action button");
 
   // W11: fix and grant_sql containing markup plus U+200B and U+202E add no
-  // elements, run no script, and Copy returns grant_sql verbatim.
+  // elements, run no script, and Copy replaces U+202E with a space while keeping literal markup and U+200B.
   const abuseGrantReport = structuredClone(grantReport);
   const abuseStop = abuseGrantReport.members.find((m) => m.local).actions.find((a) => a.id === "stop_member");
   abuseStop.fix = '<img src=x onerror="window.__w11Fix=1"><svg onload="window.__w11Fix=2">Grant\u200b\u202e it.';
@@ -708,7 +708,15 @@ try {
   assert.equal(await page.evaluate(() => window.__w11Fix || window.__w11Grant || 0), 0, "W11: no script executes");
   await page.click(`${memberWhy} .ops-commands button`);
   await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why:popover-open .ops-commands [role=status]")?.textContent || ""));
-  assert.equal(await page.evaluate(() => window.__grants.at(-1)), abuseStop.grant_sql, "W11: Copy returns exact grant_sql including markup, U+200B and U+202E");
+  assert.equal(
+    await page.evaluate(() => window.__grants.at(-1)),
+    abuseStop.grant_sql.replace(/\u202e/g, " "),
+    "W11 + lead 27: Copy replaces bidi override U+202E with a space while keeping literal markup and U+200B",
+  );
+  assert.equal(
+    await page.$eval(".view-inspector .cluster-action-why:popover-open .ops-commands [role=status]", (e) => e.textContent),
+    "Copied. Removed 1 control character.",
+  );
   await page.keyboard.press("Escape");
   await page.waitForFunction((sel) => !document.querySelector(sel), {}, memberWhy);
   await refreshTo(grantReport);

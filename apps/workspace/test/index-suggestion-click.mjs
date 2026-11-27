@@ -8,7 +8,7 @@ import { open } from "./perf-harness.mjs";
 delete process.env.MYFLAMES_VAULT_PASSPHRASE;
 const endpoint = "/api/live/index-suggestion";
 const attack = "Full scan on </script><img src=x onerror=alert(1)> אבג";
-const hint = { status: "suggestion", reason: attack,
+const hint = { status: "suggestion", reason: attack, schema: "shop", table: "orders", columns: ["status"],
   ddl: "CREATE INDEX `idx_orders_status` ON `shop`.`orders` (`status`);",
   caveats: "Heuristic: check with Explain first; indexes add write cost." };
 const base = {
@@ -92,6 +92,8 @@ try {
     await respond(hint);
     await page.waitForSelector('.view-inspector [data-action="open-index-suggestion"]');
     await settled();
+    assert.equal(await page.$eval('.view-inspector [aria-label="Copy: Suggested index SQL"]',
+      button => button.getAttribute("aria-disabled")), null, "safe schema, table and column names keep the copy");
     assert.equal(reads().length, before + 1, "one clicked request completes without an automatic duplicate");
     assert.equal(await page.$$eval('.view-inspector bdi', (elements, text) => elements.some(e => e.textContent === text), attack), true);
     assert.equal(await page.$('.view-inspector img, .view-inspector script'), null);
@@ -112,6 +114,22 @@ try {
     assert.equal(reads().length, before + 2, "an unknown result requires another explicit click after reopening");
     await page.setViewport({ width: 1440, height: 1000 });
   }
+  // A suggestion whose column name is not printable ASCII keeps the DDL
+  // visible but refuses the copy, with the reason on click.
+  await page.evaluate(() => { window.__hintCopies = []; navigator.clipboard.writeText = text => { window.__hintCopies.push(text); return Promise.resolve(); }; });
+  await page.$eval(readButton, button => button.click());
+  await page.waitForFunction(() => document.querySelector('.view-inspector')?.textContent.includes("Reading an estimated plan"));
+  await respond({ status: "suggestion", reason: "An index on (café) should help.", schema: "shop", table: "orders",
+    columns: ["café"], ddl: "CREATE INDEX `idx_orders_café` ON `shop`.`orders` (`café`);", caveats: hint.caveats });
+  await page.waitForSelector('.view-inspector [aria-label="Copy: Suggested index SQL"]');
+  assert.equal(await page.$eval('.view-inspector [aria-label="Copy: Suggested index SQL"]',
+    button => button.getAttribute("aria-disabled")), "true", "a non-ASCII column name refuses the copy");
+  await page.click('.view-inspector [aria-label="Copy: Suggested index SQL"]');
+  await page.waitForSelector("[role=dialog].why-disabled");
+  assert.match(await page.$eval("[role=dialog].why-disabled", el => el.textContent), /not printable ASCII or contains a backslash/);
+  await page.click(".why-disabled-close");
+  await page.waitForSelector("[role=dialog].why-disabled", { hidden: true });
+  assert.deepEqual(await page.evaluate(() => window.__hintCopies), [], "a refused copy never reaches the clipboard");
   assert.deepEqual(h.errors, []);
   assert.deepEqual(errors, []);
   assert.deepEqual(failures, []);

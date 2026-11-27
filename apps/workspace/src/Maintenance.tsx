@@ -115,12 +115,26 @@ function dumpContents(plan: LifecyclePlan) {
       : `${schemas.join(", ")} (all tables)`;
   return contents + ((plan.request.options as DumpOptionValues | undefined)?.structure_only ? ", structure only (no rows)" : "");
 }
+export function isPosixShellCommandPlan(plan: Pick<LifecyclePlan, "operation" | "tool">) {
+  return plan.tool.name !== "mysqlsh" && plan.operation !== "clone";
+}
+export function commandLabel(plan: Pick<LifecyclePlan, "operation" | "tool">, base: string) {
+  return isPosixShellCommandPlan(plan) ? `${base} (POSIX shell)` : base;
+}
+export function posixShellCommandNote(plan: Pick<LifecyclePlan, "operation" | "tool">, windows: boolean) {
+  if (!isPosixShellCommandPlan(plan)) return "";
+  const subject = plan.operation === "dump" ? "POSIX shell command" : "Shell load command uses POSIX shell syntax";
+  return windows
+    ? `${subject} (for a POSIX shell such as WSL or Git Bash, not Windows Command Prompt).`
+    : `${subject}.`;
+}
 function planMessages(plan: LifecyclePlan) {
   // Legacy plans have one warnings list. Recognize only the two routine
   // caveats; unknown warnings always stay prominent. Never mutate the plan.
   const routine = (line: string) => plan.operation === "dump" &&
     (line.startsWith("A consistent snapshot protects InnoDB data only.") || line.startsWith("The reviewed tool options determine"));
-  const warnings = plan.warnings.filter(line => !routine(line));
+  const shellNote = (line: string) => line.startsWith("The displayed SQL ");
+  const warnings = plan.warnings.filter(line => !routine(line) && !shellNote(line));
   const versionWarning = warnings.findIndex(line => line.startsWith("MySQL Shell ") && line.includes("older than the server"));
   if (versionWarning > 0) warnings.unshift(...warnings.splice(versionWarning, 1));
   return { warnings, notes: plan.warnings.filter(routine) };
@@ -1142,7 +1156,11 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           <Checks checks={shownPlan.report.checks} selection={selection} fix={fixCheck} />
         </>}
       </section>
-      {shownPlan && planMatches && <details className="ops-details"><summary>Planned commands and warnings</summary><Commands label="Planned commands" text={shownPlan.report.commands.join("\n")} />{shownPlan.report.warnings.map((line, i) => <p key={i}>{line}</p>)}</details>}
+      {shownPlan && planMatches && (() => {
+        const shellNote = posixShellCommandNote(shownPlan.report, WINDOWS);
+        const otherWarnings = shownPlan.report.warnings.filter(line => !line.startsWith("The displayed SQL "));
+        return <details className="ops-details"><summary>Planned commands and warnings</summary>{shellNote && <p className="hint ops-plan-note">{shellNote}</p>}<Commands label={commandLabel(shownPlan.report, "Planned commands")} text={shownPlan.report.commands.join("\n")} />{otherWarnings.map((line, i) => <p key={i}>{line}</p>)}</details>;
+      })()}
 
     </ViewLayout>
     {sheet && !startLeft && <ConfirmSheet className="ops-confirm"
@@ -1179,7 +1197,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       {sheet.report.policy?.text && <p>{sheet.report.policy.text}</p>}
       {sheet.report.operation !== "dump" && sheet.report.warnings.map((line, i) => <p className="ops-warning" key={i}>{line}</p>)}
       {!!planMessages(sheet.report).notes.length && <ul className="hint">{planMessages(sheet.report).notes.map((line, i) => <li key={i}>{line}</li>)}</ul>}
-      <Commands label="Exact commands" text={sheet.report.commands.join("\n")} />
+      {(() => {
+        const shellNote = posixShellCommandNote(sheet.report, WINDOWS);
+        return <>
+          {shellNote && <p className="hint ops-plan-note">{shellNote}</p>}
+          <Commands label={commandLabel(sheet.report, "Exact commands")} text={sheet.report.commands.join("\n")} />
+        </>;
+      })()}
       <details><summary>Preflight checks</summary><ul className="ops-verification">{sheet.report.checks.map((check, i) => <li key={i}><StatusPill tone={checkTone(check)} label={checkWord(check)} /><strong>{check.check}</strong><span>{check.reason}</span></li>)}</ul></details>
       {sheet.report.operation !== "dump" && <FormField label={`Type ${sheet.report.target} to confirm`} value={typed} onChange={setTyped} disabled={busy} />}
       {sheet.report.required_acknowledgement && <div className="ops-system-ack">

@@ -1238,7 +1238,7 @@ try {
   await page.evaluate(() => getSelection()?.removeAllRanges());
   await chord("c");
   await page.waitForFunction(() => (window.__copied || []).length === 2);
-  assert.equal(await copied(), '9223372036854775807\t"{""id"": 9007199254740993, ""tags"": [""a""]}"\r\n1\t[1, 2]\r\n\tplain');
+  assert.equal(await copied(), '9223372036854775807\t"{""id"": 9007199254740993, ""tags"": [""a""]}"\n1\t[1, 2]\n\tplain');
   // A row number selects its row; Option/Alt+click on a header the column (no sort).
   await page.click('.result-table tbody tr[data-row-key="1"] td[data-col="#"]');
   assert.equal(await footer(), "5 cells · Count 2 · Sum 3 · Avg 1.5 · Min 1 · Max 2");
@@ -1438,7 +1438,7 @@ try {
   await chord("a");
   assert.equal(await footer(), "Count 4 · Sum 10 · Avg 2.5 · Min 1 · Max 4");
   // Copy row and Copy all rows with header leave the hidden column out too.
-  for (const [item, expected] of [["Copy row", "1\t2"], ["Copy all rows with header", "a\tc\r\n1\t2\r\n3\t4"]]) {
+  for (const [item, expected] of [["Copy row", "1\t2"], ["Copy all rows with header", "a\tc\n1\t2\n3\t4"]]) {
     copyCount = await copies();
     await page.click(cell(0, 0), { button: "right" });
     await page.waitForSelector('.context-menu[aria-label="Result actions"]');

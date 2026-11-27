@@ -17,6 +17,7 @@ import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-he
 // above the view, previous report kept), Escape stops, a connection switch
 // stops it and drops late answers. Run: npm run test:report
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -215,6 +216,48 @@ const health = await load("health-mysql-8.4.json");
 const config = await load("config-mysql-8.4.json");
 const waits = await load("waits-mysql-8.4.json");
 const locks = await load("locks-mysql-8.4.json");
+
+// Exercise actual backend action builders, including the R3-2 account host.
+// Pass hostile text as JSON on stdin, never as shell or Python source text.
+const hostileHost = "\\' /*M! \" */; system touch MARK; #";
+const copyCasesResult = spawnSync(process.env.PYTHON || "python3", ["-c", String.raw`
+import json, sys
+from myflames import indexes, report, server_checks
+from myflames.perf_common import Server
+
+host = json.load(sys.stdin)
+cases = []
+for engine, version in (("mysql", "8.4.11"), ("mariadb", "11.4.13-MariaDB")):
+    server = Server({"version": version, "performance_schema": "ON"}, {"Uptime": "90000"})
+    for user, account_host, safe in (("", host, False), ("o'hara" + chr(96), "localhost", True)):
+        checks = server_checks._accounts(server, {"accounts_source": engine, "accounts": [
+            [user, account_host, "mysql_native_password", "1", "N", "N"]]})
+        for f in report._check_findings("checks", checks, {}):
+            if f["action"] and (not safe or f["id"] == "checks.no_password"):
+                f["id"] = "copy.%s.%s.%s" % (engine, "safe" if safe else "hostile", f["id"])
+                cases.append({"finding": f, "safe": safe})
+    for kind in ("unused", "redundant"):
+        for component in range(3):
+            for suffix, marker in (("\u00e9", "unicode"), (chr(92) + "path", "backslash")):
+                names = ["shop", "orders", "k_lookup"]
+                names[component] += suffix
+                test, drop = indexes._sql(server, *names)
+                item = dict(zip(("schema", "table", "index"), names))
+                item.update(verdict="candidate", test_sql=test, drop_sql=drop)
+                findings = report._indexes_findings({"available": True, kind: [item],
+                                                    "uptime_s": indexes.SHORT_UPTIME_S + 1}, None)
+                f = next(f for f in findings if f["id"] == "indexes." + kind)
+                f["id"] = "copy.%s.%s.%s.%s" % (engine, kind, component, marker)
+                cases.append({"finding": f, "safe": False})
+print(json.dumps(cases))
+`], { cwd: new URL("../../../", import.meta.url), input: JSON.stringify(hostileHost), encoding: "utf8" });
+assert.equal(copyCasesResult.status, 0, copyCasesResult.stderr);
+const copyCases = JSON.parse(copyCasesResult.stdout);
+for (const { finding } of copyCases.filter(c => c.finding.id.includes("hostile"))) {
+  assert.ok(finding.action.names.includes(hostileHost), "the raw account host reaches the copy guard");
+  assert.equal(finding.action.sql, undefined, "no account SQL is built for the hostile host");
+  assert.match(finding.action.text, /not printable ASCII or contains a backslash/);
+}
 
 const A = "a".repeat(64);
 const B = "b".repeat(64);
@@ -964,6 +1007,50 @@ try {
   }), true, "global refresh places new tables below the latest arrangement");
   await h.server();
   await page.waitForFunction(() => /^19 of 19 views refreshed$/.test(document.querySelector(".refresh-all-status")?.textContent || ""));
+
+  // Raw names must reach CopySql for every account and index action. SQL is
+  // kept visible for inspection, but refused copies expose their reason and
+  // never reach the clipboard. Printable quoted accounts still copy exactly.
+  const copyReport = structuredClone(rich);
+  copyReport.findings.push(...copyCases.map(c => c.finding));
+  state.queue.push({ status: 200, body: copyReport });
+  await h.fullAnalysis();
+  await page.evaluate(() => {
+    window.__reportCopies = [];
+    navigator.clipboard.writeText = text => { window.__reportCopies.push(text); return Promise.resolve(); };
+    window.scrollTo(0, 0);
+  });
+  const copyRun = state.seen.length;
+  await page.click(`${view} [data-action=run-analysis]`);
+  await until(() => state.seen.length === copyRun + 1, "the copy-safety report was requested");
+  await h.idle(view);
+  let accepted = 0;
+  for (const { finding, safe } of copyCases) {
+    await h.select(`${view} .report-look li[data-finding="${finding.id}"]`);
+    await inspectorTitle(finding.title);
+    const button = '.view-inspector .perf-sql button';
+    if (!finding.action.sql) {
+      assert.equal(await page.$(button), null, "refused account SQL has no Copy button");
+      assert.match(await h.inspector(), /not printable ASCII or contains a backslash/, finding.id);
+      continue;
+    }
+    assert.equal(await page.$eval(button, e => e.getAttribute("aria-disabled")), safe ? null : "true", finding.id);
+    const before = await page.evaluate(() => window.__reportCopies.length);
+    await page.click(button);
+    if (safe) {
+      accepted++;
+      await page.waitForFunction(n => window.__reportCopies.length === n + 1, {}, before);
+      assert.equal(await page.evaluate(() => window.__reportCopies.at(-1)), finding.action.sql, finding.id);
+    } else {
+      await page.waitForSelector('[role=dialog].why-disabled');
+      assert.match(await text('[role=dialog].why-disabled'), /not printable ASCII or contains a backslash/, finding.id);
+      assert.equal(await page.evaluate(() => window.__reportCopies.length), before, finding.id);
+      await page.$eval('[role=dialog].why-disabled .why-disabled-close', e => e.click());
+      await page.waitForSelector('[role=dialog].why-disabled', { hidden: true });
+    }
+  }
+  assert.equal(await page.evaluate(() => window.__reportCopies.length), accepted);
+  console.log("Report copy safety: backend-built anonymous/account SQL and every schema/table/index name passed");
 
   assert.deepEqual(h.errors, []);
   console.log("full analysis and refresh all: ok");

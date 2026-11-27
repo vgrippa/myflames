@@ -2421,8 +2421,11 @@ class TestReviewGateSurfaces(ReplicationCase):
         self.store = WorkspaceStore()
         conn = self.connection()
         conn.run.side_effect = ConnectorError('ERROR 2013 (HY000): Lost connection to server during query')
+        # Static fixture uptime must not drift against real wall time during SQLite audit setup.
+        clock = FakeTime()
         with mock.patch.object(rp, 'read_status', return_value=report), \
-                mock.patch.object(rp, 'read_receiver_identity', return_value=('receiver', 1)):
+                mock.patch.object(rp, 'read_receiver_identity', return_value=('receiver', 1)), \
+                mock.patch('myflames.replication.time.monotonic', side_effect=clock.monotonic):
             code, out, err, _ = run_cli('replication', ['skip-loop', '--channel', '', '--errors', '1062',
                                                        '--yes', '--json'], conn)
         self.assertEqual(code, 2, out + err)

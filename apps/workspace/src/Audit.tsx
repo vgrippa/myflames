@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, download, time, type AuditExport, type AuditRecord, type AuditReport, type AuditStatus, type Profile } from "./api";
 import { Icon } from "./components";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import {
   ActionButton,
   ActionStatus,
@@ -24,7 +25,7 @@ import {
   ViewLayout,
   ViewStatus,
   closePopovers,
-  copyToClipboard,
+  // clipboard helpers imported from ./clipboard
   storeInspectorWidth,
   storedInspectorWidth,
   type Column,
@@ -214,7 +215,7 @@ function Statement({ statement, index }: { statement: string; index: number }) {
         className="text-button"
         aria-label={`Copy statement ${index + 1} as stored`}
         onClick={() => {
-          void copyToClipboard(statement).then((ok) => setCopied(ok ? "Copied." : "Select the text to copy it."));
+          void copyToClipboardResult(statement).then((res) => setCopied(res.ok ? copyFeedback("Copied.", res.removed) : "Select the text to copy it."));
         }}
       >
         Copy
