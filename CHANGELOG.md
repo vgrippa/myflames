@@ -8,6 +8,8 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Improvements
 
+- Changes disabled action buttons in **Cluster**, **Readyset** and everywhere a missing privilege or policy blocks an action: the reason no longer sits under the button; clicking the button (or pressing Enter or Space) opens a message anchored to it with the reason, how to fix it and, when a privilege is missing, the exact `GRANT` statement to copy. Escape, a click outside or **Close** dismisses the message and returns focus to the button, and screen readers hear the reason as the button's description.
+
 ### Bug fixes
 
 ### Security fixes
