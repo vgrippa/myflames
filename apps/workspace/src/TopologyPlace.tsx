@@ -8,7 +8,7 @@
 // Reports are kept per group connection key, membership and tab: an edit of
 // the group's members makes the old membership's reports stale, and
 // switching the group drops the reads on their way.
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection, GroupConnection, Profile } from "./api";
 import { connectionKey } from "./binding";
 import { ConnectionGroupBar } from "./ConnectionGroupBar";
@@ -116,7 +116,7 @@ function reportKey(connection: Connection, group: GroupConnection | null | undef
   return `${connectionKey(connection)}|${membership}`;
 }
 
-export function TopologyPlace({ connection, group = null, profiles, disabled = false, onOpenGroup, onNewGroup, onUseInServer, onOpenCluster, onOpenReplication, onOpenAccounts, onOpenMember }: {
+export function TopologyPlace({ connection, group = null, profiles, disabled = false, onOpenGroup, onNewGroup, onUseInServer, onOpenCluster, onOpenReplication, onOpenAccounts, onOpenMember, focusCard = "", onCardFocused }: {
   connection: Connection;
   /** The active Group connection, when the connection in use is one. */
   group?: GroupConnection | null;
@@ -135,6 +135,10 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   /** Open the place of a member's card (Readyset, ProxySQL, Cluster,
    * Replication or Server), reading that member where the place routes one. */
   onOpenMember?: (member: OpenMemberInfo, place: MemberPlace) => void;
+  /** A map card Back to Topology returns focus to, consumed on screen. */
+  focusCard?: string;
+  /** The focusCard card took focus; clear the pending key. */
+  onCardFocused?: () => void;
 }) {
   const [tab, setTab] = useState<TopologySection>("map");
   const [selectedKey, setSelectedKey] = useState("");
@@ -310,6 +314,20 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     : "";
   const error = errors[currentId] || "";
   const report = reports[currentId] || null;
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Back from a member's place (the Back chip or history Back) returns focus
+  // to the card that opened it. The shell hands the card's key over as
+  // focusCard and this place consumes it in the commit where the place is on
+  // screen and its map shows the card, however long the map took to render:
+  // no timer polls for it.
+  useLayoutEffect(() => {
+    if (!focusCard || !onScreen) return;
+    const card = rootRef.current?.querySelector<HTMLElement>(`.topology-map-node[data-node="${CSS.escape(focusCard)}"]`);
+    if (!card || card.closest("[hidden]")) return;
+    card.focus({ preventScroll: true });
+    onCardFocused?.();
+  }, [focusCard, onScreen, report, tab, onCardFocused]);
 
   const membersContent: InspectorContent | null = useMemo(() => {
     if ((tab !== "members" && tab !== "map") || !report || !selection.key) return null;
@@ -499,7 +517,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
 
   return (
     <InspectorContext.Provider value={inspector}>
-      <div className="topology-place">
+      <div className="topology-place" ref={rootRef}>
         <ViewLayout
           id="topology"
           title="Topology"

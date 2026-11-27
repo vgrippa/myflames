@@ -193,16 +193,9 @@ function focusPlaceHeadingSoon() {
   };
   window.setTimeout(tick, 0);
 }
-/** Back to Topology returns focus to the card that was activated. */
-function focusTopologyCardSoon(nodeId: string) {
-  let attempts = 0;
-  const tick = () => {
-    const card = document.querySelector<HTMLElement>(`.topology-map-node[data-node="${CSS.escape(nodeId)}"]`);
-    if (card && !card.closest("[hidden]")) { card.focus({ preventScroll: true }); return; }
-    if (++attempts < 80) window.setTimeout(tick, 25);
-  };
-  window.setTimeout(tick, 0);
-}
+/** Back to Topology returns focus to the card that was activated: the shell
+ * hands the card's key to the Topology place (topologyFocusCard), which
+ * focuses it in a layout effect once its map shows the card on screen. */
 /** One stop in the window's navigation history (Back and Forward, the cross-link
  * chip, the palette's Recent views). In-memory only. */
 type NavEntry = {
@@ -1796,6 +1789,10 @@ function App() {
   // whose connection the place uses; the Back chip returns to the map with
   // its tab, scroll and selection, and focus returns to the card.
   const topologyCardFocus = useRef("");
+  // The card a return to Topology focuses: set by applyNavEntry, consumed and
+  // cleared by the Topology place once its map shows the card (no timer).
+  const [topologyFocusCard, setTopologyFocusCard] = useState("");
+  const clearTopologyFocusCard = useCallback(() => setTopologyFocusCard(""), []);
   const openTopologyMember = useCallback((member: OpenMemberInfo, place: MemberPlace) => {
     const back = linkOrigin();
     chooseMember(place, member.profile_id);
@@ -1930,12 +1927,13 @@ function App() {
     const now = navStateRef.current;
     if (entry.connection && entry.connection !== now.key)
       setNotice(`${entry.label} was open on ${entry.connectionName}; this window is on ${now.name}. Nothing was switched: views read the connection in use.`);
-    // Back to Topology after a card opened a member's place: focus returns to
-    // the card (the map stays mounted).
+    // Back to Topology after a card opened a member's place: the Topology
+    // place focuses the card itself once its map shows it (the map stays
+    // mounted, but its render after the traversal is not timed).
     if (entry.mode === "topology" && topologyCardFocus.current) {
       const cardId = topologyCardFocus.current;
       topologyCardFocus.current = "";
-      focusTopologyCardSoon(cardId);
+      setTopologyFocusCard(cardId);
     }
   }
   function navMove(dir: -1 | 1) {
@@ -2990,6 +2988,7 @@ function App() {
               <ViewOnScreenContext.Provider value={mode === "topology"}>
               <ColumnStoreContext.Provider value={columnStore}>
                 <TopologyPlace connection={request} group={groupActive} profiles={profiles} disabled={labBusy}
+                  focusCard={topologyFocusCard} onCardFocused={clearTopologyFocusCard}
                   onOpenGroup={(name) => void openGroup(name, { probe: true })}
                   onNewGroup={(members) => setGroupCreate(members)}
                   onUseInServer={(id) => chooseMember("server", id)}

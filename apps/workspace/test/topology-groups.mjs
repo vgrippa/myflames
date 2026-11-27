@@ -1099,7 +1099,8 @@ try {
   await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
   assert.ok(await page.$(`${rsCard}.is-selected`), "the clicked card stays selected on return");
-  await pause(400);
+  // Focus returns to the card: the Topology place drives it from its own
+  // layout, so no settle pause is needed.
   await page.waitForFunction(() => document.activeElement?.getAttribute("data-node") === "p-nav-rs");
 
   // The note is the place's own: from the sidebar, Server and ProxySQL read
@@ -1175,9 +1176,8 @@ try {
   await page.waitForFunction(() => document.activeElement?.id === "replication-title");
   await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
-  // Let the history traversal settle: focus returns to the card that opened
-  // the place.
-  await pause(400);
+  // Focus returns to the card that opened the place, driven by the Topology
+  // place itself once its map shows the card (no settle pause).
   await page.waitForFunction(() => document.activeElement?.getAttribute("data-node") === "p-nav-2");
 
   // Any other database member opens the Server place on that member, with the
