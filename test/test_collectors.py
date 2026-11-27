@@ -6,12 +6,15 @@ minimal stub connection that returns canned rows. That keeps the tests fast
 and database-free while still exercising the real parsing and query
 assembly paths.
 """
-import os
+import contextlib
 import gc
+import io
+import os
 import statistics
 import sys
 import time
 import unittest
+from unittest import mock
 
 
 def _budget(seconds):
@@ -515,36 +518,90 @@ def _sql_scanner_probe_functions():
     )
 
 
-def _scanner_seconds(function, sql, allow_refusal=False):
-    """Best of three per-call wall times, excluding collection pauses.
+def _sample_scanner_seconds(function, sql, allow_refusal=False):
+    """Measure one call's wall time, excluding collection pauses.
 
     Refusals are valid probe results, but programming errors must fail the
     test instead of being mistaken for fast input rejection.
     """
-    def call():
+    gc.collect()
+    was_enabled = gc.isenabled()
+    if was_enabled:
+        gc.disable()
+    try:
+        start = time.perf_counter()
         try:
             function(sql)
         except ValueError:
             if not allow_refusal:
                 raise
-
-    samples = []
-    for unused in range(3):
-        gc.collect()
-        was_enabled = gc.isenabled()
+        return time.perf_counter() - start
+    finally:
         if was_enabled:
-            gc.disable()
-        try:
-            start = time.perf_counter()
-            call()
-            samples.append(time.perf_counter() - start)
-        finally:
-            if was_enabled:
-                gc.enable()
-    return min(samples)
+            gc.enable()
+
+
+def _scanner_seconds(function, sql, allow_refusal=False, samples=3):
+    """Best of N per-call wall times, excluding collection pauses."""
+    return min(
+        _sample_scanner_seconds(function, sql, allow_refusal)
+        for unused in range(samples)
+    )
+
+
+def _scanner_pair_seconds(function, first, second, allow_refusal=False, samples=3):
+    """Best of N interleaved (short, long) wall times, excluding collection pauses."""
+    short_samples = []
+    long_samples = []
+    for unused in range(samples):
+        short_samples.append(_sample_scanner_seconds(function, first, allow_refusal))
+        long_samples.append(_sample_scanner_seconds(function, second, allow_refusal))
+    return min(short_samples), min(long_samples)
+
+
+def _scaling_ratio(short, long):
+    """Return long / short, guarding against a zero short sample."""
+    return (long / short) if short > 0 else float("inf")
+
+
+def _measure_scanner_scaling(function, first, second, allow_refusal=False):
+    """Measure (first, second) interleaved and confirm once if 8x is missed.
+
+    Returns (first_pair, confirmed_pair). confirmed_pair is None unless the
+    first 3-sample pair reached both the 50 ms noise floor and the 8x bound,
+    in which case 7 more interleaved samples are taken per size and
+    confirmed_pair pools the minimums across all 10 samples per size.
+    """
+    first_pair = _scanner_pair_seconds(function, first, second, allow_refusal, samples=3)
+    short, long = first_pair
+    if long >= 0.05 and long >= 8 * short:
+        retry_short, retry_long = _scanner_pair_seconds(
+            function, first, second, allow_refusal, samples=7
+        )
+        confirmed_pair = (min(short, retry_short), min(long, retry_long))
+        return first_pair, confirmed_pair
+    return first_pair, None
 
 
 class TestSQLScannerTiming(unittest.TestCase):
+    def _assert_scaling_bound(self, name, shape, first_pair, confirmed_pair, log=True):
+        short, long = first_pair
+        if log:
+            print("SQL scanner %s %s: 16K=%.6fs 64K=%.6fs ratio=%.2f" %
+                  (name, shape, short, long, _scaling_ratio(short, long)), flush=True)
+        if confirmed_pair is not None:
+            short, long = confirmed_pair
+            if log:
+                print("SQL scanner %s %s (confirmed, pooled over 10 samples): 16K=%.6fs 64K=%.6fs ratio=%.2f" %
+                      (name, shape, short, long, _scaling_ratio(short, long)), flush=True)
+        if long >= 0.05:
+            self.assertLess(long, 8 * short,
+                            "%s %s grew %.2fx (linear is about 4x, quadratic about 16x)"
+                            % (name, shape, _scaling_ratio(short, long)))
+        else:
+            self.assertLess(long, 0.05,
+                            "%s %s exceeded the 50 ms clock-noise bound" % (name, shape))
+
     def test_hostile_statement_scaling(self):
         """Bound slow-call growth; use an absolute budget below clock-noise scale."""
         small, large = _hostile_sql_shapes(16384), _hostile_sql_shapes(65536)
@@ -553,17 +610,119 @@ class TestSQLScannerTiming(unittest.TestCase):
             for (shape, first), (same_shape, second) in zip(small, large):
                 self.assertEqual(shape, same_shape)
                 with self.subTest(function=name, shape=shape):
-                    short = _scanner_seconds(function, first, allow_refusal)
-                    long = _scanner_seconds(function, second, allow_refusal)
-                    print("SQL scanner %s %s: 16K=%.6fs 64K=%.6fs ratio=%.2f" %
-                          (name, shape, short, long, long / short), flush=True)
-                    if long >= 0.05:
-                        self.assertLess(long, 8 * short,
-                                        "%s %s grew %.2fx (linear is about 4x, quadratic about 16x)"
-                                        % (name, shape, long / short))
-                    else:
-                        self.assertLess(long, 0.05,
-                                        "%s %s exceeded the 50 ms clock-noise bound" % (name, shape))
+                    first_pair, confirmed_pair = _measure_scanner_scaling(
+                        function, first, second, allow_refusal=allow_refusal
+                    )
+                    self._assert_scaling_bound(name, shape, first_pair, confirmed_pair)
+
+    def test_scaling_check_catches_quadratic_growth(self):
+        """Verify the interleaved check rejects quadratic work and accepts linear probes."""
+        from myflames import dbops
+
+        def quadratic_scanner(sql):
+            # Hashing every step=6 prefix does O(n^2) work (~16x from 16K to 64K)
+            # while keeping 64K under 0.5 s on Python 3.7.
+            return sum(hash(sql[:i]) for i in range(0, len(sql), 6))
+
+        nbe_short = dict(_hostile_sql_shapes(16384))["nbe_literal"]
+        nbe_long = dict(_hostile_sql_shapes(65536))["nbe_literal"]
+
+        q_short, q_long = _scanner_pair_seconds(
+            quadratic_scanner, nbe_short, nbe_long, samples=5
+        )
+        q_ratio = _scaling_ratio(q_short, q_long)
+        print("SQL scanner quadratic_probe nbe_literal: 16K=%.6fs 64K=%.6fs ratio=%.2f" %
+              (q_short, q_long, q_ratio), flush=True)
+        self.assertGreater(q_ratio, 8)
+
+        lin_first, lin_confirmed = _measure_scanner_scaling(
+            dbops.classify, nbe_short, nbe_long
+        )
+        # The linear probe is held to the same floor-aware rule as the real
+        # probes: below 50 ms only the absolute bound applies.
+        self._assert_scaling_bound(
+            "dbops.classify", "nbe_literal", lin_first, lin_confirmed, log=False
+        )
+
+    def test_scaling_confirmation_and_interleaving(self):
+        """Verify interleaved sampling, pooled 10-sample confirmation, and refusal rules."""
+        def scripted_measure(short_times, long_times):
+            calls = []
+            phase = [0]
+            last_duration = [0.0]
+            remaining = {"short": list(short_times), "long": list(long_times)}
+
+            def fake_perf_counter():
+                phase[0] ^= 1
+                return 0.0 if phase[0] else last_duration[0]
+
+            def probe(sql):
+                calls.append(sql)
+                last_duration[0] = remaining[sql].pop(0)
+
+            with mock.patch.object(time, "perf_counter", side_effect=fake_perf_counter):
+                first_pair, confirmed_pair = _measure_scanner_scaling(probe, "short", "long")
+            return calls, first_pair, confirmed_pair
+
+        # First round hits a long-sample spike; pooling 10 samples resolves it.
+        calls, first_pair, confirmed_pair = scripted_measure(
+            [0.005, 0.005, 0.005] + [0.005] * 7,
+            [0.060, 0.055, 0.058] + [0.022, 0.020, 0.021, 0.023, 0.020, 0.022, 0.021],
+        )
+        self.assertEqual(calls, ["short", "long"] * 10)
+        self.assertEqual(first_pair, (0.005, 0.055))
+        self.assertEqual(confirmed_pair, (0.005, 0.020))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self._assert_scaling_bound("probe", "nbe_literal", first_pair, confirmed_pair)
+        lines = buf.getvalue().strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("SQL scanner probe nbe_literal: 16K=0.005000s 64K=0.055000s ratio=11.00", lines[0])
+        self.assertIn("SQL scanner probe nbe_literal (confirmed, pooled over 10 samples): 16K=0.005000s 64K=0.020000s ratio=4.00", lines[1])
+
+        # Slowed confirmation shorts cannot mask true growth caught in round 1.
+        calls, first_pair, confirmed_pair = scripted_measure(
+            [0.010] * 3 + [0.025] * 7,
+            [0.160] * 3 + [0.160] * 7,
+        )
+        self.assertEqual(calls, ["short", "long"] * 10)
+        self.assertEqual(first_pair, (0.010, 0.160))
+        self.assertEqual(confirmed_pair, (0.010, 0.160))
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(AssertionError):
+                self._assert_scaling_bound("probe", "nbe_literal", first_pair, confirmed_pair)
+
+        # Confirmed pass still above 8x fails immediately without a second retry.
+        calls, first_pair, confirmed_pair = scripted_measure(
+            [0.005, 0.005, 0.005] + [0.005] * 7,
+            [0.055, 0.060, 0.058] + [0.065, 0.060, 0.062, 0.061, 0.063, 0.064, 0.066],
+        )
+        self.assertEqual(calls, ["short", "long"] * 10)
+        self.assertEqual(confirmed_pair, (0.005, 0.055))
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(AssertionError):
+                self._assert_scaling_bound("probe", "nbe_literal", first_pair, confirmed_pair)
+
+        # Below 50 ms does not trigger confirmation regardless of ratio.
+        calls, first_pair, confirmed_pair = scripted_measure(
+            [0.001, 0.001, 0.001],
+            [0.020, 0.021, 0.022],
+        )
+        self.assertEqual(calls, ["short", "long"] * 3)
+        self.assertIsNone(confirmed_pair)
+        self._assert_scaling_bound("probe", "nbe_literal", first_pair, confirmed_pair, log=False)
+
+        # Refusal handling respects allow_refusal and always restores GC state.
+        was_enabled = gc.isenabled()
+
+        def refuse(sql):
+            raise ValueError("refused")
+
+        self.assertIsInstance(_sample_scanner_seconds(refuse, "x", allow_refusal=True), float)
+        self.assertEqual(gc.isenabled(), was_enabled)
+        with self.assertRaises(ValueError):
+            _sample_scanner_seconds(refuse, "x", allow_refusal=False)
+        self.assertEqual(gc.isenabled(), was_enabled)
 
     def test_one_megabyte_statement_budget(self):
         from myflames import analysis_query, collectors, live
