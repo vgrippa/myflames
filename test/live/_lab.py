@@ -6,9 +6,11 @@ Every suite gets a throwaway HOME with the lab's saved connections (created by
 with ``wait_for`` instead of fixed sleeps, and never prints the lab password:
 ``redact`` is applied to every error message that can leave a test.
 
-The lab password is read from ``$CLUSTER_LAB/credentials.env`` (mode 0600 on a
-maintainer machine) only to redact it and, for the suites that save their own
-profile, to store it in the throwaway home's vault. It is never logged.
+The lab password is read from the effective credentials file (``CREDS_FILE``
+when set, as ``cluster-matrix.sh`` honors, else ``$CLUSTER_LAB/credentials.env``;
+mode 0600 on a maintainer machine) only to redact it and, for the suites that
+save their own profile, to store it in the throwaway home's vault. It is never
+logged.
 
 Suites run only with ``MYFLAMES_LIVE_LABS=1``; ``require_live`` enforces it so
 an accidental discovery or direct run skips instead of touching the labs.
@@ -35,6 +37,7 @@ LIVE_ENV = "MYFLAMES_LIVE_LABS"
 SKIP_REASON = "set %s=1 (scripts/live-tests.sh) to run the live lab suites" % LIVE_ENV
 
 _PASSWORD = None
+_CLUSTER_PASSWORDS = None
 _GA_PASSWORDS = None
 _GA_SERVERS = None
 # The real HOME, captured before any suite replaces it with a throwaway home:
@@ -57,7 +60,24 @@ def cluster_lab():
 
 
 def credentials_path():
-    return os.path.join(cluster_lab(), "credentials.env")
+    """The effective credentials file: CREDS_FILE when set (cluster-matrix.sh
+    honors the same override), else $CLUSTER_LAB/credentials.env."""
+    return os.environ.get("CREDS_FILE") or os.path.join(cluster_lab(), "credentials.env")
+
+
+def _passwords_from(path):
+    """The *_PASSWORD values of one credentials file; empty when unreadable."""
+    passwords = []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                key, _, value = line.strip().partition("=")
+                if key.endswith("_PASSWORD"):
+                    passwords.append(value.strip().strip("'\""))
+    except (OSError, UnicodeError):
+        # Redacting an error must also work on machines without the lab.
+        pass
+    return passwords
 
 
 def lab_password():
@@ -76,15 +96,29 @@ def lab_password():
 
 def redact(text):
     """The lab passwords never appear in a message that leaves a test."""
+    global _CLUSTER_PASSWORDS
     if text is None:
         return ""
     text = str(text)
+    if _CLUSTER_PASSWORDS is None:
+        # The effective credentials file (CREDS_FILE when set) and, when it
+        # differs, the lab's default one: an error can carry passwords from
+        # either side of the override.
+        paths = [credentials_path()]
+        default = os.path.join(cluster_lab(), "credentials.env")
+        if default != paths[0]:
+            paths.append(default)
+        passwords = []
+        for path in paths:
+            passwords.extend(_passwords_from(path))
+        _CLUSTER_PASSWORDS = passwords
     secrets = [_PASSWORD]
+    secrets.extend(_CLUSTER_PASSWORDS)
     if _GA_PASSWORDS:
         secrets.extend(_GA_PASSWORDS.values())
-    for secret in secrets:
-        if secret:
-            text = text.replace(secret, "[redacted]")
+    # Mask longer values first when one password contains another.
+    for secret in sorted(set(s for s in secrets if s), key=len, reverse=True):
+        text = text.replace(secret, "[redacted]")
     return text
 
 
@@ -138,14 +172,28 @@ def make_home(suite):
     matrix script itself refuses a home that is or contains the real one.
     One home is shared per run (MYFLAMES_LIVE_HOME, set by the runner or
     created here), so the profiles step runs once per lane, not per suite.
+
+    cluster-matrix.sh profiles gets the lane's selection
+    (MYFLAMES_LIVE_LABS_ONLY, set per lane by scripts/live-tests.sh) as
+    positional labs, so it saves profiles and runs smoke checks only for the
+    labs the lane may rely on and fails when any of those smokes did not
+    complete; with no selection it saves and smokes every running lab as
+    before.
     """
     home = _throwaway_home(suite)
     marker = os.path.join(home, ".profiles-ready")
     if not os.path.exists(marker):
-        matrix("profiles", "--home", home)
+        matrix("profiles", "--home", home, *lane_labs())
         with open(marker, "w", encoding="utf-8") as handle:
             handle.write("ok\n")
     return home
+
+
+def lane_labs():
+    """The labs this lane may rely on (MYFLAMES_LIVE_LABS_ONLY, set per lane by
+    scripts/live-tests.sh); empty means every lab."""
+    raw = os.environ.get("MYFLAMES_LIVE_LABS_ONLY") or ""
+    return [word for word in re.split(r"[,\s]+", raw.strip()) if word]
 
 
 def ga_lab():
@@ -264,10 +312,7 @@ class Lab(object):
             return ui.api_response(path, payload or {}, self.ws)
         except Exception as exc:  # noqa: BLE001 - re-raised redacted
             text = redact(str(exc))
-            try:
-                raise type(exc)(text)
-            except Exception:
-                raise LabError(text)
+            raise LabError(text) from None
 
     def profile(self, name):
         for entry in self.store.list("profile"):

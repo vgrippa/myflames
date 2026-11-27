@@ -35,6 +35,11 @@ live_writes.py does:
   dropped. A procedure dumped by that server's own dump tool is recreated
   through one editor confirmation, including the saved-mode preamble,
   DELIMITER lines and restores; the throwaway schema is always dropped.
+- Query editor Stop: during SELECT SLEEP(30), Stop issues KILL QUERY through
+  the reviewed guard path (bound to the tab's connection id and private
+  statement tag); the statement ends promptly as interrupted, the tab's
+  session stays usable on the same server connection, and a sleep running
+  in another tab is not killed.
 
 Credentials come only from the matrix's 0600 credentials file (read by
 _lab.ga_passwords for redaction, never printed). The saved profiles come
@@ -48,6 +53,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 import unittest
 import uuid
 
@@ -487,6 +494,100 @@ class _GAWritesBase(object):
             dropped = self._confirmed_run("DROP DATABASE IF EXISTS %s" % schema)
             self.assertEqual(dropped.get("status"), "complete", redact(str(dropped)))
 
+    # -- (e) Query editor: Stop sends KILL QUERY for this tab's statement only --
+
+    def _close_tab(self, tab_id):
+        """Cleanup: an extra editor tab closes also when the test failed."""
+        try:
+            self.lab.api("/api/editor/close",
+                         {"tab_id": tab_id, "connection": dict(self.conn), "discard": True})
+        except Exception:
+            pass
+
+    def test_07_editor_stop(self):
+        """Stop ends a long statement promptly; the tab and other sessions live."""
+        canary_tab = self.TAB + "-canary"
+        self.addCleanup(self._close_tab, canary_tab)
+        outcome, canary = {}, {}
+
+        def run_sleep(tab, sql, wait, into):
+            started = time.monotonic()
+            try:
+                out = self.lab.api("/api/editor/run",
+                                   {"tab_id": tab, "connection": dict(self.conn),
+                                    "sql": sql, "wait": wait})
+                into.update(result=out, elapsed=time.monotonic() - started)
+            except Exception as exc:  # noqa: BLE001 - asserted below, redacted
+                into.update(error=redact(str(exc)), elapsed=time.monotonic() - started)
+
+        # A canary sleep on another session runs before and through Stop: the
+        # kill, bound to this tab's connection id and private statement tag,
+        # must never reach it.
+        canary_thread = threading.Thread(
+            target=run_sleep, args=(canary_tab, "SELECT SLEEP(5) AS canary", 20, canary))
+        canary_thread.start()
+        time.sleep(1)
+        thread = threading.Thread(
+            target=run_sleep, args=(self.TAB, "SELECT SLEEP(30) AS slept", 40, outcome))
+        thread.start()
+        time.sleep(2)
+        stop = self._editor("/api/editor/stop")
+        thread.join(45)
+        self.assertFalse(thread.is_alive(), "the sleep run never finished")
+        # A direct connection is confirmable, so Stop sends KILL QUERY and the
+        # sleep ends early (the opposite of the multiplexed ProxySQL refusal).
+        self.assertTrue(stop.get("stopped"), "Stop did not send the kill: %s"
+                        % redact(stop.get("message") or ""))
+        self.assertTrue(stop.get("stop_requested"), "Stop was not recorded for the running statement")
+        self.assertIn("kill", (stop.get("message") or "").lower(),
+                      "unexpected Stop answer: %s" % redact(stop.get("message") or ""))
+        self.assertNotIn("error", outcome, "the sleep run errored: %s" % outcome.get("error"))
+        self.assertLess(outcome["elapsed"], 29.0,
+                        "the sleep ran %.1fs of 30s: the kill did not stop it" % outcome["elapsed"])
+        run = outcome["result"].get("run") or {}
+        status = outcome["result"].get("status")
+        engine = (outcome["result"].get("session") or {}).get("engine")
+        connection_id = (outcome["result"].get("session") or {}).get("connection_id")
+        if engine == "mysql" and status == "complete":
+            # mysql-server/sql/item_func.cc:6269-6281: an interrupted
+            # Item_func_sleep returns 1. A single SLEEP can succeed without
+            # ER_QUERY_INTERRUPTED, so the editor keeps its complete result.
+            rows = [row for result in run.get("results", []) if result.get("type") == "rows"
+                    for row in result.get("rows", [])]
+            self.assertEqual(rows, [["1"]], "the interrupted MySQL SLEEP did not return 1")
+        else:
+            self.assertEqual(status, "stopped",
+                             "the interrupted run did not report stopped: %s"
+                             % redact(outcome["result"].get("message") or outcome["result"].get("status")))
+            self.assertTrue((run.get("stopped") or {}).get("interrupted"),
+                            "the run does not report the statement interrupted")
+        # KILL QUERY ends the statement, not the session: the same tab, on the
+        # same server connection, stays usable.
+        follow = self._editor("/api/editor/run", sql="SELECT 1", wait=30)
+        self.assertEqual(follow.get("status"), "complete",
+                         "the tab did not stay usable after Stop: %s"
+                         % redact(follow.get("message") or follow.get("status")))
+        session = follow.get("session") or {}
+        self.assertFalse(session.get("ended"), "the tab's session ended at Stop")
+        self.assertTrue(connection_id, "the stopped run reported no connection id")
+        self.assertEqual(session.get("connection_id"), connection_id,
+                         "the tab reconnected: Stop reached more than the statement")
+        # Nothing else on the server is killed: the canary sleep runs to its
+        # full end and returns 0 (an interrupted SLEEP returns 1 or 1317).
+        canary_thread.join(20)
+        self.assertFalse(canary_thread.is_alive(), "the canary sleep never finished")
+        self.assertNotIn("error", canary, "the canary errored: %s" % canary.get("error"))
+        self.assertEqual((canary.get("result") or {}).get("status"), "complete",
+                         "the canary did not complete: %s"
+                         % redact((canary.get("result") or {}).get("status")))
+        self.assertGreaterEqual(canary["elapsed"], 4.5,
+                                "the canary sleep ended after %.1fs of 5s: Stop reached another session"
+                                % canary["elapsed"])
+        canary_run = canary["result"].get("run") or {}
+        canary_rows = [row for result in canary_run.get("results", []) if result.get("type") == "rows"
+                       for row in result.get("rows", [])]
+        self.assertEqual(canary_rows, [["0"]], "the canary sleep was interrupted: %s" % canary_rows)
+
 class MySQL57WritesTest(_GAWritesBase, unittest.TestCase):
     """MySQL 5.7 (the last 5.7 release): the GA matrix's mysql-5.7."""
 
@@ -539,6 +640,24 @@ class MariaDB118WritesTest(_GAWritesBase, unittest.TestCase):
     """MariaDB 11.8: the GA matrix's mariadb-11.8."""
 
     SERVER = "mariadb-11.8"
+
+
+class MariaDB123WritesTest(_GAWritesBase, unittest.TestCase):
+    """MariaDB 12.3: the GA matrix's mariadb-12.3."""
+
+    SERVER = "mariadb-12.3"
+
+
+class MariaDB130WritesTest(_GAWritesBase, unittest.TestCase):
+    """MariaDB 13.0: the GA matrix's mariadb-13.0.
+
+    The 13.0.2 official image runs wsrep_on OFF with a configured provider:
+    the shape the disconnected-provider waiver binds (the session identity
+    read includes wsrep_on and wsrep_gcomm_uuid, so Stop's KILL QUERY and
+    every guarded write stay bound to this node).
+    """
+
+    SERVER = "mariadb-13.0"
 
 
 if __name__ == "__main__":

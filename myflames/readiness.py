@@ -9,12 +9,12 @@ import time
 from . import privileges
 from .connector import ConnectorError, unescape_mysql
 from .perf_common import now
-from .server_info import product_identity, server_version_tuple
+from .server_info import galera_enabled, product_identity, server_version_tuple
 
 TAG = '/*myflames:readiness*/ '
 TIMEOUT = 3
 _VARIABLES = ('version', 'version_comment', 'read_only', 'super_read_only',
-              'performance_schema', 'partial_revokes', 'wsrep_on',
+              'performance_schema', 'partial_revokes', 'wsrep_on', 'wsrep_provider',
               'group_replication_group_name')
 BASE_SQL = (TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" %
             ','.join("'%s'" % name for name in _VARIABLES) + TAG +
@@ -72,7 +72,7 @@ def read_readiness(conn):
     if not maria and server_version_tuple(version) < (8, 0, 0):
         notes.append('MySQL 5.7 has no CONNECTION_ADMIN privilege; Kill uses SUPER.')
     galera = False
-    if _on(variables.get('wsrep_on')) is True:
+    if galera_enabled(variables):
         state = wsrep.get('wsrep_cluster_status')
         galera = None if state is None else state.lower() in ('primary', 'non-primary')
     group = False if not variables.get('group_replication_group_name') else None

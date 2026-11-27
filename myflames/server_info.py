@@ -22,6 +22,25 @@ never used to decide.
 import re
 
 
+def galera_provider_loaded(variables):
+    """wsrep_provider names a provider library (not empty, not 'none')."""
+    provider = (variables.get("wsrep_provider") or "").strip()
+    return bool(provider) and provider.lower() != "none"
+
+
+def galera_enabled(variables):
+    """True when the server enables Galera replication.
+
+    MariaDB exposes a global wsrep_on, whose explicit OFF takes precedence
+    over a loaded provider. PXC 8.4 exposes wsrep_on only in the session
+    scope, so an absent or unread value falls back to wsrep_provider.
+    """
+    wsrep_on = variables.get("wsrep_on")
+    if wsrep_on is not None:
+        return str(wsrep_on).strip().upper() in ("ON", "1", "YES", "TRUE")
+    return galera_provider_loaded(variables)
+
+
 def detect_flavor(version, version_comment=""):
     """The engine: MariaDB identifies itself in either version field, ignoring case.
 

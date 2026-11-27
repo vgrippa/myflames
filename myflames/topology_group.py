@@ -17,7 +17,7 @@ from . import connection_groups, dbops
 from .connector import ConnectorError
 from .group_members import open_group_member
 from .perf_common import Reader, now
-from .server_info import is_readyset_comment, product_identity, server_version_tuple
+from .server_info import galera_enabled, is_readyset_comment, product_identity, server_version_tuple
 
 SCHEMA_VERSION = 'topology-group-1.0'
 SECTIONS = ('map', 'members', 'parameters', 'accounts', 'plugins')
@@ -267,6 +267,21 @@ def _identity(conn, member, read_position=True):
     comment_rows = _optional(reader, 'SELECT @@version_comment', notes)
     conn.check()
     comment = comment_rows[0][0] if comment_rows and comment_rows[0] else ''
+    if not is_readyset_comment(comment):
+        # The existing admin identity probe verifies admin-version against
+        # @@version; a backend exposed through a proxy must not supply its UUID.
+        proxy, version = proxysql.identify(conn)
+        conn.check()
+        if proxy:
+            member.update(engine='mysql', product='ProxySQL Admin', version=version, version_comment=comment,
+                          role='proxy', state='reachable')
+            return {}, 'ProxySQL Admin is read for identity only.'
+        if comment_rows is None:
+            # A failed read is not evidence that this is a database. ProxySQL
+            # Admin may reject it; every other endpoint must answer once.
+            comment_rows = reader.rows('SELECT @@version_comment')
+            conn.check()
+            comment = comment_rows[0][0] if comment_rows and comment_rows[0] else ''
     if is_readyset_comment(comment):
         from .topology_links import parse_readyset_version
         rows = _optional(reader, 'SHOW READYSET VERSION', notes, named=True)
@@ -275,14 +290,6 @@ def _identity(conn, member, read_position=True):
         member.update(engine='mysql', product='Readyset', version=version, version_comment=comment,
                       role='cache', state='reachable')
         return {}, 'Readyset is read for identity only.'
-    # The existing admin identity probe verifies admin-version against
-    # @@version; a backend exposed through a proxy must not supply its UUID.
-    proxy, version = proxysql.identify(conn)
-    conn.check()
-    if proxy:
-        member.update(engine='mysql', product='ProxySQL Admin', version=version, version_comment=comment,
-                      role='proxy', state='reachable')
-        return {}, 'ProxySQL Admin is read for identity only.'
     values = reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
         "('version','version_comment','server_uuid','server_id','hostname','port','report_host','read_only','super_read_only',"
         "'gtid_mode','performance_schema','group_replication_group_name',"
@@ -404,8 +411,7 @@ def _member_facts(conn, member, variables):
             member['lag'] = {'kind': 'gr_applier_queue', 'value': _number(rows[0][0]) if rows else None,
                              'message': 'Transactions waiting in this member\'s applier queue.' if rows else 'The applier queue is unavailable on this member.'}
             return position, notes
-    if (_on(variables.get('wsrep_on')) or
-            variables.get('wsrep_provider') and str(variables['wsrep_provider']).lower() != 'none'):
+    if galera_enabled(variables):
         # MariaDB sql/wsrep_var.cc:1098-1126 exposes provider status;
         # mysql-test/suite/wsrep/r/variables.result:25 names wsrep_local_recv_queue.
         rows = _optional(reader, "SHOW GLOBAL STATUS WHERE Variable_name IN "
@@ -841,7 +847,7 @@ def _map_probe(conn, profile, member, variables, has_readyset=False):
         kind = 'pxc' if member['product'] == 'Percona XtraDB Cluster' else 'galera'
         if probe.get('cluster_kind') not in ('galera', 'pxc'):
             # A loaded provider can remain connected while wsrep_on is OFF.
-            # The shared probe only reads this table for wsrep_on ON.
+            # The shared probe reads this table only while Galera is enabled.
             rows = _optional(reader, topology_links._WSREP_MEMBERS_SQL, notes)
             probe['cluster_members'] = []
             for row in rows or []:
@@ -1852,13 +1858,11 @@ def read_group(store, group_name, section, active_member_profile_id,
             conn.check()
         transport.check()
         entry['outcome'] = 'read'
-        provider = str(variables.get('wsrep_provider') or '').strip().lower()
         active_cluster = None
         if (entry['role'] in ('primary', 'secondary') and entry['state'] in ('ONLINE', 'RECOVERING')
                 and _uuid(variables.get('group_replication_group_name'))):
             active_cluster = 'group_replication'
-        elif (_on(variables.get('wsrep_on')) and provider and provider != 'none'
-              and variables.get('wsrep_cluster_status') == 'Primary'):
+        elif galera_enabled(variables) and variables.get('wsrep_cluster_status') == 'Primary':
             active_cluster = 'galera'
         facts[profile['id']] = dict(role=entry['role'], state=entry['state'],
             gr_group=_uuid(variables.get('group_replication_group_name')), active_cluster=active_cluster,

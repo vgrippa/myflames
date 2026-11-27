@@ -6,7 +6,9 @@ topology views, plus loopback/SSH safety, connection caps, and redaction.
 """
 import json
 import os
+import re
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from xml.sax.saxutils import escape as xml_escape
@@ -37,6 +39,41 @@ def batch_rows(rows):
     return "".join("\t".join("NULL" if c is None else str(c) for c in r) + "\n" for r in rows)
 
 
+def answer_evidence(sql, extra_flags, timeout, answer, values):
+    """Replay the requested evidence rows, including connection status.
+
+    Parse the prefix actually sent, so both the old UUID-only query and the
+    combined status query exercise their own evidence rather than invented
+    rows. The legacy shared recording helper only understands the old query.
+    """
+    from _reviewed_replay import read_statements
+    from myflames import dbops
+    from myflames.connector import PartialReadError
+    marker = re.search(r"SELECT '(myflames_evidence_[0-9a-f]{32})';\n", sql)
+    if not sql.startswith('DELIMITER ') or marker is None:
+        return None
+    units = read_statements(sql)
+    prefix = ''
+    for statement in units[:2]:
+        names = re.findall(r"'([^']+)'", statement)
+        rows = [[name, values[name]] for name in names if name in values]
+        prefix += (xml_rows([{'Variable_name': name, 'Value': value} for name, value in rows])
+                   if '--xml' in (extra_flags or []) else batch_rows(rows))
+    prefix += (xml_rows([{'marker': marker.group(1)}]) if '--xml' in (extra_flags or [])
+               else marker.group(1) + '\n')
+    flags = [flag for flag in (extra_flags or []) if flag != '--skip-reconnect']
+    try:
+        output = answer('; '.join(units[3:]), flags, timeout)
+    except ConnectorError as exc:
+        code = dbops.error_code(str(exc))
+        if code is None or 2000 <= code <= 2999:
+            raise
+        message = re.sub(r'(ERROR\s+\d+(?:\s+\([^)]*\))?)(?: at line \d+)?:',
+                         r'\1 at line 2:', str(exc))
+        raise PartialReadError(message, prefix) from None
+    return prefix + output
+
+
 class FakeProbeConn(object):
     def __init__(self, kind, **cfg):
         self.kind = kind
@@ -52,7 +89,7 @@ class FakeProbeConn(object):
         return False
 
     def _variables(self):
-        return {
+        variables = {
             "version": self.cfg.get("version", "8.4.11"),
             "version_comment": self.cfg.get("version_comment", "MySQL Community Server - GPL"),
             "hostname": self.cfg.get("hostname", "mysql-primary"),
@@ -68,15 +105,30 @@ class FakeProbeConn(object):
             "group_replication_group_name": self.cfg.get("gr_group", ""),
             "gtid_mode": "ON",
         }
+        if "percona xtradb cluster" in variables["version_comment"].lower():
+            # PXC 8.4 exposes wsrep_on only in the session scope.
+            variables.pop("wsrep_on")
+            variables["wsrep_provider"] = "/usr/lib64/galera4/libgalera_smm.so" if self.cfg.get("wsrep") else "none"
+        else:
+            variables["wsrep_provider"] = self.cfg.get("wsrep_provider", "none")
+        if 'mariadb' in (variables['version'] + variables['version_comment']).lower():
+            variables.pop('server_uuid')
+        return variables
 
     @evidence_options
     def run(self, sql, extra_flags=None, timeout=None):
         # A review evidence packet gets the marker row and this server's
         # identity projection in the same output, like a real server.
-        from _reviewed_replay import answer_evidence
         from myflames.dbops import _EVIDENCE_VARIABLES
         values = {key: value for key, value in self._variables().items()
                   if key in _EVIDENCE_VARIABLES and value != ""}
+        if self.cfg.get('wsrep'):
+            values['wsrep_gcomm_uuid'] = self.cfg.get('gcomm_uuid', '11111111-2222-3333-4444-555555555555')
+            values['wsrep_connected'] = self.cfg.get('wsrep_connected', 'ON')
+            values['wsrep_cluster_size'] = str(self.cfg.get('wsrep_cluster_size',
+                                                           max(1, len(self.cfg.get('wsrep_members', [])))))
+        elif 'mariadb' in values['version'].lower():
+            values.update(wsrep_connected='OFF', wsrep_cluster_size='0')
         packet = answer_evidence(sql, extra_flags, timeout, self._answer, values)
         if packet is not None:
             return packet
@@ -87,6 +139,9 @@ class FakeProbeConn(object):
         raw_sql = sql.strip()
         s = sql.replace(topology_links.TOPOLOGY_TAG, "").strip()
         upper = s.upper()
+        if s == 'SELECT @@version_comment' and self.cfg.get('comment_failures', 0):
+            self.cfg['comment_failures'] -= 1
+            raise ConnectorError('ERROR 2013 (HY000): Lost connection during query')
         if self.kind == "readyset":
             if s == "SELECT @@version_comment":
                 return xml_rows([{"@@version_comment": "Readyset"}])
@@ -124,6 +179,8 @@ class FakeProbeConn(object):
                 return xml_rows(self.cfg.get("upstreams", []))
             if upper == "SHOW CACHES":
                 return xml_rows([{"query_id": "q_1"} for _ in range(self.cfg.get("caches", 2))])
+            if s.startswith('SHOW GLOBAL VARIABLES') and self.cfg.get('proxied_database'):
+                return batch_rows(list(self._variables().items()))
             return xml_rows([])
 
         if self.kind == "proxysql":
@@ -162,7 +219,8 @@ class FakeProbeConn(object):
         if "WSREP_CLUSTER_MEMBERS" in upper:
             return batch_rows(self.cfg.get("wsrep_members", []))
         if s == topology_links._WSREP_STATUS_SQL:
-            return batch_rows([["wsrep_gcomm_uuid", self.cfg["gcomm_uuid"]]]) if self.cfg.get("gcomm_uuid") else ""
+            node_uuid = self.cfg.get('gcomm_uuid', '11111111-2222-3333-4444-555555555555' if self.cfg.get('wsrep') else None)
+            return batch_rows([["wsrep_gcomm_uuid", node_uuid]]) if node_uuid else ""
         if upper == 'SHOW REPLICA STATUS' and self.cfg.get('legacy_channels'):
             raise ConnectorError('ERROR 1064 (42000): SHOW REPLICA STATUS is unavailable')
         if upper in ('SHOW REPLICA STATUS', 'SHOW SLAVE STATUS', 'SHOW ALL SLAVES STATUS'):
@@ -178,6 +236,45 @@ class FakeProbeConn(object):
 
 class TestProbeChannels(unittest.TestCase):
     """Probe identity fields preserve the engine's UUID/server-ID distinction."""
+
+    def test_connected_fixture_status_allows_cluster_size_change_with_node_uuid(self):
+        # A proved node UUID binds the node; its component size may change
+        # between packets of one scope during a join or leave (dbops ignores
+        # wsrep_connected and wsrep_cluster_size across packets only then).
+        from myflames import dbops
+        conn = FakeProbeConn('database', wsrep=True,
+                             wsrep_members=[['node-a', 'a', 'a:3306'], ['node-b', 'b', 'b:3306']])
+        evidence = dbops.TargetEvidenceConnection(conn)
+        evidence.run('SELECT @@version_comment', extra_flags=['--xml'])
+        self.assertEqual({key: evidence.variables.get(key) for key in
+                          ('wsrep_connected', 'wsrep_cluster_size')},
+                         {'wsrep_connected': 'ON', 'wsrep_cluster_size': '2'})
+        conn.cfg['wsrep_cluster_size'] = '3'
+        evidence.run('SELECT @@version_comment', extra_flags=['--xml'])
+        self.assertEqual(evidence.variables.get('wsrep_cluster_size'), '3')
+
+    def test_pxc_session_only_wsrep_on_preserves_cluster_identity_and_members(self):
+        node_a = 'aaaaaaaa-1111-2222-3333-444444444444'
+        node_b = 'bbbbbbbb-1111-2222-3333-444444444444'
+        conn = FakeProbeConn('database', version='8.4.11-11.1',
+            version_comment='Percona XtraDB Cluster (GPL)', wsrep=True,
+            cluster_name='pxc', gcomm_uuid=node_a,
+            wsrep_members=[[node_a, 'pxc1', 'pxc1:3306'], [node_b, 'pxc2', 'pxc2:3306']])
+        self.assertNotIn('wsrep_on', conn._variables())
+        report = topology_links._probe_connection(conn, {'id': 'pxc', 'host': 'pxc1', 'port': 3306})
+        self.assertEqual(report['cluster_kind'], 'pxc')
+        self.assertEqual(report['cluster_name'], 'pxc')
+        self.assertEqual(report['wsrep_node_uuid'], node_a)
+        self.assertEqual([member['uuid'] for member in report['cluster_members']], [node_a, node_b])
+        self.assertIn("'wsrep_provider'", next(sql for sql, _, _ in conn.calls
+                                             if 'SHOW GLOBAL VARIABLES' in sql))
+
+    def test_mariadb_wsrep_off_with_provider_does_not_probe_galera_members(self):
+        conn = FakeProbeConn('database', version='11.4.13-MariaDB', version_comment='MariaDB Server',
+                             wsrep=False, wsrep_provider='/usr/lib/galera/libgalera_smm.so')
+        report = topology_links._probe_connection(conn, {'id': 'maria', 'host': 'maria', 'port': 3306})
+        self.assertEqual(report['cluster_kind'], 'none')
+        self.assertFalse(any('mysql.wsrep_cluster_members' in sql for sql, _, _ in conn.calls))
 
     def probe_channel(self, row, **config):
         conn = FakeProbeConn('database', channels=[row], **config)
@@ -1783,6 +1880,540 @@ class TestMultiTierTopology(unittest.TestCase):
                     topology_links.match_database_endpoint(target, 3306, [remote_db], observer_host="proxy.example"),
                     (remote_db, "endpoint"),
                 )
+
+
+class TestProbeRefresh(unittest.TestCase):
+    UUID_A = 'aaaaaaaa-1111-2222-3333-444444444444'
+    UUID_B = 'bbbbbbbb-1111-2222-3333-444444444444'
+    UUID_C = 'cccccccc-1111-2222-3333-444444444444'
+
+    def setUp(self):
+        topology_links._reset_cache_for_tests()
+        self.current = {'id': 'current', 'group': 'lab'}
+        self.profile = dict(id='peer', name='PXC peer', host='peer.example', port=3306,
+                            group='lab', remember_password=True)
+
+    def probe(self, conn):
+        return topology_links.probe_saved_profiles([self.profile], lambda p: conn,
+                                                   skip_profile_id='current', current=self.current)
+
+    def pxc(self, **kwargs):
+        return FakeProbeConn('database', wsrep=True, version_comment='Percona XtraDB Cluster (GPL)', **kwargs)
+
+    def test_readyset_retries_failed_comment_before_database_identity(self):
+        conn = FakeProbeConn('readyset', comment_failures=1, proxied_database=True)
+        data, notes = self.probe(conn)
+        self.assertEqual(notes, [])
+        self.assertEqual([entry['kind'] for entry in data], ['readyset'])
+        self.assertEqual(sum(sql == 'SELECT @@version_comment' for sql, _, _ in conn.calls), 2)
+        self.assertFalse(any('SHOW GLOBAL VARIABLES' in sql for sql, _, _ in conn.calls))
+
+    def test_twice_failed_comment_publishes_no_backend_identity(self):
+        conn = FakeProbeConn('readyset', comment_failures=2, proxied_database=True)
+        data, notes = self.probe(conn)
+        self.assertEqual(data, [])
+        self.assertTrue(any('PXC peer' in note for note in notes), notes)
+        self.assertFalse(any('SHOW GLOBAL VARIABLES' in sql for sql, _, _ in conn.calls))
+
+    def test_readyset_listener_copy_never_owns_original_cleanup_resources(self):
+        leases = {name: object() for name in ('_held_lease', '_legacy_lease', '_defaults_file_path')}
+        inspected = []
+
+        class OwnedConnection(FakeProbeConn):
+            def _answer(self, sql, extra_flags=None, timeout=None):
+                if 'SELECT 1 FROM replication_status LIMIT 0' in sql:
+                    inspected.append({name: getattr(self, name) for name in leases})
+                return super(OwnedConnection, self)._answer(sql, extra_flags, timeout)
+
+        conn = OwnedConnection('readyset', database='readyset')
+        for name, lease in leases.items():
+            setattr(conn, name, lease)
+        data, notes = self.probe(conn)
+        self.assertEqual(notes, [])
+        self.assertEqual(data[0]['port_role'], 'adapter')
+        self.assertEqual(inspected, [dict.fromkeys(leases)])
+        self.assertEqual(conn.database, 'readyset')
+        for name, lease in leases.items():
+            self.assertIs(getattr(conn, name), lease)
+
+    def test_slow_first_peer_is_remembered_and_healthy_peer_is_read_next_time(self):
+        clock, opened = [0.0], []
+
+        class SlowPeer(FakeProbeConn):
+            def _answer(self, sql, extra_flags=None, timeout=None):
+                clock[0] += timeout
+                raise ConnectorError('Query timed out after %s s' % timeout)
+
+        slow = SlowPeer('database')
+        healthy = self.pxc(hostname='healthy.example', gcomm_uuid=self.UUID_B)
+        healthy_profile = dict(self.profile, id='healthy', host='healthy.example')
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return slow if profile['id'] == 'peer' else healthy
+
+        with mock.patch.object(topology_links.time, 'monotonic', side_effect=lambda: clock[0]):
+            for refresh in range(2):
+                data, notes = topology_links.probe_saved_profiles(
+                    [self.profile, healthy_profile], opener,
+                    skip_profile_id='current', current=self.current)
+                self.assertTrue(any('PXC peer' in note for note in notes), notes)
+                if refresh == 0:
+                    self.assertEqual(data, [])
+                else:
+                    self.assertEqual([entry['profile_id'] for entry in data], ['healthy'])
+        self.assertEqual(opened, ['peer', 'healthy'])
+
+    def test_healthy_peer_cut_by_shared_budget_is_retryable_next_refresh(self):
+        clock, opened = [0.0], []
+
+        class TimedPeer(FakeProbeConn):
+            def _answer(self, sql, extra_flags=None, timeout=None):
+                delay = 0.4
+                if self.cfg.get('slow_identity'):
+                    delay = 1.2 if sql == 'SELECT @@version_comment' or 'admin-version' in sql else 0.0
+                clock[0] += min(delay, timeout)
+                if delay >= timeout:
+                    raise ConnectorError('Query timed out after %s s' % timeout)
+                return super(TimedPeer, self)._answer(sql, extra_flags, timeout)
+
+        slow = TimedPeer('database', slow_identity=True)
+        healthy = TimedPeer('database', wsrep=True, gcomm_uuid=self.UUID_B, hostname='healthy.example')
+        healthy_profile = dict(self.profile, id='healthy', host='healthy.example')
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return slow if profile['id'] == 'peer' else healthy
+
+        with mock.patch.object(topology_links.time, 'monotonic', side_effect=lambda: clock[0]):
+            data, notes = topology_links.probe_saved_profiles([self.profile, healthy_profile], opener,
+                skip_profile_id='current', current=self.current)
+            self.assertEqual([entry['profile_id'] for entry in data], ['peer'])
+            self.assertTrue(any('budget' in note for note in notes), notes)
+            data, notes = topology_links.probe_saved_profiles([self.profile, healthy_profile], opener,
+                skip_profile_id='current', current=self.current)
+        self.assertEqual(notes, [])
+        self.assertEqual([entry['profile_id'] for entry in data], ['peer', 'healthy'])
+        self.assertEqual(opened, ['peer', 'healthy', 'healthy'])
+
+    def test_budget_exhausted_before_statements_does_not_consume_attempt(self):
+        clock, opened = [0.0], []
+        conn = self.pxc(gcomm_uuid=self.UUID_B)
+
+        def opener(profile):
+            opened.append(profile['id'])
+            if len(opened) == 1:
+                clock[0] += topology_links.PROFILE_BUDGET_S
+            return conn
+
+        with mock.patch.object(topology_links.time, 'monotonic', side_effect=lambda: clock[0]):
+            data, notes = topology_links.probe_saved_profiles([self.profile], opener,
+                skip_profile_id='current', current=self.current)
+            self.assertEqual(data, [])
+            self.assertEqual(conn.calls, [])
+            data, notes = topology_links.probe_saved_profiles([self.profile], opener,
+                skip_profile_id='current', current=self.current)
+        self.assertEqual(notes, [])
+        self.assertEqual([entry['wsrep_node_uuid'] for entry in data], [self.UUID_B])
+        self.assertEqual(opened, ['peer', 'peer'])
+
+    def test_wsrep_status_timeout_uses_remaining_budget(self):
+        clock = [0.0]
+
+        class SlowIdentity(FakeProbeConn):
+            def _answer(self, sql, extra_flags=None, timeout=None):
+                if sql == 'SELECT @@version_comment' or 'admin-version' in sql:
+                    clock[0] += 0.8
+                elif 'SHOW GLOBAL VARIABLES' in sql:
+                    clock[0] += 1.9
+                return super(SlowIdentity, self)._answer(sql, extra_flags, timeout)
+
+        conn = SlowIdentity('database', wsrep=True, gcomm_uuid=self.UUID_B)
+        with mock.patch.object(topology_links.time, 'monotonic', side_effect=lambda: clock[0]):
+            data, notes = self.probe(conn)
+        self.assertEqual(notes, [])
+        self.assertEqual(len(data), 1)
+        status_timeouts = [timeout for sql, _, timeout in conn.calls if topology_links._WSREP_STATUS_SQL in sql]
+        self.assertEqual(len(status_timeouts), 1)
+        self.assertGreater(status_timeouts[0], 0)
+        self.assertLessEqual(status_timeouts[0], 1.5 + 1e-8)
+        self.assertTrue(all(0 < timeout <= topology_links.QUERY_TIMEOUT_S for _, _, timeout in conn.calls))
+
+    def test_fresh_membership_reprobes_restarted_pxc_peer_once(self):
+        for peer_first in (True, False):
+            with self.subTest(peer_first=peer_first):
+                topology_links._reset_cache_for_tests()
+                peer = self.pxc(hostname='peer.example', gcomm_uuid=self.UUID_B)
+                data, notes = self.probe(peer)
+                self.assertEqual(notes, [])
+                self.assertEqual(data[0]['wsrep_node_uuid'], self.UUID_B)
+                # The saved endpoint is unchanged, but its process has a new
+                # provider UUID. Only the fresh primary's membership knows it.
+                peer.cfg['gcomm_uuid'] = self.UUID_C
+                source = self.pxc(hostname='source.example', gcomm_uuid=self.UUID_A,
+                                  wsrep_members=[[self.UUID_A, 'source', 'source.example:3306'],
+                                                 [self.UUID_C, 'peer', 'peer.example:3306']])
+                source_profile = dict(self.profile, id='source', name='Source', host='source.example')
+                profiles = [self.profile, source_profile] if peer_first else [source_profile, self.profile]
+                opened = []
+
+                def opener(profile):
+                    opened.append(profile['id'])
+                    return source if profile['id'] == 'source' else peer
+
+                def topology():
+                    return topology_links.build_readyset_topology(
+                        {}, [{'host': 'source.example', 'port': 3306, 'purpose': 'cdc'}], [],
+                        'adapter', 'test', profiles=profiles + [self.current], open_profile=opener,
+                        observer_host='readyset.example', current_profile_id='current')
+
+                report = topology()
+                matched = next(p for p in report['database_peers'] if p['host'] == 'peer.example')
+                self.assertEqual(matched['profile_id'], 'peer', report)
+                self.assertTrue(matched['verified'])
+                self.assertEqual(opened, ['source', 'peer'])
+                topology()
+                self.assertEqual(opened, ['source', 'peer'], 'cached membership must not cause repeated opens')
+
+    def test_membership_reprobes_share_six_connection_limit(self):
+        profiles, conns, peers = [], {}, []
+        for index in range(7):
+            pid = 'peer-%d' % index
+            profile = dict(self.profile, id=pid, name=pid, host=pid + '.example')
+            profiles.append(profile)
+            conns[pid] = self.pxc(hostname=profile['host'], gcomm_uuid=self.UUID_B)
+            data, notes = topology_links.probe_saved_profiles([profile], lambda p: conns[p['id']],
+                skip_profile_id='current', current=self.current)
+            self.assertEqual(notes, [])
+            self.assertEqual(len(data), 1)
+            conns[pid].cfg['gcomm_uuid'] = self.UUID_C
+            peers.append({'host': profile['host'], 'port': 3306, 'wsrep_node_uuid': self.UUID_C})
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return conns[profile['id']]
+
+        data, notes = topology_links.probe_saved_profiles(profiles, opener,
+            skip_profile_id='current', current=self.current, peer_endpoints=peers, observer_host='source.example')
+        self.assertEqual(len(opened), 6)
+        self.assertEqual(len(data), 6)
+        self.assertTrue(all(row['wsrep_node_uuid'] == self.UUID_C for row in data))
+        self.assertTrue(any('peer-6' in note for note in notes), notes)
+
+    def test_six_identical_contradictions_open_peer_at_most_twice(self):
+        peer = self.pxc(hostname='peer.example', gcomm_uuid=self.UUID_B)
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return peer
+
+        # One initial login, one refresh to resolve a newly disputed UUID.
+        topology_links.probe_saved_profiles([self.profile], opener,
+            skip_profile_id='current', current=self.current)
+        for refresh in range(6):
+            data, notes = topology_links.probe_saved_profiles([self.profile], opener,
+                skip_profile_id='current', current=self.current,
+                peer_endpoints=[{'host': 'peer.example', 'port': 3306, 'wsrep_node_uuid': self.UUID_C}],
+                observer_host='source.example')
+            self.assertEqual(notes, [])
+            self.assertEqual(topology_links.match_database_endpoint('peer.example', 3306, data,
+                uuid=self.UUID_C, uuid_field='wsrep_node_uuid'), (None, None))
+        self.assertEqual(opened, ['peer', 'peer'])
+        self.assertEqual(len(topology_links._probe_attempts), 1)
+
+    def test_forty_fresh_or_alternating_contradictions_allow_only_two_reprobes(self):
+        for alternating in (False, True):
+            with self.subTest(alternating=alternating):
+                topology_links._reset_cache_for_tests()
+                peer = self.pxc(hostname='peer.example', gcomm_uuid=self.UUID_B)
+                opened = []
+
+                def opener(profile):
+                    opened.append(profile['id'])
+                    return peer
+
+                topology_links.probe_saved_profiles([self.profile], opener,
+                    skip_profile_id='current', current=self.current)
+                for refresh in range(40):
+                    contrary = ('%08x-1111-2222-3333-444444444444' %
+                                (refresh % 2 + 1 if alternating else refresh + 1))
+                    data, notes = topology_links.probe_saved_profiles([self.profile], opener,
+                        skip_profile_id='current', current=self.current,
+                        peer_endpoints=[{'host': 'peer.example', 'port': 3306, 'wsrep_node_uuid': contrary}],
+                        observer_host='source.example')
+                    self.assertEqual(topology_links.match_database_endpoint('peer.example', 3306, data,
+                        uuid=contrary, uuid_field='wsrep_node_uuid'), (None, None))
+                self.assertLessEqual(len(opened), 3)
+                self.assertEqual(len(topology_links._probe_attempts), 1)
+
+    def test_reprobe_cap_survives_discard_but_new_fingerprint_can_be_read(self):
+        clock, opened = [0.0], []
+        peer = self.pxc(hostname='peer.example', gcomm_uuid=self.UUID_B)
+
+        def opener(profile):
+            opened.append(profile['host'])
+            if len(opened) == 2:
+                clock[0] += topology_links.PROFILE_BUDGET_S
+            return peer
+
+        def probe(profile, contrary=None):
+            peers = [{'host': profile['host'], 'port': 3306, 'wsrep_node_uuid': contrary}] if contrary else []
+            return topology_links.probe_saved_profiles([profile], opener,
+                skip_profile_id='current', current=self.current,
+                peer_endpoints=peers, observer_host='source.example')
+
+        with mock.patch.object(topology_links.time, 'monotonic', side_effect=lambda: clock[0]):
+            self.assertEqual(probe(self.profile)[1], [])
+            data, notes = probe(self.profile, self.UUID_C)
+            self.assertEqual(data, [])
+            self.assertTrue(any('budget' in note for note in notes), notes)
+            self.assertEqual(len(topology_links._probe_cache), 0)
+            self.assertEqual(probe(self.profile)[1], [])
+            data, notes = probe(self.profile, self.UUID_A)
+            self.assertEqual(data, [])
+            self.assertTrue(notes)
+            self.assertEqual(opened, ['peer.example'] * 3)
+            data, notes = probe(dict(self.profile, host='replacement.example'))
+        self.assertEqual(notes, [])
+        self.assertEqual(len(data), 1)
+        self.assertEqual(opened, ['peer.example'] * 3 + ['replacement.example'])
+
+    def test_concurrent_failed_reprobe_reports_failure_to_cached_reader_too(self):
+        peer = self.pxc(hostname='peer.example', gcomm_uuid=self.UUID_B)
+        self.probe(peer)
+        held, replaced = threading.Event(), threading.Event()
+        results, outcomes, errors = {}, {'holder': [], 'refresh': []}, []
+
+        class Scope(object):
+            def __init__(self, name):
+                self.name = name
+
+            def record(self, profile, outcome, message, identity):
+                outcomes[self.name].append((profile['id'], outcome))
+
+        def cached_opener(profile):
+            self.fail('The cached reader must share the replacement outcome, without another login.')
+
+        def failing_opener(profile):
+            raise ConnectorError('ERROR 1045 (28000): Access denied')
+
+        cached_opener.group_scope = Scope('holder')
+        failing_opener.group_scope = Scope('refresh')
+        original_membership = topology_links._peer_membership
+
+        def membership(peers, observer):
+            if threading.current_thread() is holder:
+                held.set()
+                if not replaced.wait(2):
+                    raise AssertionError('The concurrent refresh did not finish.')
+            return original_membership(peers, observer)
+
+        def read_cached():
+            try:
+                results['holder'] = topology_links.probe_saved_profiles([self.profile], cached_opener,
+                    skip_profile_id='current', current=self.current)
+            except BaseException as exc:
+                errors.append(exc)
+
+        holder = threading.Thread(target=read_cached)
+        with mock.patch.object(topology_links, '_peer_membership', side_effect=membership):
+            holder.start()
+            try:
+                self.assertTrue(held.wait(2), 'The first reader did not retain the cache entry.')
+                results['refresh'] = topology_links.probe_saved_profiles([self.profile], failing_opener,
+                    skip_profile_id='current', current=self.current,
+                    peer_endpoints=[{'host': 'peer.example', 'port': 3306, 'wsrep_node_uuid': self.UUID_C}],
+                    observer_host='source.example')
+            finally:
+                replaced.set()
+                holder.join(3)
+        self.assertFalse(holder.is_alive())
+        self.assertEqual(errors, [])
+        for name in ('holder', 'refresh'):
+            self.assertEqual(results[name][0], [])
+            self.assertTrue(results[name][1], name)
+            self.assertEqual(outcomes[name], [('peer', 'failed')])
+
+    def test_concurrent_capped_reprobe_reports_not_reached_to_cached_reader_too(self):
+        peer = self.pxc(hostname='peer.example', gcomm_uuid=self.UUID_B)
+        self.probe(peer)
+        # Consume both allowed re-probes, leaving a successful cached entry.
+        for contrary in (self.UUID_C, self.UUID_A):
+            data, notes = topology_links.probe_saved_profiles([self.profile], lambda p: peer,
+                skip_profile_id='current', current=self.current,
+                peer_endpoints=[{'host': 'peer.example', 'port': 3306, 'wsrep_node_uuid': contrary}],
+                observer_host='source.example')
+            self.assertEqual(notes, [])
+            self.assertEqual(data[0]['wsrep_node_uuid'], self.UUID_B)
+        self.assertEqual(list(topology_links._probe_reprobes.values()), [2])
+        held, replaced = threading.Event(), threading.Event()
+        results, outcomes, errors = {}, {'holder': [], 'refresh': []}, []
+
+        class Scope(object):
+            def __init__(self, name):
+                self.name = name
+
+            def record(self, profile, outcome, message, identity):
+                outcomes[self.name].append((profile['id'], outcome))
+
+        def cached_opener(profile):
+            self.fail('The re-probe cap must prevent another login.')
+
+        def refresh_opener(profile):
+            self.fail('The re-probe cap must prevent another login.')
+
+        cached_opener.group_scope = Scope('holder')
+        refresh_opener.group_scope = Scope('refresh')
+        original_membership = topology_links._peer_membership
+
+        def membership(peers, observer):
+            if threading.current_thread() is holder:
+                held.set()
+                if not replaced.wait(2):
+                    raise AssertionError('The concurrent refresh did not finish.')
+            return original_membership(peers, observer)
+
+        def read_cached():
+            try:
+                results['holder'] = topology_links.probe_saved_profiles([self.profile], cached_opener,
+                    skip_profile_id='current', current=self.current)
+            except BaseException as exc:
+                errors.append(exc)
+
+        holder = threading.Thread(target=read_cached)
+        with mock.patch.object(topology_links, '_peer_membership', side_effect=membership):
+            holder.start()
+            try:
+                self.assertTrue(held.wait(2), 'The first reader did not retain the cache entry.')
+                results['refresh'] = topology_links.probe_saved_profiles([self.profile], refresh_opener,
+                    skip_profile_id='current', current=self.current,
+                    peer_endpoints=[{'host': 'peer.example', 'port': 3306, 'wsrep_node_uuid': self.UUID_C}],
+                    observer_host='source.example')
+            finally:
+                replaced.set()
+                holder.join(3)
+        self.assertFalse(holder.is_alive())
+        self.assertEqual(errors, [])
+        for name in ('holder', 'refresh'):
+            self.assertEqual(results[name][0], [])
+            self.assertEqual(outcomes[name], [('peer', 'not_reached')])
+            self.assertTrue(results[name][1], name)
+
+    def test_mysql_source_uuid_is_not_a_contrary_galera_node_uuid(self):
+        peer = self.pxc(hostname='peer.example', uuid=self.UUID_A, gcomm_uuid=self.UUID_B)
+        self.probe(peer)
+        opener = mock.Mock(return_value=peer, spec=[])
+        data, notes = topology_links.probe_saved_profiles([self.profile], opener,
+            skip_profile_id='current', current=self.current,
+            peer_endpoints=[{'host': 'peer.example', 'port': 3306, 'server_uuid': self.UUID_A}],
+            observer_host='source.example')
+        self.assertEqual(notes, [])
+        self.assertEqual(data[0]['wsrep_node_uuid'], self.UUID_B)
+        opener.assert_not_called()
+
+    def test_fresh_cluster_view_retires_excluded_direct_peer_cache(self):
+        peer = self.pxc(hostname='peer.example', uuid=self.UUID_A, gcomm_uuid=self.UUID_B)
+        self.probe(peer)
+        self.assertEqual(len(topology_links._probe_cache), 1)
+        opener = mock.Mock(return_value=peer, spec=[])
+        topology_links.discover_database_tiers(
+            self.pxc(hostname='source.example', gcomm_uuid=self.UUID_C),
+            {'profile_host': 'source.example', 'profile_port': 3306},
+            peer_endpoints=[{'host': 'peer.example', 'port': 3306, 'server_uuid': self.UUID_C}],
+            profiles=[self.current, self.profile], open_profile=opener,
+            observer_host='source.example', current_profile_id='current')
+        opener.assert_not_called()
+        self.assertTrue(all(entry['data'] is None for entry in topology_links._probe_cache.values()))
+        self.assertEqual(len(topology_links._probe_attempts), 1)
+        peer.cfg['gcomm_uuid'] = self.UUID_C
+        data, notes = self.probe(peer)
+        self.assertEqual(notes, [])
+        self.assertEqual(data[0]['wsrep_node_uuid'], self.UUID_C)
+
+    def test_membership_reprobes_share_original_five_second_deadline(self):
+        clock = [0.0]
+
+        class SlowPeer(FakeProbeConn):
+            def _answer(self, sql, extra_flags=None, timeout=None):
+                if self.cfg.get('slow'):
+                    clock[0] += min(0.4, timeout)
+                return super(SlowPeer, self)._answer(sql, extra_flags, timeout)
+
+        profiles, conns, peers = [], {}, []
+        for index in range(3):
+            pid = 'peer-%d' % index
+            profile = dict(self.profile, id=pid, name=pid, host=pid + '.example')
+            profiles.append(profile)
+            conns[pid] = SlowPeer('database', hostname=profile['host'], wsrep=True,
+                                 version_comment='Percona XtraDB Cluster', gcomm_uuid=self.UUID_B)
+            topology_links.probe_saved_profiles([profile], lambda p: conns[p['id']],
+                skip_profile_id='current', current=self.current)
+            conns[pid].cfg.update(slow=True, gcomm_uuid=self.UUID_C)
+            peers.append({'host': profile['host'], 'port': 3306, 'wsrep_node_uuid': self.UUID_C})
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return conns[profile['id']]
+
+        with mock.patch.object(topology_links.time, 'monotonic', side_effect=lambda: clock[0]):
+            data, notes = topology_links.probe_saved_profiles(profiles, opener,
+                skip_profile_id='current', current=self.current, peer_endpoints=peers,
+                observer_host='source.example')
+        self.assertEqual(opened, ['peer-0', 'peer-1'])
+        self.assertEqual([row['profile_id'] for row in data], ['peer-0'])
+        self.assertLessEqual(clock[0], topology_links.PROFILE_BUDGET_S)
+        self.assertTrue(any('budget' in note for note in notes), notes)
+
+    def test_ambiguous_and_remote_loopback_membership_cannot_refresh_cached_peer(self):
+        for host, hints in (
+                ('peer.example', [{'uuid': self.UUID_A}, {'uuid': self.UUID_C}]),
+                ('127.0.0.1', [{'uuid': self.UUID_C}])):
+            with self.subTest(host=host):
+                topology_links._reset_cache_for_tests()
+                profile = dict(self.profile, host=host)
+                conn = self.pxc(hostname=host, gcomm_uuid=self.UUID_B)
+                topology_links.probe_saved_profiles([profile], lambda p: conn,
+                    skip_profile_id='current', current=self.current)
+                opener = mock.Mock(return_value=conn, spec=[])
+                data, notes = topology_links.probe_saved_profiles([profile], opener,
+                    skip_profile_id='current', current=self.current,
+                    peer_endpoints=[dict(hint, host=host, port=3306) for hint in hints],
+                    observer_host='source.example')
+                self.assertEqual(notes, [])
+                self.assertEqual(data[0]['wsrep_node_uuid'], self.UUID_B)
+                opener.assert_not_called()
+
+    def test_older_pending_membership_cannot_invalidate_a_newer_cached_peer(self):
+        source_profile = dict(self.profile, id='source', host='source.example')
+        source = self.pxc(hostname='source.example', gcomm_uuid=self.UUID_A,
+                          wsrep_members=[[self.UUID_B, 'peer', 'peer.example:3306']])
+        peer = self.pxc(hostname='peer.example', gcomm_uuid=self.UUID_C)
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return source if profile['id'] == 'source' else peer
+
+        # Reserve the source observation first, then finish a newer direct
+        # probe of the restarted peer while the source is still pending.
+        entry, owner, pending = topology_links._claim_probe(source_profile, opener, [0], lambda: 5.0)
+        self.assertTrue(owner)
+        self.assertFalse(pending)
+        self.probe(peer)
+
+        def finish_pending(timeout):
+            topology_links._fill_probe(entry, entry['key'], entry['connect'], source_profile, lambda: 5.0)
+            return entry['done'].is_set()
+
+        with mock.patch.object(entry['done'], 'wait', side_effect=finish_pending):
+            data, notes = topology_links.probe_saved_profiles([source_profile, self.profile], opener,
+                skip_profile_id='current', current=self.current)
+        self.assertEqual(notes, [])
+        self.assertEqual(opened, ['source'])
+        self.assertEqual(next(row['wsrep_node_uuid'] for row in data if row['profile_id'] == 'peer'), self.UUID_C)
 
 
 if __name__ == "__main__":

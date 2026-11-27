@@ -1319,13 +1319,15 @@ class EditorSession(EditorInsights):
             # COM_QUERY: a router can choose a different backend per packet.
             self.server_identity = None
             self._kill_identity = None
+            from . import dbops
             identity_step = self._helper(
                 TAG + "SELECT CONNECTION_ID() AS connection_id, VERSION() AS version, "
                 "@@version_comment AS version_comment, @@hostname AS hostname, @@port AS port, "
                 "@@server_id AS server_id, @@autocommit AS autocommit, @@sql_mode AS sql_mode, "
                 "@@sql_safe_updates AS sql_safe_updates; " + TAG +
                 "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'wsrep_on', 'wsrep_provider'); " +
-                TAG + "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'", results=3)
+                TAG + "SHOW GLOBAL STATUS WHERE Variable_name IN "
+                "('wsrep_gcomm_uuid', 'wsrep_connected', 'wsrep_cluster_size')", results=3)
             sets = [entry for entry in identity_step.entries if entry["type"] == "rows"]
             if (identity_step.marker and not identity_step.real_errors() and len(sets) == 3 and
                     [column["name"].lower() for column in sets[1]["columns"]] == ["variable_name", "value"] and
@@ -1340,17 +1342,24 @@ class EditorSession(EditorInsights):
                 kill_identity = dict(self.server_identity or {})
                 if detected_engine == "mysql":
                     kill_identity["server_uuid"] = variables.get("server_uuid")
+                status = {name.lower(): value for name, value in sets[2]["rows"]}
+                evidence = dict(variables)
+                evidence.update((key, status[key]) for key in
+                                ("wsrep_gcomm_uuid", "wsrep_connected", "wsrep_cluster_size") if key in status)
+                # The ordinary identity, provider and connection status all
+                # belong to this packet. Reuse reviewed writes' exact waiver;
+                # a configured provider without its complete proof still
+                # requires a node UUID and fails closed when it is missing.
+                kill_identity = dbops.target_galera_identity(None, detected_engine, kill_identity, evidence)
                 if "wsrep_on" in variables:
                     # The lexer needs the observed value, not an assumed OFF.
                     # Its guarded packet rechecks the session value before
                     # executing SQL containing MariaDB's /*!99997 marker.
                     kill_identity["wsrep_on"] = variables["wsrep_on"]
-                provider = (variables.get("wsrep_provider") or "").strip().lower()
-                if provider not in ("", "none") or (variables.get("wsrep_on") or "").upper() in ("ON", "1"):
-                    # Galera peers can share id, hostname and port. Bind KILL
-                    # to the node UUID, including a missing value to fail closed.
-                    status = {name.lower(): value for name, value in sets[2]["rows"]}
-                    kill_identity["wsrep_gcomm_uuid"] = status.get("wsrep_gcomm_uuid")
+                else:
+                    # The shared identity helper may default this field for
+                    # its guard. Missing lexer evidence must remain unknown.
+                    kill_identity.pop("wsrep_on", None)
                 if self.server_identity is not None:
                     row = bound
                     self.connection_id = _int(bound.get("connection_id"))

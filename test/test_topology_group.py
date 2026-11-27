@@ -98,8 +98,16 @@ if evidence:
     emit(['Variable_name', 'Value'], [[name, identity[name]] for name in names if name in identity])
     # Earlier synthetic Galera fixtures omit the node UUID. Supply a stable,
     # explicitly synthetic value for the new identity prefix only.
-    wsrep = cfg.get('status', {}).get('wsrep_gcomm_uuid', 'aaaaaaaa-0000-4000-8000-000000000001')
-    emit(['Variable_name', 'Value'], [['wsrep_gcomm_uuid', wsrep]])
+    wsrep = cfg.get('status', {}).get('wsrep_gcomm_uuid')
+    if wsrep is None and not cfg.get('provider_status_absent'):
+        wsrep = 'aaaaaaaa-0000-4000-8000-000000000001'
+    status = dict(cfg.get('status', {}))
+    if wsrep is not None:
+        status['wsrep_gcomm_uuid'] = wsrep
+        status.setdefault('wsrep_connected', 'ON')
+        status.setdefault('wsrep_cluster_size', str(max(1, len(cfg.get('wsrep_members', [])))))
+    status_names = re.findall(r"'([^']+)'", packet.splitlines()[1])
+    emit(['Variable_name', 'Value'], [[name, status[name]] for name in status_names if name in status])
     emit(['marker'], [[marker.group(1)]])
 
 def fail(message):
@@ -1553,8 +1561,8 @@ class TopologyReadTests(GroupCase):
                 self.assertEqual(reader.run('SELECT 1'), '1\n')
                 self.assertEqual(connection.run.call_count, 3)
 
-    def test_authenticated_optional_identity_sql_error_remains_unavailable_fact(self):
-        fixture = member_fixture(error_on='SELECT @@version_comment',
+    def test_authenticated_optional_gtid_sql_error_remains_unavailable_fact(self):
+        fixture = member_fixture(error_on='SELECT @@GLOBAL.gtid_executed',
                                  query_error='ERROR 1193 (HY000) at line 1: optional variable unavailable')
         with self.clients({'active.example': fixture}) as observed:
             report = self.read()
@@ -1694,6 +1702,95 @@ class TopologyReadTests(GroupCase):
         self.assertIsNone(by_id['galera']['super_read_only'])
         self.assertIsNone(report['primary_profile_id'])
         self.assertTrue(all(m['behind'] is None and m['behind_reason'] for m in report['members']))
+
+    def test_failed_comment_read_never_plans_a_rolling_database_write(self):
+        from myflames import topology_change
+        fixture = member_fixture(error_on='select @@version_comment',
+                                 query_error='ERROR 1193 (HY000): Unknown system variable at line 1: version_comment')
+        with self.clients({'active.example': fixture}) as observed:
+            report = self.read()
+            before_plan = len(self.statements(observed))
+            plan = topology_change.plan(self.store, 'G', 'active', 'max_connections', '200', 'global', ['active'])
+        self.assertEqual(report['members'][0]['outcome'], 'failed', report)
+        self.assertEqual(report['summary']['read'], 0)
+        self.assertEqual(plan['members'][0]['status'], 'refused', plan)
+        self.assertIsNone(plan['members'][0]['statement'], plan)
+        self.assertIsNone(plan['members'][0]['identity'], plan)
+        for statements in (self.statements(observed)[:before_plan], self.statements(observed)[before_plan:]):
+            self.assertEqual(sum(sql == topology_group.TAG + 'SELECT @@version_comment' for sql in statements), 2)
+            self.assertFalse(any('SHOW GLOBAL VARIABLES' in sql or 'SET GLOBAL' in sql for sql in statements))
+
+    def test_mariadb_disabled_disconnected_provider_reads_without_provider_uuid(self):
+        for status in ({'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'},):
+            with self.subTest(status=status):
+                fixture = member_fixture(engine='mariadb', status=status, provider_status_absent=True)
+                fixture['variables'].update(wsrep_on='OFF', wsrep_provider='/usr/lib/galera/libgalera_smm.so')
+                with self.clients({'active.example': fixture}) as observed:
+                    report = self.read()
+                member = report['members'][0]
+                self.assertEqual(member['outcome'], 'read', report)
+                self.assertEqual(report['summary']['read'], 1)
+                self.assertTrue(any("'wsrep_connected'" in sql and "'wsrep_cluster_size'" in sql
+                                    for sql in self.statements(observed)))
+
+    def test_mariadb_13_disabled_provider_reads_async_replication_channels(self):
+        fixture = member_fixture(engine='mariadb', provider_status_absent=True,
+            status={'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'},
+            channels=[{'Connection_name': 'async', 'Master_Host': 'source.example', 'Master_Port': '3306',
+                       'Master_Server_Id': '42', 'Seconds_Behind_Master': '7',
+                       'Slave_IO_Running': 'Yes', 'Slave_SQL_Running': 'Yes'}])
+        fixture['variables'].update(version='13.0.1-MariaDB', wsrep_on='OFF',
+                                    wsrep_provider='/usr/lib/galera/libgalera_smm.so')
+        with self.clients({'active.example': fixture}) as observed:
+            report = self.read()
+        member = report['members'][0]
+        self.assertEqual(member['outcome'], 'read', report)
+        self.assertEqual(member['role'], 'replica')
+        self.assertEqual(member['state'], 'running')
+        self.assertEqual(member['lag']['kind'], 'replica_seconds')
+        self.assertEqual(member['lag']['value'], 7)
+        self.assertEqual([channel['name'] for channel in member['channels']], ['async'])
+        self.assertTrue(any('SHOW ALL SLAVES STATUS' in sql for sql in self.statements(observed)))
+        self.assertFalse(any("'wsrep_local_state_comment'" in sql for sql in self.statements(observed)))
+
+    def test_connected_fixture_status_allows_cluster_size_change_with_node_uuid(self):
+        fixture = member_fixture(engine='mariadb', status={'wsrep_gcomm_uuid': UUID_A},
+                                 wsrep_members=[[UUID_A, 'a', 'a:3306'], [UUID_B, 'b', 'b:3306']])
+        fixture['variables']['wsrep_on'] = 'ON'
+        with self.clients({'active.example': fixture}):
+            with group_members.open_group_member(self.store, 'G', self.active, lambda: None) as (conn, _):
+                evidence = dbops.TargetEvidenceConnection(conn)
+                evidence.run(topology_group.TAG + 'SELECT @@version_comment', extra_flags=['--xml'])
+                self.assertEqual({key: evidence.variables.get(key) for key in
+                                  ('wsrep_connected', 'wsrep_cluster_size')},
+                                 {'wsrep_connected': 'ON', 'wsrep_cluster_size': '2'})
+                fixture['status']['wsrep_cluster_size'] = '3'
+                # Same proved node UUID: a join or leave changes the size only.
+                evidence.run(topology_group.TAG + 'SELECT @@version_comment', extra_flags=['--xml'])
+                self.assertEqual(evidence.variables.get('wsrep_cluster_size'), '3')
+
+    def test_connected_mariadb_without_provider_status_refuses_group_read_and_write_plan(self):
+        from myflames import topology_change
+        for status in ({}, {'wsrep_connected': 'OFF'}, {'wsrep_cluster_size': '0'},
+                       {'wsrep_connected': 'ON', 'wsrep_cluster_size': '0'},
+                       {'wsrep_connected': 'OFF', 'wsrep_cluster_size': '3'}):
+            with self.subTest(status=status):
+                fixture = member_fixture(engine='mariadb', status=status, provider_status_absent=True)
+                fixture['variables'].update(wsrep_on='OFF', wsrep_provider='/usr/lib/galera/libgalera_smm.so',
+                                            server_uid='AQEBAQEBAQEBAQEBAQEBAQEBAQE=')
+                with self.clients({'active.example': fixture}) as observed:
+                    report = self.read()
+                    before_plan = len(self.statements(observed))
+                    plan = topology_change.plan(self.store, 'G', 'active', 'max_connections', '200', 'global', ['active'])
+                self.assertEqual(report['members'][0]['outcome'], 'failed', report)
+                self.assertEqual(report['summary']['read'], 0)
+                self.assertEqual(plan['members'][0]['status'], 'refused', plan)
+                self.assertIsNone(plan['members'][0]['statement'], plan)
+                self.assertIsNone(plan['members'][0]['identity'], plan)
+                plan_sql = self.statements(observed)[before_plan:]
+                self.assertIn("'wsrep_connected'", plan_sql[-1], plan_sql)
+                self.assertIn("'wsrep_cluster_size'", plan_sql[-1], plan_sql)
+                self.assertFalse(any('SET GLOBAL' in sql for sql in self.statements(observed)))
 
     def test_mysql57_offline_member_does_not_inherit_stale_primary_role(self):
         fixture = member_fixture(has_gr=True, state='OFFLINE', status={'group_replication_primary_member': UUID_A})
@@ -1942,17 +2039,17 @@ class TopologyReadTests(GroupCase):
     def test_group_parameters_require_observed_active_cluster_for_offsets(self):
         self.save('peer', 'G')
         for mode, expected in (('galera', 'per_server'), ('non-primary', 'different'),
-                               ('standalone-mariadb', 'different'), ('multi-gr', 'per_server'),
+                               ('standalone-mariadb', 'different'), ('disabled-galera', 'different'), ('multi-gr', 'per_server'),
                                ('offline-gr', 'different')):
             with self.subTest(mode=mode):
-                maria = mode in ('galera', 'non-primary', 'standalone-mariadb')
+                maria = mode in ('galera', 'non-primary', 'standalone-mariadb', 'disabled-galera')
                 fixtures = {}
                 for host, uuid, offset in (('active.example', UUID_A, '1'), ('peer.example', UUID_B, '2')):
                     fixture = member_fixture(uuid, engine='mariadb' if maria else 'mysql',
                                              role=None if maria else 'PRIMARY')
                     fixture['variables']['auto_increment_offset'] = offset
                     if maria:
-                        fixture['variables'].update(wsrep_on='OFF' if mode == 'standalone-mariadb' else 'ON',
+                        fixture['variables'].update(wsrep_on='OFF' if mode in ('standalone-mariadb', 'disabled-galera') else 'ON',
                             wsrep_auto_increment_control='ON', wsrep_provider='none' if mode == 'standalone-mariadb' else '/lib/galera.so')
                         fixture['status'] = {'wsrep_local_state_comment': 'Synced',
                             'wsrep_cluster_status': 'non-Primary' if mode == 'non-primary' else 'Primary'}
@@ -1968,10 +2065,43 @@ class TopologyReadTests(GroupCase):
                         'integer' if name == 'auto_increment_offset' else 'string')
                         for name, value in variables.items()], engine='mariadb' if maria else 'mysql')
 
-                with self.clients(fixtures), mock.patch.object(param_compare, 'capture', side_effect=capture):
+                with self.clients(fixtures), mock.patch.object(param_compare, 'capture', side_effect=capture), \
+                        mock.patch.object(param_compare, 'compare_many', wraps=param_compare.compare_many) as compare:
                     report = self.read('parameters')
                 rows = {row['name']: row for row in report['parameters']['rows']}
                 self.assertEqual(rows['auto_increment_offset']['status'], expected)
+                if mode == 'disabled-galera':
+                    self.assertEqual(compare.call_args[1]['active_clusters'], {'active': None, 'peer': None})
+
+    def test_group_parameters_pxc_session_only_wsrep_on_is_active_only_in_primary_component(self):
+        self.save('peer', 'G')
+        for state, expected in (('Primary', 'galera'), ('non-Primary', None), (None, None)):
+            with self.subTest(state=state):
+                fixtures = {}
+                for host, uuid, offset in (('active.example', UUID_A, '1'), ('peer.example', UUID_B, '2')):
+                    fixture = member_fixture(uuid, status={'wsrep_local_state_comment': 'Synced'})
+                    fixture['variables'].update(version='8.4.11-11.1',
+                        version_comment='Percona XtraDB Cluster (GPL)',
+                        wsrep_provider='/usr/lib64/galera4/libgalera_smm.so',
+                        wsrep_auto_increment_control='ON', auto_increment_offset=offset)
+                    if state is not None:
+                        fixture['status']['wsrep_cluster_status'] = state
+                    self.assertNotIn('wsrep_on', fixture['variables'])
+                    fixtures[host] = fixture
+
+                def capture(conn, **kwargs):
+                    return snapshot([item(name, value,
+                        'boolean' if name == 'wsrep_auto_increment_control' else
+                        'integer' if name == 'auto_increment_offset' else 'string')
+                        for name, value in fixtures[conn.host]['variables'].items()])
+
+                with self.clients(fixtures), mock.patch.object(param_compare, 'capture', side_effect=capture), \
+                        mock.patch.object(param_compare, 'compare_many', wraps=param_compare.compare_many) as compare:
+                    report = self.read('parameters')
+                self.assertEqual(compare.call_args[1]['active_clusters'], {'active': expected, 'peer': expected})
+                rows = {row['name']: row for row in report['parameters']['rows']}
+                self.assertEqual(rows['auto_increment_offset']['status'],
+                                 'per_server' if expected == 'galera' else 'different')
 
     def test_live_mysql_chain_finds_root_and_beats_stale_stored_source(self):
         self.save('middle', 'G')
@@ -2766,6 +2896,7 @@ class TopologyReadTests(GroupCase):
                     'wsrep_cluster_status': 'Primary', 'wsrep_local_state_comment': 'Synced', 'wsrep_local_recv_queue': '0'})
         fixture['variables'].update(version_comment='Percona XtraDB Cluster (GPL)',
                                     wsrep_provider='/usr/lib/libgalera_smm.so', wsrep_cluster_name='PXC production')
+        self.assertNotIn('wsrep_on', fixture['variables'])
         with self.clients({'active.example': fixture}) as observed:
             report = self.read('map')
         nodes = self.assert_map_schema(report)
@@ -2878,6 +3009,7 @@ class TopologyReadTests(GroupCase):
                     'wsrep_cluster_status': 'Primary', 'wsrep_local_state_comment': 'Synced'})
         fixture['variables'].update(version_comment='Percona XtraDB Cluster (GPL)',
                                     wsrep_provider='/usr/lib/libgalera_smm.so', wsrep_cluster_name='PXC production')
+        self.assertNotIn('wsrep_on', fixture['variables'])
         with self.clients({'active.example': fixture}):
             report = self.read('map')
         nodes = self.assert_map_schema(report)
