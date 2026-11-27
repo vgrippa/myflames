@@ -420,3 +420,244 @@ class TestLoopReviewAbuse(fixtures.ReplicationCase):
                     conn.run_write.assert_not_called()
                     conn.run.assert_not_called()
 
+    @staticmethod
+    def changed_worker(report, field):
+        changed = copy.deepcopy(report)
+        row = changed['channels'][0]
+        if field == 'table':
+            # read_status extracts the underlying worker's table here while
+            # retaining the coordinator's original error number/text/time.
+            row['sql']['error']['table'] = 'shop.other_table'
+        else:
+            row['worker']['error'][field] = {
+                'errno': 1032, 'message': 'Different underlying worker failure',
+                'timestamp': '2026-11-27 12:00:00.000001',
+            }[field]
+        return changed
+
+    def test_3030_review_requires_and_binds_every_displayed_worker_field(self):
+        original, _ = fixtures.status('mysql-8.4-mta-3030-error')
+        report, body = self.reviewed(original, codes=[1062, 1032])
+        plan = rp.plan_skip(report, body['channel'])
+        worker = plan['identity']['worker_error']
+        self.assertEqual(worker, dict((key, plan['error'][key]) for key in ('errno', 'message', 'timestamp', 'table')))
+        self.assertEqual(rp.check_expect(plan['identity']), plan['identity'])
+        for field in (None, 'errno', 'message', 'timestamp', 'table'):
+            with self.subTest(missing=field):
+                incomplete = copy.deepcopy(plan['identity'])
+                if field is None:
+                    del incomplete['worker_error']
+                else:
+                    del incomplete['worker_error'][field]
+                with self.assertRaisesRegex(ValueError, 'complete identity'):
+                    rp.check_expect(incomplete)
+        for field, value in (('errno', True), ('errno', 0), ('errno', 3030), ('message', {}),
+                             ('timestamp', 1), ('table', [])):
+            with self.subTest(malformed=field, value=value):
+                malformed = copy.deepcopy(plan['identity'])
+                malformed['worker_error'][field] = value
+                with self.assertRaises(ValueError):
+                    rp.check_expect(malformed)
+        for field in worker:
+            with self.subTest(field=field):
+                changed = self.changed_worker(report, field)
+                conn = fixtures.TestReviewGateSurfaces.connection()
+                with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                        mock.patch.object(rp, 'read_status', return_value=changed):
+                    with self.assertRaisesRegex(ValueError, 'worker error'):
+                        ui.api_response(REVIEW, body, self.workspace)
+                conn.run_write.assert_not_called()
+                substituted = copy.deepcopy(body)
+                substituted['first_failure'] = rp.plan_skip(changed, body['channel'])['identity']
+                with mock.patch('myflames.connector.MySQLConnection') as connect, \
+                        mock.patch.object(ui, '_with_saved_password') as password:
+                    with self.assertRaisesRegex(ValueError, 'expired, changed or was already used'):
+                        ui.api_response(START, substituted, self.workspace)
+                connect.assert_not_called()
+                password.assert_not_called()
+                self.check_token(body)
+
+    def test_3030_worker_changes_refuse_at_every_loop_read_even_with_both_codes_selected(self):
+        original, _ = fixtures.status('mysql-8.4-mta-3030-error')
+        phases = ('preflight', 'prepare', 'first_iteration', 'skip_recheck', 'final_recheck')
+        grants = privileges.parse_grants(['GRANT ALL PRIVILEGES ON *.* TO `operator`@`%`'],
+                                         engine='mysql', version=original['server_version'])
+        for field in ('errno', 'message', 'timestamp', 'table'):
+            for before, phase in enumerate(phases):
+                with self.subTest(field=field, phase=phase):
+                    self.reset_workspace()
+                    report, body = self.reviewed(original, codes=[1062, 1032])
+                    changed = self.changed_worker(report, field)
+                    conn = fixtures.TestReviewGateSurfaces.connection()
+                    with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                            mock.patch.object(rp, 'read_status', side_effect=[report] * before + [changed]), \
+                            mock.patch.object(privileges, 'read_privileges', return_value=grants), \
+                            mock.patch.object(rp.threading, 'Thread') as thread:
+                        self.synchronous_worker(thread)
+                        if phase == 'preflight':
+                            with self.assertRaisesRegex(ValueError, 'worker error'):
+                                ui.api_response(START, body, self.workspace)
+                        else:
+                            answer = ui.api_response(START, body, self.workspace)
+                            self.assertEqual(answer['skips_done'], 0)
+                            self.assertIn('worker error', answer['message'])
+                            self.assertEqual(answer['state'], 'refused' if phase == 'prepare' else 'stopped')
+                    conn.run_write.assert_not_called()
+                    conn.run.assert_not_called()
+                    conn.close.assert_called_once_with()
+                    if before < 2:
+                        self.check_token(body)
+                    else:
+                        self.assert_spent(body)
+
+    def test_single_skip_3030_review_token_and_both_presend_checks_bind_worker_fields(self):
+        original, _ = fixtures.status('mysql-8.4-mta-3030-error')
+        grants = privileges.parse_grants(['GRANT ALL PRIVILEGES ON *.* TO `operator`@`%`'],
+                                         engine='mysql', version=original['server_version'])
+        for field in ('errno', 'message', 'timestamp', 'table'):
+            for before in (0, 1):
+                with self.subTest(field=field, before=before):
+                    self.reset_workspace()
+                    plan = rp.plan_skip(original, original['channels'][0]['name'])
+                    body = {'connection': self.connection, 'channel': plan['channel'], 'expect': plan['identity'],
+                            'statements': plan['statements'], 'confirmed': True}
+                    conn = fixtures.TestReviewGateSurfaces.connection()
+                    with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                            mock.patch.object(rp, 'read_status', return_value=original):
+                        body.update(ui.api_response('/api/live/replication/skip/review', body, self.workspace))
+                    changed = self.changed_worker(original, field)
+                    tampered = dict(body, expect=rp.plan_skip(changed, plan['channel'])['identity'])
+                    with mock.patch('myflames.connector.MySQLConnection') as connect, \
+                            mock.patch.object(ui, '_with_saved_password') as password:
+                        with self.assertRaisesRegex(ValueError, 'expired, changed or was already used'):
+                            ui.api_response('/api/live/replication/skip', tampered, self.workspace)
+                    connect.assert_not_called()
+                    password.assert_not_called()
+                    with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                            mock.patch.object(rp, 'read_status', side_effect=[original] * before + [changed]), \
+                            mock.patch.object(privileges, 'read_privileges', return_value=grants):
+                        answer = ui.api_response('/api/live/replication/skip', body, self.workspace)
+                    self.assertEqual(answer['status'], 'refused')
+                    self.assertIn('worker error', answer['message'])
+                    conn.run_write.assert_not_called()
+                    ui._review_tokens(self.workspace).check(body['review_token'], rp.OPERATION_SKIP,
+                        ui._review_identity(self.connection, self.workspace), ui._replication_review_details(body))
+
+    def test_worker_launch_failure_keeps_same_review_and_expiry_then_retry_consumes_once(self):
+        for failure in ('constructor', 'start'):
+            with self.subTest(failure=failure):
+                self.reset_workspace()
+                report, body = self.reviewed()
+                tokens = ui._review_tokens(self.workspace)
+                entry = tokens.entries[body['review_token']]
+                conn = fixtures.TestReviewGateSurfaces.connection()
+                with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                        mock.patch.object(rp, 'read_status', return_value=report), \
+                        mock.patch.object(rp.threading, 'Thread') as thread:
+                    thread.return_value.ident = None
+                    if failure == 'constructor':
+                        thread.side_effect = RuntimeError('worker creation failed')
+                    else:
+                        thread.return_value.start.side_effect = RuntimeError('worker creation failed')
+                    with self.assertRaisesRegex(RuntimeError, 'worker creation failed'):
+                        ui.api_response(START, body, self.workspace)
+                identity = ui._review_identity(self.connection, self.workspace)
+                self.assertEqual(self.registry.status(identity)['loops'], [])
+                self.assertEqual(tokens.entries[body['review_token']], entry)
+                self.check_token(body)
+                conn.run_write.assert_not_called()
+                conn.close.assert_called_once_with()
+                with mock.patch('myflames.connector.MySQLConnection') as connect:
+                    with self.assertRaisesRegex(ValueError, 'expired, changed or was already used'):
+                        ui.api_response(START, dict(body, max_skips=1000), self.workspace)
+                connect.assert_not_called()
+                retry = fixtures.TestReviewGateSurfaces.connection()
+                with mock.patch('myflames.connector.MySQLConnection', return_value=retry), \
+                        mock.patch.object(rp, 'read_status', return_value=report), \
+                        mock.patch.object(rp.threading, 'Thread') as thread:
+                    answer = ui.api_response(START, body, self.workspace)
+                self.assertEqual(answer['state'], 'starting')
+                self.assertEqual(len(self.registry.status(identity)['loops']), 1)
+                thread.return_value.start.assert_called_once_with()
+                self.assert_spent(body)
+                with mock.patch('myflames.connector.MySQLConnection') as connect:
+                    with self.assertRaisesRegex(ValueError, 'expired, changed or was already used'):
+                        ui.api_response(START, body, self.workspace)
+                connect.assert_not_called()
+
+    def test_expired_commit_after_real_worker_launch_cancels_worker_before_any_read(self):
+        report, body = self.reviewed()
+        tokens = ui._review_tokens(self.workspace)
+        expiry = tokens.entries[body['review_token']][1]
+        launched = []
+
+        class ExpiringThread(REAL_THREAD):
+            def start(worker):
+                REAL_THREAD.start(worker)
+                launched.append(worker)
+                # Simulate expiry while the successfully launched worker is
+                # parked behind the authorization lock. Keep real token logic.
+                tokens.clock = lambda: expiry + 1
+
+        conn = fixtures.TestReviewGateSurfaces.connection()
+        with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                mock.patch.object(rp, 'read_status', return_value=report) as read, \
+                mock.patch.object(rp.threading, 'Thread', ExpiringThread):
+            with self.assertRaisesRegex(ValueError, 'expired, changed or was already used'):
+                ui.api_response(START, body, self.workspace)
+        self.assertEqual(read.call_count, 2, 'only caller preflight and prepare may read')
+        self.assertEqual(len(launched), 1)
+        self.assertFalse(launched[0].is_alive())
+        self.assertEqual(self.registry.status(ui._review_identity(self.connection, self.workspace))['loops'], [])
+        conn.run_write.assert_not_called()
+        conn.run.assert_not_called()
+        conn.close.assert_called_once_with()
+        self.assertEqual([(row['status'], row['outcome']) for row in self.records()], [('refused', 'unsent')])
+
+    def test_concurrent_retry_after_launch_failure_commits_only_one_worker(self):
+        report, body = self.reviewed()
+        barrier = threading.Barrier(2)
+        local = threading.local()
+        answers, errors, clients = [], [], []
+
+        def connection_factory(**kwargs):
+            conn = fixtures.TestReviewGateSurfaces.connection()
+            clients.append(conn)
+            return conn
+
+        def read(conn):
+            local.reads = getattr(local, 'reads', 0) + 1
+            if local.reads == 2:
+                barrier.wait(timeout=5)
+            return report
+
+        def start():
+            try:
+                answers.append(ui.api_response(START, body, self.workspace))
+            except BaseException as exc:
+                errors.append(exc)
+
+        with mock.patch('myflames.connector.MySQLConnection', side_effect=connection_factory), \
+                mock.patch.object(rp, 'read_status', side_effect=read), \
+                mock.patch.object(rp.threading, 'Thread') as worker:
+            worker.return_value.ident = None
+            worker.return_value.start.side_effect = [RuntimeError('worker creation failed'), None]
+            callers = [REAL_THREAD(target=start, name='launch-retry-%d' % n) for n in range(2)]
+            for caller in callers:
+                caller.start()
+            for caller in callers:
+                caller.join(10)
+            self.assertTrue(all(not caller.is_alive() for caller in callers))
+            self.assertEqual(len(answers), 1, repr(errors))
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], RuntimeError)
+            self.assertEqual(str(errors[0]), 'worker creation failed')
+            self.assertEqual(worker.return_value.start.call_count, 2)
+        self.assert_spent(body)
+        loops = self.registry.status(ui._review_identity(self.connection, self.workspace))['loops']
+        self.assertEqual(len(loops), 1)
+        self.assertEqual(loops[0]['state'], 'starting')
+        for client in clients:
+            client.run_write.assert_not_called()
+            client.run.assert_not_called()
+

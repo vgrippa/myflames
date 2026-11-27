@@ -325,8 +325,9 @@ try {
   assert.equal(review.eyebrow, "UPDATE");
   assert.equal(review.title, "Set mf-ic-2:3306 to OFFLINE_SOFT?");
   assert.match(review.guardNote || "", /Identity check sent first.*before the statements/i);
-  assert.match(review.preLabel || "", /Identity check sent first, before the statements/i);
-  assert.match(review.copyLabel || "", /Identity check sent first, before the statements/i);
+  assert.match(review.preLabel || "", /Identity check sent first, before the statements.*exactly as sent/i,
+    "ProxySQL sends the check as its own first statement in the same login, so the text is exactly as sent");
+  assert.match(review.copyLabel || "", /Identity check sent first, before the statements.*exactly as sent/i);
   assert.equal(review.sql, reviewedSql(R["plan-offline-soft"]), "the identity check and statements exactly as sent");
   assert.match(review.text, /ConnectionProxySQL lab \(radmin@127\.0\.0\.1:6032\)/);
   assert.match(review.text, /TypeDevelopment/);

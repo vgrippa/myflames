@@ -2009,6 +2009,13 @@ def plan_skip(report, channel):
         plan["error"] = {"errno": failed.get("errno"), "message": failed.get("message"),
                          "timestamp": failed.get("timestamp"), "table": error.get("table"),
                          "end_log_pos": error.get("end_log_pos")}
+        # Keep the coordinator's 3030 identity as well as the actual failure
+        # shown in the confirmation. An unchanged coordinator/GTID alone
+        # cannot authorize skipping a different worker error.
+        plan["identity"]["worker_error"] = {
+            "errno": plan["error"]["errno"], "message": plan["error"]["message"],
+            "timestamp": plan["error"]["timestamp"], "table": plan["error"]["table"],
+        }
         plan["notes"].append("The status reports error 3030: a worker stopped because an earlier transaction "
                              "failed, and rolled its own transaction back. myflames skips the earlier one (error %s), "
                              "never the one that stopped." % failed.get("errno"))
@@ -2209,6 +2216,16 @@ def check_expect(expect):
     errno = expect["last_sql_errno"]
     if isinstance(errno, bool) or not isinstance(errno, int) or errno <= 0:
         raise ValueError(message)
+    if errno == WORKER_STOPPED_BY_EARLIER:
+        worker = expect.get("worker_error")
+        if not isinstance(worker, dict) or any(k not in worker for k in ("errno", "message", "timestamp", "table")):
+            raise ValueError(message)
+        code = worker["errno"]
+        if isinstance(code, bool) or not isinstance(code, int) or code <= 0 or code == WORKER_STOPPED_BY_EARLIER:
+            raise ValueError(message)
+        if any(worker[k] is not None and not isinstance(worker[k], str) for k in ("message", "timestamp", "table")):
+            raise ValueError(message)
+        required += ("worker_error",)
     if expect["method"] not in ("skip_counter", "empty_gtid_transaction"):
         raise ValueError(message)
     for key in ("last_sql_error", "last_sql_error_timestamp", "gtid"):
@@ -2244,7 +2261,8 @@ def check_expect(expect):
         raise ValueError(message)
     if not isinstance(expect["server_identity"], dict):
         raise ValueError(message)
-    return {k: dict(expect[k]) if k in ("position", "source", "server_identity") else expect[k] for k in required}
+    return {k: dict(expect[k]) if k in ("position", "source", "server_identity", "worker_error") else expect[k]
+            for k in required}
 
 
 def verify_identity(channel, plan, expect):
@@ -2265,6 +2283,10 @@ def verify_identity(channel, plan, expect):
     compare("the error number", current["last_sql_errno"], expect["last_sql_errno"])
     compare("the error message", current["last_sql_error"], expect.get("last_sql_error"))
     compare("the error time", current["last_sql_error_timestamp"], expect.get("last_sql_error_timestamp"))
+    if "worker_error" in current or "worker_error" in expect:
+        for key, label in (("errno", "the worker error number"), ("message", "the worker error message"),
+                           ("timestamp", "the worker error time"), ("table", "the worker error table")):
+            compare(label, (current.get("worker_error") or {}).get(key), (expect.get("worker_error") or {}).get(key))
     compare("the failing GTID", current["gtid"], expect.get("gtid"))
     for key, label in (("relay_log_file", "the relay log file"), ("relay_log_pos", "the relay log position"),
                        ("exec_file", "the applied source log file"), ("exec_pos", "the applied source position")):
@@ -2992,12 +3014,45 @@ class SkipLoop(object):
             return False
         return True
 
-    def start(self, prepared=False):
-        """Preflight, then launch. A registry can preflight before consuming review."""
+    def start(self, prepared=False, after_start=None):
+        """Launch before committing a review, then release the worker for IO.
+
+        The loop lock keeps a newly created worker parked until the launch
+        and its authorization both succeed. A thread-creation failure leaves
+        the original review untouched; a failed commit cannot run the loop.
+        """
         if not prepared and not self.prepare():
             return self
-        self._thread = threading.Thread(target=self.run, name="myflames-replication-skip-loop", daemon=True)
-        self._thread.start()
+        launch = {"committed": False, "cancelled": False}
+
+        def commit():
+            if not launch["committed"]:
+                if after_start is not None:
+                    after_start()
+                launch["committed"] = True
+
+        def worker():
+            with self._lock:
+                if launch["cancelled"]:
+                    return
+                commit()
+            self.run()
+
+        try:
+            with self._lock:
+                try:
+                    self._thread = threading.Thread(target=worker, name="myflames-replication-skip-loop", daemon=True)
+                    self._thread.start()
+                    commit()
+                except BaseException:
+                    launch["cancelled"] = True
+                    raise
+        except BaseException:
+            # A commit can fail after the thread exists. Let the parked
+            # worker exit before the caller closes its connection.
+            if self._thread is not None and self._thread.ident is not None:
+                self._thread.join()
+            raise
         return self
 
     def stop(self, reason=None):
@@ -3400,7 +3455,8 @@ class SkipLoopRegistry(object):
 
     def start(self, identity, loop, before_start=None):
         """Register *loop* for *identity* and start it in a thread. Only one
-        active loop per channel and connection."""
+        active loop per channel and connection. *before_start* may return a
+        commit callback to run after launch, before the worker can do IO."""
         if not isinstance(identity, str) or not identity:
             raise ValueError("A skip loop needs the connection identity.")
         with self._lock:
@@ -3411,12 +3467,11 @@ class SkipLoopRegistry(object):
             return dict(loop.status(), job_id=None, state="refused")
         with self._lock:
             self._exclude_duplicate(identity, loop)
-            if before_start is not None:
-                before_start()
+            after_start = before_start() if before_start is not None else None
             loop.identity = identity
             self._jobs.append((identity, loop))
             try:
-                loop.start(prepared=True)
+                loop.start(prepared=True, after_start=after_start)
             except BaseException:
                 self._jobs.remove((identity, loop))
                 raise

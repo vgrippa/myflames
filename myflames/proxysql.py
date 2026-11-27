@@ -82,7 +82,6 @@ UPDATE before them, which Admin passes to SQLite, carries the tag.
 """
 import hashlib
 import json
-import os
 import re
 
 from .connection_groups import grouped_read
@@ -258,43 +257,36 @@ _DOLLAR_QUOTE_SYNC_ERROR = re.compile(
     re.I | re.M,
 )
 _DOLLAR_QUOTE_SYNC_MESSAGE = (
-    "ERROR 2014 (Commands out of sync): ProxySQL Admin before 2.6.0 does not work with MySQL 8.1+ "
-    "clients (including the bundled MySQL 8.4 client) because Admin returns a row for the client's "
-    "startup 'select $$' check. Upgrade ProxySQL to 2.6.0 or later, or install and choose a MySQL 8.0 "
-    "or MariaDB client in Settings > Client tools (with TLS Disabled on MariaDB 11.4+ when Admin has "
-    "no trusted certificate)."
+    "ERROR 2014 (Commands out of sync): a MySQL 8.1+ client (including the bundled MySQL 8.4 client) "
+    "can fail this way with ProxySQL Admin before 2.6.0 because of its startup 'select $$' check. "
+    "If this is a ProxySQL Admin connection, upgrade ProxySQL to 2.6.0 or later, or install and "
+    "choose a MySQL 8.0 client in Settings > Client tools. To use MariaDB instead, set the MySQL "
+    "client to Automatic and choose a MariaDB client there. Use TLS Disabled for MariaDB 11.4+ "
+    "when Admin has no TLS; otherwise configure a trusted certificate."
 )
 
 
-def _dollar_quote_sync_error(conn, exc):
-    """True when *exc* matches MySQL 8.1+'s startup ``select $$`` sync failure."""
+def client_compatibility_message(conn, exc):
+    """Conditional startup guidance, using only existing client metadata.
+
+    First contact can fail before ``_client_use`` is published. Unknown
+    metadata permits a possible cause, never a claim about server identity.
+    Do not probe a cached path here: its program may have changed since login.
+    """
     text = str(exc).replace("\r\n", "\n")
     if re.search(r"^--------------(?:\n|\Z)", text, re.M):
-        return False
+        return None
     if _DOLLAR_QUOTE_SYNC_ERROR.search(text) is None:
-        return False
+        return None
     used = getattr(conn, "_client_use", None)
     if isinstance(used, dict):
         engine = used.get("engine")
         version = used.get("version_tuple")
         if engine and engine != "mysql":
-            return False
+            return None
         if engine == "mysql" and version and tuple(version) < (8, 1, 0):
-            return False
-        return True
-    binary = getattr(conn, "_binary_cached", None)
-    if binary and isinstance(binary, str) and os.path.isfile(binary):
-        from . import client_tools
-        name = os.path.splitext(os.path.basename(binary))[0]
-        fields = client_tools.probe(name, binary)
-        if fields.get("available"):
-            engine = fields.get("engine")
-            version = client_tools._banner_version(fields.get("version") or "", name)
-            if engine and engine != "mysql":
-                return False
-            if engine == "mysql" and version != (0, 0, 0) and version < (8, 1, 0):
-                return False
-    return True
+            return None
+    return _DOLLAR_QUOTE_SYNC_MESSAGE
 
 
 def identify(conn):
@@ -308,8 +300,9 @@ def identify(conn):
         # A client error (2000 to 2999), a refused login or no answer is a
         # connection failure; a server's SQL error means "not ProxySQL".
         if code is None or client_error(code) or "Access denied" in str(exc):
-            if code == 2014 and _dollar_quote_sync_error(conn, exc):
-                raise ConnectorError(_DOLLAR_QUOTE_SYNC_MESSAGE) from None
+            message = client_compatibility_message(conn, exc)
+            if message:
+                raise ConnectorError(message) from None
             raise
         return False, "the server has no ProxySQL admin variables (%s)" % _short(exc)
     version = (rows[0].get("variable_value") if rows else None) or None

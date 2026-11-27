@@ -651,33 +651,66 @@ class TestRead(Home):
             ('mysql_8_4', OutOfSync(client_use={'engine': 'mysql', 'version_tuple': (8, 4, 13)})),
             ('mysql_8_1', OutOfSync(client_use={'engine': 'mysql', 'version_tuple': (8, 1, 0)})),
         ):
-            with self.subTest(case=label), self.assertRaises(ConnectorError) as ctx:
-                proxysql.read_status(conn)
-            message = str(ctx.exception)
-            self.assertNotIn('\n', message)
-            self.assertIn('ERROR 2014', message)
-            self.assertIn('2.6.0', message)
-            self.assertIn('MySQL 8.0', message)
-            self.assertIn('MariaDB', message)
-            self.assertIn('Settings > Client tools', message)
-            self.assertIn('TLS Disabled', message)
+            with self.subTest(case=label):
+                with mock.patch('myflames.client_tools.probe') as probe, \
+                        self.assertRaises(ConnectorError) as ctx:
+                    proxysql.read_status(conn)
+                probe.assert_not_called()
+                message = str(ctx.exception)
+                self.assertNotIn('\n', message)
+                self.assertIn('ERROR 2014', message)
+                self.assertIn('2.6.0', message)
+                self.assertIn('MySQL 8.0', message)
+                self.assertIn('MariaDB', message)
+                self.assertIn('Settings > Client tools', message)
+                self.assertIn('set the MySQL client to Automatic', message)
+                self.assertIn('If this is a ProxySQL Admin connection', message)
+                self.assertIn('TLS Disabled', message)
 
-        with tempfile.NamedTemporaryFile(prefix='mysql-', delete=False) as handle:
-            fake_bin = handle.name
-        try:
-            probe_84 = {'available': True, 'engine': 'mysql', 'version': 'mysql  Ver 8.4.13 for macos15 on arm64'}
-            with mock.patch('myflames.client_tools.probe', return_value=probe_84), \
-                    self.assertRaises(ConnectorError) as ctx:
-                proxysql.identify(OutOfSync(binary_cached=fake_bin))
-            self.assertEqual(str(ctx.exception), proxysql._DOLLAR_QUOTE_SYNC_MESSAGE)
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable trust and symlinks')
+    def test_diagnostic_does_not_probe_a_client_replaced_during_failed_login(self):
+        from _client_tools_fixture import private_client_dir
+        from myflames import connector
 
-            probe_80 = {'available': True, 'engine': 'mysql', 'version': 'mysql  Ver 8.0.45 for macos26 on arm64'}
-            with mock.patch('myflames.client_tools.probe', return_value=probe_80), \
-                    self.assertRaises(ConnectorError) as ctx:
-                proxysql.identify(OutOfSync(binary_cached=fake_bin))
-            self.assertEqual(str(ctx.exception), raw)
-        finally:
-            os.unlink(fake_bin)
+        raw = 'mysql client exited 1: ERROR 2014 (HY000) at line 1: Commands out of sync'
+        folder = private_client_dir(Path(self.tmp.name).resolve() / 'bin')
+        binary = folder / 'mysql'
+        replacement = folder / 'replacement'
+        replacement.write_text('untrusted replacement')
+        replacement.chmod(0o777)
+
+        for mode in ('replaced_file', 'redirected_symlink'):
+            with self.subTest(mode=mode):
+                if binary.is_symlink():
+                    binary.unlink()
+                binary.write_text('previously trusted client')
+                binary.chmod(0o700)
+                connector.checked_program(str(binary))
+
+                class OutOfSync(object):
+                    _client_use = None
+                    _binary_cached = str(binary)
+
+                    def run(self, sql, extra_flags=None, timeout=None):
+                        # Another OS user replaces the client while the failed
+                        # login is running. Diagnostics must not launch it.
+                        binary.unlink()
+                        if mode == 'redirected_symlink':
+                            binary.symlink_to(replacement)
+                        else:
+                            binary.write_text('untrusted replacement')
+                            binary.chmod(0o777)
+                        raise ConnectorError(raw)
+
+                with mock.patch('myflames.client_tools.probe', return_value={'available': False}) as probe, \
+                        mock.patch('myflames.connector.subprocess.run') as child, \
+                        mock.patch('myflames.connector._run_bounded') as bounded_child, \
+                        self.assertRaises(ConnectorError) as ctx:
+                    proxysql.identify(OutOfSync())
+                probe.assert_not_called()
+                child.assert_not_called()
+                bounded_child.assert_not_called()
+                self.assertEqual(str(ctx.exception), proxysql._DOLLAR_QUOTE_SYNC_MESSAGE)
 
     def test_other_2014_errors_and_older_or_mariadb_clients_keep_raw_error(self):
         raw = "mysql client exited 1: ERROR 2014 (HY000) at line 1: Commands out of sync; you can't run this command now"
@@ -698,9 +731,12 @@ class TestRead(Home):
             ('mysql_8_0_use', raw, {'engine': 'mysql', 'version_tuple': (8, 0, 45)}),
             ('mariadb_11_4_use', raw, {'engine': 'mariadb', 'version_tuple': (11, 4, 13)}),
         ):
-            with self.subTest(case=label), self.assertRaises(ConnectorError) as ctx:
-                proxysql.identify(Fail(msg, use))
-            self.assertEqual(str(ctx.exception), msg)
+            with self.subTest(case=label):
+                with mock.patch('myflames.client_tools.probe') as probe, \
+                        self.assertRaises(ConnectorError) as ctx:
+                    proxysql.identify(Fail(msg, use))
+                probe.assert_not_called()
+                self.assertEqual(str(ctx.exception), msg)
 
     def test_pending_changes_follow_the_monitors(self):
         conn = self.admin()

@@ -186,9 +186,33 @@ const bundle = await build({
       undo: "Entries repopulate automatically.",
       review_token: "unit-token-unguarded",
     };
+    // A SQL Cluster action: the backend DELIMITER-frames this guard into the
+    // same packet as each statement (dbops.target_guarded_script).
+    const clusterGuardedPlan: ReviewedPlan = {
+      schema_version: "cluster-action-1.1",
+      action: "switchover",
+      eyebrow: "SELECT group_replication_set_as_primary",
+      title: "Make mf-ic-1:3306 the primary?",
+      confirm_label: "Make mf-ic-1:3306 primary",
+      description: "The current primary becomes a read-only secondary.",
+      target_text: "mf-ic-1:3306",
+      session_guard: [
+        "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '1062e681-cc92-11f1-83dd-b6daec340a27');",
+      ],
+      statements: ["/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('1062e681-cc92-11f1-83dd-b6daec340a27');"],
+      facts: [["Server", "MySQL 8.4.11"]],
+      warnings: [],
+      typed_guard: null,
+      undo: "SELECT group_replication_set_as_primary('10a527c5-cc92-11f1-956e-2a01c1402350'); makes mf-ic-2:3306 the primary again.",
+      expect: { engine: "mysql", server: { server_uuid: "1062e681-cc92-11f1-83dd-b6daec340a27" } },
+      timeout_s: 120,
+      policy: { action: "confirm", tone: "danger", title: "Risky write", text: "Development connection.", connection_type: "development", read_only: false },
+      review_token: "unit-token-cluster",
+    };
     return <div id="action-review-probe">
       <button id="ar-open-guarded" type="button" onClick={() => { void actions.review("guarded", async () => guardedPlan); }}>Open guarded</button>
       <button id="ar-open-unguarded" type="button" onClick={() => { void actions.review("unguarded", async () => unguardedPlan); }}>Open unguarded</button>
+      <button id="ar-open-cluster" type="button" onClick={() => { void actions.review("cluster", async () => clusterGuardedPlan); }}>Open cluster</button>
       {actions.sheet}
     </div>;
   }
@@ -635,8 +659,37 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
 
+  // 9. WB round 2 #4: a MySQL/MariaDB guard travels DELIMITER-framed in the
+  // same packet as each statement (dbops.target_guarded_script), so the
+  // joined text cannot reproduce the send. The sheet shows and copies the
+  // check first, labelled as the reviewed statements for reading, never
+  // "exactly as sent" and never a script to paste.
+  await page.click("#ar-open-cluster");
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  const clusterGuardLine = "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '1062e681-cc92-11f1-83dd-b6daec340a27');";
+  const clusterStmt = "/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('1062e681-cc92-11f1-83dd-b6daec340a27');";
+  const expectedCluster = [clusterGuardLine, clusterStmt].join("\n");
+  const clusterView = await page.$eval("dialog.action-review[open]", (d) => ({
+    note: d.querySelector(".action-guard-note")?.textContent || "",
+    preLabel: d.querySelector(".ops-pre")?.getAttribute("aria-label") || "",
+    copyLabel: d.querySelector(".ops-commands button")?.getAttribute("aria-label") || "",
+    code: d.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(clusterView.note, /Identity check \(first line below\): the backend sends it in the same packet as each statement/i);
+  assert.match(clusterView.note, /not a script to paste/i);
+  assert.match(clusterView.preLabel, /not a script to paste/i);
+  assert.match(clusterView.copyLabel, /not a script to paste/i);
+  assert.doesNotMatch([clusterView.note, clusterView.preLabel, clusterView.copyLabel].join(" "), /exactly as sent/i,
+    "a packet-framed guard never claims the shown text is exactly as sent");
+  assert.equal(clusterView.code, expectedCluster, "the packet-framed sheet still shows the check before the statements");
+  await page.click("dialog.action-review[open] .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector("dialog.action-review[open] .ops-commands [role=status]")?.textContent || ""));
+  assert.equal(await page.evaluate(() => window.__arCopied.at(-1)), expectedCluster, "Copy still puts the reviewed text on the clipboard");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+
   assert.deepEqual(errors, [], "no page errors");
-  console.log("action-feedback-unit: 8 checks passed");
+  console.log("action-feedback-unit: 9 checks passed");
 } finally {
   await browser.close();
 }

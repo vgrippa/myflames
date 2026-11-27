@@ -1798,6 +1798,77 @@ class TestProfilePasswordAPI(unittest.TestCase):
                 self.assertEqual(sum(call[0][0] == 'SELECT @@version_comment'
                                      for call in run.call_args_list), 1)
 
+    def test_connection_test_and_group_open_share_conditional_client_guidance(self):
+        from myflames import proxysql
+        from myflames.connector import ConnectorError
+
+        profile = self.workspace.store.save('profile', dict(self.settings, group='admin'),
+                                            password=self.PASSWORD, remember=True)
+        routes = (
+            ('/api/connection/test', {'connection': self.connect(profile['id'])}),
+            ('/api/connect', {'group_name': 'admin', 'active_member_profile_id': profile['id']}),
+        )
+        raw = ('mysql client exited 1: ERROR 2014 (HY000) at line 1: Commands out of sync; '
+               + self.PASSWORD)
+        # Either metadata read may be the first failed invocation. Neither
+        # failure identifies the server, and reporting it must not retry SQL.
+        for failed_sql in ('SELECT @@version', 'SELECT @@version_comment'):
+            for route, payload in routes:
+                with self.subTest(route=route, failed_sql=failed_sql):
+                    def run(sql, **kwargs):
+                        if sql == failed_sql:
+                            raise ConnectorError(raw)
+                        self.assertEqual(sql, 'SELECT @@version_comment')
+                        return 'ProxySQL\n'
+
+                    with mock.patch('myflames.connector.MySQLConnection.run', side_effect=run) as execute, \
+                            mock.patch('myflames.client_tools.probe') as probe, \
+                            self.assertRaises(ConnectorError) as caught:
+                        self.call(route, payload)
+                    message = str(caught.exception)
+                    self.assertEqual(execute.call_count, 1 if failed_sql == 'SELECT @@version_comment' else 2)
+                    probe.assert_not_called()
+                    self.assertNotIn(self.PASSWORD, message)
+                    self.assertIn('If this is a ProxySQL Admin connection', message)
+                    self.assertIn('set the MySQL client to Automatic', message)
+                    self.assertEqual(message, proxysql._DOLLAR_QUOTE_SYNC_MESSAGE)
+
+    def test_connection_test_and_group_open_preserve_other_client_errors(self):
+        from myflames.connector import ClientAuthPluginError, ClientMissingError, ConnectorError
+
+        profile = self.workspace.store.save('profile', dict(self.settings, group='admin'),
+                                            password=self.PASSWORD, remember=True)
+        routes = (
+            ('/api/connection/test', {'connection': self.connect(profile['id'])}),
+            ('/api/connect', {'group_name': 'admin', 'active_member_profile_id': profile['id']}),
+        )
+        startup = 'mysql client exited 1: ERROR 2014 (HY000) at line 1: Commands out of sync'
+        cases = (
+            (ConnectorError, startup, {'engine': 'mariadb', 'version_tuple': (11, 4, 13)}),
+            (ConnectorError, startup, {'engine': 'mysql', 'version_tuple': (8, 0, 45)}),
+            (ConnectorError, startup.replace('line 1', 'line 2'), None),
+            (ConnectorError, 'mysql client exited 1: --------------\nSELECT 1\n--------------\n' + startup, None),
+            (ConnectorError, 'ERROR 1045 (28000): Access denied for ' + self.PASSWORD, None),
+            (ConnectorError, 'ERROR 2026 (HY000): TLS/SSL error', None),
+            (ClientMissingError, 'The chosen client is unavailable for ' + self.PASSWORD, None),
+            (ClientAuthPluginError, 'ERROR 2059 (HY000): Authentication plugin cannot be loaded', None),
+        )
+        for error_type, raw, used in cases:
+            for route, payload in routes:
+                with self.subTest(route=route, error=raw, client=used):
+                    def run(conn, sql, **kwargs):
+                        conn._client_use = used
+                        raise error_type(raw)
+
+                    with mock.patch('myflames.connector.MySQLConnection.run', autospec=True, side_effect=run), \
+                            mock.patch('myflames.client_tools.probe') as probe, \
+                            self.assertRaises(error_type) as caught:
+                        self.call(route, payload)
+                    expected = raw.replace(self.PASSWORD, '[redacted]')
+                    self.assertIs(type(caught.exception), error_type)
+                    self.assertEqual(str(caught.exception), expected)
+                    probe.assert_not_called()
+
     def test_connection_test_databases_bounded_and_error_path(self):
         from unittest import mock
         from myflames.connector import ConnectorError

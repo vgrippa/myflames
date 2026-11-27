@@ -1240,6 +1240,8 @@ def _replication_open(payload, workspace, state):
 def _replication_skip_response(payload, workspace, safety=None):
     """Skip the one failed transaction the person confirmed (replication.skip_one)."""
     from . import dbops, replication as rp
+    if getattr(workspace, "store", None) is None:
+        raise ValueError("The workspace policy and audit store is unavailable. Nothing was sent.")
     connection = payload.get("connection")
     safety = safety or dbops.connection_safety(None, connection)
     decision = dbops.decide("risky", safety["type"], safety["read_only"], safety["profile_name"])
@@ -1332,43 +1334,62 @@ def _replication_review_details(payload, loop=False):
 
 
 def _replication_review_response(payload, workspace, loop=False):
-    """Issue one review on demand, after checking the displayed failure."""
+    """Check a confirmed action on demand; audit refusals, never passive reads."""
     from . import dbops, replication as rp
-    from .live import connection_options
-    details = _replication_review_details(payload, loop)
+    if getattr(workspace, "store", None) is None:
+        raise ValueError("The workspace policy and audit store is unavailable. Nothing was sent.")
     connection = payload.get("connection")
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection, store=workspace.store)
-    decision = dbops.decide(dbops.classify(";\n".join(details["statements"])),
-                            safety["type"], safety["read_only"], safety["profile_name"])
-    blocked = dbops.gate(decision, True)
-    if blocked:
-        raise ValueError(blocked[1])
-    identity = _review_identity(connection, workspace)
-    options = connection_options(connection)
-    options["query_timeout"] = 30
-    with _group_guarded_connection(options, connection, workspace.store, identity) as raw:
-        conn = dbops.TargetEvidenceConnection(raw)
-        report = rp.read_status(conn)
-        conn.check()
-        problem = rp.loop_target_problem(report, details["expect"]) if loop else None
-        problem = problem or rp.loop_failure_problem(report, details["channel"],
-            details["first_failure"] if loop else details["expect"], details["statements"])
-        if problem:
-            raise ValueError(problem)
-        if loop and details["receiver_guard"] == "on":
-            guard = rp.receiver_guard_plan(conn, report)
-            if guard["receiver_guard"] != "on":
-                raise ValueError(guard["receiver_guard_reason"] or "Receiver reconnection monitoring is unavailable.")
-        conn.check()
-        if _review_identity(connection, workspace) != identity:
-            raise ValueError("The connection's write policy changed. Nothing was sent; review again.")
-    action = "replication_skip_loop" if loop else "replication_skip"
-    return {"review_token": _review_tokens(workspace).issue(action, identity, details)}
+    operation = rp.OPERATION_LOOP if loop else rp.OPERATION_SKIP
+    safety = dbops.connection_safety(None, connection)
+    decision = dbops.decide("risky", safety["type"], safety["read_only"], safety["profile_name"])
+    factory, state = _replication_audit(workspace, operation, connection, safety, decision)
+    audit = factory()
+    target, tagged = {"channel": payload.get("channel")}, []
+    try:
+        details = _replication_review_details(payload, loop)
+        target = details if loop else details["expect"]
+        tagged = [rp.SKIP_TAG + statement for statement in details["statements"]]
+        profile = _request_profile(connection, workspace.store)
+        if isinstance(connection, dict) and connection.get("profile_id") and profile is None:
+            raise ValueError("This saved connection no longer exists. Choose a connection again.")
+        safety = dbops.connection_safety(profile, connection, store=workspace.store)
+        decision = dbops.decide(dbops.classify(";\n".join(details["statements"])),
+                                safety["type"], safety["read_only"], safety["profile_name"])
+        factory, state = _replication_audit(workspace, operation, connection, safety, decision)
+        audit = factory()
+        blocked = dbops.gate(decision, True)
+        if blocked:
+            raise ValueError(blocked[1])
+        identity = _review_identity(connection, workspace)
+        with _replication_open(payload, workspace, state) as raw:
+            audit.password, audit.connection = state["password"], state["connection"]
+            conn = dbops.TargetEvidenceConnection(raw)
+            report = rp.read_status(conn)
+            audit.server(report.get("engine"), report.get("server_version"))
+            conn.check()
+            problem = rp.loop_target_problem(report, details["expect"]) if loop else None
+            problem = problem or rp.loop_failure_problem(report, details["channel"],
+                details["first_failure"] if loop else details["expect"], details["statements"])
+            if problem:
+                raise ValueError(problem)
+            if loop and details["receiver_guard"] == "on":
+                guard = rp.receiver_guard_plan(conn, report)
+                if guard["receiver_guard"] != "on":
+                    raise ValueError(guard["receiver_guard_reason"] or "Receiver reconnection monitoring is unavailable.")
+            conn.check()
+            if _review_identity(connection, workspace) != identity:
+                raise ValueError("The connection's write policy changed. Nothing was sent; review again.")
+        return {"review_token": _review_tokens(workspace).issue(operation, identity, details)}
+    except (Exception, KeyboardInterrupt) as exc:
+        _replication_preflight_error(audit, state, exc, target, tagged)
+        _reraise_redacted(exc, state["password"])
 
 
 def _replication_loop_start(payload, workspace, safety=None, identity=None):
     """Start one skip loop (replication.SkipLoop) after its own confirmation."""
     from . import dbops, replication as rp
+    if getattr(workspace, "store", None) is None:
+        raise ValueError("The workspace policy and audit store is unavailable. Nothing was sent.")
     connection = payload.get("connection")
     safety = safety or dbops.connection_safety(None, connection)
     decision = dbops.decide(dbops.classify("START REPLICA SQL_THREAD"), safety["type"], safety["read_only"],
@@ -1437,7 +1458,9 @@ def _replication_loop_start(payload, workspace, safety=None, identity=None):
             if rp._policy_key(current) != rp._policy_key(decision) or dbops.gate(current, True) or \
                     _review_identity(connection, workspace) != identity:
                 raise ValueError("The connection's write policy changed. Nothing was sent; review the loop again.")
-            consume()
+            # The registry commits this only once a worker exists, while
+            # duplicate exclusion and the worker's IO barrier are still held.
+            return consume
 
         return _replication_loops(workspace).start(identity, loop, before_start=before_start)
     except (Exception, KeyboardInterrupt) as exc:
@@ -1558,8 +1581,8 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE
 #: true), then the saved password is filled, and every attempt is audited. Loop
 #: status and stop open no connection: they act on loops this process holds,
 #: keyed by connection identity (dbops.connection_identity).
-_REPLICATION_READ_PATHS = ("/api/live/replication", "/api/live/replication/skip/review",
-                           "/api/live/replication/skip-loop/review")
+_REPLICATION_REVIEW_PATHS = ("/api/live/replication/skip/review", "/api/live/replication/skip-loop/review")
+_REPLICATION_READ_PATHS = ("/api/live/replication",) + _REPLICATION_REVIEW_PATHS
 _REPLICATION_WRITE_PATHS = ("/api/live/replication/skip", "/api/live/replication/skip-loop/start")
 _REPLICATION_PATHS = _REPLICATION_READ_PATHS + _REPLICATION_WRITE_PATHS + (
     "/api/live/replication/skip-loop/status", "/api/live/replication/skip-loop/stop")
@@ -1671,6 +1694,18 @@ _TEST_DATABASES_LIMIT = 1000
 
 
 def _connection_test_report(conn, options, password):
+    """Shared failure boundary for connection tests and opening a group."""
+    try:
+        return _connection_test_details(conn, options, password)
+    except ConnectorError as exc:
+        from .proxysql import client_compatibility_message
+        message = client_compatibility_message(conn, exc)
+        if message:
+            raise ConnectorError(message) from None
+        raise
+
+
+def _connection_test_details(conn, options, password):
     """Server identity plus a bounded database list for one open connection."""
     from .dbops import redact
     from .server_info import product_identity
@@ -2920,7 +2955,8 @@ def api_response(path, payload, workspace=None):
             if operation == "delete": return workspace.store.delete(kind, payload.get("id"))
         if path == "/api/live/start" and "session_tab" in payload:
             return _session_capture_response(payload, workspace)
-        if path in _CONNECTION_PATHS and path not in _WRITE_PATHS and path not in _ACTION_PATHS:
+        if path in _CONNECTION_PATHS and path not in _WRITE_PATHS and path not in _ACTION_PATHS \
+                and path not in _REPLICATION_REVIEW_PATHS:
             payload = _with_saved_password(payload, workspace)
         if path == "/api/live/start":
             from .accounts_api import _group_login_guard
