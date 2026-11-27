@@ -1724,9 +1724,11 @@ class TestEndpoints(ReplicationCase):
         grouped = dict(plain, group_name='before')
         registry = ui._replication_loops(self.workspace)
         loop = rp.SkipLoop(NoConn(), '', [1062], 2, poll_s=60)
-        # Register the real loop without starting its worker or touching a server.
-        with mock.patch.object(loop, 'start'):
-            registry.start(dbops.connection_identity(plain), loop)
+        # Register the real loop without startup reads or a worker.
+        with mock.patch.object(loop, 'prepare', return_value=True), \
+                mock.patch.object(loop, 'start'):
+            started = registry.start(dbops.connection_identity(plain), loop)
+        self.assertEqual(started['job_id'], loop.job_id)
 
         def call(route, connection, job_id=None):
             body = {'connection': connection}
