@@ -173,6 +173,23 @@ try {
   ]) {
     assert.equal(safety.findMysqlClientCommand(safety.sanitizeClipboardText(sql).text), null, id);
   }
+  // Security N1: MySQL 8.4+ skips leading comments before named commands,
+  // including conditional comments and hints whose contents were scanned.
+  const round4Probes = [
+    ['n01_cond_lead_named', 'SELECT 1;\n/*!99999 x */ system touch MARK\n'],
+    ['n02_cond_first_line', '/*!99999 x */ system touch MARK\n'],
+    ['n03_hint_lead_named', 'SELECT 1;\n/*+ x */ system touch MARK\n'],
+    ['n04_cond_after_delim', 'SELECT 1; /*!99999 x */ system touch MARK;\n'],
+    ['n05_plain_cond_lead', 'SELECT 1;\n/* a */ /*!99999 b */ system touch MARK\n'],
+    ['n06_cond_version_only', 'SELECT 1;\n/*!99999*/ system touch MARK\n'],
+  ];
+  for (const [id, sql] of round4Probes) {
+    for (const text of [sql, safety.sanitizeClipboardText(sql).text]) {
+      assert.equal(safety.findMysqlClientCommand(text), 'system', id);
+      assert.match(safety.clientCommandNote(text), /mysql client command \(system\)/, id);
+    }
+  }
+
   // Long-form commands are case insensitive and can begin a line or follow
   // a statement boundary. DELIMITER itself warns before it can alter parsing.
   for (const command of ['source /tmp/payload.sql', 'system touch /tmp/x', 'DELIMITER "\'"', 'use database_name',

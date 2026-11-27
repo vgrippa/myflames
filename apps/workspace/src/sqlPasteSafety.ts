@@ -55,6 +55,8 @@ function findCommandInMode(sql: string, mode: ClientMode): string | null {
   // Unlike commandStart, this survives newlines in a buffered statement.
   // MariaDB accepts -- without whitespace only with an empty SQL buffer.
   let statementStart = true;
+  // MySQL 8.4+ (--comments default) skips leading /*...*/ before a named command.
+  let commentAtStart = false;
   const n = sql.length;
   for (let i = 0; i < n; i++) {
     const ch = sql[i];
@@ -117,8 +119,11 @@ function findCommandInMode(sql: string, mode: ClientMode): string | null {
     // conditional-comment parsing, where quotes and semicolons are live.
     if (serverComment && ch === "*" && sql[i + 1] === "/") {
       serverComment = "";
-      // MySQL visits the slash again; MariaDB consumes the whole pair.
-      if (mode.client === "mariadb") i++;
+      // MySQL normally visits the slash again. Consume it when restoring the
+      // leading-comment command check; MariaDB always consumes the whole pair.
+      if (mode.client === "mariadb" || commentAtStart) i++;
+      if (commentAtStart) commandStart = true;
+      commentAtStart = false;
       continue;
     }
     if (serverComment !== "hint" && ch === "#") {
@@ -133,6 +138,7 @@ function findCommandInMode(sql: string, mode: ClientMode): string | null {
     if (ch === "/" && sql[i + 1] === "*") {
       const kind = sql[i + 2];
       const mariaExecutable = mode.client === "mariadb" && kind === "M" && sql[i + 3] === "!";
+      if ((kind === "!" || kind === "+") && !serverComment) commentAtStart = commandStart;
       if (kind === "!") serverComment = "conditional";
       else if (kind === "+") serverComment = "hint";
       else if (serverComment !== "hint" && !mariaExecutable) blockComment = true;

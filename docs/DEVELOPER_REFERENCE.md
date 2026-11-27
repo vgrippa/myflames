@@ -2215,9 +2215,10 @@ text once, so every copy through either clipboard helper and every selection
 copy (`handleSelectionCopy`) carries the note in `CopyResult.note`, and a
 successful copy with a note also shows it in the shared status
 (`#myflames-copy-notice`, `role="status"`, `aria-live="polite"`, twelve
-seconds). The status mounts inside the topmost open `dialog[open]` when one
-is open (a `showModal()` sheet makes the rest of the page inert, so a notice
-on `document.body` would be hidden and unsounded), else on `document.body`.
+seconds). The status mounts inside the last open `dialog[open]` in document
+order when one is open (a `showModal()` sheet makes the rest of the page inert,
+so a notice on `document.body` would be hidden and unsounded), else on
+`document.body`.
 Callers that keep their own confirmation (`PerfShared.tsx` `CopySql`,
 `SchemaExport.tsx`, `TableStructure.tsx`, the row menus of `Tables.tsx` and
 `Indexes.tsx`, `SchemaVersions.tsx`, `Locks.tsx`, `ServerCompare.tsx`) pass
@@ -2249,9 +2250,12 @@ accepts `--` without following whitespace when the SQL buffer is empty.
 Plain `/* ... */` comments hide commands, while `/*! ... */` bodies are
 scanned, as are `/*M! ... */` bodies in MariaDB passes. Optimizer hints
 (`/*+ ... */`) ignore quotes and line-comment markers, but a nested `/*!`
-switches to conditional-comment parsing. MySQL dollar-quote passes recognize
-an opening tag at an identifier boundary and require the exact closing tag;
-the passes without dollar quoting still warn about commands inside such text.
+switches to conditional-comment parsing. Closing a `/*! ... */` or
+`/*+ ... */` comment opened at a line or statement start restores the named
+command check, matching MySQL 8.4+ skipping leading comments before command
+lookup. MySQL dollar-quote passes recognize an opening tag at an identifier
+boundary and require the exact closing tag; the passes without dollar quoting
+still warn about commands inside such text.
 
 `findMysqlClientCommand` is a lexical **warning heuristic, not a guarantee**,
 with three accepted limits: a `sql_mode` change inside the copied script itself
