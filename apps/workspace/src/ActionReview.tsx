@@ -1,8 +1,14 @@
-// Reviewed changes that the backend plans from a fresh read (the ProxySQL
-// and Cluster places; myflames/reviewed_writes.py, db-operations skill
-// section 6). Planning reads only. The sheet shows the statements exactly as
-// they will be sent, the target, the connection and its write policy, the
-// facts and warnings, the undo, and a typed name for destructive changes.
+// Reviewed changes that the backend plans from a fresh read (the ProxySQL,
+// Cluster and Readyset places; myflames/reviewed_writes.py, db-operations
+// skill section 6). Planning reads only. The sheet shows any identity check
+// (`session_guard`) and the statements, the target, the connection and its
+// write policy, the facts and warnings, the undo, and a typed name for
+// destructive changes. How the check is sent decides the label: ProxySQL
+// Admin and MySQL Shell send it as their own first statement in the same
+// login, so the shown text is exactly as sent; for MySQL and MariaDB the
+// backend frames the check into the same packet as each statement
+// (dbops.target_guarded_script), so the shown text is labelled as the
+// reviewed statements for reading, not a script to paste.
 // Cancel and Escape record a declined attempt in the Audit log. Confirm reads
 // the saved connections again (useWritePolicy) and sends the reviewed plan
 // with its token; the backend reads the target again and sends nothing when
@@ -83,6 +89,7 @@ export type ReviewedResult = {
   audit_id: string | null;
   /** Each statement's final state, in order. */
   states?: StatementState[];
+  session_guard?: string[];
   /** What changed: what, before, now (read again after the write). */
   effect?: [string, string, string][] | null;
   checks?: string[];
@@ -544,10 +551,23 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
   const [tone, word] = r ? resultTone(r) : ["unknown", ""];
   const checks = r?.checks?.length ? r.checks : plan.checks || [];
   const sessionGuard = Array.isArray(plan.session_guard)
-    ? plan.session_guard.filter((line): line is string => typeof line === "string" && line.length > 0)
+    ? plan.session_guard.filter((line): line is string => typeof line === "string" && line.trim().length > 0)
     : [];
   const isShell = plan.via === "mysqlsh";
   const fullScript = [...sessionGuard, ...plan.statements].join("\n");
+  // Match reviewed_writes.execute: SQL guards share each statement's packet,
+  // while ProxySQL Admin and MySQL Shell send the guard as a first statement.
+  // The joined review text only reproduces the send in the latter two cases.
+  const expectEngine = plan.expect && typeof plan.expect === "object"
+    ? String((plan.expect as { engine?: unknown }).engine || "") : "";
+  const packetGuard = sessionGuard.length > 0 && !isShell &&
+    ["mysql", "percona", "percona_server", "pxc", "mariadb"].includes(expectEngine);
+  const guardLines = `first ${sessionGuard.length === 1 ? "line" : `${sessionGuard.length.toLocaleString()} lines`} below`;
+  const commandsLabel = packetGuard
+    ? "Reviewed statements with the identity check first, for reading; the check travels in the same packet as each statement, so this is not a script to paste"
+    : isShell
+      ? "Identity check and MySQL Shell call, exactly as sent"
+      : "Identity check sent first, before the statements, and statements to send, exactly as sent";
   return (
     <ConfirmSheet className="ops-confirm action-review"
       band={<ConnectionTypeBand connection={p.connection} label={p.label} type={type} readOnly={readOnly} />}
@@ -595,29 +615,27 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
       </> : <>
         {sessionGuard.length > 0 ? (
           <>
-            <p className="ops-plan-note">
-              {isShell
-                ? "MySQL Shell call (runs after the identity check below):"
-                : plan.statements.length === 1
-                  ? "Statement to send (runs after the identity check below):"
-                  : "Statements to send (run after the identity check below):"}
-            </p>
-            <pre className="ops-pre" tabIndex={0} aria-label={isShell ? "MySQL Shell call" : "Statements to send"}>
-              <code>{plan.statements.join("\n")}</code>
-            </pre>
+            {isShell && <>
+              <p className="ops-plan-note">MySQL Shell call (runs after the identity check below):</p>
+              <pre className="ops-pre" tabIndex={0} aria-label="MySQL Shell call">
+                <code>{plan.statements.join("\n")}</code>
+              </pre>
+            </>}
             <Disclosure
               title="Identity check"
               open={guardOpen}
               onToggle={setGuardOpen}
               className="action-guard"
             >
-              <p className="hint">
+              <p className={isShell ? "hint" : "hint ops-plan-note action-guard-note"}>
                 {isShell
                   ? "Sent first on the same MySQL Shell session before the call above. Checks the server and AdminAPI identity and defines the checked object used by the call. Copy copies the complete script as sent."
-                  : "Sent first on the same session before the statements above. Stops if the server identity changed. Copy copies the complete script as sent."}
+                  : packetGuard
+                    ? `Identity check (${guardLines}): the backend sends it in the same packet as each statement, so the text below is the reviewed statements for reading, not a script to paste.`
+                    : `Identity check sent first (${guardLines}), before the ${plan.statements.length === 1 ? "statement" : "statements"}.`}
               </p>
               <Commands
-                label={isShell ? "Identity check and MySQL Shell call, exactly as sent" : "Identity check and statements, exactly as sent"}
+                label={commandsLabel}
                 text={fullScript}
               />
             </Disclosure>

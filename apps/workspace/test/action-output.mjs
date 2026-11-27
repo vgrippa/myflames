@@ -834,7 +834,8 @@ try {
     title: d.querySelector(".action-guard summary")?.textContent?.replace(/\s+/g, " ").trim() || "",
     full: d.querySelector(".action-guard .ops-pre code")?.textContent || "",
   }));
-  assert.equal(sqlGuardCheck.call, sqlGuardedPlan.statements[0]);
+  assert.equal(sqlGuardCheck.call, `${sqlGuard}\n${sqlGuardedPlan.statements[0]}`,
+    "SQL review shows the identity check before the statements");
   assert.equal(sqlGuardCheck.title, "Identity check", "SQL guard uses the exact same Identity check label as JS guard");
   assert.equal(sqlGuardCheck.full, `${sqlGuard}\n${sqlGuardedPlan.statements[0]}`);
   await page.keyboard.press("Escape");
