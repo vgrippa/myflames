@@ -3909,10 +3909,18 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   for an interrupt, a client time limit or client error 2013 (`may_have_run`:
   the statement may have reached the server), else `error`. Records left
   `pending` or finished `unknown` read as `outcome_unknown: true`. `redact` applies
-  ASCII-only keyword guards (`_SECRET_PATTERN_KEYWORDS`, `'='`, `'://'`, `'0x'`,
-  `'variable'`/`'1231'`, `_may_have_secret_variables`) to skip unused passes on
-  plain scripts (non-ASCII text always runs all passes to preserve `re.I`
-  equivalences). After replacing any supplied connection `password` (raw and
+  ASCII-only keyword guards (`_SECRET_PATTERN_KEYWORDS`, `'='`, `'('`, `'set'`,
+  `'random'`/`'[redacted]'`, `'://'`, `'0x'`, `'variable'`+`"can't"`/`'1231'`+`'error'`,
+  `_may_have_set_secret_variables` via `_SIMPLE_SET_ASSIGN`, and
+  `_may_have_secret_variable_literals` via `_SECRET_VARIABLE_LITERAL_SUBSTRINGS`)
+  to skip unused passes on
+  plain scripts without recomputing `text.lower()` across unchanged passes
+  (non-ASCII text always runs all passes to preserve `re.I`
+  equivalences). `_secret_variable_spans` skips non-state-changing tokens
+  outside `SET`/`INSERT`/executable comments via `_SET_SCAN_OUTSIDE`, and
+  `_secret_literal_spans` uses anchor-guided search
+  (`_make_inventory_literal_search`) for ASCII `_SECRET_VARIABLE_LITERAL` scans
+  plus monotonic context-span lookups (`_secret_literal_context_spans`). After replacing any supplied connection `password` (raw and
   doubled/backslash-escaped SQL quotes) and scanning `ER_WRONG_VALUE_FOR_VAR` /
   `1231` errors, `redact` collects all credential, `SET PASSWORD`, and `SET`
   secret-variable spans against the same original text under both
@@ -3947,13 +3955,18 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   the end of the text when an earlier-stage span starts on a different quote
   character. Whenever a first-pass replacement could change quote, separator or
   comment structure (`needs_followup`: merging non-identical overlapping spans,
-  removing a semicolon, replacing an unquoted or unclosed value, shortening a
+  removing a semicolon, replacing an unclosed value or an unquoted value other
+  than a plain `[A-Za-z0-9_$]+` word (`_PLAIN_UNQUOTED_WORD`) followed by
+  whitespace, `;`, `,` or `)` (or EOF) with no custom
+  boundaries, shortening a
   literal when `SET PASSWORD` is possible, or replacing a literal matching
   `_STRUCTURAL_IN_LITERAL`), `redact` runs one bounded follow-up credential pass
   (`_redact_credential_pass` with `allow_custom_boundaries=False`,
   `semicolon_only=not overlapped`, `custom_boundaries=remapped` and
   `pass1_redacted=unquoted_redacted`) without re-running `split_statements` to
-  open new custom delimiter boundaries; proven first-pass custom boundaries
+  open new custom delimiter boundaries; the post-pass `_SECRET_PATTERNS[-1]`
+  `REPLACE` scan also skips when Pass 1 needed no follow-up and applied no
+  stage-0/1 spans; proven first-pass custom boundaries
   carry over (`_remap_custom_boundaries`) only when no overlap or removed
   semicolon occurred and every shifted boundary remains untouched and still
   closed outside strings, backticks and comments (while `pass1_redacted`
