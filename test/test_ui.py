@@ -1678,7 +1678,7 @@ class TestProfilePasswordAPI(unittest.TestCase):
             identity = dbops.connection_identity(dict(self.settings, profile_id=profile_id))
             loop = replication.SkipLoop(object(), '', [1062], 1)
             loops.append(loop)
-            with mock.patch.object(loop, 'start'):
+            with mock.patch.object(loop, 'prepare', return_value=True), mock.patch.object(loop, 'start'):
                 registry.start(identity, loop)
         self.call('/api/profiles/save', {'id': profile['id'], 'value': dict(self.settings, read_only=True)})
         self.assertEqual(loops[0]._stop_requested, 'policy_changed')
@@ -1692,7 +1692,7 @@ class TestProfilePasswordAPI(unittest.TestCase):
         profile2 = self.workspace.store.save('profile', dict(self.settings, name='second'))
         identity2 = dbops.connection_identity(dict(self.settings, profile_id=profile2['id']))
         loop2 = replication.SkipLoop(object(), '', [1062], 1)
-        with mock.patch.object(loop2, 'start'):
+        with mock.patch.object(loop2, 'prepare', return_value=True), mock.patch.object(loop2, 'start'):
             registry.start(identity2, loop2)
         self.call('/api/profiles/delete', {'id': profile2['id']})
         self.assertEqual(loop2._stop_requested, 'policy_changed')
@@ -1743,7 +1743,7 @@ class TestProfilePasswordAPI(unittest.TestCase):
         server.jobs, server.editor, server.lifecycle = mock.Mock(), mock.Mock(), mock.Mock()
         server.replication_loops = replication.SkipLoopRegistry()
         loop = replication.SkipLoop(object(), '', [1062], 1)
-        with mock.patch.object(loop, 'start'):
+        with mock.patch.object(loop, 'prepare', return_value=True), mock.patch.object(loop, 'start'):
             server.replication_loops.start('endpoint', loop)
         with mock.patch.object(loop, 'stop', wraps=loop.stop) as stop, \
                 mock.patch.object(loop, 'join') as join, \

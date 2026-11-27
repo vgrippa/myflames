@@ -2164,10 +2164,35 @@ def check_loop_expect(expect):
 
 def loop_target_problem(report, expect):
     """Refuse a different node before adopting any initial loop baseline."""
+    # A denied status read may return before collecting the optional Galera
+    # identity. Its incomplete evidence is not evidence of a different node.
+    if not report.get("available"):
+        return report.get("message") or "Replication status could not be read. Nothing was sent."
     current = report.get("server_identity") or (report.get("settings") or {}).get("server_identity")
     if report.get("engine") != expect["engine"] or current != expect["server_identity"]:
         return ("The server identity changed after you reviewed the skip loop. Nothing was sent; "
                 "refresh replication and review the loop again.")
+    return None
+
+
+def loop_failure_problem(report, channel, expect, statements):
+    """Keep the displayed first failure fixed until its first successful skip."""
+    if not report.get("available"):
+        return report.get("message") or "Replication status could not be read. Nothing was sent."
+    found = find_channel(report, channel)
+    if found is None or found.get("kind") == "group_replication":
+        return "The reviewed replication channel is unavailable. Nothing was sent; review the action again."
+    try:
+        plan = plan_skip(report, channel)
+    except ValueError as exc:
+        return "%s Nothing was sent; review the action again." % exc
+    if not plan.get("available"):
+        return plan.get("message") or "The reviewed failure is unavailable. Nothing was sent."
+    _verified, problem = verify_identity(found, plan, expect)
+    if problem:
+        return problem
+    if plan["statements"] != statements:
+        return "The first skip statements changed after review. Nothing was sent; review the action again."
     return None
 
 
@@ -2527,7 +2552,10 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     # Audit storage and grants collection can block. No write uses the old snapshot.
     fresh = status_reader(conn)
     current = find_channel(fresh, channel)
-    if not fresh.get("available") or current is None:
+    if not fresh.get("available"):
+        return _unsent(result, audit, "refused", "unavailable",
+                       fresh.get("message") or "Replication status could not be read; nothing was sent.", expect)
+    if current is None:
         return _unsent(result, audit, "refused", "identity", "Channel unavailable after audit preparation; nothing was sent.", expect)
     try:
         fresh_plan = plan_skip(fresh, channel)
@@ -2867,7 +2895,7 @@ class SkipLoop(object):
     def __init__(self, conn, channel, codes, max_skips, max_duration_s=None, poll_s=LOOP_DEFAULT_POLL_S,
                  decision=None, audit_factory=None, identity=None, clock=None, sleep=None, on_event=None,
                  settle_s=SETTLE_S, close_conn=False, decision_reader=None, receiver_reader=None,
-                 receiver_required=False, expect=None):
+                 receiver_required=False, expect=None, first_failure=None, statements=None):
         if not isinstance(channel, str) or len(channel) > 256:
             raise ValueError("Choose the channel to watch by its name.")
         # Receiver checks run from status-guard callbacks as well as between
@@ -2885,6 +2913,12 @@ class SkipLoop(object):
         self.receiver_reader = receiver_reader or read_receiver_identity
         self.identity = identity
         self.expect = check_loop_expect(expect) if expect is not None else None
+        self.first_failure = check_expect(first_failure) if first_failure is not None else None
+        if self.first_failure is not None and (self.first_failure["channel"] != channel or
+                not isinstance(statements, list) or not statements or
+                any(not isinstance(s, str) for s in statements)):
+            raise ValueError("Send the reviewed first failure and its statements for this channel.")
+        self.first_statements = list(statements) if statements is not None else None
         self.settle_s = settle_s
         self.close_conn = close_conn
         self.on_event = on_event
@@ -2921,8 +2955,8 @@ class SkipLoop(object):
 
     # -- control ------------------------------------------------------------------
 
-    def start(self):
-        """Read initial receiver coverage, then run in a daemon thread.
+    def prepare(self):
+        """Read startup evidence without registering or launching a worker.
 
         Use the loop's connection before handing it to the worker; its
         existing connect/query timeouts bound these reads.
@@ -2932,7 +2966,15 @@ class SkipLoop(object):
             self.conn.check()
             self._engine, self._server_version = report.get("engine"), report.get("server_version")
             target_problem = loop_target_problem(report, self.expect) if self.expect is not None else None
-            problem = ("config_changed", target_problem) if target_problem else self._receiver_guard(report)
+            if not report.get("available"):
+                problem = ("refused", report.get("message"))
+            elif target_problem:
+                problem = ("config_changed", target_problem)
+            elif self.first_failure is not None:
+                failure_problem = loop_failure_problem(report, self.channel, self.first_failure, self.first_statements)
+                problem = ("refused", failure_problem) if failure_problem else self._receiver_guard(report)
+            else:
+                problem = self._receiver_guard(report)
             self.conn.check()
         except (ConnectorError, ValueError) as exc:
             problem = ("connection_lost", str(exc))
@@ -2947,6 +2989,12 @@ class SkipLoop(object):
                     self.conn.close()
                 except Exception:
                     pass
+            return False
+        return True
+
+    def start(self, prepared=False):
+        """Preflight, then launch. A registry can preflight before consuming review."""
+        if not prepared and not self.prepare():
             return self
         self._thread = threading.Thread(target=self.run, name="myflames-replication-skip-loop", daemon=True)
         self._thread.start()
@@ -3067,6 +3115,10 @@ class SkipLoop(object):
             problem = loop_target_problem(report, self.expect)
             if problem:
                 return "config_changed", problem
+        if self.first_failure is not None and not self._skips:
+            problem = loop_failure_problem(report, self.channel, self.first_failure, self.first_statements)
+            if problem:
+                return "refused", problem
         uptime = report.get("uptime_s")
         if self._last_uptime is not None and uptime is not None and uptime < self._last_uptime:
             return "server_restarted", None
@@ -3228,8 +3280,10 @@ class SkipLoop(object):
                 return
             audit = self.audit_factory() if self.audit_factory is not None else None
             self._iteration_audit = audit
-            result = skip_one(self.conn, self.channel, plan["identity"], audit=audit, decision=self.decision,
-                              confirmed=True, statements=plan["statements"], settle_s=self.settle_s,
+            first = self.first_failure is not None and not self._skips
+            result = skip_one(self.conn, self.channel, self.first_failure if first else plan["identity"],
+                              audit=audit, decision=self.decision, confirmed=True,
+                              statements=self.first_statements if first else plan["statements"], settle_s=self.settle_s,
                               sleep=self._sleep, decision_reader=self.decision_reader,
                               before_send=self._before_send, send_lock=self._lock, status_guard=self._fresh_guard,
                               status_reader=self._read_status)
@@ -3333,23 +3387,42 @@ class SkipLoopRegistry(object):
     def __init__(self):
         self._lock = threading.Lock()
         self._jobs = []
+        self._closed = False
 
-    def start(self, identity, loop):
+    def _exclude_duplicate(self, identity, loop):
+        # Caller holds the registry lock, including at the consume boundary.
+        if self._closed:
+            raise ValueError("The workspace is closing. No skip loop was started.")
+        for key, job in self._jobs:
+            if _same_endpoint(key, identity) and job.channel == loop.channel and job.active:
+                raise ValueError("A skip loop is already running on channel %r of this connection; stop it "
+                                 "first." % (loop.channel,))
+
+    def start(self, identity, loop, before_start=None):
         """Register *loop* for *identity* and start it in a thread. Only one
         active loop per channel and connection."""
         if not isinstance(identity, str) or not identity:
             raise ValueError("A skip loop needs the connection identity.")
         with self._lock:
-            for key, job in self._jobs:
-                if _same_endpoint(key, identity) and job.channel == loop.channel and job.active:
-                    raise ValueError("A skip loop is already running on channel %r of this connection; stop it "
-                                     "first." % (loop.channel,))
+            self._exclude_duplicate(identity, loop)
+        # Database IO must not block Status or Stop on other loops. Competing
+        # starts may both preflight, but only one may consume and register.
+        if not loop.prepare():
+            return dict(loop.status(), job_id=None, state="refused")
+        with self._lock:
+            self._exclude_duplicate(identity, loop)
+            if before_start is not None:
+                before_start()
+            loop.identity = identity
             self._jobs.append((identity, loop))
+            try:
+                loop.start(prepared=True)
+            except BaseException:
+                self._jobs.remove((identity, loop))
+                raise
             finished = [entry for entry in self._jobs if not entry[1].active]
             for entry in finished[:max(0, len(finished) - LOOP_HISTORY)]:
                 self._jobs.remove(entry)
-        loop.identity = identity
-        loop.start()
         return loop.status()
 
     def _find(self, identity, job_id):
@@ -3392,6 +3465,9 @@ class SkipLoopRegistry(object):
 
     def stop_all(self, wait=False):
         with self._lock:
+            # Preflight runs outside the lock. Shutdown must also prevent a
+            # pending request from consuming its review and launching later.
+            self._closed = True
             jobs = [job for _key, job in self._jobs]
         for job in jobs:
             job.stop()

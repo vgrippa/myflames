@@ -33,7 +33,9 @@ function withReceiverGuard(report, enabled) {
   const guard = receiverGuard(report.engine, enabled);
   Object.assign(next, guard);
   for (const channel of next.channels) if (channel.skip_plan) {
-    Object.assign(channel.skip_plan, guard, { review_token: "review-skip", loop_review_token: "review-loop" });
+    Object.assign(channel.skip_plan, guard);
+    delete channel.skip_plan.review_token;
+    delete channel.skip_plan.loop_review_token;
     channel.skip_plan.identity.server_identity ??= report.engine === "mariadb"
       ? { server_id: "1", hostname: "fixture-db", port: "3306" }
       : { server_uuid: "11111111-2222-3333-4444-555555555555" };
@@ -87,12 +89,15 @@ const STATUS = "/api/live/replication/skip-loop/status";
 const START = "/api/live/replication/skip-loop/start";
 const STOP = "/api/live/replication/skip-loop/stop";
 const SKIP = "/api/live/replication/skip";
+const LOOP_REVIEW = "/api/live/replication/skip-loop/review";
+const SKIP_REVIEW = "/api/live/replication/skip/review";
 const DECLINED = "/api/audit/declined";
 /** The loops this myflames holds, by endpoint (host:port:user), like SkipLoopRegistry. */
 const registry = new Map();
 const endpoint = (c) => `${c?.host}:${c?.port}:${c?.user}`;
 /** While true, loop status fails as if myflames were restarting. */
 let restarting = false;
+let loopReviewBody, skipReviewBody;
 const h = await open("/api/live/replication", "replication", {
   [STATUS]: (body) =>
     restarting
@@ -102,6 +107,8 @@ const h = await open("/api/live/replication", "replication", {
     assert.ok(["on", "off"].includes(body.receiver_guard), "Start echoes the confirmed coverage mode");
     assert.equal(body.review_token, "review-loop", "Start passes the loop review token, not the single-skip token");
     assert.ok(body.expect?.server_identity, "Start carries the reviewed server identity");
+    const { review_token, confirmed, ...details } = body;
+    assert.deepEqual(details, loopReviewBody, "Start exactly echoes the on-demand review, including options and first failure");
     const running = { ...loopRunning, ...receiverGuard("mysql", body.receiver_guard === "on") };
     registry.set(endpoint(body.connection), [running]);
     return { status: 200, body: running, delay: 50 };
@@ -111,7 +118,22 @@ const h = await open("/api/live/replication", "replication", {
     registry.set(endpoint(body.connection), [loopStopped]);
     return { status: 200, body: loopStopped };
   },
-  [SKIP]: () => ({ status: 200, body: skipped, delay: 50 }),
+  [LOOP_REVIEW]: (body) => {
+    loopReviewBody = structuredClone(body);
+    assert.ok(body.first_failure && body.statements.length, "Review binds the displayed first failure and SQL");
+    assert.ok(body.codes.length, "Review is requested only after choosing errors");
+    return { status: 200, body: { review_token: "review-loop" } };
+  },
+  [SKIP_REVIEW]: (body) => {
+    skipReviewBody = structuredClone(body);
+    return { status: 200, body: { review_token: "review-skip" } };
+  },
+  [SKIP]: (body) => {
+    const { review_token, confirmed, ...details } = body;
+    assert.deepEqual(details, skipReviewBody, "Single skip also uses its on-demand review");
+    assert.equal(review_token, "review-skip");
+    return { status: 200, body: skipped, delay: 50 };
+  },
   // Declined sheets reach the real audit endpoint of the isolated store.
   [DECLINED]: (body, request) => {
     void request.continue();
@@ -415,7 +437,9 @@ try {
 
   // Skip until stopped: no error code is chosen for you; a cap is required.
   const statusBefore = calls(STATUS).length;
+  const reviewsBefore = calls(LOOP_REVIEW).length;
   await openSheet("Skip until stopped");
+  assert.equal(calls(LOOP_REVIEW).length, reviewsBefore, "opening a sheet issues no token");
   assert.equal(await text(`${sheet} .eyebrow`), "SKIP UNTIL STOPPED");
   assert.equal((await text(`${sheet} .ops-receiver-guard`)).replace(/\s+/g, " ").trim(), `${plan.receiver_guard_note} How to turn it on`);
   assert.equal(await page.$eval(`${sheet} .ops-drift + .ops-receiver-guard`, e => !!e), true, "coverage immediately follows the drift warning");
@@ -430,13 +454,17 @@ try {
   await page.keyboard.press("Backspace");
   assert.equal(await page.$eval(confirmButton, (e) => e.disabled), true, "the cap is required");
   await page.type(skipsField, "2");
+  assert.equal(calls(LOOP_REVIEW).length, reviewsBefore, "changing options issues no token");
   await page.click(confirmButton);
   await settle(START, 1);
   const startBody = calls(START)[0].body;
   assert.deepEqual([startBody.channel, startBody.codes, startBody.max_skips, startBody.max_minutes, startBody.confirmed], ["", [1062], 2, 10, true]);
   assert.equal(startBody.receiver_guard, "off");
   assert.deepEqual(startBody.expect, { engine: plan.engine, server_identity: plan.identity.server_identity });
-  assert.equal(startBody.review_token, plan.loop_review_token);
+  assert.equal(startBody.review_token, "review-loop");
+  assert.equal(calls(LOOP_REVIEW).length, reviewsBefore + 1, "Confirm requests one token for the selected policy");
+  assert.deepEqual(startBody.first_failure, plan.identity);
+  assert.deepEqual(startBody.statements, plan.statements);
   await closedSheet();
   await page.waitForSelector(`${view} .ops-loop[data-loop=running]`);
   assert.match(loopRunning.message, /^Skipping 1062 on channel '': 1 skipped since \d\d:\d\d UTC\.$/);

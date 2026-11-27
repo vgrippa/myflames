@@ -1009,12 +1009,17 @@ def fake_report(errno=0, running='No', gtid=U + ':1', uptime=100, source='src', 
             'notes': [], 'server_identity': {'server_uuid': U}}
 
 
-def loop_review(workspace, connection, report, channel_name='', receiver_guard='off'):
+def loop_review(workspace, connection, report, channel_name='', receiver_guard='off', **options):
     """Authorize a synthetic status fixture through the real token registry."""
-    details = {'channel': channel_name, 'receiver_guard': receiver_guard,
+    plan = rp.plan_skip(report, channel_name)
+    details = {'channel': channel_name, 'receiver_guard': receiver_guard, 'codes': [1062], 'max_skips': 2,
+               'max_minutes': None, 'poll_s': rp.LOOP_DEFAULT_POLL_S,
+               'first_failure': plan['identity'], 'statements': plan['statements'],
                'expect': {'engine': report['engine'],
                           'server_identity': dict(report.get('server_identity') or
                                                   report['settings']['server_identity'])}}
+    details.update(options)
+    details = ui._replication_review_details(details, loop=True)
     return dict(details, review_token=ui._review_tokens(workspace).issue(
         'replication_skip_loop', ui._review_identity(connection, workspace), details))
 
@@ -1564,8 +1569,10 @@ class TestEndpoints(ReplicationCase):
                 factory
 
     def test_paths(self):
-        self.assertIn('/api/live/replication', ui._CONNECTION_PATHS)
-        self.assertNotIn('/api/live/replication', ui._WRITE_PATHS)
+        for path in ('/api/live/replication', '/api/live/replication/skip/review',
+                     '/api/live/replication/skip-loop/review'):
+            self.assertIn(path, ui._CONNECTION_PATHS)
+            self.assertNotIn(path, ui._WRITE_PATHS)
         for path in ('/api/live/replication/skip', '/api/live/replication/skip-loop/start'):
             self.assertIn(path, ui._WRITE_PATHS)
             self.assertIn(path, ui._CONNECTION_PATHS)
@@ -1592,27 +1599,26 @@ class TestEndpoints(ReplicationCase):
                 self.assertEqual(plan['receiver_guard'], 'on' if enabled else 'off')
                 self.assertEqual(plan['receiver_guard_instrument'], instrument)
                 self.assertEqual(plan['receiver_guard_note'], report['receiver_guard_note'])
-                ui._review_tokens(self.workspace).check(
-                    plan['loop_review_token'], 'replication_skip_loop',
-                    ui._review_identity(self.connection, self.workspace),
-                    {'channel': plan['channel'], 'receiver_guard': plan['receiver_guard'],
-                     'expect': {'engine': plan['engine'], 'server_identity': plan['identity']['server_identity']}})
+                self.assertNotIn('loop_review_token', plan)
+                self.assertNotIn('review_token', plan)
+                self.assertFalse(ui._review_tokens(self.workspace).entries)
                 if not enabled:
                     self.assertIn('Receiver reconnects are not detected', plan['receiver_guard_note'])
                     self.assertTrue(plan['receiver_guard_reason'])
 
     def test_loop_keeps_guard_requested_by_confirmation(self):
         body = {'channel': '', 'codes': [1062], 'max_skips': 1, 'confirmed': True, 'receiver_guard': 'on'}
-        body.update(loop_review(self.workspace, self.connection, fake_report(1062), receiver_guard='on'))
+        body.update(loop_review(self.workspace, self.connection, fake_report(1062), receiver_guard='on', max_skips=1))
         with mock.patch.object(rp, 'read_status', return_value=fake_report(1062)), \
                 mock.patch.object(rp, 'read_receiver_identity', return_value=None), \
                 mock.patch.object(rp, 'skip_one') as skip:
             started, _, _ = self.call('/api/live/replication/skip-loop/start', body)
-            for _, loop in self.workspace.replication_loops._jobs:
-                loop.join(5)
             self.addCleanup(self.workspace.replication_loops.stop_all, wait=True)
-            final, _, _ = self.call('/api/live/replication/skip-loop/status', {'job_id': started['job_id']})
-        self.assertEqual(final['stop_reason'], 'receiver_unverified')
+        self.assertEqual((started['state'], started['job_id'], started['stop_reason']),
+                         ('refused', None, 'receiver_unverified'))
+        self.assertEqual(self.workspace.replication_loops._jobs, [])
+        ui._review_tokens(self.workspace).check(body['review_token'], 'replication_skip_loop',
+            ui._review_identity(self.connection, self.workspace), ui._replication_review_details(body, loop=True))
         skip.assert_not_called()
         with self.assertRaisesRegex(ValueError, 'receiver_guard'):
             self.call('/api/live/replication/skip-loop/start', dict(body, receiver_guard='maybe'))
@@ -1620,6 +1626,20 @@ class TestEndpoints(ReplicationCase):
     def plan(self):
         report, _ = status('mysql-8.4-gtid-error')
         return channel(report)['skip_plan']
+
+    def test_single_skip_review_is_on_demand_and_checks_displayed_statements(self):
+        plan = self.plan()
+        body = {'channel': plan['channel'], 'expect': plan['identity'], 'statements': plan['statements']}
+        review, conn, _ = self.call('/api/live/replication/skip/review', body, 'mysql-8.4-gtid-error')
+        tokens = ui._review_tokens(self.workspace)
+        tokens.check(review['review_token'], 'replication_skip',
+                     ui._review_identity(self.connection, self.workspace), body)
+        self.assertFalse(any(rp.SKIP_TAG in s for s, _flags in conn.calls))
+        entries = dict(tokens.entries)
+        with self.assertRaisesRegex(ValueError, 'statements changed'):
+            self.call('/api/live/replication/skip/review', dict(body, statements=['DROP TABLE unreviewed']),
+                      'mysql-8.4-gtid-error')
+        self.assertEqual(dict(tokens.entries), entries)
 
     def test_skip_policy_and_confirmation(self):
         plan = self.plan()
@@ -1671,9 +1691,12 @@ class TestEndpoints(ReplicationCase):
         del self.connection['read_only']
         with self.assertRaises(ValueError):
             self.call('/api/live/replication/skip-loop/start', dict(body, codes=[], confirmed=True))
-        h = LoopHarness([fake_report(0, running='Yes')])
-        body.update(loop_review(self.workspace, self.connection, h.reports[0]))
-        with mock.patch.object(rp, 'read_status', h.read_status):
+        h = LoopHarness([fake_report(1062)])
+        body.update(loop_review(self.workspace, self.connection, h.reports[0], poll_s=60))
+        def skip(*args, **kwargs):
+            h.reports.append(fake_report(0, running='Yes'))
+            return h.skip_one(*args, **kwargs)
+        with mock.patch.object(rp, 'read_status', h.read_status), mock.patch.object(rp, 'skip_one', skip):
             started, _, factory = self.call('/api/live/replication/skip-loop/start', dict(body, confirmed=True),
                                             'mysql-8.4-healthy')
             self.assertEqual(factory.options['query_timeout'], 30)
@@ -1690,7 +1713,7 @@ class TestEndpoints(ReplicationCase):
             for key, loop in self.workspace.replication_loops._jobs:
                 loop.join(5)
         final, _, _ = self.call('/api/live/replication/skip-loop/status', {'job_id': job})
-        self.assertEqual(final['stop_reason'], 'user_stop')
+        self.assertEqual(final['stop_reason'], 'user_stop', final)
         self.assertEqual([(r['status'], r['outcome']) for r in self.records()],
                          [('refused', 'unsent'), ('refused', 'read_only'), ('refused', 'needs_confirmation')])
 
@@ -1711,7 +1734,11 @@ class TestLoopReviewBinding(ReplicationCase):
         body = {'connection': dict(self.connection), 'channel': plan['channel'], 'codes': [1062],
                 'max_skips': 2, 'max_minutes': 1, 'confirmed': True,
                 'expect': {'engine': plan['engine'], 'server_identity': dict(plan['identity']['server_identity'])},
-                'receiver_guard': plan['receiver_guard'], 'review_token': plan['loop_review_token']}
+                'first_failure': json.loads(json.dumps(plan['identity'])), 'statements': list(plan['statements']),
+                'receiver_guard': plan['receiver_guard']}
+        conn, _ = replay('replication', fixture_name)
+        with mock.patch('myflames.connector.MySQLConnection', FakeFactory(conn)):
+            body.update(ui.api_response('/api/live/replication/skip-loop/review', body, self.workspace))
         return report, plan, body
 
     def assert_unsent_audit(self):
@@ -1734,7 +1761,9 @@ class TestLoopReviewBinding(ReplicationCase):
                 elif changed == 'forged_token':
                     body['review_token'] = 'forged'
                 elif changed == 'skip_token':
-                    body['review_token'] = plan['review_token']
+                    body['review_token'] = ui._review_tokens(self.workspace).issue('replication_skip',
+                        ui._review_identity(self.connection, self.workspace),
+                        {'channel': plan['channel'], 'expect': plan['identity'], 'statements': plan['statements']})
                 elif changed == 'connection':
                     body['connection']['port'] = 3307
                 elif changed == 'channel':
@@ -1786,7 +1815,7 @@ class TestLoopReviewBinding(ReplicationCase):
                         else:
                             result = ui.api_response('/api/live/replication/skip-loop/start', body, self.workspace)
                             self.assertEqual((result['state'], result['stop_reason'], result['skips_done']),
-                                             ('stopped', 'config_changed', 0))
+                                             ('refused' if phase == 'start' else 'stopped', 'config_changed', 0))
                         if phase != 'first_iteration':
                             thread.assert_not_called()
                     skip.assert_not_called()
@@ -1795,10 +1824,9 @@ class TestLoopReviewBinding(ReplicationCase):
                     conn.close.assert_called_once_with()
                     self.assert_unsent_audit()
 
-    def test_unchanged_target_consumes_review_once_even_if_failure_changed(self):
+    def test_changed_first_failure_preserves_review_and_sends_nothing(self):
         report, _plan, body = self.reviewed()
-        # A loop follows selected error codes, so its target review does not
-        # freeze the first failing transaction. A new unselected error stops it.
+        # A valid node cannot authorize a replacement for the displayed failure.
         current = json.loads(json.dumps(report))
         current['channels'][0]['sql']['error']['errno'] = 1032
         current['channels'][0]['worker'] = {}
@@ -1809,16 +1837,15 @@ class TestLoopReviewBinding(ReplicationCase):
                 mock.patch.object(rp, 'skip_one') as skip, \
                 mock.patch.object(rp.threading, 'Thread') as thread:
             thread.return_value.start.side_effect = lambda: thread.call_args[1]['target']()
-            result = ui.api_response('/api/live/replication/skip-loop/start', body, self.workspace)
-        self.assertEqual((result['state'], result['stop_reason']), ('stopped', 'unselected_error'))
+            with self.assertRaisesRegex(ValueError, 'changed since you confirmed'):
+                ui.api_response('/api/live/replication/skip-loop/start', body, self.workspace)
+            thread.assert_not_called()
         skip.assert_not_called()
         conn.run_write.assert_not_called()
         conn.close.assert_called_once_with()
-        with mock.patch('myflames.connector.MySQLConnection') as connect:
-            with self.assertRaisesRegex(ValueError, 'already used'):
-                ui.api_response('/api/live/replication/skip-loop/start', body, self.workspace)
-        connect.assert_not_called()
-        self.assertEqual([r['status'] for r in self.records()], ['refused', 'refused'])
+        ui._review_tokens(self.workspace).check(body['review_token'], 'replication_skip_loop',
+            ui._review_identity(self.connection, self.workspace), ui._replication_review_details(body, loop=True))
+        self.assertEqual([r['status'] for r in self.records()], ['refused'])
 
 
 class TestReadOnlyText(unittest.TestCase):
@@ -2305,14 +2332,15 @@ class TestReviewGateSurfaces(ReplicationCase):
         identity = dbops.connection_identity(connection, safety)
         existing = rp.SkipLoop(NoConn(), '', [1062], 2)
         # Register an active job without starting a thread or waiting.
-        with mock.patch.object(existing, 'start', return_value=existing):
+        with mock.patch.object(existing, 'prepare', return_value=True), \
+                mock.patch.object(existing, 'start', return_value=existing):
             registry.start(identity, existing)
         conn = self.connection()
         body = {'connection': connection, 'channel': '', 'codes': [1062],
                 'max_skips': 2, 'confirmed': True}
-        body.update(loop_review(workspace, connection, fake_report(0, running='Yes')))
+        body.update(loop_review(workspace, connection, fake_report(1062)))
         with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
-                mock.patch.object(rp, 'read_status', return_value=fake_report(0, running='Yes')):
+                mock.patch.object(rp, 'read_status', return_value=fake_report(1062)):
             with self.assertRaisesRegex(ValueError, 'already running'):
                 ui._replication_response('/api/live/replication/skip-loop/start',
                                          body, workspace)
