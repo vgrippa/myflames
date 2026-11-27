@@ -465,7 +465,15 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         </SummaryLine>
         {isCluster && !stale && !!identityText(report, connection.group_name) && <p className="cluster-identity">{identityText(report, connection.group_name)}</p>}
         {!report.available ? (
-          <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
+          <>
+            <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
+            {typeof report.grant_sql === "string" && report.grant_sql.length > 0 && (
+              <div className="cluster-denied-grant">
+                <Commands text={report.grant_sql} label="Grant to read cluster status" />
+                <p className="hint">Run it as an administrator, then Refresh.</p>
+              </div>
+            )}
+          </>
         ) : report.kind === "none" ? (
           <>
             {report.connection_group && (
@@ -553,17 +561,13 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   );
 }
 
-/** An account that cannot read: the reason in one sentence and the grant to
- * run, without the client's error text (kept in the CLI and JSON). */
-function deniedText(message: string | null) {
+/** An account that cannot read: the reason in one sentence, without the
+ * client's error text (kept in the CLI and JSON). Never parses SQL out of the
+ * error message; any advisory GRANT comes from report.grant_sql. */
+function deniedText(message: string | null): string {
   const text = message || "Cluster status is not available for this connection.";
   const reason = text.split(/:\s*(?:mysql client exited \d+:\s*)?ERROR \d+/)[0].replace(/\s*$/, "");
-  const account = text.match(/to user '([^']*)'@'([^']*)'/);
-  const table = text.match(/(performance_schema|mysql)\.\w+/)?.[1];
-  return <>
-    {reason.endsWith(".") ? reason : `${reason}.`}
-    {account && table && <> To grant it: <code className="ops-wrap">{`GRANT SELECT ON ${table}.* TO '${account[1]}'@'${account[2]}';`}</code></>}
-  </>;
+  return reason.endsWith(".") ? reason : `${reason}.`;
 }
 
 /** The backend's sentence without its "Not part of a cluster:" lead, which the title already says. */

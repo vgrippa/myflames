@@ -838,6 +838,68 @@ def _pxc_state(state):
     return text[:1].upper() + text[1:].lower(), "watch", "Not Synced (pxc_cluster_view reads %s)." % text
 
 
+def _partial_revokes_for_server(server):
+    """Database-pattern matching mode for advisory schema GRANTs.
+
+    MariaDB and MySQL before 8.0.16 always use wildcard matching (False).
+    MySQL 8.0.16+ uses the server's partial_revokes variable; absence or an
+    incomplete/unknown version leaves it None so grant_sql refuses names with
+    '_' or '%' rather than guessing.
+    """
+    if server.engine == "mariadb":
+        return False
+    version = tuple(server.version_tuple)
+    if len(version) >= 3 and (5, 7, 0) <= version[:3] < (8, 0, 16):
+        return False
+    raw = server.variables.get("partial_revokes")
+    if raw is None:
+        return None
+    text = str(raw).strip().upper()
+    if text in ("ON", "1"):
+        return True
+    if text in ("OFF", "0"):
+        return False
+    return None
+
+
+def _read_current_user(reader, report=None):
+    """CURRENT_USER() from cached report grants when known, else through *reader*.
+
+    Never uses USER(), a profile name or error text. Any failure returns None.
+    """
+    cached = getattr(report, "_action_grants", None)
+    if isinstance(cached, dict) and isinstance(cached.get("account"), str) and "@" in cached["account"]:
+        return cached["account"]
+    try:
+        rows = reader.rows("SELECT USER(), CURRENT_USER() LIMIT 1")
+    except ConnectorError:
+        return None
+    if not rows or len(rows[0]) < 2:
+        return None
+    account = rows[0][1]
+    return account if isinstance(account, str) and "@" in account else None
+
+
+def _denied_read_grant_sql(reader, server, schema=None, report=None):
+    """Advisory SELECT GRANT for a denied table read, built from CURRENT_USER()
+    through privileges.grant_sql (printable-ASCII allowlist without backslash).
+
+    Never derives anything from error text. Returns None when no table schema
+    applies, CURRENT_USER() cannot be read, or grant_sql refuses the names.
+    """
+    if not schema:
+        return None
+    account = _read_current_user(reader, report)
+    if not account:
+        return None
+    from . import privileges
+    partial = _partial_revokes_for_server(server)
+    try:
+        return privileges.grant_sql([(("SELECT",), schema, False)], account, partial, engine=server.engine)
+    except ValueError:
+        return None
+
+
 def _read_galera(reader, server, report):
     report["kind"] = galera_kind(server.variables)
     try:
@@ -846,6 +908,7 @@ def _read_galera(reader, server, report):
         if denied(exc):
             report["available"] = False
             report["message"] = "This account cannot read the wsrep status variables: %s" % reason(exc)
+            report["grant_sql"] = _denied_read_grant_sql(reader, server, report=report)
             return
         raise
     report["statements"].append("SHOW GLOBAL STATUS (wsrep_%)")
@@ -875,6 +938,7 @@ def _read_galera_off(reader, server, report):
         report["message"] = ("wsrep_on is OFF with a Galera provider loaded, and this account cannot read the wsrep "
                              "status variables, so whether this node is still in a cluster is not known: %s"
                              % reason(exc))
+        report["grant_sql"] = _denied_read_grant_sql(reader, server, report=report)
         return
     connected = _on(status.get("wsrep_connected"))
     size = _number(status.get("wsrep_cluster_size"))
@@ -1227,6 +1291,7 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
             report["cluster"]["uuid"] = group_name
             report["message"] = ("This account cannot read performance_schema.replication_group_members (it needs "
                                  "SELECT on performance_schema): %s" % reason(exc))
+            report["grant_sql"] = _denied_read_grant_sql(reader, server, "performance_schema", report=report)
             return
         raise
     report["statements"].append("SELECT performance_schema.replication_group_members")

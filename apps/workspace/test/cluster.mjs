@@ -1062,10 +1062,43 @@ try {
   assert.deepEqual(await visible(`${view} .cluster-card.is-local .cluster-mark`), ["Donor/Desynced"]);
   await shot("cluster-pxc-topology.png");
 
-  // An account that cannot read: one sentence, no muted sidebar.
+  // An account that cannot read: one sentence, backend grant_sql in Commands, no muted sidebar.
   await refreshTo(R["gr-8.4-denied"]);
-  assert.match(await h.text(`${view} .gate`), /cannot read performance_schema\.replication_group_members/);
+  const deniedGate = await h.text(`${view} .gate`);
+  assert.match(deniedGate, /cannot read performance_schema\.replication_group_members/);
+  assert.doesNotMatch(deniedGate, /\bGRANT\b/i, "deniedText never builds a GRANT inside .gate");
+  assert.equal(await page.$(`${view} .gate code`), null, "no browser-built GRANT code element in .gate");
+  assert.equal(await page.$eval(`${view} .cluster-denied-grant .ops-pre code`, (e) => e.textContent),
+    R["gr-8.4-denied"].grant_sql, "backend grant_sql renders in Commands block");
+  assert.ok(await page.$(`${view} .cluster-denied-grant button[aria-label="Copy: Grant to read cluster status"]`),
+    "Commands block carries its Copy button");
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
+
+  // S-F4 abuse cases: hostile user/host text in report.message never produces a GRANT
+  // when backend grant_sql is null or absent (nor does a plain message without grant_sql).
+  const deniedLead = "This account cannot read performance_schema.replication_group_members (it needs SELECT on performance_schema): ";
+  for (const [label, user, host, grantSql] of [
+    ["ctrl-a", "\u0001\\! touch /tmp/x #", "%", null],
+    ["egrave", "\u00c8".repeat(7) + "\\! touch /tmp/x #", "%", null],
+    ["esc-host", "app", "h\u001b[201~", null],
+    ["benign-msg-omitted-grant", "app", "%", undefined],
+  ]) {
+    const abused = structuredClone(R["gr-8.4-denied"]);
+    abused.message = `${deniedLead}ERROR 1142 (42000) at line 1: SELECT command denied to user '${user}'@'${host}' for table 'replication_group_members'`;
+    if (grantSql === undefined) delete abused.grant_sql;
+    else abused.grant_sql = grantSql;
+    await refreshTo(abused);
+    const body = await page.$eval(view, (e) => ({
+      gate: e.querySelector(".gate")?.textContent || "",
+      gateCode: !!e.querySelector(".gate code"),
+      grantBlock: !!e.querySelector(".cluster-denied-grant, .ops-commands"),
+      all: e.textContent || "",
+    }));
+    assert.match(body.gate, /cannot read performance_schema\.replication_group_members/, `${label}: keeps reason`);
+    assert.equal(body.gateCode, false, `${label}: no <code> inside .gate`);
+    assert.equal(body.grantBlock, false, `${label}: no Commands block without backend grant_sql`);
+    assert.doesNotMatch(body.all, /\bGRANT\b/i, `${label}: no GRANT text shown`);
+  }
 
   // Not part of a cluster: a calm state naming the three kinds, and a muted
   // sidebar item that stays focusable and opens the place.

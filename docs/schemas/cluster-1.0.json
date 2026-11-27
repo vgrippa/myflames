@@ -233,6 +233,13 @@
       ],
       "description": "One sentence: why the report is empty (not a cluster, no privilege)."
     },
+    "grant_sql": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Advisory GRANT statement for a denied cluster table read (available false), built from CURRENT_USER() through privileges.grant_sql (printable ASCII without backslash); null when no table privilege applies, CURRENT_USER() or partial_revokes cannot be read, or a name fails the allowlist. Absent when available is true."
+    },
     "kind": {
       "type": "string",
       "enum": [

@@ -39,8 +39,17 @@ const h = await open("/api/live/sessions", "why-disabled-chunk", {
 try {
   const { page, state } = h;
   state.fallback = { status: 200, body: foreign };
+  const origin = new URL(page.url()).origin;
   const chunkPattern = /\/WhyDisabled-[^/]*\.js$/;
+  const chunkRequests = [];
   let failedChunkRequests = 0;
+  let idlePreloadReachedEnd = false;
+  page.on("request", (request) => {
+    const url = request.url();
+    const pathname = new URL(url).pathname;
+    if (chunkPattern.test(pathname) || /WhyDisabled/i.test(url)) chunkRequests.push(url);
+    if (/\/PlanScreen-[^/]*\.js$/.test(pathname)) idlePreloadReachedEnd = true;
+  });
   page.on("requestfailed", (request) => {
     if (chunkPattern.test(new URL(request.url()).pathname)) failedChunkRequests += 1;
   });
@@ -66,42 +75,63 @@ try {
   assert.equal(await page.$eval(gatedKill, (b) => b.getAttribute("aria-disabled")), "true");
   assert.equal(await page.$(".why-disabled"), null, "WhyDisabled host is not mounted before first click");
 
-  // Click while the chunk is blocked (twice, plus keyboard activation): the
-  // error boundary renders nothing, the workspace stays mounted, and nothing is sent.
-  const failedBefore = failedChunkRequests;
-  await page.click(gatedKill);
-  await page.waitForFunction(() => true);
+  // Wait for the one-time startup idle preload queue to finish so it does not
+  // overlap with the idle and per-click assertions below.
+  for (let i = 0; i < 60 && !idlePreloadReachedEnd; i++) await pause(250);
   await pause(400);
-  assert.ok(failedChunkRequests > failedBefore, "blocked WhyDisabled chunk request actually failed");
-  const aliveAfterFirst = await page.evaluate((sel) => ({
-    workspace: !!document.querySelector(".workspace"),
-    sessionsView: !!document.querySelector(".server-view[data-view=sessions]"),
-    inspector: !!document.querySelector(".view-inspector"),
-    killButton: !!document.querySelector(sel),
-    killAriaDisabled: document.querySelector(sel)?.getAttribute("aria-disabled"),
-    whyOpen: !!document.querySelector(".why-disabled:popover-open"),
-    dialogOpen: !!document.querySelector("dialog.kill-dialog[open]"),
-  }), gatedKill);
-  assert.deepEqual(aliveAfterFirst, {
-    workspace: true,
-    sessionsView: true,
-    inspector: true,
-    killButton: true,
-    killAriaDisabled: "true",
-    whyOpen: false,
-    dialogOpen: false,
-  }, "workspace stays rendered after WhyDisabled chunk load failure");
-  assert.equal(prepares.length, 0, "blocked chunk click prepares nothing");
-  assert.equal(kills.length, 0, "blocked chunk click sends nothing");
 
-  // A second click and keyboard burst while still blocked also leave the workspace intact.
-  const failedBeforeSecond = failedChunkRequests;
-  await page.click(gatedKill);
+  // R-1 follow-up: 0 chunk requests while idle before any user click.
+  const idleBeforeClicks = chunkRequests.length;
+  await pause(2000);
+  assert.equal(chunkRequests.length, idleBeforeClicks, "0 WhyDisabled chunk requests while idle before clicks");
+
+  // Click while the chunk is blocked: each click starts at most 1 chunk
+  // request, the error boundary renders nothing, the workspace stays mounted,
+  // and nothing is sent. Test past all retry variants (6 clicks).
+  for (let click = 1; click <= 6; click += 1) {
+    const reqsBefore = chunkRequests.length;
+    const failedBefore = failedChunkRequests;
+    await page.click(gatedKill);
+    await pause(400);
+    const delta = chunkRequests.length - reqsBefore;
+    assert.ok(delta <= 1, `click ${click} started at most 1 chunk request (got ${delta})`);
+    assert.equal(delta, 1, `click ${click} attempted 1 fresh chunk fetch while blocked`);
+    assert.ok(failedChunkRequests > failedBefore, `click ${click} blocked WhyDisabled chunk request actually failed`);
+    if (click === 1) {
+      const aliveAfterFirst = await page.evaluate((sel) => ({
+        workspace: !!document.querySelector(".workspace"),
+        sessionsView: !!document.querySelector(".server-view[data-view=sessions]"),
+        inspector: !!document.querySelector(".view-inspector"),
+        killButton: !!document.querySelector(sel),
+        killAriaDisabled: document.querySelector(sel)?.getAttribute("aria-disabled"),
+        whyOpen: !!document.querySelector(".why-disabled:popover-open"),
+        dialogOpen: !!document.querySelector("dialog.kill-dialog[open]"),
+      }), gatedKill);
+      assert.deepEqual(aliveAfterFirst, {
+        workspace: true,
+        sessionsView: true,
+        inspector: true,
+        killButton: true,
+        killAriaDisabled: "true",
+        whyOpen: false,
+        dialogOpen: false,
+      }, "workspace stays rendered after WhyDisabled chunk load failure");
+    }
+    assert.equal(prepares.length, 0, `blocked click ${click} prepares nothing`);
+    assert.equal(kills.length, 0, `blocked click ${click} sends nothing`);
+  }
+
+  // Keyboard burst while still blocked also stays bounded (at most 1 per
+  // activation) and leaves the workspace intact.
+  const reqsBeforeKeys = chunkRequests.length;
+  const failedBeforeKeys = failedChunkRequests;
   await page.focus(gatedKill);
   await page.keyboard.press("Enter");
   await page.keyboard.press("Space");
   await pause(400);
-  assert.ok(failedChunkRequests > failedBeforeSecond, "retry while still blocked attempts a fresh chunk fetch");
+  const keyDelta = chunkRequests.length - reqsBeforeKeys;
+  assert.ok(keyDelta >= 1 && keyDelta <= 2, `2 key activations started at most 1 chunk request each (got ${keyDelta})`);
+  assert.ok(failedChunkRequests > failedBeforeKeys, "keyboard retry while still blocked attempts a fresh chunk fetch");
   assert.ok(await page.$(gatedKill), "workspace and Kill button survive repeated blocked clicks");
   assert.equal(await page.$(".why-disabled:popover-open"), null);
   assert.equal(await page.$("dialog.kill-dialog[open]"), null);
@@ -109,11 +139,19 @@ try {
   assert.equal(kills.length, 0, "repeated blocked clicks send nothing");
   assert.deepEqual(h.errors, [], "error boundary catches chunk failure with no uncaught page errors");
 
+  // R-1 follow-up: 0 chunk requests while idle after repeated failures (no retry loop).
+  const idleAfterClicks = chunkRequests.length;
+  await pause(2000);
+  assert.equal(chunkRequests.length, idleAfterClicks, "0 WhyDisabled chunk requests while idle after blocked clicks");
+
   // Allow the WhyDisabled chunk again: the next click on the same button retries
-  // the import and opens the message with the backend GRANT.
+  // the import (at most 1 request) and opens the message with the backend GRANT.
   state.failAssets = null;
+  const reqsBeforeRecover = chunkRequests.length;
   await page.click(gatedKill);
   await page.waitForSelector(".why-disabled:popover-open", { visible: true, timeout: 10000 });
+  const recoverDelta = chunkRequests.length - reqsBeforeRecover;
+  assert.ok(recoverDelta >= 1 && recoverDelta <= 1, `recovery click started at most 1 chunk request (got ${recoverDelta})`);
   const why = await page.$eval(".why-disabled:popover-open", (e) => ({
     role: e.getAttribute("role"),
     text: e.textContent || "",
@@ -126,6 +164,12 @@ try {
   assert.equal(prepares.length, 0, "retrying and opening the message prepares nothing");
   assert.equal(kills.length, 0, "retrying and opening the message sends nothing");
   assert.equal(await page.$("dialog.kill-dialog[open]"), null);
+
+  // R-1 follow-up: every WhyDisabled chunk request stayed on the workspace origin.
+  assert.ok(chunkRequests.length > 0, "observed WhyDisabled chunk requests");
+  assert.deepEqual(chunkRequests.filter((u) => new URL(u).origin !== origin), [],
+    "every WhyDisabled chunk request went to the workspace origin only");
+  assert.deepEqual(state.blocked, [], "no non-local requests were attempted");
 
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));

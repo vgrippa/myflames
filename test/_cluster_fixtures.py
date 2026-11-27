@@ -479,7 +479,8 @@ SCENARIOS = {
         },
     },
     "gr-8.4-denied": {
-        "variables": _mysql_vars(),
+        "variables": _mysql_vars(partial_revokes="OFF"),
+        "account": "app@%",
         "tables": {"performance_schema.replication_group_members":
                    ConnectorError("mysql client exited 1: ERROR 1142 (42000) at line 1: SELECT command denied to "
                                   "user 'app'@'%' for table 'replication_group_members'")},
@@ -663,7 +664,10 @@ class ScenarioConn(object):
             from _grants_fixtures import grants_batch
             return grants_batch(ADMIN_GRANTS, version=self.version)
         if body == "SELECT USER(), CURRENT_USER() LIMIT 1":
-            return batch([["mf_admin@client", "mf_admin@localhost"]])
+            if isinstance(sc.get("account"), Exception):
+                raise sc["account"]
+            account = sc.get("account", "mf_admin@localhost")
+            return batch([["mf_admin@client", account]])
         if body == "SHOW GRANTS":
             return batch([[line] for line in ADMIN_GRANTS])
         if body.startswith("SHOW GLOBAL VARIABLES WHERE Variable_name IN"):

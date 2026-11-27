@@ -554,6 +554,8 @@ class TestGalera(unittest.TestCase):
         self.assertEqual(report['kind'], 'galera')
         self.assertIn('PROCESS', report['message'])
         self.assertEqual(report['status'], 'unknown')
+        self.assertIn('grant_sql', report)
+        self.assertIsNone(report['grant_sql'])
 
     def test_connection_failure_raises(self):
         conn = F.conn('galera-11.8-healthy')
@@ -1086,6 +1088,7 @@ class TestGroupReplication(unittest.TestCase):
         denied = F.report('gr-8.4-denied')
         self.assertFalse(denied['available'])
         self.assertIn('SELECT on performance_schema', denied['message'])
+        self.assertEqual(denied['grant_sql'], 'GRANT SELECT ON `performance\\_schema`.* TO `app`@`%`;')
         off = F.report('gr-8.4-ps-off')
         self.assertEqual((off['kind'], off['status'], off['members']), ('group_replication', 'unknown', []))
         self.assertTrue(any('Performance Schema is off' in n for n in off['notes']))
@@ -1094,6 +1097,105 @@ class TestGroupReplication(unittest.TestCase):
             self.assertEqual((report['kind'], report['status']), ('none', 'unknown'), name)
             self.assertTrue(report['message'].startswith('Not part of a cluster'))
             self.assertEqual(m.format_text(report).count('\n'), 1)
+
+    def test_denied_read_grant_sql(self):
+        from test_chart_data import validate
+        err = ConnectorError("mysql client exited 1: ERROR 1142 (42000) at line 1: SELECT command denied to "
+                             "user 'spoofed'@'%' for table 'mysql.user'")
+        # MySQL 8.4: partial_revokes OFF escapes '_', ON keeps literal, absent leaves null.
+        for partial, expected in (
+            ('OFF', 'GRANT SELECT ON `performance\\_schema`.* TO `real_user`@`10.0.0.5`;'),
+            ('ON', 'GRANT SELECT ON `performance_schema`.* TO `real_user`@`10.0.0.5`;'),
+            (None, None),
+        ):
+            with self.subTest(partial_revokes=partial):
+                sc = {
+                    'variables': F._mysql_vars(partial_revokes=partial),
+                    'account': 'real_user@10.0.0.5',
+                    'tables': {'performance_schema.replication_group_members': err},
+                }
+                report = m.read_status(F.ScenarioConn(sc))
+                validate(report, SCHEMA)
+                self.assertFalse(report['available'])
+                self.assertEqual(report['grant_sql'], expected)
+                if expected is not None:
+                    self.assertNotIn('spoofed', expected)
+                    self.assertNotIn('mysql', expected)
+
+        # MySQL 5.7 has no partial_revokes variable and always uses wildcard matching.
+        sc_57 = {
+            'variables': F._mysql_vars(version='5.7.44'),
+            'account': 'app@localhost',
+            'tables': {'performance_schema.replication_group_members': err},
+        }
+        report_57 = m.read_status(F.ScenarioConn(sc_57))
+        validate(report_57, SCHEMA)
+        self.assertEqual(report_57['grant_sql'], 'GRANT SELECT ON `performance\\_schema`.* TO `app`@`localhost`;')
+
+        # CURRENT_USER() failure, NULL or missing '@' leaves grant_sql null.
+        for bad_account in (
+            ConnectorError('mysql client exited 1: ERROR 2013 (HY000): Lost connection'),
+            None,
+            '',
+            'no_host_part',
+        ):
+            with self.subTest(bad_account=bad_account):
+                sc = {
+                    'variables': F._mysql_vars(partial_revokes='OFF'),
+                    'account': bad_account,
+                    'tables': {'performance_schema.replication_group_members': err},
+                }
+                report = m.read_status(F.ScenarioConn(sc))
+                validate(report, SCHEMA)
+                self.assertFalse(report['available'])
+                self.assertIsNone(report['grant_sql'])
+
+        # Hostile CURRENT_USER() outside printable ASCII or with a backslash returns null.
+        hostile_accounts = (
+            '\x01\\! touch /tmp/x #@%',
+            '\u00c8' * 7 + '\\! touch /tmp/x #@%',
+            'app@h\x1b[201~',
+            'back\\slash@%',
+            'bad\nuser@%',
+            'app\x7f@%',
+            'a\u200bb@%',
+            'a\u202eb@%',
+            'caf\u00e9@%',
+        )
+        for account in hostile_accounts:
+            for partial in ('OFF', 'ON'):
+                with self.subTest(hostile=account, partial_revokes=partial):
+                    sc = {
+                        'variables': F._mysql_vars(partial_revokes=partial),
+                        'account': account,
+                        'tables': {'performance_schema.replication_group_members': err},
+                    }
+                    report = m.read_status(F.ScenarioConn(sc))
+                    validate(report, SCHEMA)
+                    self.assertFalse(report['available'])
+                    self.assertIsNone(report['grant_sql'])
+
+        # Galera (_read_galera and _read_galera_off): SHOW GLOBAL STATUS has no table
+        # schema, so grant_sql is null even when error text mimics a 1142 table error.
+        galera_1142 = ConnectorError(
+            "mysql client exited 1: ERROR 1142 (42000) at line 1: SELECT command denied to "
+            "user 'evil'@'%' for table 'mysql.wsrep_cluster_members'"
+        )
+        for wsrep_on in ('ON', 'OFF'):
+            with self.subTest(galera_wsrep_on=wsrep_on):
+                sc = {
+                    'variables': F._mariadb_vars(wsrep_on=wsrep_on,
+                                                 wsrep_provider='/usr/lib/galera/libgalera_smm.so',
+                                                 wsrep_cluster_address='gcomm://a,b,c'),
+                    'account': 'app@%',
+                    'status_error': galera_1142,
+                }
+                report = m.read_status(F.ScenarioConn(sc))
+                validate(report, SCHEMA)
+                self.assertFalse(report['available'])
+                self.assertEqual(report['kind'], 'galera')
+                self.assertIn('grant_sql', report)
+                self.assertIsNone(report['grant_sql'])
 
     def test_live_primary_mode_wins_over_metadata(self):
         conn, data = F.recorded('ic-8.4-healthy', edit=F.editor(

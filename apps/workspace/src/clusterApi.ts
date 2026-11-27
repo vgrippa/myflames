@@ -66,6 +66,8 @@ export type ClusterReport = {
   performance_schema: boolean;
   available: boolean;
   message: string | null;
+  /** Advisory GRANT for a denied cluster read, built on the backend from CURRENT_USER(); null or absent when unavailable. */
+  grant_sql?: string | null;
   kind: ClusterKind;
   server: { hostname: string | null; port: number | null; report_host: string | null; server_uuid: string | null };
   cluster: {
