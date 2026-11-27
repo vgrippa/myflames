@@ -239,6 +239,12 @@ export type LifecycleJob = {
   output?: { written_bytes: number; estimated_bytes: number | null } | null;
   events: { at: string; stream: string; text: string }[];
   result: LifecycleResult | null; error: string; policy?: OpsPolicy;
+  /** Where the job was started (non-secret): stays the truth when the owning
+   * saved connection's endpoint is edited afterwards. */
+  started_on?: { host: string; port: number };
+  /** How this caller owns the job: the endpoint it runs on, or the saved
+   * connection it started from (survives an endpoint edit). */
+  owner_match?: "endpoint" | "saved_connection";
 };
 export function jobActive(job: LifecycleJob) { return job.state === "queued" || job.state === "running"; }
 /** lifecycle-dump-info-1.0: what a dump folder restores into, read before the

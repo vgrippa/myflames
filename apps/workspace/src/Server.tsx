@@ -468,6 +468,11 @@ export function Server({
     () => (groupServer ? new Set(groupServer.group.members.map((m) => m.profile_id)) : null),
     [groupServer],
   );
+  // The scope the member resolver sees: the connection in use and the open
+  // group's membership, as a stable value so an effect can depend on it.
+  const groupScopeKey = groupServer
+    ? `${groupServer.group.group_name}:${[...groupServer.group.members.map((m) => m.profile_id)].sort().join(",")}`
+    : "";
   const groupKeyInScope = useCallback(
     (key: string) => {
       if (endpointKey(key) === endpointKey(activeKey)) return true;
@@ -1611,13 +1616,14 @@ export function Server({
   // S14 restore: list the job registry of every saved job member that is a
   // same-group member again (registry read only, no database login, no new
   // connection). An outside member keeps its id saved and is named in the
-  // note; it is dropped only when its saved connection was deleted.
+  // note; it is dropped only when its saved connection was deleted. The spec
+  // is JSON: a saved id may itself contain a comma.
   const restoredJobSpec = useMemo(
-    () => (restoredJobs.pending.length ? [...restoredJobs.pending].sort().join(",") : ""),
+    () => (restoredJobs.pending.length ? JSON.stringify([...restoredJobs.pending].sort()) : ""),
     [restoredJobs],
   );
   useEffect(() => {
-    if (!restoredJobSpec || !profilesLoaded) return;
+    if (!restoredJobSpec) return;
     if (profilesFailed) {
       // While the saved-connections list fails, nothing is read or dropped:
       // the pending ids move to the note as "group unknown" and stay saved.
@@ -1637,7 +1643,9 @@ export function Server({
       });
       return;
     }
-    const ids = restoredJobSpec.split(",");
+    // The first read has not finished (and has not failed): wait for it.
+    if (!profilesLoaded) return;
+    const ids = JSON.parse(restoredJobSpec) as string[];
     const controller = new AbortController();
     async function run() {
       const resolve = latestResolveMember.current;
@@ -1677,7 +1685,9 @@ export function Server({
       setRestoredJobs((prev) => ({
         pending: prev.pending.filter((id) => !ids.includes(id)),
         outside: [...prev.outside.filter((o) => !doneIds.includes(o.id) && !dropped.includes(o.id) && !outside.some((n) => n.id === o.id)), ...outside],
-        failed: [...prev.failed.filter((f) => !doneIds.includes(f.id) && !dropped.includes(f.id) && !failed.some((n) => n.id === f.id)), ...failed],
+        // A member that moved outside since its read failed leaves the retry
+        // list too: it is named in the outside note, not retried forever.
+        failed: [...prev.failed.filter((f) => !doneIds.includes(f.id) && !dropped.includes(f.id) && !failed.some((n) => n.id === f.id) && !outside.some((n) => n.id === f.id)), ...failed],
       }));
     }
     void run();
@@ -1696,32 +1706,44 @@ export function Server({
     }, JOB_POLL_MS);
     return () => window.clearTimeout(timer);
   }, [restoredJobs, profilesLoaded, profilesFailed]);
-  // Outside members that became resolvable again (rejoined the group) queue
-  // for a fresh registry read; a deleted saved connection drops out of the
-  // note and the saved ids.
+  // Outside members that became resolvable again (a connection or group
+  // switch into their scope, or a rejoined group) queue for a fresh registry
+  // read; a deleted saved connection drops out of the note and the saved ids.
+  // A member whose running job was adopted meanwhile (opened in Maintenance)
+  // leaves the note and the retry list: its own banner and poller carry it.
+  // Entries that stay outside follow the saved connection's current name and
+  // group, and say "group unknown" while the list cannot be read.
   useEffect(() => {
-    if (!profilesLoaded || profilesFailed) return;
+    if (!profilesLoaded && !profilesFailed) return;
     const resolve = latestResolveMember.current;
     setRestoredJobs((prev) => {
+      const adopted = new Set(activeJobMemberIds);
       let changed = false;
       const keep: typeof prev.outside = [];
       const requeue: string[] = [];
       for (const o of prev.outside) {
+        if (adopted.has(o.id)) { changed = true; continue; }
+        if (profilesFailed) {
+          if (!o.listFailed) { changed = true; keep.push({ ...o, listFailed: true }); }
+          else keep.push(o);
+          continue;
+        }
         const p = latestProfiles.current.find((x) => x.id === o.id);
         if (!p) { changed = true; continue; }
         if (resolve && resolve(o.id)) { changed = true; requeue.push(o.id); continue; }
-        if (o.listFailed) {
+        const group = (p.group || "").trim();
+        const fresh = { id: o.id, name: p.name || o.id, group, hadGroup: !!group || seenJobProfileGroups.current.has(o.id), listFailed: false };
+        if (o.listFailed || o.name !== fresh.name || o.group !== fresh.group || o.hadGroup !== fresh.hadGroup) {
           changed = true;
-          const group = (p.group || "").trim();
-          keep.push({ id: o.id, name: p.name || o.id, group, hadGroup: !!group || seenJobProfileGroups.current.has(o.id), listFailed: false });
-          continue;
-        }
-        keep.push(o);
+          keep.push(fresh);
+        } else keep.push(o);
       }
+      const failed = prev.failed.filter((f) => !adopted.has(f.id));
+      if (failed.length !== prev.failed.length) changed = true;
       if (!changed) return prev;
-      return { ...prev, outside: keep, pending: [...prev.pending, ...requeue.filter((id) => !prev.pending.includes(id))] };
+      return { ...prev, outside: keep, failed, pending: [...prev.pending, ...requeue.filter((id) => !prev.pending.includes(id))] };
     });
-  }, [profiles, profilesLoaded, profilesFailed, resolveMemberConnection]);
+  }, [profiles, profilesLoaded, profilesFailed, resolveMemberConnection, activeKey, groupScopeKey, activeJobMemberIds]);
   function resolveBoundConnection(boundKey: string, action: "Stop" | "Cancel"): { connection: Connection | null; reason: string } {
     const wanted = endpointKey(boundKey);
     const pid = keyProfileId(boundKey);
