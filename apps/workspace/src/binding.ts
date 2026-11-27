@@ -100,7 +100,9 @@ export function keyProfileId(key: string): string {
 
 /** "Production (app@db1:3306)", or "app@db1:3306" without a name; a
  * connection through SSH adds "via bastion". A Group connection (group_name)
- * shows its group label ("Group connection mf-ic · 3 servers") as its name. */
+ * shows its group label with the member's name ("Group connection mf-ic ·
+ * 3 servers · db-1") as its name, so a review sheet names the server the
+ * reviewed statement runs on. */
 export function connectionLabel(c: Identity): string {
   const via = trimPasted(c.ssh_host || "");
   const target = `${c.user ? `${c.user}@` : ""}${c.host}:${c.port}${via ? ` via ${via}` : ""}`;

@@ -54,11 +54,17 @@ export type OpenMemberInfo = {
 };
 function memberPlace(member: { role: MemberRole | null; product: string | null }): MemberPlace {
   if (member.role === "cache" || member.product === "Readyset") return "readyset";
-  if (member.role === "proxy" || member.product === "ProxySQL") return "proxysql";
+  // The backend reports ProxySQL's product as "ProxySQL Admin"
+  // (topology_group.py); "ProxySQL" covers older reports.
+  if (member.role === "proxy" || member.product === "ProxySQL" || member.product === "ProxySQL Admin") return "proxysql";
   if (member.role && CLUSTER_ROLES.has(member.role)) return "cluster";
   if (member.role && REPLICATION_ROLES.has(member.role)) return "replication";
   return "server";
 }
+/** The place a member card opens, as the word its buttons and cards use. */
+const MEMBER_PLACE_LABEL: Record<MemberPlace, string> = {
+  server: "Server", cluster: "Cluster", replication: "Replication", proxysql: "ProxySQL", readyset: "Readyset",
+};
 const PARAMETER_STATUS: Record<string, [BadgeTone | "info", string]> = {
   same: ["ok", "Same"], different: ["warn", "Different"], missing: ["warn", "Missing"], per_server: ["info", "Per server"],
 };
@@ -316,15 +322,15 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     const actions = (
       <div className="topology-member-actions">
         <ToolbarButton className="small" onClick={() => onUseInServer(member.profile_id)}>Use in Server views</ToolbarButton>
-        {member.role && CLUSTER_ROLES.has(member.role) && (
+        {onOpenMember && openPlace !== "server" && (
+          <ToolbarButton className="small" onClick={() => onOpenMember(member, openPlace)}>
+            Open in {MEMBER_PLACE_LABEL[openPlace]}</ToolbarButton>
+        )}
+        {!onOpenMember && member.role && CLUSTER_ROLES.has(member.role) && (
           <ToolbarButton className="small" onClick={onOpenCluster}>Open in Cluster</ToolbarButton>
         )}
-        {member.role && REPLICATION_ROLES.has(member.role) && (
+        {!onOpenMember && member.role && REPLICATION_ROLES.has(member.role) && (
           <ToolbarButton className="small" onClick={onOpenReplication}>Open in Replication</ToolbarButton>
-        )}
-        {onOpenMember && (openPlace === "readyset" || openPlace === "proxysql") && (
-          <ToolbarButton className="small" onClick={() => onOpenMember(member, openPlace)}>
-            Open in {openPlace === "readyset" ? "Readyset" : "ProxySQL"}</ToolbarButton>
         )}
       </div>
     );
@@ -792,7 +798,8 @@ function MapTab({ report, memberName, selection, onOpenMember }: { report: Topol
         if (node.kind !== "member") return;
         const member = { profile_id: node.profile_id, profile_name: node.label, role: node.role, product: node.product };
         onOpenMember(member, memberPlace(member));
-      } : undefined} />
+      } : undefined} openPlaceName={onOpenMember ? (node) =>
+        node.kind === "member" ? MEMBER_PLACE_LABEL[memberPlace({ role: node.role, product: node.product })] : null : undefined} />
       <section className="topology-map-section" aria-label="Servers">
         <h3>Servers</h3>
         <ul className="topology-map-list">

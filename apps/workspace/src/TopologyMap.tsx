@@ -364,7 +364,7 @@ function placeLabel(points: Point[], labelAt: Point, text: string, grid: ReturnT
   return null;
 }
 
-export function TopologyMap({ map, selection, onOpenNode }: { map: MapReport; selection: Selection; onOpenNode?: (node: MapNode) => void }) {
+export function TopologyMap({ map, selection, onOpenNode, openPlaceName }: { map: MapReport; selection: Selection; onOpenNode?: (node: MapNode) => void; /** The place a member card opens ("Readyset"), so the card's name and title state the navigation. */ openPlaceName?: (node: MapNode) => string | null }) {
   const diagram = useMemo(() => layout(map), [map]);
   const labels = mapNodeLabels(map);
   // Index once per render: node labels, each node's owning block, and the
@@ -443,11 +443,13 @@ export function TopologyMap({ map, selection, onOpenNode }: { map: MapReport; se
             // A member card navigates to its place (onOpenNode); only a peer
             // card toggles the inspector, so only a peer is a pressed toggle.
             const navigates = !peer && !!onOpenNode;
+            const placeName = navigates && openPlaceName ? openPlaceName(node) : null;
+            const facts = [mapAddress(node), engine, !peer && node.role ? ROLE[node.role] || node.role : "", aliasOf ? `Alias of ${aliasOf}` : "", status].filter(Boolean).join(", ");
             return <div key={node.id} className="topology-map-node-wrap" style={{ left: x, top: y, width: CARD_W, height: CARD_H }}>
               <button type="button" className={`topology-map-node tone-${tone}${peer ? " is-peer" : ""}${selection.key === key ? " is-selected" : ""}`}
               data-node={node.id} data-row-key={key} data-outcome={peer ? undefined : node.outcome}
-              aria-pressed={navigates ? undefined : selection.key === key} aria-label={[nodeLabel, mapAddress(node), engine, !peer && node.role ? ROLE[node.role] || node.role : "", aliasOf ? `Alias of ${aliasOf}` : "", status].filter(Boolean).join(", ")}
-              title={`${nodeLabel}\n${mapAddress(node)}\n${engine}${aliasOf ? `\nAlias of ${aliasOf}` : ""}\n${status}`}
+              aria-pressed={navigates ? undefined : selection.key === key} aria-label={placeName ? `Open ${nodeLabel} in ${placeName}: ${facts}` : [nodeLabel, facts].filter(Boolean).join(", ")}
+              title={`${nodeLabel}\n${mapAddress(node)}\n${engine}${aliasOf ? `\nAlias of ${aliasOf}` : ""}\n${status}${placeName ? `\nOpens the ${placeName} place on this member` : ""}`}
               onClick={() => {
                 // A peer's click keeps opening its inspector with the "Not in
                 // this group" fix; a member's click opens that member's place
@@ -462,12 +464,15 @@ export function TopologyMap({ map, selection, onOpenNode }: { map: MapReport; se
               {aliasOf && <span className="topology-map-alias">Alias of {aliasOf}</span>}
               <span className="topology-map-node-state">{!peer && node.role ? `${ROLE[node.role] || node.role} · ` : ""}{status}</span>
             </button>
-              <button type="button" className="icon-button topology-map-node-details"
+              {/* The Details button opens the inspector. Only a card whose own
+                  click navigates (a member with onOpenNode) needs it: a peer's
+                  click already opens the inspector. */}
+              {navigates && <button type="button" className="icon-button topology-map-node-details"
               data-details={node.id}
               aria-label={`Details for ${nodeLabel}`} title={`Details for ${nodeLabel}`}
               onClick={(event) => { event.stopPropagation(); selection.select(key, true); }}>
               <Icon name="info" size={12} />
-            </button>
+            </button>}
             </div>;
           })}
         </div>)}

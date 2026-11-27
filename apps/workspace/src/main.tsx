@@ -177,6 +177,32 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
 };
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
+/** After a topology card opened a place, focus lands on the place's heading
+ * (the chunk can still be loading, so retry briefly); the page never scrolls. */
+function focusPlaceHeadingSoon() {
+  let attempts = 0;
+  const tick = () => {
+    const main = document.getElementById("main");
+    const target = main
+      ? Array.from(main.querySelectorAll<HTMLElement>('h2[id$="-title"]')).find((el) => !el.closest("[hidden]"))
+        || main.querySelector<HTMLElement>(
+          ':scope > div:not([hidden]) button, :scope > div:not([hidden]) input, :scope > div:not([hidden]) select, :scope > div:not([hidden]) [tabindex]:not([tabindex="-1"])')
+      : null;
+    if (target) { target.focus({ preventScroll: true }); return; }
+    if (++attempts < 80) window.setTimeout(tick, 25);
+  };
+  window.setTimeout(tick, 0);
+}
+/** Back to Topology returns focus to the card that was activated. */
+function focusTopologyCardSoon(nodeId: string) {
+  let attempts = 0;
+  const tick = () => {
+    const card = document.querySelector<HTMLElement>(`.topology-map-node[data-node="${CSS.escape(nodeId)}"]`);
+    if (card && !card.closest("[hidden]")) { card.focus({ preventScroll: true }); return; }
+    if (++attempts < 80) window.setTimeout(tick, 25);
+  };
+  window.setTimeout(tick, 0);
+}
 /** One stop in the window's navigation history (Back and Forward, the cross-link
  * chip, the palette's Recent views). In-memory only. */
 type NavEntry = {
@@ -692,12 +718,17 @@ function App() {
     setConnectionNote(`Group ${name} was deleted. Its saved connections stay; the active member stays in use as a plain connection.`);
   }
   // The member each single-server place works on, by place ("server",
-  // "query"): chosen in the place's Server: control, an explicit open of that
-  // member's saved connection. Absent entries mean the primary or source (the
-  // active member the backend picked). Never saved; a reload starts there.
+  // "query", "readyset", "proxysql", "cluster", "replication"): chosen in the
+  // place's Server: control, an explicit open of that member's saved
+  // connection, or a Topology map card. Absent entries mean the primary or
+  // source (the active member the backend picked). Never saved; a reload
+  // starts there.
   const [memberByPlace, setMemberByPlace] = useState<Record<string, string>>({});
   // A group edit removed a member a place was on: its views moved to the
-  // primary and this note says so until the next explicit choice.
+  // primary and this note says so until the next explicit choice. The "Using
+  // <member>" note is not stored: it is derived per place from the request
+  // the place reads (placeMemberNote below), so it can never name another
+  // member.
   const [memberNote, setMemberNote] = useState("");
   /** The member's saved connection as a request connection (its profile id,
    * its own endpoint, the group's strictest safety), with the group name so
@@ -1629,8 +1660,11 @@ function App() {
       }
       // Confirmation must preserve the Group connection's identity and use
       // its freshly read strictest type. Read-only remains this member's flag.
+      // The name carries the member (target?.name already does; the active
+      // member's fallback adds it), so the review sheet names the server.
+      const activeName = members.find((p) => p.id === asked.id)?.name;
       checked.group_name = group.group_name;
-      checked.name = target?.name || groupConnectionLabel(group.group_name, members.length);
+      checked.name = target?.name || `${groupConnectionLabel(group.group_name, members.length)}${activeName ? ` · ${activeName}` : ""}`;
       checked.type = members.some((p) => p.type !== "development") ? "production" : "development";
     }
     return checked;
@@ -1648,14 +1682,18 @@ function App() {
       );
       // A Group connection carries its group name: the backend re-checks the
       // membership on every request, and the key reloads the views on a change.
-      // Its display name is the group's ("Group connection mf-ic · 3 servers").
+      // Its display name is the group's with the active member's name
+      // ("Group connection mf-ic · 3 servers · db-1"), so a review sheet names
+      // the server the reviewed statement runs on, not only the group.
       if (groupActive) {
         c.group_name = groupActive.group_name;
-        c.name = groupConnectionLabel(groupActive.group_name, groupActive.members.length);
+        const activeName = profiles.find((p) => p.id === labState.profile_id)?.name
+          || groupActive.members.find((m) => m.profile_id === labState.profile_id)?.profile_name || "";
+        c.name = groupConnectionLabel(groupActive.group_name, groupActive.members.length) + (activeName ? ` · ${activeName}` : "");
       }
       return c;
     },
-    [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known, groupActive],
+    [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known, groupActive, profiles],
   );
   const requestRef = useRef(request);
   requestRef.current = request;
@@ -1688,6 +1726,18 @@ function App() {
     () => (groupActive && proxyMemberId ? memberRequest(proxyMemberId) || request : request),
     [groupActive, proxyMemberId, request, profiles],
   );
+  // Cluster and Replication route the same way: a card or the inspector opens
+  // the place on the clicked member.
+  const clusterMemberId = memberOf("cluster");
+  const replicationMemberId = memberOf("replication");
+  const clusterRequest = useMemo(
+    () => (groupActive && clusterMemberId ? memberRequest(clusterMemberId) || request : request),
+    [groupActive, clusterMemberId, request, profiles],
+  );
+  const replicationRequest = useMemo(
+    () => (groupActive && replicationMemberId ? memberRequest(replicationMemberId) || request : request),
+    [groupActive, replicationMemberId, request, profiles],
+  );
   const serverRequestRef = useRef(serverRequest);
   serverRequestRef.current = serverRequest;
   const serverWritePolicy = useMemo(() => ({
@@ -1708,9 +1758,28 @@ function App() {
     : ["server", "workload", "tuning", "diagram"].includes(mode) ? serverRequest
     : mode === "readyset" ? readysetRequest
     : mode === "proxysql" ? proxyRequest
+    : mode === "cluster" ? clusterRequest
+    : mode === "replication" ? replicationRequest
     : request;
   const queryRequestRef = useRef(queryRequest);
   queryRequestRef.current = queryRequest;
+  // The "Using <member> from group <group>." note is derived per place from
+  // the request the place on screen actually reads: it can never name another
+  // member, and navigating to a place that reads the active member (or the
+  // connection in use) shows no stale note. The removal notice (memberNote)
+  // is separate and takes precedence until the next navigation or choice.
+  const memberNameOf = (id: string) =>
+    profiles.find((p) => p.id === id)?.name
+    || groupActive?.members.find((m) => m.profile_id === id)?.profile_name
+    || id;
+  const usingNote = (req: Connection) =>
+    groupActive && req.profile_id && req.profile_id !== labState.profile_id
+      ? `Using ${memberNameOf(req.profile_id)} from group ${groupActive.group_name}.`
+      : "";
+  const serverMemberNote = usingNote(serverRequest);
+  const placeMemberNote = mode === "readyset" || mode === "proxysql" || mode === "cluster" || mode === "replication"
+    ? usingNote(placeRequest)
+    : "";
   const placeConnected = ready && safety.known && !!placeRequest.host;
   const placeConnectionName = groupActive && placeRequest.profile_id
     ? profiles.find((p) => p.id === placeRequest.profile_id)?.name
@@ -1722,23 +1791,18 @@ function App() {
     setMemberByPlace((current) => (current[place] === id ? current : { ...current, [place]: id }));
   }, []);
   // A member card's click opens that member's place in the click's frame:
-   // Server, Readyset and ProxySQL route their reads to the chosen member and
-   // the note says whose connection the place uses; the Back chip returns to
-   // the map with its tab, scroll and selection. Cluster and Replication keep
-   // reading the connection in use, so no member is chosen for them.
+  // Server, Readyset, ProxySQL, Cluster and Replication route their reads to
+  // the chosen member and the per-place note (derived from placeRequest) says
+  // whose connection the place uses; the Back chip returns to the map with
+  // its tab, scroll and selection, and focus returns to the card.
+  const topologyCardFocus = useRef("");
   const openTopologyMember = useCallback((member: OpenMemberInfo, place: MemberPlace) => {
     const back = linkOrigin();
-    if (place === "cluster" || place === "replication") {
-      setMemberNote("");
-      go(place);
-      finishLink(back);
-      return;
-    }
     chooseMember(place, member.profile_id);
-    const group = groupActiveRef.current;
-    if (group) setMemberNote(`Using ${member.profile_name} from group ${group.group_name}.`);
     go(place);
     finishLink(back);
+    topologyCardFocus.current = member.profile_id;
+    focusPlaceHeadingSoon();
   }, [chooseMember]);
   const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
   // Navigation history (Back/Forward, the cross-link chip, the palette's
@@ -1866,6 +1930,13 @@ function App() {
     const now = navStateRef.current;
     if (entry.connection && entry.connection !== now.key)
       setNotice(`${entry.label} was open on ${entry.connectionName}; this window is on ${now.name}. Nothing was switched: views read the connection in use.`);
+    // Back to Topology after a card opened a member's place: focus returns to
+    // the card (the map stays mounted).
+    if (entry.mode === "topology" && topologyCardFocus.current) {
+      const cardId = topologyCardFocus.current;
+      topologyCardFocus.current = "";
+      focusTopologyCardSoon(cardId);
+    }
   }
   function navMove(dir: -1 | 1) {
     const h = navHistory.current;
@@ -1893,33 +1964,36 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  // The Cluster item names the state of the connection in use once the place
-  // or Refresh all has read it: muted when it is not part of a cluster (still
-  // focusable; the place explains), otherwise the cluster's status. Before
-  // the first read it looks like any other place.
-  const isProxyHere = proxyReport?.key === connectionKey(request) && proxyReport.report.is_proxysql;
-  const isReadysetHere = readysetReport?.key === connectionKey(request) && readysetReport.report.is_readyset;
-  const shownClusterReport = (isProxyHere || isReadysetHere) && clusterReport?.key !== connectionKey(request) ? null : clusterReport;
-  const clusterState = clusterNav(shownClusterReport, connectionKey(request));
+  // The Cluster item names the state of the member the Cluster place reads
+  // (clusterRequest) once the place or Refresh all has read it: muted when it
+  // is not part of a cluster (still focusable; the place explains), otherwise
+  // the cluster's status. Before the first read it looks like any other place.
+  // Every badge, muted state and staleness check keys its report against the
+  // request its own place reads, never connectionKey(request).
+  const isProxyHere = proxyReport?.key === connectionKey(proxyRequest) && proxyReport.report.is_proxysql;
+  const isReadysetHere = readysetReport?.key === connectionKey(readysetRequest) && readysetReport.report.is_readyset;
+  const shownClusterReport = (isProxyHere || isReadysetHere) && clusterReport?.key !== connectionKey(clusterRequest) ? null : clusterReport;
+  const clusterState = clusterNav(shownClusterReport, connectionKey(clusterRequest));
   const clusterMuted = clusterState.state === "none" || isProxyHere || isReadysetHere;
-  const proxyNav = proxySqlNav(proxyReport, connectionKey(request));
+  const proxyNav = proxySqlNav(proxyReport, connectionKey(proxyRequest));
   const proxyMuted = proxyNav === "none" || isReadysetHere;
-  const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(request) ? proxyReport.report : null;
+  const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(proxyRequest) ? proxyReport.report : null;
   const proxyIssues = proxyNow && (proxyNow.status === "problem" || proxyNow.status === "watch") ? proxyNow.status_why.length : 0;
   const proxyBadge = !proxyNow ? null
     : proxyIssues > 0
       ? <NavMarker compact tone={proxyNow.status} count={proxyIssues} countTone={proxyNow.status === "problem" ? "danger" : "warn"} text={`ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}, ${proxyIssues} ${proxyIssues === 1 ? "issue" : "issues"}`} />
       : <NavMarker compact tone={proxyNow.status === "unknown" ? "unknown" : proxyNow.status} text={proxyNow.status === "ok" ? "ProxySQL OK" : proxyNow.status === "unknown" ? "ProxySQL not judged" : `ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}`} />;
   // A report read with another default database is stale like an unread one:
-  // the sidebar names Readyset's state only from a report of this database.
+  // the sidebar names Readyset's state only from a report of this database,
+  // read on the member the Readyset place reads (readysetRequest).
   const readysetDbStale =
     !!readysetReport &&
-    readysetReport.key === connectionKey(request) &&
+    readysetReport.key === connectionKey(readysetRequest) &&
     readysetReport.report.is_readyset &&
-    (readysetReport.report.session_database || null) !== (request.database || null);
-  const readysetNavState = readysetDbStale ? "unread" : readysetNav(readysetReport, connectionKey(request));
+    (readysetReport.report.session_database || null) !== (readysetRequest.database || null);
+  const readysetNavState = readysetDbStale ? "unread" : readysetNav(readysetReport, connectionKey(readysetRequest));
   const readysetMuted = readysetNavState === "none" || isProxyHere;
-  const readysetNow = (readysetNavState === "ok" || readysetNavState === "watch" || readysetNavState === "problem" || readysetNavState === "unknown") && readysetReport && readysetReport.key === connectionKey(request) ? readysetReport.report : null;
+  const readysetNow = (readysetNavState === "ok" || readysetNavState === "watch" || readysetNavState === "problem" || readysetNavState === "unknown") && readysetReport && readysetReport.key === connectionKey(readysetRequest) ? readysetReport.report : null;
   const readysetIssues = readysetNow && (readysetNow.status === "problem" || readysetNow.status === "watch") ? readysetNow.status_why.length : 0;
   const readysetBadge = !readysetNow ? null
     : readysetIssues > 0
@@ -1930,11 +2004,12 @@ function App() {
       ? <NavMarker compact tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
       // Not judged (an account that cannot read): no marker word of its own; the place says why.
       : <NavMarker compact tone={clusterState.status === "unknown" ? undefined : clusterState.status} text={clusterState.text} />;
-  // Replication names the state of the connection in use the same way, from
-  // the one report the place and Refresh all share: muted when it is not a
-  // replica (a neutral state; Group Replication's own channels do not count),
-  // Unknown only when the status could not be read.
-  const replicationState = replicationNav(replicationReport, connectionKey(request));
+  // Replication names the state of the member the Replication place reads
+  // (replicationRequest) the same way, from the one report the place and
+  // Refresh all share: muted when it is not a replica (a neutral state; Group
+  // Replication's own channels do not count), Unknown only when the status
+  // could not be read.
+  const replicationState = replicationNav(replicationReport, connectionKey(replicationRequest));
   const replicationMuted = replicationState.state === "none" || isReadysetHere;
   const replicationBadge = replicationState.state !== "replica" ? null
     : replicationState.failed > 0
@@ -2467,7 +2542,7 @@ function App() {
       />
       <div ref={chrome} data-place={place || (mode === "settings" ? "settings" : "audit")} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
-        {ready && connectionPlace && <ConnectionTypeStrip safety={safety} />}
+        {ready && connectionPlace && <ConnectionTypeStrip safety={{ ...safety, type: placeRequest.type === "development" ? "development" : "production", read_only: placeRequest.read_only === true }} />}
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
           <SidebarToggle expanded={sidebarOpen} narrow={sidebar.narrow}
             onToggle={() => setSidebar((current) => ({ ...current, open: !current.open }))} />
@@ -2487,9 +2562,12 @@ function App() {
               <span>{linkBack.label}</span>
             </button>
           )}
-          {/* The Server place shows the same note inside its view header. */}
-          {memberNote && (mode === "readyset" || mode === "proxysql") && (
-            <span className="group-server-note nav-member-note" role="status">{memberNote}</span>
+          {/* The Server place shows the same note inside its view header. The
+              "Using" note is the current place's own (derived from
+              placeRequest); the removed-member notice keeps showing until the
+              next explicit choice. */}
+          {(memberNote || placeMemberNote) && (mode === "readyset" || mode === "proxysql" || mode === "cluster" || mode === "replication") && (
+            <span className="group-server-note nav-member-note" role="status" title={memberNote || placeMemberNote}>{memberNote || placeMemberNote}</span>
           )}
           {ready && mode === "library" && (
             <Popover label="About Investigations" className="topbar-info">
@@ -2822,7 +2900,7 @@ function App() {
                 groupServer={groupActive ? {
                   group: groupActive,
                   member: serverMemberId,
-                  note: memberNote,
+                  note: memberNote || serverMemberNote,
                   onChoose: (id: string) => chooseMember("server", id),
                 } : null}
                 disabled={labBusy}
@@ -2878,10 +2956,10 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "replication"}>
                 <ReplicationPlace
-                  connection={request}
+                  connection={replicationRequest}
                   restoredLoop={restoredLoop}
                   disabled={labBusy}
-                  clusterKind={clusterReport?.key === connectionKey(request) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
+                  clusterKind={clusterReport?.key === connectionKey(clusterRequest) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
                   onOpenCluster={() => go("cluster")}
                   onOpenReadyset={() => go("readyset")}
                   onOpenProxySql={() => go("proxysql")}
@@ -2927,7 +3005,7 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "cluster"}>
               <ColumnStoreContext.Provider value={columnStore}>
-                <ClusterPlace connection={request} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
+                <ClusterPlace connection={clusterRequest} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
                   failure={clusterFailure} onFailure={failCluster}
                   onOpenProxySql={() => go("proxysql")} onOpenReadyset={() => go("readyset")}
                   profiles={profiles} onSwitchConnection={switchConnection}

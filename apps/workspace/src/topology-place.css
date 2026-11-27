@@ -254,7 +254,8 @@
 }
 /* The card's Details button opens the member inspector (the card itself
    opens the member's place). It shows on hover or focus anywhere in the
-   card and stays in the Tab order at all times. */
+   card, stays in the Tab order at all times, and is always visible where
+   there is no hover (touch). */
 .topology-map-node-details {
   position: absolute;
   top: 6px;
@@ -274,10 +275,16 @@
 .topology-map-node-details:hover { color: var(--accent); }
 .topology-map-node-wrap:hover .topology-map-node-details,
 .topology-map-node-wrap:focus-within .topology-map-node-details { opacity: 1; }
+@media (hover: none) {
+  .topology-map-node-details { opacity: 1; }
+}
 @media (prefers-reduced-motion: reduce) {
   .topology-map-node-details { transition: none; }
 }
 .topology-map-node .topology-eyebrow { min-width: 0; gap: 7px; color: var(--muted); }
+/* A card with a Details button keeps the eyebrow's engine/version text clear
+   of the icon (22 px at right 6 px, over the card's 14 px padding). */
+.topology-map-node-wrap:has(> .topology-map-node-details) .topology-eyebrow { padding-right: 18px; }
 .topology-map-node .topology-eyebrow > span,
 .topology-map-node-name, .topology-map-node-address, .topology-map-node-state {
   overflow: hidden;
@@ -530,7 +537,14 @@
   margin: 0;
 }
 
-/* The group-member note the shell shows in the top bar when a Readyset or
-   ProxySQL place reads one member of the Group connection (main.tsx); in the
-   Server place the same note sits inside the view header instead. */
-.nav-member-note { flex-basis: auto; white-space: nowrap; }
+/* The group-member note the shell shows in the top bar when a place reads one
+   member of the Group connection (main.tsx); in the Server place the same note
+   sits inside the view header instead. It truncates with an ellipsis (the full
+   text is the title) and never crushes the connection picker at 720 px. */
+.nav-member-note {
+  flex-basis: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

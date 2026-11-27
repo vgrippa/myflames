@@ -14,11 +14,11 @@
 // 3. layoutMatrix on the bar and on the open sheet (1440/720 x light/dark).
 // 4. The Topology map on a Group connection: a member card opens that
 //    member's place (Readyset, ProxySQL, Cluster, Replication or Server),
-//    with a Details button that keeps the inspector, a member note, and a
-//    Back to Topology chip that keeps the map's selection.
+//    with a Details button that keeps the inspector, a per-place member note,
+//    focus that follows the navigation, and a Back to Topology chip that
+//    keeps the map's selection and returns focus to the card.
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { chooseConnection, connectionOption, layoutMatrix, openConnectionPicker } from "./chrome-helpers.mjs";
 import { load, open, pause, setUiPreferences } from "./perf-harness.mjs";
 
@@ -130,7 +130,7 @@ const navMembers = [
   navMember({ profile_id: "p-nav-1", profile_name: "nav-db-1", host: "10.0.1.11", role: "primary", state: "ONLINE", server_uuid: "11111111-1111-1111-1111-1111111111aa" }),
   navMember({ profile_id: "p-nav-2", profile_name: "nav-db-2", host: "10.0.1.12", role: "source", state: "running", server_uuid: "22222222-2222-2222-2222-2222222222aa" }),
   navMember({ profile_id: "p-nav-3", profile_name: "nav-db-3", host: "10.0.1.13", server_uuid: "33333333-3333-3333-3333-3333333333aa" }),
-  navMember({ profile_id: "p-nav-proxy", profile_name: "nav-proxy", host: "10.0.1.14", port: 6032, engine: null, product: "ProxySQL", version: "2.5.1", version_comment: null, role: "proxy" }),
+  navMember({ profile_id: "p-nav-proxy", profile_name: "nav-proxy", host: "10.0.1.14", port: 6032, engine: null, product: "ProxySQL Admin", version: "2.5.1", version_comment: null, role: "proxy" }),
   navMember({ profile_id: "p-nav-rs", profile_name: "nav-rs", host: "10.0.1.15", port: 3307, engine: null, product: "Readyset", version: "2410.30", version_comment: null, role: "cache" }),
 ];
 function navMapNode(over) {
@@ -150,7 +150,7 @@ const navMapReport = {
   summary: { read: 5, failed: 0, not_reached: 0, versions: ["8.4.6"], text: "5 read." },
   map: {
     nodes: [
-      navMapNode({ id: "p-nav-proxy", profile_id: "p-nav-proxy", label: "nav-proxy", host: "10.0.1.14", port: 6032, engine: null, product: "ProxySQL", version: "2.5.1", role: "proxy" }),
+      navMapNode({ id: "p-nav-proxy", profile_id: "p-nav-proxy", label: "nav-proxy", host: "10.0.1.14", port: 6032, engine: null, product: "ProxySQL Admin", version: "2.5.1", role: "proxy" }),
       navMapNode({ id: "p-nav-rs", profile_id: "p-nav-rs", label: "nav-rs", host: "10.0.1.15", port: 3307, engine: null, product: "Readyset", version: "2410.30", role: "cache" }),
       navMapNode({ id: "p-nav-1", profile_id: "p-nav-1", label: "nav-db-1", host: "10.0.1.11", role: "primary", state: "ONLINE", server_uuid: "11111111-1111-1111-1111-1111111111aa" }),
       navMapNode({ id: "p-nav-2", profile_id: "p-nav-2", label: "nav-db-2", host: "10.0.1.12", role: "source", state: "running", server_uuid: "22222222-2222-2222-2222-2222222222aa" }),
@@ -969,14 +969,18 @@ try {
 
   // ---------------------------------------------------------------------------
   // 8. Topology map on a Group connection: a member card opens that member's
-  //    place; Details keeps the inspector; the note and Back chip follow.
+  //    place; Details keeps the inspector; the note is the place's own; focus
+  //    follows the navigation and Back returns it to the card.
   // ---------------------------------------------------------------------------
   profiles.push(
     { id: "p-nav-1", name: "nav-db-1", host: "10.0.1.11", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
     { id: "p-nav-2", name: "nav-db-2", host: "10.0.1.12", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
     { id: "p-nav-3", name: "nav-db-3", host: "10.0.1.13", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
     { id: "p-nav-proxy", name: "nav-proxy", host: "10.0.1.14", port: 6032, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
-    { id: "p-nav-rs", name: "nav-rs", host: "10.0.1.15", port: 3307, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    // nav-rs carries its own database and read-only flag: the sidebar badge and
+    // the top-edge strip on its place are the member's, not the connection in
+    // use's.
+    { id: "p-nav-rs", name: "nav-rs", host: "10.0.1.15", port: 3307, user: "dba", database: "shop", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: true, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
   );
   // The saved-connections list re-reads on window focus.
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -988,9 +992,9 @@ try {
   assert.equal(topologyCalls.length, 1, "the Map tab read once when shown");
   assert.equal(connectCalls.length, 1, "opening the group connection is the one /api/connect");
   const connectsBefore = connectCalls.length;
-  const topoShots = fileURLToPath(new URL("../../../local/topo-shots/", import.meta.url));
-  await fs.mkdir(topoShots, { recursive: true });
   const rsCard = '.topology-map-node[data-node="p-nav-rs"]';
+  // Screenshots go through the harness's shots folder; layoutMatrix adds the
+  // overflow checks (1440/720 px, light/dark).
   async function takeShots(name, hover) {
     for (const width of [1440, 720]) {
       await page.setViewport({ width, height: 900 });
@@ -998,7 +1002,7 @@ try {
         await setUiPreferences(page, { theme });
         if (hover) await page.hover(hover);
         await pause(150);
-        await page.screenshot({ path: `${topoShots}${name}-${width}-${theme}.png` });
+        await page.screenshot({ path: path.join(h.shots, `${name}-${width}-${theme}.png`) });
         writtenShots.push(`${name}-${width}-${theme}`);
       }
     }
@@ -1008,15 +1012,45 @@ try {
   }
   // The map with the Details button visible on hover.
   await takeShots("topo-map-details", rsCard);
+  writtenShots.push(...await layoutMatrix(page, h.shots, "topo-map", { frame: ".topology-place" }));
+  await page.setViewport({ width: 1440, height: 900 });
+  await setUiPreferences(page, { theme: "light" });
+
+  const rsDetails = '.topology-map-node-details[aria-label="Details for nav-rs"]';
   await page.hover(rsCard);
   await pause(180);
-  const rsDetails = '.topology-map-node-details[aria-label="Details for nav-rs"]';
   const hoverOpacity = await page.$eval(rsDetails, (e) => getComputedStyle(e).opacity);
   assert.equal(hoverOpacity, "1", "Details shows while its card is hovered");
   await page.hover(".topology-map-legend");
   await pause(180);
   const restOpacity = await page.$eval(rsDetails, (e) => getComputedStyle(e).opacity);
   assert.equal(restOpacity, "0", "Details hides again when the pointer leaves");
+  // On touch (no hover) the Details button is always visible: the stylesheet
+  // keeps a (hover: none) rule for it. (Headless Chrome does not emulate the
+  // hover media feature, so the rule itself is what the test can prove.)
+  const touchRule = await page.evaluate(() => {
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch { continue; }
+      for (const rule of rules) {
+        if (!(rule instanceof CSSMediaRule) || rule.conditionText !== "(hover: none)") continue;
+        for (const inner of rule.cssRules) {
+          if (inner.selectorText === ".topology-map-node-details" && inner.style.opacity === "1") return true;
+        }
+      }
+    }
+    return false;
+  });
+  assert.equal(touchRule, true, "Details is always visible without hover (touch)");
+
+  // A member card's name and title state the navigation; a peer card has no
+  // Details button (its click already opens the inspector).
+  const cardA11y = await page.$eval(rsCard, (e) => ({ label: e.getAttribute("aria-label") || "", title: e.getAttribute("title") || "" }));
+  assert.ok(cardA11y.label.startsWith("Open nav-rs in Readyset: "), `the card's name states the navigation: ${cardA11y.label}`);
+  assert.match(cardA11y.title, /Opens the Readyset place on this member/, "the card's title states the navigation");
+  const clusterCardA11y = await page.$eval('.topology-map-node[data-node="p-nav-1"]', (e) => e.getAttribute("aria-label") || "");
+  assert.ok(clusterCardA11y.startsWith("Open nav-db-1 in Cluster: "), `the cluster card's name states the navigation: ${clusterCardA11y}`);
+  assert.equal(await page.$('.topology-map-node-details[data-details="peer:10.0.0.88:3306"]'), null, "a peer card has no Details button");
 
   // The Details button opens the inspector without navigating.
   await page.click('.topology-map-node-details[aria-label="Details for nav-rs"]');
@@ -1043,64 +1077,127 @@ try {
   assert.equal(readysetReads.length, 1, "the Readyset place reads when opened");
   assert.equal(readysetReads[0].connection.profile_id, "p-nav-rs", "the read carries the clicked member");
   assert.equal(readysetReads[0].connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(readysetReads[0].connection.database, "shop", "the read carries the member's database");
   assert.equal(connectCalls.length, connectsBefore, "navigation never opens a new connection");
-  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "Using nav-rs from group mf-nav.");
-  // The arrival note in the Readyset place.
-  await takeShots("topo-arrive-readyset");
-  // Back to Topology returns with the same selection kept.
+  const rsNote = "Using nav-rs from group mf-nav.";
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), rsNote);
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.getAttribute("title")), rsNote, "the truncated note keeps its full text in the title");
+  // The sidebar badge and the top-edge strip are the member's own: nav-rs is
+  // read-only with database shop; the connection in use (nav-db-1) is neither.
+  let readysetBadgeHtml = "";
+  for (let i = 0; i < 100 && !readysetBadgeHtml.includes("nav-marker"); i++) {
+    readysetBadgeHtml = await page.$eval('.main-nav button[data-place="readyset"]', (e) => e.outerHTML);
+    await pause(150);
+  }
+  assert.ok(readysetBadgeHtml.includes("nav-marker"), `the Readyset badge is the member's own: ${readysetBadgeHtml}`);
+  assert.equal(await page.$eval('.connection-type-strip', (e) => e.dataset.connectionStrip), "read-only", "the strip shows the member's read-only flag");
+  // The arrival note in the Readyset place, with the picker intact at 720 px.
+  writtenShots.push(...await layoutMatrix(page, h.shots, "topo-arrive-readyset", { frame: ".window-toolbar" }));
+  await page.setViewport({ width: 1440, height: 900 });
+  await setUiPreferences(page, { theme: "light" });
+  // Back to Topology returns with the same selection kept and focus on the card.
   await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
   assert.ok(await page.$(`${rsCard}.is-selected`), "the clicked card stays selected on return");
+  await pause(400);
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-node") === "p-nav-rs");
 
-  // A ProxySQL member opens the ProxySQL place on that member.
-  const proxyReadsBefore = proxysqlReads.length;
+  // The note is the place's own: from the sidebar, Server and ProxySQL read
+  // the active member (no member was chosen for them) and show no note.
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  const healthSidebar = healthReads.length;
+  for (let i = 0; i < 100 && healthReads.length === healthSidebar; i++) await pause(25);
+  assert.equal(healthReads.at(-1).connection.profile_id, "p-nav-1", "Server from the sidebar reads the active member");
+  assert.equal(await page.$('.nav-member-note'), null, "no nav-rs note follows into the Server place");
+  assert.equal(await page.$('.server-place .group-server-note'), null, "the Server header has no member note for the active member");
+  const proxySidebar = proxysqlReads.length;
+  await page.click('.main-nav button[data-place="proxysql"]');
+  await page.waitForSelector('.main-nav button[data-place="proxysql"].active');
+  for (let i = 0; i < 100 && proxysqlReads.length === proxySidebar; i++) await pause(25);
+  assert.equal(proxysqlReads.at(-1).connection.profile_id, "p-nav-1", "ProxySQL from the sidebar reads the active member");
+  assert.equal(await page.$('.nav-member-note'), null, "no nav-rs note follows into the ProxySQL place");
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // A ProxySQL member (product "ProxySQL Admin", as the backend reports it)
+  // opens the ProxySQL place on that member.
+  const proxyBeforeCard = proxysqlReads.length;
   await page.click('.topology-map-node[data-node="p-nav-proxy"]');
   await page.waitForSelector('.main-nav button[data-place="proxysql"].active');
-  for (let i = 0; i < 100 && proxysqlReads.length === proxyReadsBefore; i++) await pause(25);
+  for (let i = 0; i < 100 && proxysqlReads.length === proxyBeforeCard; i++) await pause(25);
   assert.equal(proxysqlReads.at(-1).connection.profile_id, "p-nav-proxy", "the read carries the clicked member");
   assert.equal(proxysqlReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
   assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "Using nav-proxy from group mf-nav.");
-  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  // The badge is keyed to the member the place reads: the read above answered
+  // for nav-proxy, so the sidebar names nav-proxy's state.
+  let proxyBadgeHtml = "";
+  for (let i = 0; i < 100 && !proxyBadgeHtml.includes("nav-marker"); i++) {
+    proxyBadgeHtml = await page.$eval('.main-nav button[data-place="proxysql"]', (e) => e.outerHTML);
+    await pause(150);
+  }
+  assert.ok(proxyBadgeHtml.includes("nav-marker"), `the ProxySQL badge is the member's own: ${proxyBadgeHtml}`);
+
+  // Switching places through the sidebar keeps each place's own note: Readyset
+  // still reads nav-rs, never nav-proxy.
+  await page.click('.main-nav button[data-place="readyset"]');
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), rsNote, "the Readyset place keeps its own member note");
+  await page.click('.main-nav button[data-place="topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
 
-  // A cluster member opens the Cluster place.
+  // A cluster member opens the Cluster place on that member.
   state.fallback = { status: 200, body: clusterBase };
+  const clusterReadsNav = state.seen.length;
   await page.click('.topology-map-node[data-node="p-nav-1"]');
   await page.waitForSelector('.main-nav button[data-place="cluster"].active');
+  for (let i = 0; i < 100 && state.seen.length === clusterReadsNav; i++) await pause(25);
+  assert.equal(state.seen.at(-1).connection.profile_id, "p-nav-1", "the Cluster place reads the clicked member");
+  assert.equal(state.seen.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  // The clicked member is the active member: the place reads the connection
+  // in use and no note is needed.
+  assert.equal(await page.$('.nav-member-note'), null, "no member note when the place reads the active member");
   await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
 
-  // A replication member opens the Replication place.
+  // Keyboard Enter on a focused card navigates the same way, on a member not
+  // read yet: the wait is for that member's own read.
   replicationReport = structuredClone(replicationBase);
   const replReadsNav = replicationReads.length;
-  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.focus('.topology-map-node[data-node="p-nav-2"]');
+  await page.keyboard.press("Enter");
   await page.waitForSelector('.main-nav button[data-place="replication"].active');
   for (let i = 0; i < 100 && replicationReads.length === replReadsNav; i++) await pause(25);
-  assert.equal(replicationReads.at(-1).connection.profile_id, "p-nav-1", "the Replication place keeps the connection in use (the active member)");
+  assert.equal(replicationReads.at(-1).connection.profile_id, "p-nav-2", "Enter opens the clicked member's Replication place");
+  assert.equal(replicationReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "Using nav-db-2 from group mf-nav.");
+  // Keyboard activation lands focus on the place's heading.
+  await page.waitForFunction(() => document.activeElement?.id === "replication-title");
   await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  // Let the history traversal settle: focus returns to the card that opened
+  // the place.
+  await pause(400);
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-node") === "p-nav-2");
 
   // Any other database member opens the Server place on that member, with the
-  // member note in the view header.
-  const healthBefore = healthReads.length;
+  // member note in the view header. The place was visited above (it read the
+  // active member): the previous member's report stays, greyed, until an
+  // explicit Refresh, whose read is the login to the clicked member.
   await page.click('.topology-map-node[data-node="p-nav-3"]');
   await page.waitForSelector('.main-nav button[data-place="server"].active');
-  for (let i = 0; i < 100 && healthReads.length === healthBefore; i++) await pause(25);
-  assert.equal(healthReads.at(-1).connection.profile_id, "p-nav-3", "the Server place reads the clicked member");
-  assert.equal(healthReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  // Five members: the Server: control is a select naming the chosen member.
+  await page.waitForFunction(() => document.querySelector('.server-view[data-view="health"] .group-server-select')?.value === "p-nav-3");
   assert.equal(await page.$eval('.server-place .group-server-note', (e) => e.textContent.trim()), "Using nav-db-3 from group mf-nav.");
+  const healthBefore = healthReads.length;
+  await h.refresh();
+  for (let i = 0; i < 100 && healthReads.length === healthBefore; i++) await pause(25);
+  assert.equal(healthReads.at(-1).connection.profile_id, "p-nav-3", "the explicit read is the login to the clicked member");
+  assert.equal(healthReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
   await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
 
-  // Keyboard Enter on a focused card navigates the same way.
-  const readysetReadsBefore = readysetReads.length;
-  await page.focus(rsCard);
-  await page.keyboard.press("Enter");
-  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
-  for (let i = 0; i < 100 && readysetReads.length === readysetReadsBefore; i++) await pause(25);
-  assert.equal(readysetReads.at(-1).connection.profile_id, "p-nav-rs", "Enter opens the member's place");
-  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
-  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  assert.equal(topologyCalls.length, 1, "the map never re-read on navigation");
   assert.equal(connectCalls.length, connectsBefore, "no card ever opened a new connection");
 
   assert.deepEqual(h.errors, [], "Group actions and replication branch changes produce no runtime exceptions");

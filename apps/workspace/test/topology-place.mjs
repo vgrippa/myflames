@@ -513,18 +513,20 @@ try {
   const nodeY = (id) => firstPositions.find((n) => n.id === id).y;
   assert.ok(nodeY("p-topo-1") < nodeY("p-topo-2"), "a replication source is above its replica inside a cluster");
   assert.ok(nodeY("p-topo-1") < nodeY(peerId), "a replication peer appears downstream");
-  // Tab reaches every card and its Details button in visual group order.
+  // Tab reaches every card and its Details button in visual group order (a
+  // peer card has no Details button: its click already opens the inspector).
   // Enter on Details uses the same member inspector as Members, without
   // sending a read; the card itself opens the member's place (covered in
   // topology-groups.mjs).
+  const expectedFocus = await page.$$eval(`${diagram} button[data-node], ${diagram} button[data-details]`,
+    (nodes) => nodes.map((n) => n.dataset.node || n.dataset.details));
   await page.focus(`${diagram} .topology-map-scroll`);
   const focusIds = [];
-  for (let i = 0; i < firstPositions.length * 2; i++) {
+  for (let i = 0; i < expectedFocus.length; i++) {
     await page.keyboard.press("Tab");
     focusIds.push(await page.evaluate(() => document.activeElement?.dataset.node || document.activeElement?.dataset.details));
   }
-  assert.deepEqual(focusIds, await page.$$eval(`${diagram} button[data-node], ${diagram} button[data-details]`,
-    (nodes) => nodes.map((n) => n.dataset.node || n.dataset.details)));
+  assert.deepEqual(focusIds, expectedFocus);
   await page.focus(nodeDetails("p-topo-2"));
   await page.keyboard.press("Enter");
   assert.match(await h.inspector(), /db-2.*Secondary.*super_read_only/s, "Enter on Details opens the shared member inspector");
