@@ -216,7 +216,7 @@ import re
 
 from .connection_groups import grouped_read
 from .connector import ConnectorError, terminal_text
-from .perf_common import Reader, Server, _number, denied, now, preflight, reason
+from .perf_common import PREFLIGHT_VARIABLES, Reader, Server, _LOST_SQL, _number, denied, now, preflight, reason
 from .server_info import product_name
 
 SCHEMA_VERSION = "cluster-1.0"
@@ -236,7 +236,7 @@ GALERA_VARIABLES = (
     "wsrep_node_name", "wsrep_node_address", "wsrep_node_incoming_address", "wsrep_desync", "pxc_strict_mode",
     "pxc_maint_mode",
 )
-#: Variables read with the standard preflight. A name the server does not
+#: Variables read with the initial preflight. A name the server does not
 #: have is simply absent from the answer (SHOW GLOBAL VARIABLES WHERE ... IN).
 EXTRA_VARIABLES = GALERA_VARIABLES + (
     "report_port", "server_uuid", "server_id", "partial_revokes",
@@ -244,6 +244,28 @@ EXTRA_VARIABLES = GALERA_VARIABLES + (
     "group_replication_group_seeds", "group_replication_bootstrap_group",
     "group_replication_preemptive_garbage_collection",
 )
+_CURRENT_USER_MARKER = "myflames_current_user"
+
+
+def _preflight_variables_sql():
+    names = sorted(set(PREFLIGHT_VARIABLES + EXTRA_VARIABLES))
+    return ("SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s); %sSELECT '%s', CURRENT_USER()"
+            % (", ".join("'%s'" % n for n in names), CLUSTER_TAG, _CURRENT_USER_MARKER))
+
+
+def _preflight(reader):
+    """Read preflight variables and CURRENT_USER() in one client invocation,
+    then Uptime and Performance Schema lost counters.
+    """
+    variables = {}
+    current_user = None
+    for row in reader.rows(_preflight_variables_sql()):
+        if len(row) == 2 and row[0] == _CURRENT_USER_MARKER:
+            current_user = row[1]
+        elif row:
+            variables[row[0]] = row[1] if len(row) > 1 else ""
+    status = reader.pairs(_LOST_SQL)
+    return Server(variables, status), current_user
 
 WSREP_STATUS_SQL = "SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\\_%'"
 WSREP_MEMBERS_SQL = "SELECT node_uuid, node_name, node_incoming_address FROM mysql.wsrep_cluster_members"
@@ -671,7 +693,7 @@ def read_status(conn, _identity=None):
     """
     reader = Reader(conn, CLUSTER_TAG)
     try:
-        server = preflight(reader, EXTRA_VARIABLES)
+        server, current_user = _preflight(reader)
     except ConnectorError as exc:
         if "Access denied" not in str(exc):
             from . import proxysql
@@ -708,7 +730,7 @@ def read_status(conn, _identity=None):
                 _finish(report)
                 return report
         raise
-    report = _ActionReport(_base(server), conn, server.variables)
+    report = _ActionReport(_base(server), conn, server.variables, current_user=current_user)
     report["statements"].append("SHOW GLOBAL VARIABLES")
     wsrep_on = _on(server.var("wsrep_on"))
     if is_galera_node(server.variables):
@@ -862,35 +884,20 @@ def _partial_revokes_for_server(server):
     return None
 
 
-def _read_current_user(reader, report=None):
-    """CURRENT_USER() from cached report grants when known, else through *reader*.
+def _denied_read_grant_sql(server, schema=None, report=None):
+    """Advisory SELECT GRANT for a denied table read, built from the
+    CURRENT_USER() kept privately on *report* (captured in the initial
+    preflight without an extra login) through privileges.grant_sql
+    (printable-ASCII allowlist without backslash).
 
-    Never uses USER(), a profile name or error text. Any failure returns None.
-    """
-    cached = getattr(report, "_action_grants", None)
-    if isinstance(cached, dict) and isinstance(cached.get("account"), str) and "@" in cached["account"]:
-        return cached["account"]
-    try:
-        rows = reader.rows("SELECT USER(), CURRENT_USER() LIMIT 1")
-    except ConnectorError:
-        return None
-    if not rows or len(rows[0]) < 2:
-        return None
-    account = rows[0][1]
-    return account if isinstance(account, str) and "@" in account else None
-
-
-def _denied_read_grant_sql(reader, server, schema=None, report=None):
-    """Advisory SELECT GRANT for a denied table read, built from CURRENT_USER()
-    through privileges.grant_sql (printable-ASCII allowlist without backslash).
-
-    Never derives anything from error text. Returns None when no table schema
-    applies, CURRENT_USER() cannot be read, or grant_sql refuses the names.
+    Never opens another connection or login, and never derives anything from
+    error text. Returns None when no table schema applies, CURRENT_USER() was
+    not read or lacks '@', or grant_sql refuses the names.
     """
     if not schema:
         return None
-    account = _read_current_user(reader, report)
-    if not account:
+    account = getattr(report, "_current_user", None)
+    if not isinstance(account, str) or "@" not in account:
         return None
     from . import privileges
     partial = _partial_revokes_for_server(server)
@@ -908,7 +915,7 @@ def _read_galera(reader, server, report):
         if denied(exc):
             report["available"] = False
             report["message"] = "This account cannot read the wsrep status variables: %s" % reason(exc)
-            report["grant_sql"] = _denied_read_grant_sql(reader, server, report=report)
+            report["grant_sql"] = _denied_read_grant_sql(server, report=report)
             return
         raise
     report["statements"].append("SHOW GLOBAL STATUS (wsrep_%)")
@@ -938,7 +945,7 @@ def _read_galera_off(reader, server, report):
         report["message"] = ("wsrep_on is OFF with a Galera provider loaded, and this account cannot read the wsrep "
                              "status variables, so whether this node is still in a cluster is not known: %s"
                              % reason(exc))
-        report["grant_sql"] = _denied_read_grant_sql(reader, server, report=report)
+        report["grant_sql"] = _denied_read_grant_sql(server, report=report)
         return
     connected = _on(status.get("wsrep_connected"))
     size = _number(status.get("wsrep_cluster_size"))
@@ -1291,7 +1298,7 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
             report["cluster"]["uuid"] = group_name
             report["message"] = ("This account cannot read performance_schema.replication_group_members (it needs "
                                  "SELECT on performance_schema): %s" % reason(exc))
-            report["grant_sql"] = _denied_read_grant_sql(reader, server, "performance_schema", report=report)
+            report["grant_sql"] = _denied_read_grant_sql(server, "performance_schema", report=report)
             return
         raise
     report["statements"].append("SELECT performance_schema.replication_group_members")
@@ -2148,17 +2155,20 @@ _GR_PRIVILEGE = "GROUP_REPLICATION_ADMIN or SUPER"
 
 
 class _ActionReport(dict):
-    """Request-local catalog inputs, never fields in the public JSON report.
+    """Request-local inputs, never fields in the public JSON report.
 
     Plain status/CLI reads do not need grants. Keep the originating connection
     only for a lazy catalog read, shared by every member and overview action.
-    MariaDB's additional reviewed identity comes from the same preflight as
-    hostname/port and the wsrep variables, without changing cluster-1.0.
+    The session's CURRENT_USER() (used for denied-read GRANT suggestions without
+    an extra login) and MariaDB's additional reviewed identity come from the
+    same initial preflight as hostname/port and the wsrep variables, without
+    changing cluster-1.0.
     """
-    def __init__(self, report, conn, variables):
+    def __init__(self, report, conn, variables, current_user=None):
         super().__init__(report)
         self._action_conn = conn
         self._action_grants = None
+        self._current_user = current_user if isinstance(current_user, str) and "@" in current_user else None
         self._clusterset_groups = {}
         self._galera_identity = ({"server_id": _number(variables.get("server_id")),
                                   "wsrep_node_name": _text(variables.get("wsrep_node_name"))}

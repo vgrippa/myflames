@@ -1132,23 +1132,33 @@ class TestGroupReplication(unittest.TestCase):
         validate(report_57, SCHEMA)
         self.assertEqual(report_57['grant_sql'], 'GRANT SELECT ON `performance\\_schema`.* TO `app`@`localhost`;')
 
-        # CURRENT_USER() failure, NULL or missing '@' leaves grant_sql null.
-        for bad_account in (
-            ConnectorError('mysql client exited 1: ERROR 2013 (HY000): Lost connection'),
-            None,
-            '',
-            'no_host_part',
+        # CURRENT_USER() not read, NULL or missing '@' leaves grant_sql null.
+        for extra in (
+            {'omit_current_user': True},
+            {'account': None},
+            {'account': ''},
+            {'account': 'no_host_part'},
         ):
-            with self.subTest(bad_account=bad_account):
-                sc = {
+            with self.subTest(extra=extra):
+                sc = dict({
                     'variables': F._mysql_vars(partial_revokes='OFF'),
-                    'account': bad_account,
                     'tables': {'performance_schema.replication_group_members': err},
-                }
+                }, **extra)
                 report = m.read_status(F.ScenarioConn(sc))
                 validate(report, SCHEMA)
                 self.assertFalse(report['available'])
                 self.assertIsNone(report['grant_sql'])
+                self.assertNotIn('_current_user', report)
+        # Plain dict report without private _current_user leaves grant_sql null.
+        self.assertIsNone(m._denied_read_grant_sql(
+            m.Server(F._mysql_vars(partial_revokes='OFF'), {}), 'performance_schema', report={}))
+        # Connection failure during the initial preflight still raises ConnectorError.
+        with self.assertRaises(ConnectorError):
+            m.read_status(F.ScenarioConn({
+                'variables': F._mysql_vars(partial_revokes='OFF'),
+                'account': ConnectorError('mysql client exited 1: ERROR 2013 (HY000): Lost connection'),
+                'tables': {'performance_schema.replication_group_members': err},
+            }))
 
         # Hostile CURRENT_USER() outside printable ASCII or with a backslash returns null.
         hostile_accounts = (
@@ -1196,6 +1206,24 @@ class TestGroupReplication(unittest.TestCase):
                 self.assertEqual(report['kind'], 'galera')
                 self.assertIn('grant_sql', report)
                 self.assertIsNone(report['grant_sql'])
+
+    def test_denied_gr_scenario_uses_no_extra_invocation_for_grant_sql(self):
+        conn = F.conn('gr-8.4-denied')
+        report = m.read_status(conn)
+        sent = [sql for sql, _ in conn.calls]
+        self.assertFalse(report['available'])
+        self.assertEqual(report['grant_sql'], 'GRANT SELECT ON `performance\\_schema`.* TO `app`@`%`;')
+        self.assertEqual(len(sent), 3)
+        self.assertIn("SELECT 'myflames_current_user', CURRENT_USER()", sent[0])
+        self.assertIn('SHOW GLOBAL STATUS', sent[1])
+        self.assertIn('performance_schema.replication_group_members', sent[2])
+        self.assertFalse(any('SELECT USER()' in sql for sql in sent))
+        self.assertEqual(sum('CURRENT_USER()' in sql for sql in sent), 1)
+        self.assertNotIn('_current_user', report)
+        # Private _current_user never serializes into JSON on healthy reports either.
+        healthy = m.read_status(F.conn('ic-8.4-healthy'))
+        self.assertNotIn('_current_user', healthy)
+        self.assertNotIn('mf_admin@localhost', json.dumps(healthy))
 
     def test_live_primary_mode_wins_over_metadata(self):
         conn, data = F.recorded('ic-8.4-healthy', edit=F.editor(
