@@ -2154,8 +2154,11 @@ class WorkspaceStore:
         host, port, user, TLS mode, and CA path still match the profile, and
         the endpoint fingerprint in the secret's key matches them too. Returns
         a new dict; the caller uses it for one request and must not persist it.
+        Capture the returned password in the active request's redaction context,
+        so logging never needs a separate secret lookup.
         """
         from .live import connection_options
+        from . import request_secrets
         if not isinstance(value, dict):
             raise ValueError('Enter connection settings.')
         for field in ('binary', 'socket', 'ssl_cert', 'ssl_key', 'init_command', 'defaults_file', 'extra_flags'):
@@ -2178,6 +2181,7 @@ class WorkspaceStore:
             clean['group_name'] = group_name
         value = clean
         if not profile_id:
+            request_secrets.capture(value.get('password'))
             return value
         # One read: the endpoint and the secret reference come from the same
         # committed record. A group request checks membership with it too, also
@@ -2190,6 +2194,7 @@ class WorkspaceStore:
         if group_name is not None and (not group_name or profile.get('group') != group_name):
             raise ValueError('This saved connection is outside the current connection group.')
         if value.get('password'):
+            request_secrets.capture(value['password'])
             return value
         if not profile.get('remember_password'):
             return value
@@ -2209,6 +2214,7 @@ class WorkspaceStore:
                              % (name, secret_store.backend_label(backend)))
         result = dict(value)
         result['password'] = secret
+        request_secrets.capture(secret)
         return result
 
 

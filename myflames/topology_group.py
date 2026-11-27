@@ -13,7 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 
-from . import connection_groups, dbops
+from . import connection_groups, dbops, request_secrets
 from .connector import ConnectorError
 from .group_members import open_group_member
 from .perf_common import Reader, now
@@ -1801,6 +1801,7 @@ def _comparison_inputs(results, section):
     return snapshots, not_compared
 
 
+@request_secrets.scoped
 def read_group(store, group_name, section, active_member_profile_id,
                expected_current, expected_generation):
     """Read only the stored members, once each, on an explicit tab request."""
@@ -1839,10 +1840,10 @@ def read_group(store, group_name, section, active_member_profile_id,
     def _record_member_failure(profile, exc, began):
         if not isinstance(exc, (ConnectorError, ValueError, OSError)):
             # A programming error belongs to this member, not its peers.
-            # Reuse HTTP traceback redaction, including the saved group
-            # credentials, without exposing exception text in the report.
+            # Reuse HTTP traceback redaction with only credentials already
+            # obtained by this read, without exposing exception text in the report.
             from .ui import _log_unexpected_error
-            _log_unexpected_error('/api/live/topology', sys.exc_info(), route, store)
+            _log_unexpected_error('/api/live/topology', sys.exc_info(), route)
             exc = ConnectorError('The connection could not be read.')
         # No observed identity, role or inventory from a rejected read
         # may influence the group summary or another member's comparison.
@@ -1972,11 +1973,12 @@ def read_group(store, group_name, section, active_member_profile_id,
     from . import read_cancel
     request_cancel = read_cancel.current()
     request_guard = read_cancel.current_guard()
+    registry = request_secrets.current()
 
     def read_member(profile):
         # Thread-local request state is intentionally not inherited by pools.
-        # Carry only this read's trusted event, never data from request JSON.
-        with read_cancel.scope(request_cancel, request_guard):
+        # Carry this read's trusted cancellation, consent and redaction context.
+        with request_secrets.scope(registry), read_cancel.scope(request_cancel, request_guard):
             return read_one(profile)
 
     if section == 'map':
@@ -1988,7 +1990,7 @@ def read_group(store, group_name, section, active_member_profile_id,
             with stacks_lock:
                 open_stacks.append(stack)
             try:
-                with read_cancel.scope(request_cancel, request_guard):
+                with request_secrets.scope(registry), read_cancel.scope(request_cancel, request_guard):
                     state = _open_and_identify(profile, stack)
             except BaseException:
                 stack.close()
@@ -2009,7 +2011,7 @@ def read_group(store, group_name, section, active_member_profile_id,
                 def phase2_member(state):
                     stack = state.get('stack')
                     try:
-                        with read_cancel.scope(request_cancel, request_guard):
+                        with request_secrets.scope(registry), read_cancel.scope(request_cancel, request_guard):
                             if not state['ok']:
                                 return state['result']
                             profile, entry = state['profile'], state['entry']

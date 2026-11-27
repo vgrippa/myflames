@@ -814,6 +814,48 @@ class MemberLoginTests(GroupCase):
                     self.assertEqual(logged, '')
                 self.assertEqual(_FakeMemberConn.active, 0)
 
+    def test_connect_worker_redacts_departed_peer_without_retrieving_secrets_again(self):
+        active_secret = 'active-request-password'
+        peer_secret = "worker-'password\\value"
+        self.store.save('profile', dict(self.active), 'active', password=active_secret, remember=True)
+        self.store.save('profile', dict(self.member), 'member', password=peer_secret, remember=True)
+        _FakeMemberConn.reset(uuids={'active.example': UUID_A})
+        original = ui._member_live_facts
+        caller = threading.get_ident()
+        worker_threads = []
+
+        def facts(conn):
+            if conn.host == 'member.example':
+                worker_threads.append(threading.get_ident())
+                self.store.assign_profile_group(['member'], '')
+                # Both the request thread's earlier login and this pool
+                # thread's login contributed a password to this traceback.
+                raise KeyError('member failed with %s and %s' % (active_secret, peer_secret))
+            return original(conn)
+
+        stderr = io.StringIO()
+        with mock.patch.object(connector, 'MySQLConnection', _FakeMemberConn), \
+                mock.patch.object(ui, '_member_live_facts', side_effect=facts), \
+                mock.patch.object(self.store, 'connection_with_saved_password',
+                                  wraps=self.store.connection_with_saved_password) as lookup, \
+                contextlib.redirect_stderr(stderr):
+            result = ui.api_response('/api/connect', {
+                'group_name': 'G', 'active_member_profile_id': 'active', 'probe_members': True},
+                types.SimpleNamespace(store=self.store))
+        self.assertEqual([call[0][0]['profile_id'] for call in lookup.call_args_list], ['active', 'member'])
+        self.assertEqual(len(worker_threads), 1)
+        self.assertNotEqual(worker_threads[0], caller)
+        self.assertIn('KeyError', stderr.getvalue())
+        self.assertIn('[redacted]', stderr.getvalue())
+        for password in (active_secret, peer_secret):
+            for variant in (password, repr(password)[1:-1], json.dumps(password)[1:-1]):
+                self.assertNotIn(variant, stderr.getvalue())
+            self.assertNotIn(password, json.dumps(result))
+        members = {row['profile_id']: row for row in result['group_connection']['members']}
+        self.assertTrue(members['active']['reachable'])
+        self.assertFalse(members['member']['reachable'])
+        self.assertEqual(_FakeMemberConn.active, 0)
+
 
 class TopologyEndpointTests(GroupCase):
     def setUp(self):
@@ -1021,6 +1063,54 @@ class TopologyReadTests(GroupCase):
                 else:
                     logger.assert_not_called()
                     self.assertEqual(logged, '')
+
+    def test_group_read_worker_errors_redact_without_saved_password_rereads(self):
+        broken = self.save('broken', 'G')
+        active_secret = 'topology-active-password'
+        peer_secret = "topology-'worker\\password"
+        self.store.save('profile', dict(self.active), 'active', password=active_secret, remember=True)
+        self.store.save('profile', dict(broken), 'broken', password=peer_secret, remember=True)
+        fixtures = {'active.example': member_fixture(UUID_A),
+                    'broken.example': member_fixture(UUID_B)}
+        caller = threading.get_ident()
+        map_probe = topology_group._map_probe
+        # Members has one pool phase; Map has separate identification and
+        # probe phases. Both must inherit the shared read's registry.
+        for section, phase in (('members', 'identify'), ('map', 'identify'), ('map', 'probe')):
+            with self.subTest(section=section, phase=phase):
+                worker_threads = []
+
+                def fail_one(host):
+                    if phase == 'identify' and host == 'broken.example':
+                        worker_threads.append(threading.get_ident())
+                        raise KeyError('worker failure ' + peer_secret)
+
+                def probe_one(conn, profile, *args, **kwargs):
+                    if phase == 'probe' and profile['id'] == 'broken':
+                        worker_threads.append(threading.get_ident())
+                        raise KeyError('probe worker failure ' + peer_secret)
+                    return map_probe(conn, profile, *args, **kwargs)
+
+                stderr = io.StringIO()
+                with self.clients(fixtures, after_spawn=fail_one), \
+                        mock.patch.object(topology_group, '_map_probe', side_effect=probe_one), \
+                        mock.patch.object(self.store, 'connection_with_saved_password',
+                                          wraps=self.store.connection_with_saved_password) as lookup, \
+                        contextlib.redirect_stderr(stderr):
+                    report = ui.api_response('/api/live/topology', {
+                        'connection': self.connection, 'section': section}, self.workspace)
+                self.assertCountEqual([call[0][0]['profile_id'] for call in lookup.call_args_list],
+                                      ['active', 'broken'])
+                self.assertEqual(len(worker_threads), 1)
+                self.assertNotEqual(worker_threads[0], caller)
+                self.assertIn('KeyError', stderr.getvalue())
+                self.assertIn('[redacted]', stderr.getvalue())
+                for variant in (peer_secret, repr(peer_secret)[1:-1], json.dumps(peer_secret)[1:-1]):
+                    self.assertNotIn(variant, stderr.getvalue())
+                self.assertNotIn(peer_secret, json.dumps(report))
+                members = {row['profile_id']: row for row in report['members']}
+                self.assertEqual(members['broken']['outcome'], 'failed')
+                self.assertEqual(members['active']['outcome'], 'read')
 
     def test_topology_has_no_custom_client_process_path(self):
         tree = ast.parse((ROOT / 'myflames/topology_group.py').read_text(encoding='utf-8'))

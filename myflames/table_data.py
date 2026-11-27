@@ -14,7 +14,7 @@ import threading
 import time
 from collections import OrderedDict
 
-from . import dbops, editor_session as ed, privileges
+from . import dbops, editor_session as ed, privileges, request_secrets
 from .connector import ConnectorError
 from .connection_groups import ProfileReadError
 from .live import connection_options
@@ -588,6 +588,8 @@ def response(path, payload, workspace, fill_password):
         with registry.reserve():
             return _open(payload, workspace, fill_password, options, identity, safety, label)
     snapshot = registry.get(payload.get('snapshot_id'), identity)
+    if snapshot.session._conn is not None:
+        request_secrets.capture(snapshot.session._conn.password)
     if operation == 'status':
         return snapshot.status()
     if operation == 'cancel':
