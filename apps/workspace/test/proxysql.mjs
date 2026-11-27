@@ -163,6 +163,7 @@ async function clickAction(label) {
   await page.evaluate((label) => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === label).click(), label);
 }
 const sheet = "dialog.action-review[open]";
+const reviewedSql = (plan) => [...(plan.session_guard || []), ...plan.statements].join("\n");
 async function waitSheet() { await page.waitForSelector(sheet, { visible: true }); }
 async function noSheet() { await page.waitForFunction((s) => !document.querySelector(s), {}, sheet); }
 /** The sheet after Confirm: wait for the server's answer, then Close. */
@@ -315,12 +316,18 @@ try {
   assert.equal(plans[0].connection.host, "127.0.0.1");
   const review = await page.$eval(sheet, (d) => ({
     eyebrow: d.querySelector(".eyebrow")?.textContent, title: d.querySelector("h2")?.textContent,
+    guardNote: d.querySelector(".action-guard-note")?.textContent,
+    preLabel: d.querySelector(".ops-pre")?.getAttribute("aria-label"),
+    copyLabel: d.querySelector(".ops-commands button")?.getAttribute("aria-label"),
     sql: d.querySelector(".ops-pre code")?.textContent, text: d.textContent,
     confirm: d.querySelector(".sheet-actions button:last-child")?.textContent,
     focused: document.activeElement?.textContent }));
   assert.equal(review.eyebrow, "UPDATE");
   assert.equal(review.title, "Set mf-ic-2:3306 to OFFLINE_SOFT?");
-  assert.equal(review.sql, R["plan-offline-soft"].statements.join("\n"), "the statements exactly as sent");
+  assert.match(review.guardNote || "", /Identity check sent first.*before the statements/i);
+  assert.match(review.preLabel || "", /Identity check sent first, before the statements/i);
+  assert.match(review.copyLabel || "", /Identity check sent first, before the statements/i);
+  assert.equal(review.sql, reviewedSql(R["plan-offline-soft"]), "the identity check and statements exactly as sent");
   assert.match(review.text, /ConnectionProxySQL lab \(radmin@127\.0\.0\.1:6032\)/);
   assert.match(review.text, /TypeDevelopment/);
   assert.match(review.text, /Applied to runtime only\. Save servers to disk afterwards/);
@@ -337,9 +344,27 @@ try {
     { operation: "proxysql_action", statements: R["plan-offline-soft"].statements });
   assert.equal(sends.length, 0, "nothing sent on Escape");
 
-  // Review, Cancel: declined again.
+  // Review, Copy, Cancel: Copy includes the identity check first; Cancel records declined.
   await clickAction("Set OFFLINE_SOFT…");
   await waitSheet();
+  await page.evaluate(() => {
+    window.__proxyCopied = [];
+    window.__prevClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: (t) => { window.__proxyCopied.push(t); return Promise.resolve(); } },
+    });
+  });
+  await page.click(`${sheet} .ops-commands button`);
+  await page.waitForFunction((s) => /Copied\./.test(document.querySelector(`${s} .ops-commands [role=status]`)?.textContent || ""), {}, sheet);
+  assert.equal(await page.evaluate(() => window.__proxyCopied.at(-1)), reviewedSql(R["plan-offline-soft"]),
+    "Copy includes the identity check before the statements");
+  await page.evaluate(() => {
+    if (window.__prevClipboard) Object.defineProperty(navigator, "clipboard", window.__prevClipboard);
+    else delete navigator.clipboard;
+    delete window.__proxyCopied;
+    delete window.__prevClipboard;
+  });
   await page.click(`${sheet} .sheet-actions button:first-child`);
   await noSheet();
   for (let i = 0; i < 50 && declined.length < 2; i++) await pause(20);
@@ -529,7 +554,7 @@ try {
   await clickAction("Disable rule…");
   await waitSheet();
   assert.deepEqual(plans.at(-1).target, { rule_id: 30 });
-  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), R["plan-rule-disable"].statements.join("\n"));
+  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), reviewedSql(R["plan-rule-disable"]));
   await page.keyboard.press("Escape");
   await noSheet();
   // Rules show their hits and the digests they apply to (evaluated here).
@@ -679,7 +704,7 @@ try {
   };
   await clickAction("Disable rule…");
   await waitSheet();
-  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), R["plan-rule-disable"].statements.join("\n"));
+  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), reviewedSql(R["plan-rule-disable"]));
   await page.click(`${sheet} .sheet-actions button:last-child`);
   assert.match((await answered()).outcome, /^Done/);
   await closeSheet();
