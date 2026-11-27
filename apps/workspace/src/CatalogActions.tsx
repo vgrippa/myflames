@@ -67,8 +67,8 @@ export function ActionGroup<A extends CatalogAction>({
   // The client-side block is the first thing every button's description names
   // while it holds: it wins over catalog state.
   const blockedId = `${base}-blocked`;
-  /** The action whose message is open, with the text it opened with. */
-  const [openWhy, setOpenWhy] = useState<{ id: string; text: string } | null>(null);
+  /** The open action's text and the latest eligibility observed while open. */
+  const [openWhy, setOpenWhy] = useState<{ id: string; text: string; enabled: boolean } | null>(null);
   // One stable ref object per action: WhyDisabled resolves .current at effect
   // time (refs attach after the render that passes them).
   const buttons = useRef(new Map<string, { current: HTMLButtonElement | null }>());
@@ -82,16 +82,17 @@ export function ActionGroup<A extends CatalogAction>({
   /** The message's sentences: the client block first, then the action's own reason. */
   const messageText = (a: A) => [blocked, a.enabled ? "" : explanationOf(a)].filter(Boolean).join(" ");
 
-  // A new report closes an open message when its action is now enabled or its
-  // text changed. The caller remounts this per connection, so a message never
-  // carries over to another cluster.
+  // A new report closes an open message when its action becomes enabled or its
+  // text changes. A client block can keep the same sentence across an enabled
+  // transition, so eligibility is compared separately from the message text.
   useEffect(() => {
     if (!openWhy) return;
     const a = list.find((x) => x.id === openWhy.id);
     if (!a) { setOpenWhy(null); return; }
     const extra = slot ? slot(a) : null;
     const hasReason = !a.enabled && !!(a.why_not || a.fix || extra?.hasReason);
-    if ((!blocked && !hasReason) || messageText(a) !== openWhy.text) setOpenWhy(null);
+    if ((!openWhy.enabled && a.enabled) || (!blocked && !hasReason) || messageText(a) !== openWhy.text) setOpenWhy(null);
+    else if (openWhy.enabled !== a.enabled) setOpenWhy({ ...openWhy, enabled: a.enabled });
   });
 
   return (
@@ -101,7 +102,7 @@ export function ActionGroup<A extends CatalogAction>({
         const reasonId = `${base}-why-${i}`;
         const extra = slot ? slot(a) : null;
         const hasReason = !a.enabled && !!(a.why_not || a.fix || extra?.hasReason);
-        const note = extra?.note;
+        const note = a.enabled ? extra?.note : undefined;
         const explanation = explanationOf(a);
         const describedBy = blocked
           ? hasReason || note
@@ -122,7 +123,7 @@ export function ActionGroup<A extends CatalogAction>({
             {(!!blocked || hasReason) && (
               <WhyDisabled anchor={buttonRef(a.id)} open={openWhy?.id === a.id}
                 mayOpen={off && !busy}
-                onOpen={() => setOpenWhy({ id: a.id, text: messageText(a) })}
+                onOpen={() => setOpenWhy({ id: a.id, text: messageText(a), enabled: a.enabled })}
                 onClose={() => setOpenWhy((cur) => (cur?.id === a.id ? null : cur))}>
                 {blocked && <p>{blocked}</p>}
                 {hasReason && explanation && <p>{explanation}</p>}

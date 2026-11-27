@@ -1,12 +1,14 @@
 // The message a disabled button opens on click, Enter or Space: why the
 // action is off and what fixes it, anchored to the button. It uses the HTML
 // Popover API (popover="auto"): the top layer keeps it out of every scroll
-// container, Escape and a click outside close it (light dismiss) and the
-// browser returns focus to the button, and opening another closes this one.
+// container, a click outside closes it (light dismiss), and opening another
+// closes this one. Escape and Close return focus to the button; Escape is
+// consumed before an enclosing inspector can handle the same key.
 // The anchor button is wired as the popover's invoker (popovertarget), so a
-// click on it toggles the message instead of light-dismissing it first; the
-// open state reaches the owner through the popover's toggle events (onOpen /
-// onClose). Position is CSS anchor positioning (anchor-name on the button,
+// click on it does not light-dismiss the message before its toggle handler
+// runs. That handler calls showPopover / hidePopover through the ref; the
+// open state reaches the owner through toggle events (onOpen / onClose).
+// Position is CSS anchor positioning (anchor-name on the button,
 // position-anchor here), so the message tracks its button and flips instead
 // of leaving the viewport. Contents stay React nodes: server text can never
 // become markup (S8, S10). While closed the box renders empty: nothing a
@@ -44,6 +46,11 @@ export function WhyDisabled({ anchor, open, mayOpen = true, onOpen, onClose, chi
   // Resolved at effect/event time: a ref's .current is empty during the first
   // render and set by the time effects and handlers run.
   const resolve = () => (anchor && "current" in anchor ? anchor.current : anchor);
+  const closeToAnchor = () => {
+    pop.current?.hidePopover();
+    resolve()?.focus({ preventScroll: true });
+    onCloseRef.current();
+  };
 
   // Anchor positioning and the invoker relationship: the button carries the
   // anchor name and points at the message while clicks may open it.
@@ -53,10 +60,21 @@ export function WhyDisabled({ anchor, open, mayOpen = true, onOpen, onClose, chi
     if (!button || !el) return;
     button.style.setProperty("anchor-name", anchorName);
     el.style.setProperty("position-anchor", anchorName);
-    if (mayOpen) button.setAttribute("popovertarget", popId);
+    const toggle = (event: MouseEvent) => {
+      // Keep the invoker relationship for pointer light dismiss, but cancel
+      // its default toggle because the ref owns opening and closing.
+      event.preventDefault();
+      if (el.matches(":popover-open")) el.hidePopover();
+      else el.showPopover();
+    };
+    if (mayOpen) {
+      button.setAttribute("popovertarget", popId);
+      button.addEventListener("click", toggle);
+    }
     return () => {
       button.style.removeProperty("anchor-name");
       button.removeAttribute("popovertarget");
+      button.removeEventListener("click", toggle);
     };
   }, [anchor, anchorName, popId, mayOpen]);
 
@@ -74,6 +92,20 @@ export function WhyDisabled({ anchor, open, mayOpen = true, onOpen, onClose, chi
     return () => el.removeEventListener("toggle", sync);
   }, []);
 
+  // Native Escape handling runs after keydown. Consume the key first so a
+  // surrounding inspector or focus scope cannot close as well. Window capture
+  // precedes those document listeners, including a narrow inspector's scope.
+  useEffect(() => {
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !pop.current?.matches(":popover-open")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeToAnchor();
+    };
+    window.addEventListener("keydown", escape, true);
+    return () => window.removeEventListener("keydown", escape, true);
+  }, [anchor]);
+
   // A state change that did not come from the popover (a refresh that made
   // the message stale) drives the element instead.
   useEffect(() => {
@@ -89,7 +121,7 @@ export function WhyDisabled({ anchor, open, mayOpen = true, onOpen, onClose, chi
         <>
           {children}
           <button type="button" className="icon-button why-disabled-close" aria-label="Close"
-            onClick={() => { resolve()?.focus(); onCloseRef.current(); }}>
+            onClick={closeToAnchor}>
             <Icon name="close" size={12} />
           </button>
         </>

@@ -34,8 +34,9 @@ const nav = '.main-nav button[data-place="cluster"]';
 const plans = [];
 const sends = [];
 const declined = [];
+let planDelay = 0;
 const h = await open("/api/live/cluster", "cluster", {
-  "/api/live/cluster/plan": (body) => { plans.push(body); return { status: 200, body: R["plan-switchover"] }; },
+  "/api/live/cluster/plan": (body) => { plans.push(body); return { status: 200, body: R["plan-switchover"], delay: planDelay }; },
   "/api/live/cluster/action": (body) => { sends.push(body); return { status: 200, body: R["result-switchover"], delay: 1500 }; },
   "/api/live/action/progress": () => ({ status: 200, body: R["progress-sending"] }),
   "/api/audit/declined": (body) => { declined.push(body); return { status: 200, body: { audit_id: "x", status: "declined" } }; },
@@ -65,10 +66,15 @@ const whyShot = (file) => page.screenshot({ path: path.join(whyShots, file), ful
 async function answer(report) {
   state.fallback = { status: 200, body: report };
 }
-async function refreshTo(report) {
+async function refreshTo(report, { preservePopover = false } = {}) {
   const before = state.seen.length;
   await answer(report);
-  await h.refresh();
+  if (preservePopover) {
+    // A DOM activation refreshes without an outside pointer gesture light-
+    // dismissing the message first, so these cases exercise report updates.
+    await page.evaluate(() => [...document.querySelectorAll("[data-action=refresh]")]
+      .find((b) => !b.closest("[hidden]") && b.getClientRects().length)?.click());
+  } else await h.refresh();
   await page.waitForFunction((n, sel) => !document.querySelector(`${sel} .spinner`), {}, before, view);
   for (let i = 0; i < 50 && state.seen.length === before; i++) await pause(20);
   assert.equal(state.seen.length, before + 1, "Refresh sends one read");
@@ -88,6 +94,7 @@ try {
   await api("/api/profiles/save", { value: { name: "Node A", host: "node-a.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await api("/api/profiles/save", { value: { name: "Solo", host: "solo.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await api("/api/profiles/save", { value: { name: "cluster-galera-2", host: "192.168.80.3", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
+  await api("/api/profiles/save", { value: { name: "Read-only", host: "readonly.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", read_only: true } });
   await page.reload({ waitUntil: "networkidle0" });
 
   // Session hydration can finish after networkidle under parallel browser load.
@@ -175,13 +182,17 @@ try {
   // visible: never a caption under the group before a click.
   const reasons = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
     label: e.textContent.trim(),
+    title: e.title,
     reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim(),
-    reasonHidden: document.getElementById(e.getAttribute("aria-describedby") || "")?.classList.contains("visually-hidden") || false })));
+    reasonHidden: document.getElementById(e.getAttribute("aria-describedby") || "")?.classList.contains("visually-hidden") || false,
+    controls: document.getElementById(e.getAttribute("aria-describedby") || "")?.querySelectorAll("button, .ops-commands").length })));
   for (const [i, a] of R["ic-8.4-healthy"].actions.entries()) {
     assert.equal(reasons[i].label, a.label);
     assert.ok(reasons[i].reason.includes(a.why_not), `${a.id}: its reason is described: ${reasons[i].reason}`);
     assert.ok(reasons[i].reason.includes(a.fix), `${a.id}: its fix is described: ${reasons[i].reason}`);
     assert.equal(reasons[i].reasonHidden, true, `${a.id}: the description is visually hidden, not a caption`);
+    assert.equal(reasons[i].title, [...new Set([a.why_not, a.fix].filter(Boolean))].join(" "), `${a.id}: hover explains the disabled action`);
+    assert.equal(reasons[i].controls, 0, `${a.id}: its hidden description contains no controls or Commands`);
   }
   assert.equal(await page.$$eval(`${view} .cluster-actions .cluster-action-why`, (els) =>
     els.filter((e) => e.getClientRects().length).length), 0, "no reason text is visible under the buttons before a click");
@@ -206,12 +217,13 @@ try {
   // Space opens it too; clicking a second action's button closes the first
   // message and opens the second; clicking the same button again closes it.
   const thirdWhy = R["ic-8.4-healthy"].actions[2];
+  const thirdWhyButton = `${view} .cluster-actions .review-actions > button:nth-of-type(3)`;
   await page.keyboard.press("Space");
   await page.waitForFunction((sel, text) => {
     const open = document.querySelector(sel);
     return !!open && open.textContent.includes(text);
   }, {}, openWhy, firstWhy.why_not);
-  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)][2].click(), view);
+  await page.click(thirdWhyButton);
   await page.waitForFunction((sel, text) => {
     const open = document.querySelector(sel);
     return !!open && open.textContent.includes(text);
@@ -219,11 +231,34 @@ try {
   whyText = await page.$eval(openWhy, (e) => e.textContent);
   assert.ok(whyText.includes(thirdWhy.why_not), `the other action's message replaces the first: ${whyText}`);
   assert.equal(await page.$$eval(".cluster-action-why:popover-open", (els) => els.length), 1, "one message at a time");
-  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)][2].click(), view);
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
+  await page.click(thirdWhyButton);
+  await page.waitForSelector(openWhy, { visible: true });
+  await page.click(`${view} .summary-line`);
   await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
   await pause(300);
   assert.equal(plans.length, plansBeforeDisabled, "a disabled action plans nothing");
+  assert.equal(sends.length, 0, "disabled-action messages send no action requests");
   assert.equal(await page.$("dialog.action-review[open]"), null, "a disabled action opens no review sheet");
+
+  // Refresh invalidates an open explanation; server text remains literal in
+  // both the hidden description and the message, even when it resembles HTML.
+  await page.click(thirdWhyButton);
+  await page.waitForSelector(openWhy, { visible: true });
+  const changedWhy = structuredClone(R["ic-8.4-healthy"]);
+  const literalReason = '<img src=x onerror="window.__whyInjection = true"> needs <script>privileges</script>.';
+  changedWhy.actions[2].why_not = literalReason;
+  await refreshTo(changedWhy, { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "Refresh closes a message when its explanation changes");
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel, reason) => document.querySelector(sel)?.textContent.includes(reason), {}, openWhy, literalReason);
+  assert.equal(await page.$eval(openWhy, (e) => e.querySelectorAll("img, script").length), 0, "server text never becomes message markup");
+  assert.equal(await page.$eval(thirdWhyButton, (b) => document.getElementById(b.getAttribute("aria-describedby")).querySelectorAll("img, script").length),
+    0, "server text never becomes hidden-description markup");
+  assert.equal(await page.evaluate(() => window.__whyInjection), undefined, "server text cannot execute");
+  await refreshTo(R["ic-8.4-healthy"], { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "the next explanation change also closes the message");
 
   // Keyboard: arrows move between member cards and select; Enter opens the inspector; Escape returns.
   await page.focus(`${view} .cluster-members .cluster-card`);
@@ -318,8 +353,14 @@ try {
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
     .find((b) => b.textContent.trim() === "Start Group Replication…").click());
   await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
+  planDelay = 1200;
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === "Make primary…").click());
+  await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector .review-actions > button")].some((b) => b.textContent === "Reading…"));
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Start Group Replication…").click());
+  assert.equal(await page.$(".view-inspector .cluster-action-why:popover-open"), null, "a busy group opens no disabled-action message");
   await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  planDelay = 0;
   assert.deepEqual({ action: plans[0].action, member: plans[0].member_key }, { action: "switchover", member: secondary.key });
   const sheet = await page.$eval("dialog.action-review[open]", (d) => ({ eyebrow: d.querySelector(".eyebrow").textContent,
     sql: d.querySelector(".ops-pre code").textContent, confirm: d.querySelector(".sheet-actions button:last-child").textContent }));
@@ -379,8 +420,12 @@ try {
   await page.evaluate(() => { window.__grants = []; navigator.clipboard.writeText = (t) => (window.__grants.push(t), Promise.resolve()); });
   await refreshTo(grantReport);
   await h.select(`${view} tr[data-row-key="${grantMember.key}"]`);
-  const clickMemberAction = (label) => page.evaluate((l) => [...document.querySelectorAll(".view-inspector .review-actions > button")]
-    .find((b) => b.textContent.trim() === l).click(), label);
+  const clickMemberAction = async (label) => {
+    const button = await page.evaluateHandle((l) => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+      .find((b) => b.textContent.trim() === l), label);
+    await button.asElement().click();
+    await button.dispose();
+  };
   const memberWhy = ".view-inspector .cluster-action-why:popover-open";
   // Before any click the inspector shows no caption: the reasons are hidden descriptions.
   assert.equal(await page.$$eval(".view-inspector .cluster-action-why", (els) => els.filter((e) => e.getClientRects().length).length),
@@ -395,6 +440,33 @@ try {
   await clickMemberAction("Start Group Replication…");
   await page.waitForFunction((sel) => !!document.querySelector(sel)?.textContent.includes("Privileges could not be read"), {}, memberWhy);
   assert.match(await h.inspector(), /Privileges could not be read; the server refuses the change if one is missing\./);
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForSelector(`${memberWhy} .ops-pre`, { visible: true });
+  // The top-layer message stays beside its anchor, and follows the button
+  // in DOM order so Tab reaches the scrollable GRANT and then Copy.
+  const anchored = await page.$eval(memberWhy, (message) => {
+    const button = message.previousElementSibling;
+    const a = button.getBoundingClientRect();
+    const b = message.getBoundingClientRect();
+    return { supports: CSS.supports("anchor-name", "--probe") && CSS.supports("position-area", "block-end span-inline-end"),
+      anchor: button.style.getPropertyValue("anchor-name"), target: message.style.getPropertyValue("position-anchor"),
+      distance: Math.min(Math.abs(a.bottom - b.top), Math.abs(a.top - b.bottom)) };
+  });
+  assert.equal(anchored.supports, true, "Puppeteer's Chromium supports CSS anchor positioning");
+  assert.ok(anchored.anchor && anchored.anchor === anchored.target, "the message uses its own button's CSS anchor");
+  assert.ok(anchored.distance <= 1, `the message touches its anchor's block edge: ${JSON.stringify(anchored)}`);
+  await page.$eval(memberWhy, (message) => message.previousElementSibling.focus());
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Grant for Stop Group Replication",
+    "Tab from the action enters its message at the scrollable GRANT");
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Copy: Grant for Stop Group Replication",
+    "the next Tab reaches Copy inside the message");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, memberWhy);
+  assert.ok(await page.$(".view-inspector"), "Escape dismisses only the message, keeping its inspector open");
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Stop Group Replication…",
+    "Escape from inside the message returns focus to the action");
   await clickMemberAction("Stop Group Replication…");
   await page.waitForSelector(`${memberWhy} .ops-pre`, { visible: true });
   // A long GRANT scrolls inside its box instead of stretching the page, in both themes.
@@ -680,6 +752,7 @@ try {
   assert.deepEqual(useFix, ["Use cluster-galera-2"], `the message carries the saved connection: ${useFix}`);
   await page.click(".view-inspector .cluster-action-why:popover-open .cluster-use-node");
   await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("cluster-galera-2"));
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
   assert.equal(await page.$(".view-inspector .cluster-action-why:popover-open"), null, "the message does not carry over to another connection");
   await backToList();
   await tab("Topology");
@@ -944,6 +1017,37 @@ try {
   await refreshTo(R["ic-8.4-degraded"]);
   assert.equal(state.seen.at(-1).connection.host, "node-a.test");
   assert.deepEqual((await findingStates()).filter((f) => f.expanded === "true"), [], "a new connection starts with every finding closed");
+
+  // A read-only connection keeps a client block even when eligibility changes.
+  // A slot-only disabled reason has the same sentence as an enabled-but-blocked
+  // action, so the enabled transition must close it independently of text.
+  await chooseConnection(page, await connectionOption(page, "Read-only"));
+  const blockedReport = structuredClone(R["ic-8.4-healthy"]);
+  Object.assign(blockedReport.actions[2], {
+    enabled: false, why_not: null, fix: null, privileges_unreadable: true,
+  });
+  await refreshTo(blockedReport);
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel) => document.querySelector(sel)?.textContent.includes("Privileges could not be read"), {}, openWhy);
+  const blockedReason = "This connection is read-only in myflames, so changes are refused.";
+  assert.equal(await page.$eval(openWhy, (e) => e.querySelector("p")?.textContent), blockedReason,
+    "the client block is the message's first sentence");
+  assert.equal(await page.$eval(thirdWhyButton, (b) => b.title), blockedReason, "a blocked action's hover text is the client block");
+  assert.equal(await page.$$eval(`${view} .cluster-actions .review-actions > .hint`, (els) => els.length), 1,
+    "the group keeps one visible blocked line");
+  const newlyEnabled = structuredClone(blockedReport);
+  Object.assign(newlyEnabled.actions[2], { enabled: true, privileges_unreadable: false });
+  await refreshTo(newlyEnabled, { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "an enabled transition closes the message even when the blocked sentence is unchanged");
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel, text) => document.querySelector(sel)?.textContent === text, {}, openWhy, blockedReason);
+  await pause(100);
+  assert.ok(await page.$(openWhy), "an already enabled but blocked action can still explain the client block");
+  await refreshTo(blockedReport, { preservePopover: true });
+  assert.ok(await page.$(openWhy), "the unchanged blocked message may stay open when the catalog disables the action");
+  await refreshTo(newlyEnabled, { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "a later enabled transition also closes a message first opened while enabled and blocked");
+  await chooseConnection(page, await connectionOption(page, "Node A"));
 
   // The app's 720 px minimum window: no page scroll sideways; the cards wrap
   // inside the frame; the sections stay reachable; the first tab's content
