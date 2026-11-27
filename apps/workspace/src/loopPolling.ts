@@ -1,15 +1,14 @@
 // Skip-loop polling that does not gate the first screen: the one-time poll of
 // a restored workspace's other members, the retry of failed reads, the refresh
-// of loops running on other members, and the shell's Stop for those loops.
+// of loops running on other members.
 // The shell (main.tsx) keeps the state and the render; these workers run only
 // after a restore with saved loops or while another member's loop is active,
 // so they load with their own chunk (docs/DEVELOPER_REFERENCE.md, "Bundle and
-// lazy loading"), preloaded beside the first screen so a poll or a Stop never
-// waits on it.
+// lazy loading"). Stop stays eager in the shell.
 import type { Dispatch, SetStateAction } from "react";
 import type { Connection, Profile } from "./api";
 import { connectionKey, connectionLabel, endpointKey, type Bound } from "./binding";
-import { LOOP_POLL_MS, loopActive, readSkipLoops, stopSkipLoop, type SkipLoop } from "./opsApi";
+import { LOOP_POLL_MS, loopActive, readSkipLoops, type SkipLoop } from "./opsApi";
 
 /** The shell's restoredMembers state (main.tsx), published by these polls. */
 export type RestoredMembersState = {
@@ -22,8 +21,7 @@ export type RestoredMembersState = {
 
 /** Poll each restored same-group member's loop registry once (no database
  * login). Resolves true when the result was applied; false when the read was
- * aborted or there was nothing to poll, so the caller re-arms on the next
- * change, exactly as the inline effect did. */
+ * aborted. An empty poll is complete too, so it never re-arms on cleanup. */
 export async function pollRestoredMembers(args: {
   resetKey: number;
   members: string[];
@@ -63,7 +61,7 @@ export async function pollRestoredMembers(args: {
       if (outsideGroup.length === 0) args.syncLoopSession(false, []);
       else args.syncLoopSession(true, outsideGroup.map((m) => m.id));
     }
-    return false;
+    return true;
   }
   const results = await Promise.allSettled(
     toPoll.map(async (item) => ({ item, loops: (await readSkipLoops(item.c, signal)).loops })),
@@ -216,9 +214,3 @@ export function startOtherLoopPoll(
   return stop;
 }
 
-/** The shell's Stop for another member's loop: stop, then read the registry
- * back so the banner reflects the server. */
-export async function stopAndReadSkipLoops(c: Connection, id: string) {
-  await stopSkipLoop(c, id);
-  return readSkipLoops(c);
-}

@@ -1,7 +1,7 @@
 // The Import dialog opens on a user action (Import… in the shell, Import in
 // Investigations), so it loads with its first opener instead of the entry
 // chunk (docs/DEVELOPER_REFERENCE.md, "Bundle and lazy loading"). The shell
-// preloads it beside the first screen, so opening it never waits.
+// preloads it beside the first screen and awaits that preload before opening.
 import { useRef, useState } from "react";
 import { ActionButton, ActionStatus, useFocusScope, useSince } from "./kit";
 import { Icon } from "./components";

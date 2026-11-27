@@ -29,6 +29,7 @@ import {
 import { Icon, type IconName } from "./components";
 import { currentUiPreferences, loadUiPreferencesWithin, setUiPreference, useUiPreferences } from "./uiPreferences";
 import "./fonts";
+import "./themes";
 import type { WorkspaceCommand } from "./CommandPalette";
 import type { EditorState, QueryLabHandle, QueryNavigation } from "./QueryLab";
 import { Home } from "./Home";
@@ -37,7 +38,7 @@ import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, endpointKey, keyGroupName, keyProfileId, type Bound } from "./binding";
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { useSchemaCatalog } from "./PerfShared";
-import { loopActive, NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
+import { loopActive, NOT_A_REPLICA, readSkipLoops, replicationNav, stopSkipLoop, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
 import { NOT_A_READYSET, readysetNav, type ReadysetFailure, type ReadysetReport } from "./readysetApi";
@@ -64,14 +65,20 @@ import { groupConnectionLabel } from "./binding";
 import { unavailableMemberConnection } from "./queryConnection";
 const GroupEditorSheet = lazyComponent(() => import("./GroupEditorSheet").then((m) => m.GroupEditorSheet));
 // The Import dialog opens only from Import… (shell) and Investigations, so its
-// code stays out of the entry chunk; it preloads beside the first screen, the
-// ReadinessFacts pattern, so opening it never waits on the chunk.
-const ImportDialog = lazyComponent(() => import("./ImportPlanDialog").then((m) => m.ImportDialog));
+// code stays out of the entry chunk. Every opener awaits its preload before
+// mounting, so a failed chunk cannot replace the modal with an inert fallback.
+const loadImportDialog = () => import("./ImportPlanDialog").then((m) => m.ImportDialog);
+const retryImportDialog = [
+  import.meta.glob("./ImportPlanDialog.tsx", { query: "?open-retry", import: "ImportDialog" }),
+  import.meta.glob("./ImportPlanDialog.tsx", { query: "?open-retry=2", import: "ImportDialog" }),
+  import.meta.glob("./ImportPlanDialog.tsx", { query: "?open-retry=3", import: "ImportDialog" }),
+  import.meta.glob("./ImportPlanDialog.tsx", { query: "?open-retry=4", import: "ImportDialog" }),
+].map((variant) => Object.values(variant)[0] as () => ReturnType<typeof loadImportDialog>);
+const ImportDialog = lazyComponent(loadImportDialog, (attempt) => retryImportDialog[Math.min(attempt, retryImportDialog.length) - 1]());
 void ImportDialog.preload().catch(() => {});
 // Skip-loop polling for restored workspaces and other members' loops lives in
-// its own chunk, out of the entry (the polls and the other-member Stop import
-// it on demand); load it beside the first screen so neither ever waits.
-void import("./loopPolling").catch(() => {});
+// its own chunk, loaded on demand. Stop stays eager. Failed poller loads leave
+// a visible stale state and Reload instead of silently freezing the snapshot.
 import type { DigestAction } from "./SlowQueries";
 import type { SettingsSection } from "./SettingsPage";
 import { ActionButton, ActionStatus, useAction, ColumnStoreContext, Popover, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
@@ -329,6 +336,7 @@ function App() {
   const seenProfileGroups = useRef(new Set<string>());
   const [otherLoopErrors, setOtherLoopErrors] = useState<Record<string, string>>({});
   const [pollerStaleEndpoints, setPollerStaleEndpoints] = useState<string[]>([]);
+  const [loopPollingFailed, setLoopPollingFailed] = useState(false);
   const publishReplicationLoops = useCallback((next: Bound<SkipLoop[]>) => {
     setReplicationLoops((current) => {
       const endpoint = endpointKey(next.key);
@@ -372,6 +380,23 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [importOpening, setImportOpening] = useState(false);
+  const [importLoadError, setImportLoadError] = useState(false);
+  const importRequest = useRef(0);
+  const importLauncher = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!importOpening) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      importRequest.current++;
+      setImportOpening(false);
+      importLauncher.current?.focus();
+    };
+    document.addEventListener("keydown", cancel, true);
+    return () => document.removeEventListener("keydown", cancel, true);
+  }, [importOpening]);
   const [working, setBusy] = useState(false);
   const sampleAction = useAction();
   const saveAction = useAction();
@@ -2317,14 +2342,14 @@ function App() {
     }
     if (failedRestoreMembers.length) {
       const one = failedRestoreMembers.length === 1;
-      parts.push(`Status not refreshed for ${failedRestoreMembers.map((m) => m.name).join(", ")}: ${one ? "a skip loop was" : "skip loops were"} running before reload, and myflames is checking again.`);
+      parts.push(`Status not refreshed for ${failedRestoreMembers.map((m) => m.name).join(", ")}: ${one ? "a skip loop was" : "skip loops were"} running before reload. ${loopPollingFailed ? "Reload the workspace to check again." : "myflames is checking again."}`);
     }
     if (restoreMemberPending && profilesFailed) {
       const one = restoredOtherMembers.length === 1;
       parts.push(`${one ? "A skip loop was running on another saved connection" : `Skip loops were running on ${restoredOtherMembers.length} other saved connections`} before reload, and ${listErr}. Retry loading saved connections to check or stop ${one ? "it" : "them"}.`);
     }
     return parts.join(" ");
-  }, [unreachedLoopMembers, failedRestoreMembers, restoreMemberPending, profilesFailed, restoredOtherMembers.length]);
+  }, [unreachedLoopMembers, failedRestoreMembers, restoreMemberPending, profilesFailed, restoredOtherMembers.length, loopPollingFailed]);
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
   // When a restored workspace had skip loops on other members, poll each
@@ -2339,8 +2364,8 @@ function App() {
     restoredMembersPolled.current = resetKey;
     const controller = new AbortController();
     let done = false;
-    // The poll runs in loopPolling.ts (preloaded beside the first screen); a
-    // chunk that cannot be read re-arms the poll for the next change.
+    // A failed chunk is an unrefreshed result, not a pending restore: preserve
+    // the member ids without blocking subsequent loop/session updates.
     void import("./loopPolling")
       .then((m) => controller.signal.aborted ? false : m.pollRestoredMembers({
         resetKey,
@@ -2354,7 +2379,15 @@ function App() {
         setRestoredMembers,
         syncLoopSession,
       }, controller.signal))
-      .then((applied) => { done = applied; }, () => { if (!controller.signal.aborted) restoredMembersPolled.current = -1; });
+      .then((applied) => { done = applied; }, () => {
+        if (controller.signal.aborted) return;
+        done = true;
+        setLoopPollingFailed(true);
+        setRestoredMembers({
+          reset: resetKey, activeKeys: [], stoppedKeys: [], outsideGroup: [],
+          failedMembers: restoredOtherMembers.map((id) => ({ id, name: profilesRef.current.find((p) => p.id === id)?.name || id })),
+        });
+      });
     return () => {
       if (!done) restoredMembersPolled.current = -1;
       controller.abort();
@@ -2381,8 +2414,7 @@ function App() {
     const ids = [...new Set([...reachIds, ...failIds])];
     const controller = new AbortController();
     let stop: (() => void) | undefined;
-    // The retry loop runs in loopPolling.ts (preloaded beside the first
-    // screen); a chunk that cannot be read retries with the next change.
+    // Loading failures keep the existing failed-member notice and offer Reload.
     void import("./loopPolling").then((m) => {
       if (controller.signal.aborted) return;
       stop = m.startRestoreRetry({
@@ -2396,7 +2428,7 @@ function App() {
         publishReplicationLoops,
         setRestoredMembers,
       }, controller.signal);
-    }).catch(() => {});
+    }).catch(() => { if (!controller.signal.aborted) setLoopPollingFailed(true); });
     return () => { controller.abort(); stop?.(); };
   }, [ready, resetKey, restoreRetrySpec, loopMemberRequest, publishReplicationLoops]);
   const restoreCurrentPending =
@@ -2454,8 +2486,7 @@ function App() {
     });
     const controller = new AbortController();
     let stop: (() => void) | undefined;
-    // The poll runs in loopPolling.ts (preloaded beside the first screen); a
-    // chunk that cannot be read retries with the next change.
+    // If the worker cannot load, every affected endpoint remains visibly stale.
     void import("./loopPolling").then((m) => {
       if (controller.signal.aborted) return;
       stop = m.startOtherLoopPoll(
@@ -2465,7 +2496,11 @@ function App() {
         setPollerStaleEndpoints,
         controller.signal,
       );
-    }).catch(() => {});
+    }).catch(() => {
+      if (controller.signal.aborted) return;
+      setLoopPollingFailed(true);
+      setPollerStaleEndpoints([...activeEps]);
+    });
     return () => { controller.abort(); stop?.(); };
   }, [otherActiveLoopKeys, resolveBoundLoopConnection, publishReplicationLoops]);
   const staleLoopEndpoints = useMemo(() => {
@@ -2498,12 +2533,16 @@ function App() {
     });
     otherLoopStoppingRef.current.add(stopKey);
     setOtherLoopStopping({ key: bound.key, id });
+    let sent = false;
     try {
-      const { stopAndReadSkipLoops } = await import("./loopPolling");
-      const answer = await stopAndReadSkipLoops(c, id);
+      await stopSkipLoop(c, id);
+      sent = true;
+      const answer = await readSkipLoops(c);
       publishReplicationLoops({ key: connectionKey(c), label: connectionLabel(c), report: answer.loops });
     } catch {
-      // Banner stays quiet; the member's own view shows status errors.
+      setOtherLoopErrors((prev) => ({ ...prev, [stopKey]: sent
+        ? "Stop sent, but status was not refreshed. Check this member's status."
+        : "Could not send Stop. Check the connection and try again." }));
     } finally {
       otherLoopStoppingRef.current.delete(stopKey);
       setOtherLoopStopping((pending) => (pending?.key === bound.key && pending.id === id ? null : pending));
@@ -2702,10 +2741,24 @@ function App() {
       capture(c, planName, { open: false, cancelled }),
     [capture],
   );
-  const openImport = () => {
+  const openImport = async () => {
+    if (importOpening) return;
+    const attempt = ++importRequest.current;
+    if (!importLoadError) importLauncher.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setNotebookOpen(false);
     setError("");
-    setImportOpen(true);
+    setImportOpening(true);
+    try {
+      await ImportDialog.preload();
+      if (attempt !== importRequest.current) return;
+      importLauncher.current?.focus();
+      setImportLoadError(false);
+      setImportOpen(true);
+    } catch {
+      if (attempt === importRequest.current) setImportLoadError(true);
+    } finally {
+      if (attempt === importRequest.current) setImportOpening(false);
+    }
   };
   const openNotebook = () => {
     if (!ready || !plans.length || document.querySelector("dialog[open]")) return;
@@ -3096,6 +3149,24 @@ function App() {
               : undefined
           }
         >
+          {(importOpening || importLoadError) && (
+            <div className={importLoadError ? "error import-open-error" : "notice"} role={importLoadError ? "alert" : "status"}>
+              {importLoadError ? "The Import plan window could not be loaded." : "Opening Import plan…"}
+              {importLoadError && <button className="text-button" onClick={openImport} disabled={importOpening}>{importOpening ? "Retrying…" : "Retry"}</button>}
+              <button className="text-button" onClick={() => {
+                importRequest.current++;
+                setImportOpening(false);
+                setImportLoadError(false);
+                importLauncher.current?.focus();
+              }}>{importOpening ? "Cancel" : "Dismiss"}</button>
+            </div>
+          )}
+          {loopPollingFailed && (
+            <div className="notice loop-polling-error" role="alert">
+              Status not refreshed: skip-loop polling could not be loaded.
+              <button className="text-button" onClick={() => window.location.reload()}>Reload</button>
+            </div>
+          )}
           {error && !importOpen && !notebookVisible && (
             <div role="alert" className="error">
               {error}
