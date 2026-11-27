@@ -34,8 +34,7 @@ export async function pollRestoredMembers(args: {
   setRestoredMembers: Dispatch<SetStateAction<RestoredMembersState | null>>;
   syncLoopSession: (active: boolean, members?: string[]) => void;
 }, signal: AbortSignal): Promise<boolean> {
-  const { resetKey, members, profiles, activeId, seenProfileGroups, loopMemberRequest, restoredLoopForCurrent } = args;
-  const currentGroup = (profiles.find((p) => p.id === activeId)?.group || "").trim();
+  const { resetKey, members, profiles, seenProfileGroups, loopMemberRequest, restoredLoopForCurrent } = args;
   const toPoll: { id: string; c: Connection; key: string; label: string; name: string }[] = [];
   const outsideGroup: { id: string; name: string; group: string; hadGroup: boolean }[] = [];
   for (const id of members) {
@@ -51,7 +50,7 @@ export async function pollRestoredMembers(args: {
         id,
         name: target.name || id,
         group: targetGroup,
-        hadGroup: !!targetGroup || !!currentGroup || seenProfileGroups.has(id),
+        hadGroup: !!targetGroup || seenProfileGroups.has(id),
       });
     }
   }
@@ -107,12 +106,12 @@ export function startRestoreRetry(args: {
   let timer: number | undefined;
   async function tick(batch: string[]) {
     const known = args.profilesStatus().loaded && !args.profilesStatus().failed;
-    const toTry: { id: string; c: Connection; key: string; label: string }[] = [];
+    const toTry: { id: string; c: Connection; key: string; label: string; name: string }[] = [];
     const dropped = new Set<string>();
     const movedOutside: { id: string; name: string; group: string; hadGroup: boolean }[] = [];
     for (const id of batch) {
       const c = args.loopMemberRequest(id);
-      if (c) toTry.push({ id, c, key: connectionKey(c), label: connectionLabel(c) });
+      if (c) toTry.push({ id, c, key: connectionKey(c), label: connectionLabel(c), name: args.profiles().find((p) => p.id === id)?.name || id });
       else if (known && failSet.has(id)) {
         const t = args.profiles().find((p) => p.id === id);
         if (!t) dropped.add(id);
@@ -120,11 +119,19 @@ export function startRestoreRetry(args: {
       }
     }
     const ok = new Set<string>(), newlyActive: string[] = [], newlyStopped: string[] = [];
+    const failedReach: { id: string; name: string }[] = [];
     if (toTry.length) {
       const results = await Promise.allSettled(toTry.map(async (item) => ({ item, loops: (await readSkipLoops(item.c, signal)).loops })));
       if (signal.aborted) return;
-      for (const r of results) {
-        if (r.status !== "fulfilled") continue;
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (r.status !== "fulfilled") {
+          // Rejoined members are in scope again even when their status read
+          // fails: retry them as unrefreshed, not as outside the group.
+          const item = toTry[i];
+          if (!failSet.has(item.id)) failedReach.push({ id: item.id, name: item.name });
+          continue;
+        }
         const { item, loops } = r.value;
         ok.add(item.id);
         args.publishReplicationLoops({ key: item.key, label: item.label, report: loops });
@@ -134,16 +141,18 @@ export function startRestoreRetry(args: {
     }
     if (signal.aborted) return;
     const done = new Set([...dropped, ...ok, ...movedOutside.map((m) => m.id)]);
-    if (done.size) {
+    if (done.size || failedReach.length) {
       args.setRestoredMembers((prev) => {
         if (!prev || prev.reset !== resetKey) return prev;
         const seen = new Set(prev.outsideGroup.map((m) => m.id));
+        const failedReachIds = new Set(failedReach.map((m) => m.id));
+        const seenFailed = new Set(prev.failedMembers.map((m) => m.id));
         return {
           ...prev,
           activeKeys: [...new Set([...prev.activeKeys, ...newlyActive])],
           stoppedKeys: [...new Set([...prev.stoppedKeys, ...newlyStopped])],
-          outsideGroup: [...prev.outsideGroup.filter((m) => !ok.has(m.id)), ...movedOutside.filter((m) => !seen.has(m.id))],
-          failedMembers: prev.failedMembers.filter((m) => !done.has(m.id)),
+          outsideGroup: [...prev.outsideGroup.filter((m) => !ok.has(m.id) && !failedReachIds.has(m.id)), ...movedOutside.filter((m) => !seen.has(m.id))],
+          failedMembers: [...prev.failedMembers.filter((m) => !done.has(m.id)), ...failedReach.filter((m) => !seenFailed.has(m.id))],
         };
       });
     }
