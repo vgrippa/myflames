@@ -335,8 +335,10 @@
 /* The rolling change sheet (RollingChangeSheet.tsx): value, mode and member
    choice, then the numbered review and the per-member result. */
 
-.topology-change-blocked {
-  margin: 4px 0 0;
+/* A blocked rolling change stays focusable (aria-disabled), looking off. */
+.topology-member-actions .button[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .topology-change-done {

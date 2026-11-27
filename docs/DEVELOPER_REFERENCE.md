@@ -9597,10 +9597,15 @@ logs in.
   `placeRequest.read_only`, so a member read through a non-active saved
   connection keeps its own Read-only badge.
 - **Rolling change UI (`RollingChangeSheet.tsx`, `rollingRuns.ts`)**: a
-  **Parameters** row's inspector offers **Change on every member…** (disabled
-  with its reason by `rollingChangeBlock` when `effective_safety.read_only` or
+  **Parameters** row's inspector offers **Change on every member…** (off by
+  `rollingChangeBlock` when `effective_safety.read_only` or
   `connection.read_only`, `per_server`, `row.reason`, or a compared member
-  value is `undefined`/`null`/`"[redacted]"`). The sheet pre-fills `commonValue`,
+  value is `undefined`/`null`/`"[redacted]"`; like every disabled action it
+  stays focusable with `aria-disabled`, the reason as a visually hidden
+  `aria-describedby` description and in its `title`, and click, Enter or
+  Space opens the shared app-level `WhyDisabled` message through
+  `openWhyDisabled` (`whyDisabledBus.ts`), never a caption and never the
+  sheet). The sheet pre-fills `commonValue`,
   shows only `SET GLOBAL` when all changeable members are MariaDB (else all
   three modes with MariaDB note, defaulting to `persist`), lists every group
   member with proxies/caches and `not_compared` members unticked and disabled,
