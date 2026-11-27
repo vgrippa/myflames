@@ -1557,9 +1557,9 @@
  ],
  "notes": [],
  "statements": [
-  "SELECT admin-version",
-  "SELECT @@version",
   "SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'",
+  "SELECT variable_value FROM global_variables WHERE variable_name = 'admin-version'",
+  "SELECT @@version",
   "SELECT * FROM stats_mysql_global",
   "SELECT * FROM main.mysql_servers",
   "SELECT * FROM main.runtime_mysql_servers",

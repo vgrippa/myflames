@@ -16,6 +16,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+import unicodedata
 from pathlib import Path
 from unittest import mock
 
@@ -126,7 +127,7 @@ class FakeAdmin(object):
             self.db.execute("ATTACH DATABASE ':memory:' AS %s" % schema)
         self.missing = set(missing)
         self.fail_line, self.fail_text, self.timeout_line = fail_line, fail_text, timeout_line
-        self.calls, self.writes = [], []
+        self.calls, self.read_flags, self.writes = [], [], []
         self.db.execute('CREATE TABLE disk.global_settings '
                         '(variable_name VARCHAR NOT NULL PRIMARY KEY, variable_value VARCHAR NOT NULL)')
         if server_uuid is not None:
@@ -229,6 +230,8 @@ class FakeAdmin(object):
         for name in self.missing:
             if name in body:
                 raise self._error(line, self.missing_text % name if '%s' in self.missing_text else self.missing_text)
+        if body.rstrip(';') == 'SELECT @@version':
+            return [['@@version'], [self.version]]
         commands = {proxysql.LOAD['servers']: ('load', 'servers'), proxysql.LOAD['query_rules']: ('load', 'query_rules'),
                     proxysql.SAVE['servers']: ('save', 'servers'), proxysql.SAVE['query_rules']: ('save', 'query_rules')}
         if body in commands:
@@ -267,6 +270,7 @@ class FakeAdmin(object):
     # -- the connection API proxysql.py uses -------------------------------------------------
     def run(self, sql, extra_flags=None, timeout=None, retain_partial_stdout=False):
         self.calls.append(sql)
+        self.read_flags.append((sql, tuple(extra_flags or ())))
         hook = getattr(self, 'on_read', None)
         if hook is not None:
             self.on_read = None
@@ -492,6 +496,82 @@ class TestRead(Home):
                 self.assertEqual(statements[0]['text'].strip().rstrip(';'), IDENTITY_SQL)
                 self.assertEqual(statements[-1]['text'].strip().rstrip(';'), IDENTITY_SQL)
 
+    def test_product_identification_is_bound_before_the_configuration_reads(self):
+        conn = self.admin()
+        report = proxysql.read_status(conn)
+        self.assertEqual(report['version'], VERSION)
+        for query in (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version'):
+            batches = [(sql, flags) for sql, flags in conn.read_flags if query in sql]
+            self.assertEqual(len(batches), 1)
+            sql, flags = batches[0]
+            statements = [s['text'].strip().rstrip(';') for s in dbops.split_statements(sql)]
+            self.assertEqual(statements, [IDENTITY_SQL, query, IDENTITY_SQL])
+            self.assertIn('--xml', flags)
+            self.assertIn('--skip-reconnect', flags)
+
+    def test_standalone_identification_binds_the_version_to_the_instance(self):
+        for query in (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version'):
+            with self.subTest(query=query):
+                conn = self.admin()
+                with self.other_instance_read(conn, query), self.assertRaises(ConnectorError) as caught:
+                    proxysql.identify(conn)
+                self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
+                self.assertEqual(conn.rows(IDENTITY_SQL), [(ADMIN_UUID,)])
+        conn = self.admin()
+        self.assertEqual(proxysql.identify(conn), (True, VERSION))
+        for query in (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version'):
+            sql, flags = next((sql, flags) for sql, flags in conn.read_flags if query in sql)
+            self.assertEqual([s['text'].strip().rstrip(';') for s in dbops.split_statements(sql)],
+                             [IDENTITY_SQL, query, IDENTITY_SQL])
+            self.assertIn('--skip-reconnect', flags)
+
+    def test_connection_wrapper_without_partial_output_still_binds_identification(self):
+        conn = self.admin()
+
+        class Wrapper(object):
+            def run(self, sql, extra_flags=None, timeout=None):
+                return conn.run(sql, extra_flags=extra_flags, timeout=timeout)
+
+        self.assertEqual(proxysql.identify(Wrapper()), (True, VERSION))
+        with self.other_instance_read(conn, 'SELECT @@version'), self.assertRaises(ConnectorError) as caught:
+            proxysql.identify(Wrapper())
+        self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
+
+    def test_identification_from_another_instance_refuses_the_whole_report(self):
+        for query in (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version'):
+            with self.subTest(query=query):
+                conn = self.admin()
+                # B reports exactly A's version and data, but has a distinct UUID.
+                with self.other_instance_read(conn, query), self.assertRaises(ConnectorError) as caught:
+                    proxysql.read_status(conn)
+                self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
+                self.assertEqual(conn.writes, [])
+
+    def test_identification_rejects_incomplete_or_wrong_uuid_framing(self):
+        for query in (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version'):
+            for mode in ('missing_prefix', 'missing_suffix', 'different_suffix', 'malformed'):
+                with self.subTest(query=query, mode=mode):
+                    conn = self.admin()
+                    original = conn.run
+
+                    def corrupt(sql, *args, **kwargs):
+                        output = original(sql, *args, **kwargs)
+                        if query not in sql:
+                            return output
+                        documents = re.findall(r'(?:<\?xml[^>]*>\s*)?<resultset\b[^>]*>.*?</resultset>',
+                                               output, re.S)
+                        if mode.startswith('missing_'):
+                            documents.pop(0 if mode.endswith('prefix') else -1)
+                        elif mode == 'different_suffix':
+                            documents[-1] = conn._xml(IDENTITY_SQL, [['variable_value'], [OTHER_ADMIN_UUID]])
+                        else:
+                            documents[-1] = '<resultset><row></resultset>'
+                        return '\n'.join(documents)
+
+                    with mock.patch.object(conn, 'run', side_effect=corrupt), self.assertRaises(ConnectorError) as caught:
+                        proxysql.read_status(conn)
+                    self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
+
     def test_an_alternating_evidence_instance_invalidates_the_report(self):
         # Exercise config, runtime, disk, optional statistics and routing
         # inputs. Identical version/configuration cannot substitute for UUID.
@@ -503,14 +583,10 @@ class TestRead(Home):
         for query in evidence:
             with self.subTest(query=query):
                 conn = self.admin()
-                with self.other_instance_read(conn, query):
-                    report = proxysql.read_status(conn)
+                with self.other_instance_read(conn, query), self.assertRaises(ConnectorError) as caught:
+                    proxysql.read_status(conn)
                 self.assertEqual(conn.rows(IDENTITY_SQL), [(ADMIN_UUID,)], 'the endpoint returned to A')
-                self.assertEqual(report['server_identity'], {})
-                self.assertRegex(report['message'].lower(), r'(uuid|identity|identified)')
-                self.assertEqual(proxysql.available_actions(report), [])
-                with self.assertRaises(reviewed_writes.ActionUnavailable):
-                    proxysql.plan_action(report, 'servers_load')
+                self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
                 self.assertEqual(conn.writes, [])
 
     def test_incomplete_or_invalid_identity_result_sets_invalidate_the_report(self):
@@ -545,12 +621,9 @@ class TestRead(Home):
                         documents[-1] = '<resultset><row></resultset>'
                     return '\n'.join(documents)
 
-                with mock.patch.object(conn, 'run', side_effect=corrupt):
-                    report = proxysql.read_status(conn)
-                self.assertEqual(report['server_identity'], {})
-                self.assertTrue(report['message'])
-                with self.assertRaises(reviewed_writes.ActionUnavailable):
-                    proxysql.plan_action(report, 'servers_load')
+                with mock.patch.object(conn, 'run', side_effect=corrupt), self.assertRaises(ConnectorError) as caught:
+                    proxysql.read_status(conn)
+                self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
                 self.assertEqual(conn.writes, [])
 
     def test_optional_table_errors_cannot_hide_an_unidentified_evidence_login(self):
@@ -562,13 +635,10 @@ class TestRead(Home):
                 # This table exists on A. A failed UUID read on B must not
                 # mark all copies absent and omit it from LOAD/SAVE review.
                 conn.db.execute("INSERT INTO main.mysql_hostgroup_attributes VALUES (30, 2, 'unreviewed')")
-                with self.unidentified_optional_read(conn, mode):
-                    report = proxysql.read_status(conn)
+                with self.unidentified_optional_read(conn, mode), self.assertRaises(ConnectorError) as caught:
+                    proxysql.read_status(conn)
                 self.assertEqual(conn.rows(IDENTITY_SQL), [(ADMIN_UUID,)])
-                self.assertEqual(report['server_identity'], {})
-                self.assertTrue(report['message'])
-                with self.assertRaises(reviewed_writes.ActionUnavailable):
-                    proxysql.plan_action(report, 'servers_load')
+                self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
                 self.assertEqual(conn.writes, [])
 
     def test_a_valid_partial_identity_prefix_preserves_optional_table_fallback(self):
@@ -1290,6 +1360,13 @@ class Endpoints(Home):
                 self.assertEqual(len(records), previous_audits + 1)
                 self.assertEqual(records[0]['status'], 'refused')
 
+    def test_a_mixed_status_read_returns_an_error_instead_of_empty_counts(self):
+        for query in (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version', 'SELECT * FROM main.mysql_servers'):
+            with self.subTest(query=query), self.other_instance_read(self.conn, query), \
+                    self.assertRaises(ConnectorError) as caught:
+                self.api('/api/live/proxysql', {'connection': self.connection})
+            self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
+
     def test_optional_table_errors_with_unbound_prefix_refuse_the_fresh_apply_read(self):
         for mode in ('missing_identity_prefix', 'missing_identity_suffix', 'different_prefix', 'empty_prefix',
                      'missing_prefix', 'transport'):
@@ -1329,8 +1406,10 @@ class Endpoints(Home):
                 self.assertEqual(result['sent'], plan['statements'])
                 self.assertIsNone(result['after'], 'another instance must not be shown as the after-state')
                 self.assertIsNone(result['effect'], 'an unbound readback proves no effect')
+                self.assertIsNone(result['next'])
                 self.assertRegex(result['message'].lower(), r'(read|after)')
                 self.assertRegex(result['message'].lower(), r'(uuid|identity|instance)')
+                self.assertIn('refresh', result['message'].lower())
                 self.assertEqual(self.conn.rows("SELECT weight FROM main.mysql_servers WHERE hostname='mf-ic-2'"),
                                  [(50,)], 'the acknowledged write remains applied')
                 record = self.audit()[0]
@@ -1366,7 +1445,9 @@ class Endpoints(Home):
                 self.assertEqual(result['sent'], plan['statements'])
                 self.assertIsNone(result['after'])
                 self.assertIsNone(result['effect'])
+                self.assertIsNone(result['next'])
                 self.assertIn('read after', result['message'].lower())
+                self.assertIn('refresh', result['message'].lower())
                 self.assertEqual(len(self.conn.writes), 1, 'a failed readback must never retry the write')
                 self.assertEqual(self.audit()[0]['message'], result['message'])
 
@@ -1398,8 +1479,344 @@ class Endpoints(Home):
         self.assertEqual(result['status'], 'done', result)
         self.assertIsNone(result['after'])
         self.assertIsNone(result['effect'])
+        self.assertIsNone(result['next'])
         self.assertRegex(result['message'].lower(), r'(uuid|identity|instance)')
         self.assertIsNone(self.audit()[0]['after'])
+
+    def test_unread_state_after_a_valid_identity_offers_no_followup(self):
+        actions = (('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50, 'mysql_servers'),
+                   ('rule_disable', {'rule_id': 30}, None, 'mysql_query_rules'))
+        for action, target, value, table in actions:
+            for copy in ('main.%s', 'runtime_%s', 'disk.%s'):
+                with self.subTest(action=action, copy=copy):
+                    self.conn = self.admin()
+                    plan = self.plan(action, target, value)
+                    self.assertIsNotNone(plan['next'])
+                    original = self.conn.run_write
+
+                    def make_copy_unreadable(sql, *args, **kwargs):
+                        answer = original(sql, *args, **kwargs)
+                        self.conn.missing.add(copy % table)
+                        return answer
+
+                    with mock.patch.object(self.conn, 'run_write', side_effect=make_copy_unreadable):
+                        result = self.send(plan)
+                    self.assertEqual(result['status'], 'done', result)
+                    self.assertIsNone(result['next'])
+                    self.assertIsNone(result['after'])
+                    self.assertIsNone(result['effect'])
+                    self.assertIn('refresh', result['message'].lower())
+                    self.assertEqual(self.audit()[0]['message'], result['message'])
+
+    def test_verified_readback_keeps_the_reviewed_followup(self):
+        cases = (('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50, 'servers_save'),
+                 ('rule_disable', {'rule_id': 30}, None, 'query_rules_save'))
+        for action, target, value, next_action in cases:
+            with self.subTest(action=action):
+                self.conn = self.admin()
+                result = self.send(self.plan(action, target, value))
+                self.assertEqual(result['status'], 'done', result)
+                self.assertIsNotNone(result['after'])
+                self.assertEqual(result['next']['action'], next_action)
+
+    def test_verified_rule_enable_and_hostgroup_move_keep_their_followups(self):
+        self.conn.db.execute('UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30')
+        self.conn.load('query_rules')
+        plan = self.plan('rule_enable', {'rule_id': 30})
+        result = self.send(plan)
+        self.assertEqual(result['status'], 'done', result)
+        self.assertEqual(result['next']['action'], 'query_rules_save')
+
+        self.conn = self.admin()
+        self.conn.db.execute("INSERT INTO main.mysql_servers VALUES "
+                             "(50, 'mf-app-1', 3306, 0, 'ONLINE', 100, 0, 100, 0, 0, 0, 'app')")
+        self.conn.load('servers')
+        plan = self.plan('server_hostgroup', {'config': [50, 'mf-app-1', 3306]}, 70)
+        result = self.send(plan, typed=plan['typed_guard'])
+        self.assertEqual(result['status'], 'done', result)
+        self.assertEqual(result['after']['config']['hostgroup_id'], 70)
+        self.assertEqual(result['next']['action'], 'servers_save')
+
+    def test_offline_hard_allows_a_verified_absent_runtime_row(self):
+        plan = self.plan('server_offline_hard', {'config': [30, 'mf-ic-2', 3306]})
+        result = self.send(plan, typed='mf-ic-2:3306')
+        self.assertEqual(result['status'], 'done', result)
+        self.assertEqual(result['after']['runtime'], [])
+        self.assertEqual(result['next']['action'], 'servers_save')
+
+    def test_recognized_runtime_lag_status_does_not_make_state_unreadable(self):
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+        original = self.conn.run_write
+
+        def write(sql, *args, **kwargs):
+            answer = original(sql, *args, **kwargs)
+            self.conn.db.execute("UPDATE main.runtime_mysql_servers SET status = 'SHUNNED_REPLICATION_LAG' "
+                                 "WHERE hostname = 'mf-ic-2'")
+            return answer
+
+        with mock.patch.object(self.conn, 'run_write', side_effect=write):
+            result = self.send(plan)
+        self.assertEqual(result['status'], 'done', result)
+        self.assertIsNotNone(result['after'])
+        self.assertEqual(result['next']['action'], 'servers_save')
+
+    def test_missing_or_malformed_rule_active_readback_is_not_verified(self):
+        for copy, action in (('main.mysql_query_rules', 'rule_disable'),
+                             ('main.runtime_mysql_query_rules', 'rule_enable')):
+            for value in ('missing', None, 'not-a-boolean'):
+                with self.subTest(copy=copy, value=value):
+                    self.conn = self.admin()
+                    if action == 'rule_enable':
+                        self.conn.db.execute('UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30')
+                        self.conn.load('query_rules')
+                    plan = self.plan(action, {'rule_id': 30})
+                    original_read, original_write = self.conn._execute, self.conn.run_write
+                    wrote = [False]
+
+                    def write(sql, *args, **kwargs):
+                        answer = original_write(sql, *args, **kwargs)
+                        wrote[0] = True
+                        return answer
+
+                    def read(sql, *args, **kwargs):
+                        rows = original_read(sql, *args, **kwargs)
+                        if wrote[0] and sql.strip().rstrip(';') == 'SELECT * FROM ' + copy:
+                            active = rows[0].index('active')
+                            if value == 'missing':
+                                rows = [row[:active] + row[active + 1:] for row in rows]
+                            else:
+                                rule_id = rows[0].index('rule_id')
+                                for row in rows[1:]:
+                                    if row[rule_id] == 30:
+                                        row[active] = value
+                        return rows
+
+                    with mock.patch.object(self.conn, 'run_write', side_effect=write), \
+                            mock.patch.object(self.conn, '_execute', side_effect=read):
+                        result = self.send(plan)
+                    self.assertEqual(result['status'], 'done', result)
+                    self.assertIsNone(result['after'])
+                    self.assertIsNone(result['effect'])
+                    self.assertIsNone(result['next'])
+                    self.assertIn('refresh', result['message'].lower())
+
+    def test_followup_is_suppressed_if_the_readable_postcondition_has_changed(self):
+        cases = (
+            ('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50,
+             "UPDATE main.mysql_servers SET weight = 60 WHERE hostname = 'mf-ic-2'", 'servers'),
+            ('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]}, None,
+             "UPDATE main.mysql_servers SET status = 'ONLINE' WHERE hostname = 'mf-ic-2'", 'servers'),
+            ('rule_disable', {'rule_id': 30}, None,
+             'UPDATE main.mysql_query_rules SET active = 1 WHERE rule_id = 30', 'query_rules'),
+            ('rule_enable', {'rule_id': 30}, None,
+             'UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30', 'query_rules'),
+        )
+        for action, target, value, drift, module in cases:
+            with self.subTest(action=action):
+                self.conn = self.admin()
+                if action == 'rule_enable':
+                    self.conn.db.execute('UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30')
+                    self.conn.load('query_rules')
+                plan = self.plan(action, target, value)
+                original = self.conn.run_write
+
+                def change_after_write(sql, *args, **kwargs):
+                    answer = original(sql, *args, **kwargs)
+                    self.conn.db.execute(drift)
+                    self.conn.load(module)
+                    return answer
+
+                with mock.patch.object(self.conn, 'run_write', side_effect=change_after_write):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertIsNotNone(result['after'], 'the actual, verified state remains visible')
+                self.assertIsNone(result['next'])
+                self.assertIn('does not confirm the expected', result['message'])
+                self.assertIn('refresh', result['message'].lower())
+                self.assertEqual(self.audit()[0]['message'], result['message'])
+
+    def test_followup_requires_the_whole_reviewed_module_to_remain_unchanged(self):
+        cases = (
+            ('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50,
+             "UPDATE main.mysql_servers SET weight = 77 WHERE hostname = 'mf-ic-3'", 'servers'),
+            ('rule_disable', {'rule_id': 30}, None,
+             "UPDATE main.mysql_query_rules SET comment = 'different' WHERE rule_id = 20", 'query_rules'),
+            ('servers_load', None, None,
+             "UPDATE main.mysql_servers SET weight = 77 WHERE hostname = 'mf-ic-3'", 'servers'),
+            ('query_rules_load', None, None,
+             "UPDATE main.mysql_query_rules SET comment = 'different' WHERE rule_id = 20", 'query_rules'),
+        )
+        for action, target, value, drift, module in cases:
+            with self.subTest(action=action):
+                self.conn = self.admin()
+                if action == 'servers_load':
+                    self.conn.db.execute("UPDATE main.mysql_servers SET weight = 50 WHERE hostname = 'mf-ic-2'")
+                elif action == 'query_rules_load':
+                    self.conn.db.execute('UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30')
+                plan = self.plan(action, target, value)
+                original = self.conn.run_write
+
+                def change_after_write(sql, *args, **kwargs):
+                    answer = original(sql, *args, **kwargs)
+                    self.conn.db.execute(drift)
+                    self.conn.load(module)
+                    return answer
+
+                with mock.patch.object(self.conn, 'run_write', side_effect=change_after_write):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertIsNotNone(result['after'])
+                self.assertIsNone(result['next'])
+                self.assertIn('does not confirm the expected', result['message'])
+                self.assertIn('refresh', result['message'].lower())
+
+    def test_unread_runtime_server_fields_do_not_offer_save(self):
+        for column in ('weight', 'status', 'hostgroup_id'):
+            with self.subTest(column=column):
+                self.conn = self.admin()
+                plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+                original_read, original_write = self.conn._execute, self.conn.run_write
+                wrote = [False]
+
+                def write(sql, *args, **kwargs):
+                    answer = original_write(sql, *args, **kwargs)
+                    wrote[0] = True
+                    return answer
+
+                def read(sql, *args, **kwargs):
+                    rows = original_read(sql, *args, **kwargs)
+                    if wrote[0] and sql.strip().rstrip(';') == 'SELECT * FROM main.runtime_mysql_servers':
+                        index = rows[0].index(column)
+                        rows = [row[:index] + row[index + 1:] for row in rows]
+                    return rows
+
+                with mock.patch.object(self.conn, 'run_write', side_effect=write), \
+                        mock.patch.object(self.conn, '_execute', side_effect=read):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertIsNone(result['next'])
+                self.assertIn('refresh', result['message'].lower())
+
+    def test_module_load_without_rule_active_evidence_offers_no_save(self):
+        for copy in ('main.mysql_query_rules', 'main.runtime_mysql_query_rules', 'disk.mysql_query_rules'):
+            with self.subTest(copy=copy):
+                self.conn = self.admin()
+                self.conn.db.execute('UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30')
+                plan = self.plan('query_rules_load')
+                original_read, original_write = self.conn._execute, self.conn.run_write
+                wrote = [False]
+
+                def write(sql, *args, **kwargs):
+                    answer = original_write(sql, *args, **kwargs)
+                    wrote[0] = True
+                    return answer
+
+                def read(sql, *args, **kwargs):
+                    rows = original_read(sql, *args, **kwargs)
+                    if wrote[0] and sql.strip().rstrip(';') == 'SELECT * FROM ' + copy:
+                        index = rows[0].index('active')
+                        rows = [row[:index] + row[index + 1:] for row in rows]
+                    return rows
+
+                with mock.patch.object(self.conn, 'run_write', side_effect=write), \
+                        mock.patch.object(self.conn, '_execute', side_effect=read):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertIsNone(result['next'])
+                self.assertIsNone(result['after'])
+                self.assertIn('refresh', result['message'].lower())
+                self.assertNotIn('Loaded to runtime', result['message'])
+
+    def test_followup_requires_non_key_columns_seen_before_the_send(self):
+        cases = (
+            ('query_rules_load', 'runtime_mysql_query_rules', 'destination_hostgroup'),
+            ('query_rules_load', 'disk.mysql_query_rules', 'apply'),
+            ('query_rules_load', 'mysql_query_rules', 'match_digest'),
+            ('server_weight', 'main.runtime_mysql_servers', 'max_connections'),
+            ('server_weight', 'disk.mysql_servers', 'use_ssl'),
+            ('server_weight', 'main.runtime_mysql_galera_hostgroups', 'active'),
+        )
+        for action, table, column in cases:
+            with self.subTest(action=action, table=table, column=column):
+                self.conn = self.admin()
+                if action == 'query_rules_load':
+                    self.conn.db.execute('UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30')
+                    plan = self.plan(action)
+                else:
+                    plan = self.plan(action, {'config': [30, 'mf-ic-2', 3306]}, 50)
+                original_read, original_write = self.conn._execute, self.conn.run_write
+                wrote = [False]
+
+                def write(sql, *args, **kwargs):
+                    answer = original_write(sql, *args, **kwargs)
+                    wrote[0] = True
+                    return answer
+
+                def read(sql, *args, **kwargs):
+                    rows = original_read(sql, *args, **kwargs)
+                    if wrote[0] and table in sql and column in rows[0]:
+                        index = rows[0].index(column)
+                        rows = [row[:index] + row[index + 1:] for row in rows]
+                    return rows
+
+                with mock.patch.object(self.conn, 'run_write', side_effect=write), \
+                        mock.patch.object(self.conn, '_execute', side_effect=read):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertIsNone(result['next'])
+                self.assertIsNone(result['after'])
+                self.assertIn('refresh', result['message'].lower())
+                self.assertIn('acknowledged', result['message'])
+
+    def test_missing_monitor_active_value_offers_no_save(self):
+        self.conn.db.execute('UPDATE main.mysql_servers SET weight = 50 WHERE hostname = \'mf-ic-2\'')
+        plan = self.plan('servers_load')
+        original_read, original_write = self.conn._execute, self.conn.run_write
+        wrote = [False]
+
+        def write(sql, *args, **kwargs):
+            answer = original_write(sql, *args, **kwargs)
+            wrote[0] = True
+            return answer
+
+        def read(sql, *args, **kwargs):
+            rows = original_read(sql, *args, **kwargs)
+            if wrote[0] and sql.strip().rstrip(';') == 'SELECT * FROM main.runtime_mysql_galera_hostgroups':
+                index = rows[0].index('active')
+                for row in rows[1:]:
+                    row[index] = None
+            return rows
+
+        with mock.patch.object(self.conn, 'run_write', side_effect=write), \
+                mock.patch.object(self.conn, '_execute', side_effect=read):
+            result = self.send(plan)
+        self.assertEqual(result['status'], 'done', result)
+        self.assertIsNone(result['next'])
+        self.assertIsNone(result['after'])
+        self.assertIn('refresh', result['message'].lower())
+
+    def test_table_disappearing_after_the_send_is_not_treated_as_never_present(self):
+        self.conn = self.admin()
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+        original = self.conn.run_write
+
+        def remove_table(sql, *args, **kwargs):
+            answer = original(sql, *args, **kwargs)
+            self.conn.missing.add('mysql_servers_ssl_params')
+            return answer
+
+        with mock.patch.object(self.conn, 'run_write', side_effect=remove_table):
+            result = self.send(plan)
+        self.assertEqual(result['status'], 'done', result)
+        self.assertIsNone(result['after'])
+        self.assertIsNone(result['next'])
+        self.assertIn('refresh', result['message'].lower())
+
+        # A table absent on both sides of the send remains a supported fallback.
+        self.conn = self.admin(missing=('mysql_servers_ssl_params',))
+        result = self.send(self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50))
+        self.assertEqual(result['status'], 'done', result)
+        self.assertEqual(result['next']['action'], 'servers_save')
 
     def test_instance_swapped_after_reread_refuses_every_action_before_any_change(self):
         actions = [('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]}),
@@ -1566,6 +1983,40 @@ class Endpoints(Home):
                         self.assertNotIn('connection-only-secret', text)
                     self.assertNotIn('replica-secret', text)
                     self.assertIn('[redacted]', text)
+
+    def test_identity_refusal_strips_controls_before_message_and_audit(self):
+        self.conn.password = 'connection-only-secret'
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+        reason = ('ProxySQL Admin Error: readonly database \x1b]52;c;YQ==\x07 '
+                  '\x00\x7f\x9b\u202e password pw-\x1bsecret '
+                  'other connection-\x00only-secret SOURCE_PASS\x1bWORD=\'replica-secret\'')
+
+        def fail_guard():
+            raise ConnectorError('ERROR 1045 (28000) at line 1: ' + reason)
+
+        self.conn.on_write = fail_guard
+        result = self.send(plan)
+        self.assertEqual((result['status'], result['outcome'], result['sent']),
+                         ('refused', 'identity_unavailable', []))
+        record = self.audit()[0]
+        for text in (result['message'], record['message']):
+            self.assertIn('readonly database', text)
+            self.assertIn('[redacted]', text)
+            for secret in ('pw-secret', 'connection-only-secret', 'replica-secret'):
+                self.assertNotIn(secret, text)
+            self.assertFalse([ch for ch in text if unicodedata.category(ch) in ('Cc', 'Cf', 'Zl', 'Zp')])
+
+    def test_identity_refusal_with_only_controls_uses_the_empty_reason(self):
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+
+        def fail_guard():
+            raise ConnectorError('ERROR 1045 (28000) at line 1: \x1b\x07\x9b')
+
+        self.conn.on_write = fail_guard
+        result = self.send(plan)
+        self.assertEqual((result['status'], result['outcome']), ('refused', 'identity_unavailable'))
+        self.assertIn('no server reason was reported', result['message'])
+        self.assertEqual(self.audit()[0]['message'], result['message'])
 
     def test_temp_global_variables_cannot_shadow_the_guard_target(self):
         plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
