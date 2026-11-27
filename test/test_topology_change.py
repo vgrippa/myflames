@@ -164,6 +164,8 @@ class MemberClient(object):
             return ['@@GLOBAL.' + name], [[self.variables[name]]]
         if "variable_name = 'admin-version'" in lower:
             return ['variable_value'], [[self.variables['version']]] if self.proxy == 'proxysql' else []
+        if "from disk.global_settings" in lower:
+            return ['variable_value'], [[self.variables['server_uuid']]] if self.proxy == 'proxysql' else []
         if lower == 'show readyset version':
             return ['name', 'value'], [['release version', 'stable-test']]
         if lower.startswith('show global variables') or lower.startswith('show session variables'):

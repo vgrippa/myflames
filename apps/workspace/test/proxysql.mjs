@@ -25,6 +25,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import vm from "node:vm";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { transformWithEsbuild } from "vite";
 import { chooseConnection, connectionOption } from "./chrome-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
@@ -70,7 +72,35 @@ const R = {};
 for (const name of ["lab", "pending", "problem", "not", "plan-offline-soft", "plan-offline-hard", "plan-weight", "plan-rule-disable",
   "plan-read-only", "result-done", "plan-save", "digests-time", "digests-slowest", "digests-rate", "digests-hg10", "digests-digest",
   "digests-rule-30", "digests-mismatch", "progress-checking", "progress-sending", "progress-finished-unknown",
-  "rules-pending", "collisions", "digests-collisions"]) R[name] = await load(`proxysql-${name}.json`);
+  "rules-pending", "collisions", "digests-collisions", "digests-other-instance", "digests-unverified"]) R[name] = await load(`proxysql-${name}.json`);
+
+// Compute the compatibility cases with the backend under test, rather than
+// hand-writing the catalog or its shared disabled reason in a browser fixture.
+const uuidFixture = spawnSync(process.env.PYTHON || "python3", ["-c", `
+import json, os, sys, tempfile
+home = tempfile.mkdtemp(prefix="proxysql-uuid-browser-")
+os.environ.update(HOME=home, USERPROFILE=home, MYFLAMES_SECRET_BACKEND="vault")
+sys.path.insert(0, "test")
+from test_proxysql import FakeAdmin
+from myflames import proxysql
+reports = {}
+for name, options in (
+    ("old", {"version": "2.3.2", "server_uuid": None}),
+    ("unreadable", {"missing": ("disk.global_settings",)}),
+    ("boundary", {"version": "2.4.0"}),
+):
+    conn = FakeAdmin(**options)
+    try:
+        reports[name] = proxysql.read_status(conn)
+    finally:
+        conn.db.close()
+print(json.dumps(reports))
+`], { cwd: fileURLToPath(new URL("../../../", import.meta.url)), encoding: "utf8", timeout: 15000, maxBuffer: 2 * 1024 * 1024 });
+assert.equal(uuidFixture.status, 0, `UUID fixture generation failed: ${uuidFixture.error || uuidFixture.stderr}`);
+const uuidReports = JSON.parse(uuidFixture.stdout);
+assert.match(uuidReports.old.message, /ProxySQL 2\.4\.0 or later.*Upgrade ProxySQL/);
+assert.match(uuidReports.unreadable.message, /UUID could not be read.*disk\.global_settings.*refresh/);
+assert.equal(uuidReports.boundary.message, null);
 
 const view = '.server-view[data-view="proxysql"]';
 const nav = '.main-nav button[data-place="proxysql"]';
@@ -133,6 +163,7 @@ async function clickAction(label) {
   await page.evaluate((label) => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === label).click(), label);
 }
 const sheet = "dialog.action-review[open]";
+const reviewedSql = (plan) => [...(plan.session_guard || []), ...plan.statements].join("\n");
 async function waitSheet() { await page.waitForSelector(sheet, { visible: true }); }
 async function noSheet() { await page.waitForFunction((s) => !document.querySelector(s), {}, sheet); }
 /** The sheet after Confirm: wait for the server's answer, then Close. */
@@ -153,6 +184,46 @@ async function closeSheet() {
 }
 const resultButton = (label) => page.evaluate((sel, label) => [...document.querySelectorAll(`${sel} .action-result .ops-result-head .text-button`)]
   .find((b) => b.textContent.trim() === label).click(), view, label);
+
+const whyDisabled = ".why-disabled:popover-open";
+async function disabledReason(selector, label, reason, activation, { screenshot = "", keepOpen = false } = {}) {
+  const handle = await page.evaluateHandle((sel, text) => [...document.querySelectorAll(sel)]
+    .find((button) => button.textContent.trim() === text), selector, label);
+  const button = handle.asElement();
+  assert.ok(button, `${label} stays listed`);
+  const state = await button.evaluate((b) => ({
+    disabled: b.disabled,
+    ariaDisabled: b.getAttribute("aria-disabled"),
+    tabIndex: b.tabIndex,
+    description: document.getElementById(b.getAttribute("aria-describedby"))?.textContent,
+  }));
+  assert.deepEqual(state, { disabled: false, ariaDisabled: "true", tabIndex: 0, description: reason },
+    `${label} stays focusable and describes the common reason`);
+  await button.evaluate((b) => b.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  await button.focus();
+  if (activation === "click") await button.click();
+  else await page.keyboard.press(activation);
+  await page.waitForSelector(whyDisabled, { visible: true });
+  assert.equal(await page.$eval(`${whyDisabled} p`, (p) => p.textContent), reason);
+  assert.equal(await page.$("dialog.action-value[open], dialog.action-review[open]"), null,
+    "a disabled action opens its reason, without a value or review sheet");
+  const bounds = await page.$eval(whyDisabled, (el) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: innerWidth,
+      statusTop: document.querySelector(".window-statusbar").getBoundingClientRect().top,
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+  });
+  assert.ok(bounds.left >= 0 && bounds.right <= bounds.width && bounds.top >= 0 && bounds.bottom <= bounds.statusTop,
+    `${label} reason fits above the status bar: ${JSON.stringify(bounds)}`);
+  assert.ok(bounds.overflow <= 0, `disabled reason causes no page overflow: ${JSON.stringify(bounds)}`);
+  if (screenshot) await shot(screenshot);
+  if (!keepOpen) {
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(whyDisabled, { hidden: true });
+    assert.equal(await button.evaluate((b) => document.activeElement === b), true, "Escape restores the action's focus");
+  }
+  await handle.dispose();
+}
 
 try {
   await api("/api/profiles/save", { value: { name: "ProxySQL lab", host: "127.0.0.1", port: 6032, user: "radmin", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development" } });
@@ -245,12 +316,19 @@ try {
   assert.equal(plans[0].connection.host, "127.0.0.1");
   const review = await page.$eval(sheet, (d) => ({
     eyebrow: d.querySelector(".eyebrow")?.textContent, title: d.querySelector("h2")?.textContent,
+    guardNote: d.querySelector(".action-guard-note")?.textContent,
+    preLabel: d.querySelector(".ops-pre")?.getAttribute("aria-label"),
+    copyLabel: d.querySelector(".ops-commands button")?.getAttribute("aria-label"),
     sql: d.querySelector(".ops-pre code")?.textContent, text: d.textContent,
     confirm: d.querySelector(".sheet-actions button:last-child")?.textContent,
     focused: document.activeElement?.textContent }));
   assert.equal(review.eyebrow, "UPDATE");
   assert.equal(review.title, "Set mf-ic-2:3306 to OFFLINE_SOFT?");
-  assert.equal(review.sql, R["plan-offline-soft"].statements.join("\n"), "the statements exactly as sent");
+  assert.match(review.guardNote || "", /Identity check sent first.*before the statements/i);
+  assert.match(review.preLabel || "", /Identity check sent first, before the statements.*exactly as sent/i,
+    "ProxySQL sends the check as its own first statement in the same login, so the text is exactly as sent");
+  assert.match(review.copyLabel || "", /Identity check sent first, before the statements.*exactly as sent/i);
+  assert.equal(review.sql, reviewedSql(R["plan-offline-soft"]), "the identity check and statements exactly as sent");
   assert.match(review.text, /ConnectionProxySQL lab \(radmin@127\.0\.0\.1:6032\)/);
   assert.match(review.text, /TypeDevelopment/);
   assert.match(review.text, /Applied to runtime only\. Save servers to disk afterwards/);
@@ -267,9 +345,27 @@ try {
     { operation: "proxysql_action", statements: R["plan-offline-soft"].statements });
   assert.equal(sends.length, 0, "nothing sent on Escape");
 
-  // Review, Cancel: declined again.
+  // Review, Copy, Cancel: Copy includes the identity check first; Cancel records declined.
   await clickAction("Set OFFLINE_SOFT…");
   await waitSheet();
+  await page.evaluate(() => {
+    window.__proxyCopied = [];
+    window.__prevClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: (t) => { window.__proxyCopied.push(t); return Promise.resolve(); } },
+    });
+  });
+  await page.click(`${sheet} .ops-commands button`);
+  await page.waitForFunction((s) => /Copied\./.test(document.querySelector(`${s} .ops-commands [role=status]`)?.textContent || ""), {}, sheet);
+  assert.equal(await page.evaluate(() => window.__proxyCopied.at(-1)), reviewedSql(R["plan-offline-soft"]),
+    "Copy includes the identity check before the statements");
+  await page.evaluate(() => {
+    if (window.__prevClipboard) Object.defineProperty(navigator, "clipboard", window.__prevClipboard);
+    else delete navigator.clipboard;
+    delete window.__proxyCopied;
+    delete window.__prevClipboard;
+  });
   await page.click(`${sheet} .sheet-actions button:first-child`);
   await noSheet();
   for (let i = 0; i < 50 && declined.length < 2; i++) await pause(20);
@@ -459,7 +555,7 @@ try {
   await clickAction("Disable rule…");
   await waitSheet();
   assert.deepEqual(plans.at(-1).target, { rule_id: 30 });
-  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), R["plan-rule-disable"].statements.join("\n"));
+  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), reviewedSql(R["plan-rule-disable"]));
   await page.keyboard.press("Escape");
   await noSheet();
   // Rules show their hits and the digests they apply to (evaluated here).
@@ -609,7 +705,7 @@ try {
   };
   await clickAction("Disable rule…");
   await waitSheet();
-  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), R["plan-rule-disable"].statements.join("\n"));
+  assert.equal(await page.$eval(`${sheet} .ops-pre code`, (e) => e.textContent), reviewedSql(R["plan-rule-disable"]));
   await page.click(`${sheet} .sheet-actions button:last-child`);
   assert.match((await answered()).outcome, /^Done/);
   await closeSheet();
@@ -672,6 +768,66 @@ try {
   assert.deepEqual(await page.$$eval(`${view} .proxysql-config button`, (els) => els.map((b) => b.classList.contains("ghost"))), [false, false],
     "when changes wait in memory or disk, Load and Save are not ghost buttons");
 
+  // UUID availability blocks changes only. Check both failure causes in
+  // both appearances and at the desktop's minimum width, using real reports.
+  const previousTheme = await page.evaluate(() => document.documentElement.getAttribute("data-theme"));
+  for (const [theme, width, report] of [
+    ["light", 1440, uuidReports.old], ["dark", 1440, uuidReports.unreadable],
+    ["light", 720, uuidReports.unreadable], ["dark", 720, uuidReports.old],
+  ]) {
+    await backToList();
+    await tab("Servers");
+    await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+    await page.setViewport({ width, height: width === 720 ? 520 : 1000 });
+    await refreshTo(report);
+    const counts = { plans: plans.length, sends: sends.length };
+    const reason = report.message;
+    assert.equal(await page.$$eval(`${view} tbody tr[data-row-key]`, (rows) => rows.length), report.servers.length,
+      "server reads remain available without an instance UUID");
+    await disabledReason(`${view} .proxysql-config button`, "Load servers to runtime…", reason, "click",
+      { screenshot: `proxysql-uuid-${width}-${theme}.png` });
+    await disabledReason(`${view} .proxysql-config button`, "Save servers to disk…", reason, "Enter");
+    await selectRow("rt|32|mf-ic-2|3306");
+    await disabledReason(".view-inspector .review-actions button", "Set OFFLINE_SOFT…", reason, "Space");
+    await disabledReason(".view-inspector .review-actions button", "Set OFFLINE_HARD…", reason, "click");
+    await disabledReason(".view-inspector .review-actions button", "Change weight…", reason, "Enter");
+    await backToList();
+    await tab("Query rules");
+    await disabledReason(`${view} .proxysql-config button`, "Load query rules to runtime…", reason, "Space");
+    await disabledReason(`${view} .proxysql-config button`, "Save query rules to disk…", reason, "click");
+    await selectRow("rule:30");
+    await disabledReason(".view-inspector .review-actions button", "Disable rule…", reason, "Enter");
+    await backToList();
+    await tab("Query digests");
+    const digestCount = digestReads.length;
+    await refreshTo(report);
+    await page.waitForSelector(`${view} .proxysql-digest-summary`);
+    assert.ok(digestReads.length > digestCount, "Refresh still reads query digests while changes are blocked");
+    assert.ok(await page.$$eval(`${view} tbody tr[data-row-key]`, (rows) => rows.length > 0), "digests remain readable");
+    assert.deepEqual({ plans: plans.length, sends: sends.length }, counts,
+      "click, Enter and Space on blocked changes never plan or send");
+
+    await tab("Servers");
+    await selectRow("rt|32|mf-ic-2|3306");
+    await disabledReason(".view-inspector .review-actions button", "Set OFFLINE_SOFT…", reason, "click", { keepOpen: true });
+    // A programmatic Refresh avoids an outside pointer click dismissing the
+    // message before the replacement report proves the UUID is readable.
+    state.fallback = { status: 200, body: uuidReports.boundary };
+    await page.evaluate(() => [...document.querySelectorAll("[data-action=refresh]")]
+      .find((b) => !b.closest("[hidden]") && b.offsetParent !== null).click());
+    await page.waitForFunction(() => document.querySelector(".view-inspector .review-actions button")?.getAttribute("aria-disabled") === "false");
+    await page.waitForSelector(whyDisabled, { hidden: true });
+    assert.deepEqual(await page.$$eval(`${view} .proxysql-config button`, (buttons) => buttons.map((b) => b.getAttribute("aria-disabled"))),
+      ["false", "false"], "ProxySQL 2.4.0 with a readable UUID restores Load and Save");
+    assert.deepEqual({ plans: plans.length, sends: sends.length }, counts, "recovery never starts a change itself");
+  }
+  await backToList();
+  await page.evaluate((theme) => {
+    if (theme === null) document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
+  }, previousTheme);
+  await page.setViewport({ width: 1440, height: 1000 });
+
   // Another connection's report: greyed, its changes off, nothing planned.
   await refreshTo(R.lab);
   await chooseConnection(page, await connectionOption(page, "Plain MySQL"));
@@ -692,6 +848,92 @@ try {
   await chooseConnection(page, await connectionOption(page, "ProxySQL lab"));
   await pause(300);
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "", "another connection is not muted by this read");
+  await refreshTo(R.lab);
+
+  // Separate reports can each be UUID-verified yet come from different
+  // instances. Their routing context must never be joined by row/rule id.
+  assert.equal(R["digests-time"].server_identity.uuid, R.lab.server_identity.uuid);
+  assert.notEqual(R["digests-other-instance"].server_identity.uuid, R.lab.server_identity.uuid);
+  assert.equal(R["digests-other-instance"].message, null, "the other instance's report is itself verified");
+  await tab("Query digests");
+  const contextKey = digestKey(32, "0xA8027DF9CE26E2FF");
+  const contextCases = [{ label: "different verified instances", digest: R["digests-other-instance"], status: R.lab }];
+  for (const side of ["digest", "status"]) {
+    for (const identity of [undefined, {}, { uuid: null }, { uuid: "" }]) {
+      const digest = structuredClone(R["digests-time"]);
+      const status = structuredClone(R.lab);
+      const report = side === "digest" ? digest : status;
+      if (identity === undefined) delete report.server_identity;
+      else report.server_identity = identity;
+      contextCases.push({ label: `${side} UUID missing: ${JSON.stringify(identity)}`, digest, status });
+    }
+  }
+  for (const scenario of contextCases) {
+    // No digest routing context means the summary would otherwise fall back
+    // to the independently read status report. That join also needs the UUID.
+    digestOverride = { ...scenario.digest, routing: null };
+    await refreshTo(scenario.status);
+    const filterChoices = await page.$$eval(`${view} .proxysql-digest-filters select option`, (options) =>
+      options.map((option) => option.textContent).join(" "));
+    assert.doesNotMatch(filterChoices, /Group Replication|Galera/, `${scenario.label}: no borrowed filter roles`);
+    assert.match(filterChoices, /32/, `${scenario.label}: digest hostgroup choices stay readable`);
+    await page.click(`${view} .proxysql-digest-summary button[aria-label="How routing is evaluated"]`);
+    const routingPopover = '.popover[role="dialog"][aria-label="How routing is evaluated"]';
+    await page.waitForSelector(routingPopover);
+    assert.match(await page.$eval(routingPopover, (el) => el.textContent),
+      /Not verified against one ProxySQL instance/, `${scenario.label}: no borrowed routing context`);
+    await page.keyboard.press("Escape");
+    await selectRow(contextKey);
+    const inspector = await h.inspector();
+    assert.match(inspector, /Not verified against one ProxySQL instance/, scenario.label);
+    assert.doesNotMatch(inspector, /Group Replication|Galera|Evaluated here|Rules send it to/, scenario.label);
+    assert.match(inspector, /Executions/, `${scenario.label}: own counters stay readable`);
+    assert.equal(await page.$(".view-inspector .proxysql-links .proxysql-link"), null, `${scenario.label}: no status rule links`);
+    assert.equal(await page.$('.view-inspector button[aria-label="About Routing"]'), null, `${scenario.label}: no routing-context popover`);
+    await backToList();
+  }
+  // Matching UUIDs restore the joined context, including the status rule's
+  // text and the monitor role for hostgroup 32.
+  digestOverride = R["digests-time"];
+  await refreshTo(R.lab);
+  assert.match(await page.$$eval(`${view} .proxysql-digest-filters select option`, (options) =>
+    options.map((option) => option.textContent).join(" ")), /Group Replication reader/,
+    "matching UUIDs allow status roles in hostgroup choices");
+  await selectRow(contextKey);
+  const sameInstanceInspector = await h.inspector();
+  assert.doesNotMatch(sameInstanceInspector, /Not verified against one ProxySQL instance/);
+  assert.match(sameInstanceInspector, /Group Replication reader/);
+  assert.ok(await page.$(".view-inspector .proxysql-links .proxysql-link"), "matching UUIDs allow status rule links");
+  assert.ok(await page.$('.view-inspector button[aria-label="About Routing"]'), "matching UUIDs allow routing context");
+  await backToList();
+
+  // An unverified digest report (no readable instance UUID, for example
+  // ProxySQL before 2.4.0): labelled, no routing claims, and its details keep
+  // to the digest read's own evidence (proxysql_digests.read_digests).
+  digestOverride = R["digests-unverified"];
+  await tab("Query digests");
+  await refreshTo(R.lab);
+  await page.waitForFunction((sel) => /Not verified against one ProxySQL instance/.test(
+    document.querySelector(`${sel} .proxysql-digest-summary`)?.textContent || ""), {}, view);
+  const unverifiedSummary = (await visible(`${view} .proxysql-digest-summary`))[0];
+  assert.match(unverifiedSummary, /Not verified against one ProxySQL instance: a valid ProxySQL instance UUID could not be read/);
+  assert.doesNotMatch(unverifiedSummary, /on another hostgroup than the rules send to/);
+  const unverifiedRoutes = await page.$$eval(`${view} tbody tr[data-row-key] td[data-col="route"]`, (els) => els.map((e) => e.textContent.trim()));
+  assert.ok(unverifiedRoutes.length > 0 && unverifiedRoutes.every((t) => t === "Not evaluated"),
+    `an unverified read claims no routing: ${JSON.stringify(unverifiedRoutes)}`);
+  assert.equal(await page.$(`${view} tbody tr.proxysql-mismatch`), null, "no mismatch flag on an unverified read");
+  await shot("proxysql-digests-unverified-1440.png");
+  // A digest's details keep to their own read: no hostgroup roles or rule
+  // texts from the separately read status report beside them.
+  await selectRow(digestKey(32, "0xA8027DF9CE26E2FF"));
+  const unverifiedInspector = await h.inspector();
+  assert.match(unverifiedInspector, /Not verified against one ProxySQL instance/);
+  assert.doesNotMatch(unverifiedInspector, /Group Replication|Galera/, "no hostgroup roles from another read");
+  assert.match(unverifiedInspector, /Executions/, "the digest's own counters still show");
+  assert.equal(await page.$(".view-inspector .proxysql-links .proxysql-link"), null, "no rule links on an unverified read");
+  await backToList();
+  digestOverride = null;
+  await tab("Servers");
   await refreshTo(R.lab);
 
   // The 720x520 window: no sideways scroll, the table starts above the fold.

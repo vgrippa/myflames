@@ -134,6 +134,7 @@ const loopRegistry = new Map();
 const loopStarts = [];
 const loopStatusReads = [];
 const loopStops = [];
+let loopReviewBody, skipReviewBody;
 const lifecycleJobs = new Map();
 const lifecycleJobLists = [];
 const lifecycleStatusReads = [];
@@ -296,7 +297,21 @@ const h = await open("/api/live/cluster", "topology-groups", {
     replicationReads.push(body);
     return { status: 200, body: replicationReportFor ? replicationReportFor(body) : replicationReport };
   },
+  "/api/live/replication/skip-loop/review": (body) => {
+    loopReviewBody = structuredClone(body);
+    assert.ok(body.first_failure && body.statements.length, "Loop review binds the displayed first failure and SQL");
+    assert.ok(body.codes.length, "Loop review is requested only after choosing errors");
+    return { status: 200, body: { review_token: "review-loop" } };
+  },
+  "/api/live/replication/skip/review": (body) => {
+    skipReviewBody = structuredClone(body);
+    assert.ok(body.expect && body.statements.length, "Skip review binds the displayed failed transaction and SQL");
+    return { status: 200, body: { review_token: "review-skip" } };
+  },
   "/api/live/replication/skip-loop/start": (body) => {
+    assert.equal(body.review_token, "review-loop", "Start passes the loop review token");
+    const { review_token, confirmed, ...details } = body;
+    assert.deepEqual(details, loopReviewBody, "Start exactly echoes the on-demand review");
     loopStarts.push(body);
     const running = structuredClone(loopRunning);
     loopRegistry.set(loopEndpoint(body.connection), [running]);

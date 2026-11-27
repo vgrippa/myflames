@@ -20,7 +20,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "test"))
 os.environ.setdefault("MYFLAMES_SECRET_BACKEND", "vault")
 
-from test_proxysql import FakeAdmin, NotProxy  # noqa: E402
+from test_proxysql import FakeAdmin, NotProxy, OTHER_ADMIN_UUID  # noqa: E402
 from myflames import dbops, proxysql, proxysql_digests, reviewed_writes  # noqa: E402
 
 OUT = os.path.join(ROOT, "apps", "workspace", "test", "fixtures")
@@ -69,6 +69,8 @@ def main():
     # The Query digests tab: the default order, the other orders, filters, a
     # digest and a rule (proxysql_digests.read_digests over the lab).
     write("digests-time", digests(FakeAdmin()))
+    write("digests-other-instance", digests(FakeAdmin(server_uuid=OTHER_ADMIN_UUID)))
+    write("digests-unverified", digests(FakeAdmin(server_uuid=None)))
     write("digests-slowest", digests(FakeAdmin(), order="slowest"))
     write("digests-rate", digests(FakeAdmin(), order="rate", limit=25))
     write("digests-hg10", digests(FakeAdmin(), hostgroup=10))

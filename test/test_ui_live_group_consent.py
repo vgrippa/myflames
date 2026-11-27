@@ -90,7 +90,7 @@ class LiveConsentTests(groups.GroupCase):
                 self.assertTrue(self.invocations, 'the fresh plan read happened before audit preparation')
                 record = next(r for r in self.store.audit_records() if r['id'] == result['audit_id'])
                 self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'), record)
-                self.assertEqual(record['statements'], plan['statements'])
+                self.assertEqual(record['statements'], list(plan.get('session_guard') or []) + plan['statements'])
 
     def test_reviewed_proxy_and_readyset_refuse_membership_change_during_secret_lookup(self):
         fill = self.store.connection_with_saved_password
@@ -131,7 +131,7 @@ class LiveConsentTests(groups.GroupCase):
                 plan = self.plan(kind, server)
                 result = self.apply(kind, server, plan)
                 self.assertEqual(result['status'], 'done', result)
-                self.assertEqual(server.writes, ['\n'.join(plan['statements'])])
+                self.assertEqual(server.writes, ['\n'.join(list(plan.get('session_guard') or []) + plan['statements'])])
 
     def test_every_synchronous_live_reader_stops_before_a_second_client_login(self):
         # Each collector seam attempts two real connector invocations. This
