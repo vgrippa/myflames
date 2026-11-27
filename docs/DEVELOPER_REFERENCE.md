@@ -3956,7 +3956,8 @@ and [MariaDB manual](https://mariadb.com/docs/server/reference/sql-statements/da
   character. Whenever a first-pass replacement could change quote, separator or
   comment structure (`needs_followup`: merging non-identical overlapping spans,
   removing a semicolon, replacing an unclosed value or an unquoted value other
-  than a plain `[A-Za-z0-9_$]+` word (`_PLAIN_UNQUOTED_WORD`) with no custom
+  than a plain `[A-Za-z0-9_$]+` word (`_PLAIN_UNQUOTED_WORD`) followed by
+  whitespace, `;`, `,` or `)` (or EOF) with no custom
   boundaries, shortening a
   literal when `SET PASSWORD` is possible, or replacing a literal matching
   `_STRUCTURAL_IN_LITERAL`), `redact` runs one bounded follow-up credential pass

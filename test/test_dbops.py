@@ -4822,6 +4822,31 @@ class TestRedaction(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(dbops.redact(raw), expected)
 
+    def test_r352_redaction_speed_security_abuse_cases(self):
+        cases = (
+            ("SELECT 'ALTER USER u IDENTIFIED WITH caching_sha2_password AS 0x2441' REPLACE 'CurrentPw9'",
+             "SELECT 'ALTER USER u IDENTIFIED WITH caching_sha2_password AS [redacted]' REPLACE '[redacted]'"),
+            ("'wsrep_sst_auth = 0x41' REPLACE 'OldPw1'",
+             "'wsrep_sst_auth = [redacted]' REPLACE '[redacted]'"),
+            ("'VIA ed25519 USING 0b0101' REPLACE 'OldPw1'",
+             "'VIA ed25519 USING [redacted]' REPLACE '[redacted]'"),
+            ("SET GLOBAL s/*!!3*/_secret_key = 'AKIAEXAMPLEKEY'",
+             "SET GLOBAL s/*!!3*/_secret_key = '[redacted]'"),
+            ("SET GLOBAL s/*!!3*/_secret_key = AKIAEXAMPLEKEY",
+             "SET GLOBAL s/*!!3*/_secret_key = [redacted]"),
+            ("/*!!12SET GLOBAL wsrep_sst_auth = CONCAT('sst:', 'Hunter2Pw')*/",
+             "/*!!12SET GLOBAL wsrep_sst_auth = [redacted]*/"),
+            ("/*M!!1SET GLOBAL wsrep_sst_auth = @sst_pw*/",
+             "/*M!!1SET GLOBAL wsrep_sst_auth = [redacted]*/"),
+            ("SET GLOBAL wsrep_sst_auth = DEFAULT# previous value was sst:Hunter2Pw\n;",
+             "SET GLOBAL wsrep_sst_auth = [redacted]\n;"),
+            ("SET GLOBAL wsrep_sst_auth = DEFAULT-- note sst:Hunter2Pw",
+             "SET GLOBAL wsrep_sst_auth = [redacted]"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), expected)
+
     def test_error_code(self):
         self.assertEqual(dbops.error_code('mysql client exited 1: ERROR 1095 (HY000) at line 1: x'), 1095)
         self.assertIsNone(dbops.error_code('Lost connection'))

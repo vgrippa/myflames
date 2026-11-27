@@ -3791,7 +3791,6 @@ _SIMPLE_SET_ASSIGN = re.compile(
     r"(?:@@(?:(?:global|session|persist_only|persist|local)\.)?)?"
     r"([a-z0-9_$]+)[ \t\r\n]*:?=[^=;'\"`/*#\-,()\\]*(?:;|\Z)")
 _SET_VARIABLE_VERSION_TAIL = re.compile(r"(?P<word>\d+)")
-_SET_VARIABLE_DELIMITER = re.compile(r"(?P<delimiter>[\s\S]+)")
 _SET_VARIABLE_SCOPES = frozenset(('GLOBAL', 'SESSION', 'PERSIST', 'PERSIST_ONLY', 'LOCAL'))
 _SET_VALUE_ENDS = frozenset(('WHERE', 'ORDER', 'LIMIT', 'ON', 'RETURNING', 'FOR', 'AS'))
 # Recognize a complete row alias before revealing it. Unrecognized or
@@ -3967,50 +3966,6 @@ def _secret_variable_boundaries(text):
     return _secret_variable_boundary_plan(text)[0]
 
 
-def _secret_variable_tokens(text, backslash_escapes=True, allow_custom_boundaries=True,
-                            custom_boundaries=None):
-    """Scan redaction tokens, recognizing closers only in executable bodies.
-
-    Bound token searches at proven endings even when a word contains '$$'.
-    """
-    if custom_boundaries is not None:
-        boundaries = custom_boundaries
-    else:
-        boundaries = _secret_variable_boundaries(text) if allow_custom_boundaries else []
-    boundary = 0
-    cursor, executable = 0, False
-    while cursor < len(text):
-        limit = boundaries[boundary][0] if boundary < len(boundaries) else len(text)
-        if backslash_escapes:
-            pattern = _SET_VARIABLE_EXECUTABLE_PART if executable else _SET_VARIABLE_PART
-        else:
-            pattern = _SET_VARIABLE_EXECUTABLE_NO_BACKSLASH if executable else _SET_VARIABLE_PART_NO_BACKSLASH
-        token = pattern.search(text, cursor, limit)
-        if token is None:
-            if boundary < len(boundaries):
-                cursor = boundaries[boundary][1]
-                yield _SET_VARIABLE_DELIMITER.match(text, limit, cursor)
-                boundary += 1
-                executable = False
-                continue
-            return
-        cursor = token.end()
-        if token.lastgroup == 'executable':
-            executable = True
-            yield token
-            # MariaDB also accepts a sixth version digit adjacent to SQL.
-            # Keep leftover digits as a token, separate from a following SET
-            # or name, so both names and numeric secret values remain visible.
-            tail = _SET_VARIABLE_VERSION_TAIL.match(text, cursor, limit)
-            if tail is not None:
-                cursor = tail.end()
-                yield tail
-        elif token.lastgroup == 'end':
-            executable = False
-        elif token.lastgroup not in ('comment', 'linecomment'):
-            yield token
-
-
 def _may_have_set_secret_variables(folded):
     """Whether lowercased ASCII *folded* may contain a SET secret assignment.
 
@@ -4143,10 +4098,9 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
                     # executable opener
                     executable = True
                     cursor = tok.end()
-                    if text[cursor - 1].isdigit():
-                        tail = version_tail_match(text, cursor)
-                        if tail is not None:
-                            cursor = tail.end()
+                    tail = version_tail_match(text, cursor)
+                    if tail is not None:
+                        cursor = tail.end()
                     break
             else:
                 cursor = text_len
@@ -4177,6 +4131,8 @@ def _secret_variable_spans(text, backslash_escapes=True, allow_custom_boundaries
                         if value_start is not None:
                             value_end = cursor
                             value_can_end = True
+                        if in_set and depth == 0 and name_parts is not None:
+                            name_parts.append(tail.group())
                     else:
                         version_tail_at = None
                 switched = True
@@ -4832,7 +4788,8 @@ def _redact_spans_pass(text, spans, boundaries=None, set_password_possible=False
                     needs_followup = True
             elif (has_boundaries
                   or (set_password_possible and end - start > redacted_len)
-                  or plain_word_fullmatch(text, start, end) is None):
+                  or plain_word_fullmatch(text, start, end) is None
+                  or (end < text_len and text[end] not in ' \t\r\n;,)')):
                 needs_followup = True
         parts_append(text[kept:start])
         parts_append(redacted_by_quote[quote] if quote in redacted_by_quote else quote + REDACTED + quote)
