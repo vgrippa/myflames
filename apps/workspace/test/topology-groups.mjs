@@ -31,6 +31,7 @@ const healthBase = await load("health-mysql-8.4.json");
 const lifecycleTools = await load("lifecycle-tools-mysql.json");
 const lifecycleJobRunning = await load("lifecycle-job-dump-running.json");
 const lifecycleJobCancelled = await load("lifecycle-job-dump-cancelled.json");
+const lifecycleJobDone = await load("lifecycle-job-dump-done.json");
 
 const profiles = [
   {
@@ -131,6 +132,30 @@ const lifecycleJobLists = [];
 const lifecycleStatusReads = [];
 const lifecycleCancels = [];
 const loopEndpoint = (c) => `${c?.host}:${c?.port}:${c?.user}`;
+// Lifecycle ownership can survive a saved endpoint edit. Capture the original
+// owner and start address before an edit, as the backend does at job creation.
+const lifecycleOwners = new Map();
+const lifecycleStatusFailures = new Set();
+const lifecycleCancelFailures = new Map();
+function matchingLifecycleJobs(connection) {
+  const current = profiles.find(p => p.id === connection?.profile_id && loopEndpoint(p) === loopEndpoint(connection));
+  const matches = [];
+  for (const [ep, jobs] of lifecycleJobs) {
+    for (const job of jobs) {
+      let owner = lifecycleOwners.get(job.id);
+      if (!owner) {
+        const profile = profiles.find(p => loopEndpoint(p) === ep);
+        const start = job.started_on || { host: profile?.host || connection.host, port: profile?.port || connection.port };
+        owner = { profileId: profile?.id || "", started_on: { ...start } };
+        lifecycleOwners.set(job.id, owner);
+      }
+      const owner_match = ep === loopEndpoint(connection) ? "endpoint"
+        : current && owner.profileId === current.id ? "saved_connection" : null;
+      if (owner_match) matches.push({ ep, job: { ...job, started_on: { ...owner.started_on }, owner_match } });
+    }
+  }
+  return matches;
+}
 const loopRunning = await load("replication-loop-running.json");
 const loopStopped = await load("replication-loop-stopped.json");
 function navMember(over) {
@@ -285,23 +310,30 @@ const h = await open("/api/live/cluster", "topology-groups", {
   },
   "/api/lifecycle/tools": () => ({ status: 200, body: lifecycleTools }),
   "/api/lifecycle/jobs": (body) => {
+    assert.ok(!body.connection.password, "registry listing never carries a typed password");
     lifecycleJobLists.push(body);
     return {
       status: 200,
-      body: { schema_version: "lifecycle-jobs-1.0", jobs: lifecycleJobs.get(loopEndpoint(body.connection)) || [] },
+      body: { schema_version: "lifecycle-jobs-1.0", jobs: matchingLifecycleJobs(body.connection).map(m => m.job) },
     };
   },
   "/api/lifecycle/status": (body) => {
+    assert.ok(!body.connection.password, "registry status never carries another member's typed password");
     lifecycleStatusReads.push(body);
-    const list = lifecycleJobs.get(loopEndpoint(body.connection)) || [];
-    return { status: 200, body: list.find((j) => j.id === body.id) || structuredClone(lifecycleJobCancelled) };
+    if (lifecycleStatusFailures.has(body.id)) return { status: 500, body: { error: "Synthetic registry status failure." } };
+    const match = matchingLifecycleJobs(body.connection).find(m => m.job.id === body.id);
+    return match ? { status: 200, body: match.job } : { status: 400, body: { error: "No such job." } };
   },
   "/api/lifecycle/cancel": (body) => {
     assert.equal(body.connection.password, "", "Maintenance cancel never carries another member's typed password");
     lifecycleCancels.push(body);
-    const cancelled = { ...structuredClone(lifecycleJobCancelled), id: body.id };
-    const ep = loopEndpoint(body.connection);
-    lifecycleJobs.set(ep, (lifecycleJobs.get(ep) || []).map((j) => (j.id === body.id ? cancelled : j)));
+    const failure = lifecycleCancelFailures.get(body.id);
+    if (failure) return failure;
+    const match = matchingLifecycleJobs(body.connection).find(m => m.job.id === body.id);
+    if (!match) return { status: 400, body: { error: "No such job." } };
+    const cancelled = { ...match.job, ...structuredClone(lifecycleJobCancelled), id: body.id,
+      started_on: match.job.started_on, owner_match: match.job.owner_match };
+    lifecycleJobs.set(match.ep, (lifecycleJobs.get(match.ep) || []).map((j) => (j.id === body.id ? cancelled : j)));
     return { status: 200, body: cancelled };
   },
   "/api/live/proxysql": (body) => {
@@ -2179,6 +2211,134 @@ try {
   nav2Profile.group = "mf-nav";
   lifecycleJobs.clear();
   await focusProfilesRefresh();
+
+  // JB2/JB3/JB7: a job's immutable target survives a saved endpoint edit,
+  // while status and banner Cancel use the verified current saved owner.
+  // A failed Cancel remains visible even after successful status polling.
+  const openMaintenanceGroup = async () => {
+    // Reload restores a saved member, not the live Group connection. Open
+    // the group explicitly before using its Server picker in this setup.
+    await page.click('.main-nav button[data-place="home"]');
+    const opener = 'button[aria-label="Open group connection mf-nav"], button[aria-label="Refresh group connection mf-nav"]';
+    await page.waitForSelector(opener, { visible: true });
+    const before = connectCalls.length;
+    await page.click(opener);
+    for (let i = 0; i < 120 && connectCalls.length === before; i++) await pause(25);
+    assert.ok(connectCalls.length > before, "the test explicitly opened its group connection");
+    await h.view("maintenance");
+    await page.waitForSelector('.server-view[data-view="maintenance"] .group-server-select, .server-view[data-view="maintenance"] .group-server-segmented', { visible: true });
+    await page.evaluate(() => {
+      [...document.querySelectorAll('.server-view[data-view="maintenance"] [aria-label="Maintenance task"] button')]
+        .find(b => b.textContent.trim() === "Dump")?.click();
+    });
+  };
+  const editedJobId = "job-jb3-edited-owner";
+  const editedJobBanner = `.server-content > .ops-loop[data-maintenance-job="${editedJobId}"]`;
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: editedJobId,
+    started_on: { host: "10.0.1.12", port: 3306 } }]);
+  await openMaintenanceGroup();
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector(`.server-view[data-view="maintenance"] .ops-job[data-job="${editedJobId}"][data-state="running"]`);
+  await chooseMaintServer("p-nav-3");
+  await h.view("health");
+  await page.waitForSelector(editedJobBanner, { visible: true });
+  lifecycleStatusFailures.add(editedJobId);
+  nav2Profile.host = "10.0.1.99";
+  nav2Profile.port = 3310;
+  await focusProfilesRefresh();
+  assert.match(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /10\.0\.1\.12:3306/,
+    "JB2 the banner retains the start address before a new status reply arrives");
+  assert.doesNotMatch(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /10\.0\.1\.99/);
+  for (let i = 0; i < 200 && !lifecycleStatusReads.some(b => b.id === editedJobId && b.connection.host === "10.0.1.99"); i++) await pause(25);
+  const editedStatus = lifecycleStatusReads.find(b => b.id === editedJobId && b.connection.host === "10.0.1.99");
+  assert.ok(editedStatus, "JB3 status is requested after the saved endpoint edit");
+  assert.equal(editedStatus.connection.profile_id, "p-nav-2");
+  assert.equal(editedStatus.connection.port, 3310);
+  assert.ok(!editedStatus.connection.password);
+  await page.waitForSelector(`${editedJobBanner} .ops-loop-stale`, { visible: true });
+  lifecycleCancelFailures.set(editedJobId, { status: 502, body: { error: "Synthetic cancellation reply was lost." } });
+  const cancelsBeforeJB7 = lifecycleCancels.length;
+  await page.click(`${editedJobBanner} button.action-button`);
+  await page.waitForSelector(`${editedJobBanner} .ops-loop-error[role="alert"]`, { visible: true });
+  assert.equal(lifecycleCancels.length, cancelsBeforeJB7 + 1, "JB3 banner Cancel sends one request");
+  assert.equal(lifecycleCancels.at(-1).connection.host, "10.0.1.99");
+  assert.equal(lifecycleCancels.at(-1).connection.port, 3310);
+  assert.equal(lifecycleCancels.at(-1).connection.profile_id, "p-nav-2");
+  assert.match(await page.$eval(`${editedJobBanner} .ops-loop-error`, e => e.textContent),
+    /Outcome unknown\..*Synthetic cancellation reply was lost\./,
+    "JB7 the failed Cancel preserves its unknown-outcome message");
+  const statusBeforeJB7Recovery = lifecycleStatusReads.length;
+  lifecycleStatusFailures.delete(editedJobId);
+  await page.waitForFunction(s => !document.querySelector(`${s} .ops-loop-stale`), { timeout: 8000 }, editedJobBanner);
+  assert.ok(lifecycleStatusReads.slice(statusBeforeJB7Recovery).some(b => b.id === editedJobId), "a later status request succeeds");
+  assert.match(await page.$eval(`${editedJobBanner} .ops-loop-error`, e => e.textContent), /Outcome unknown/,
+    "JB7 successful polling and owner rebinding do not erase a failed Cancel");
+  assert.match(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /Dump started on 10\.0\.1\.12:3306 is running\./,
+    "JB2 a saved-owner status reply still names the original server");
+
+  // Restore the same job from a saved-connection-only registry match. The
+  // edited address is used for access, never as the job's execution target.
+  await h.savedSlow(s => s.kind === "health" && s.lifecycle_job_members?.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const listsBeforeJB2 = lifecycleJobLists.length;
+  const connectsBeforeJB2 = connectCalls.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector(editedJobBanner, { visible: true, timeout: 8000 });
+  assert.ok(lifecycleJobLists.slice(listsBeforeJB2).some(b => b.connection.profile_id === "p-nav-2" && b.connection.host === "10.0.1.99"),
+    "JB2 reload lists the current saved owner without connecting to it");
+  assert.equal(connectCalls.length, connectsBeforeJB2, "registry restore never opens a saved connection");
+  assert.match(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /Dump started on 10\.0\.1\.12:3306 is running\./);
+  assert.doesNotMatch(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /10\.0\.1\.99/);
+  lifecycleCancelFailures.delete(editedJobId);
+  await page.click(`${editedJobBanner} button.action-button`);
+  await page.waitForFunction(s => !document.querySelector(s), {}, editedJobBanner);
+  assert.equal(lifecycleCancels.at(-1).connection.host, "10.0.1.99", "JB3 Cancel works after saved-owner adoption");
+  nav2Profile.host = "10.0.1.12";
+  nav2Profile.port = 3306;
+  lifecycleJobs.clear();
+  await focusProfilesRefresh();
+
+  // JB9: Health restores a job on its active member before Maintenance has
+  // mounted. Server owns the polling, stale feedback and completion cleanup.
+  const activeJobId = "job-jb9-active-health";
+  const activeJobBanner = `.server-content > .ops-loop[data-maintenance-job="${activeJobId}"]`;
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: activeJobId,
+    started_on: { host: "10.0.1.12", port: 3306 } }]);
+  await openMaintenanceGroup();
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector(`.server-view[data-view="maintenance"] .ops-job[data-job="${activeJobId}"][data-state="running"]`);
+  await h.view("health");
+  await h.savedSlow(s => s.kind === "health" && s.lifecycle_job_members?.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  lifecycleStatusFailures.add(activeJobId);
+  const statusBeforeJB9 = lifecycleStatusReads.length;
+  const connectsBeforeJB9 = connectCalls.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.server-view[data-view="health"]', { visible: true });
+  assert.equal(await page.$('.server-view[data-view="maintenance"]'), null, "JB9 Maintenance is not mounted after the Health reload");
+  await page.waitForSelector(`${activeJobBanner} .ops-loop-stale`, { visible: true, timeout: 8000 });
+  const activePolls = lifecycleStatusReads.slice(statusBeforeJB9).filter(b => b.id === activeJobId);
+  assert.ok(activePolls.length, "JB9 Server polls its active member without Maintenance");
+  assert.equal(activePolls.every(b => b.connection.profile_id === "p-nav-2" && b.connection.host === "10.0.1.12" && !b.connection.password), true);
+  assert.equal(connectCalls.length, connectsBeforeJB9, "JB9 restore and polling never open a saved connection");
+  const maintenanceBadgeText = async () => {
+    const floating = await h.floating();
+    if (floating) await h.openViews();
+    const label = await page.$eval('#server-nav-maintenance', e => e.textContent);
+    if (floating) await page.keyboard.press("Escape");
+    return label;
+  };
+  assert.match(await maintenanceBadgeText(), /1 running/, "JB9 the badge reflects the restored running job");
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: activeJobId,
+    started_on: { host: "10.0.1.12", port: 3306 } }]);
+  lifecycleStatusFailures.delete(activeJobId);
+  await page.waitForFunction(s => !document.querySelector(s), { timeout: 8000 }, activeJobBanner);
+  assert.doesNotMatch(await maintenanceBadgeText(), /running/, "JB9 completed status clears the Maintenance running badge");
+  await h.savedSlow(s => !s.lifecycle_job_members?.includes("p-nav-2"));
+  assert.equal(await page.$('.server-view[data-view="maintenance"]'), null, "JB9 completion was noticed without mounting Maintenance");
+  lifecycleJobs.clear();
 
   // H2 plain connection: a saved connection that was never in a group says
   // "not in a connection group", never "no longer in a connection group".

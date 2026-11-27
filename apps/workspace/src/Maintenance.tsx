@@ -90,14 +90,26 @@ export function jobWord(job: LifecycleJob): [Tone, string] {
   if (status === "needs_verification") return ["watch", "Needs verification"];
   return ["unknown", status ? status.replace(/_/g, " ") : "Done"];
 }
+/** Ownership can follow a saved connection edit; the execution target cannot.
+ * A bound key still identifies the request owner, so use the snapshot's
+ * immutable address when that owner now points somewhere else. */
+export function lifecycleJobLabel(job: LifecycleJob, key: string, label: string): string {
+  if (!job.started_on) return label;
+  let edited = job.owner_match === "saved_connection";
+  try {
+    const parts: unknown = JSON.parse(key);
+    if (Array.isArray(parts)) edited = edited || parts[1] !== job.started_on.host || parts[2] !== job.started_on.port;
+  } catch { /* An unreadable key cannot supply execution metadata. */ }
+  return edited ? `started on ${job.started_on.host}:${job.started_on.port}` : label;
+}
 /** Merge the jobs the server lists for *key* into memory: known ids take the
- * listed state and this connection (a policy change keeps the endpoint), new
- * ones are added, and finished ones beyond KEEP_FINISHED drop out. */
+ * listed state and request owner, while their label keeps the starting target.
+ * New ones are added, and finished ones beyond KEEP_FINISHED drop out. */
 export function adoptJobs(memory: MaintenanceMemory, key: string, label: string, jobs: LifecycleJob[]): MaintenanceMemory {
   const listed = jobs.filter((job) => job.id);
   const ids = new Set(listed.map((job) => job.id));
   const kept = memory.jobs.filter((b) => !ids.has(b.report.id));
-  const merged = [...kept, ...listed.map((job) => ({ key, label, report: job }))];
+  const merged = [...kept, ...listed.map((job) => ({ key, label: lifecycleJobLabel(job, key, label), report: job }))];
   const finished = merged.filter((b) => !jobActive(b.report));
   const drop = new Set(finished.slice(0, Math.max(0, finished.length - KEEP_FINISHED)));
   return { ...memory, jobs: merged.filter((b) => !drop.has(b)) };
@@ -821,7 +833,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       let found: LifecycleJob | undefined;
       try {
         const answer = await listLifecycleJobs(from);
-        found = answer.jobs.find((job) => job.id && !known.has(job.id) && job.operation === p.report.operation);
+        found = answer.jobs.find((job) => job.owner_match === "endpoint" && job.id && !known.has(job.id) && job.operation === p.report.operation);
         if (found) {
           if (p.report.operation === "dump" && found.state !== "refused") {
             lastDumpParent = parentPath(p.report.target);

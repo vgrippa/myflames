@@ -53,6 +53,7 @@ import { validateDiagram, rebuildDiagramLayout, type DiagramDocument, type Schem
 import type { AccountsReport } from "./accountsApi";
 import {
   ActionButton,
+  writeFailure,
   ColumnStoreContext,
   RefreshAllContext,
   useColumnStore,
@@ -115,7 +116,7 @@ import {
 import { LocksView } from "./Locks";
 import type { TableFocus } from "./Tables";
 import { InstrumentsLinkContext, InstrumentsView } from "./Instruments";
-import { MaintenanceView, adoptJobs, emptyMaintenance, type MaintenanceMemory, type MaintenanceSection } from "./Maintenance";
+import { MaintenanceView, adoptJobs, emptyMaintenance, lifecycleJobLabel, type MaintenanceMemory, type MaintenanceSection } from "./Maintenance";
 import { ReplicationLoopBanner } from "./Replication";
 import {
   JOB_POLL_MS,
@@ -514,9 +515,15 @@ export function Server({
     if (endpointKey(bound.key) === endpointKey(activeKey)) return "";
     const pid = keyProfileId(bound.key);
     const member = pid ? groupServer?.group.members.find((m) => m.profile_id === pid) : undefined;
-    if (member) return groupMemberLabel(member);
     const profile = pid ? profiles.find((p) => p.id === pid) : undefined;
-    if (profile) return `${profile.name} · ${profile.host}:${profile.port}`;
+    // Names may follow a saved edit; addresses must describe the bound work.
+    try {
+      const parts: unknown = JSON.parse(bound.key);
+      if (Array.isArray(parts) && typeof parts[1] === "string" && typeof parts[2] === "number") {
+        if (member) return groupMemberLabel({ ...member, host: parts[1], port: parts[2] });
+        if (profile) return `${profile.name} · ${parts[1]}:${parts[2]}`;
+      }
+    } catch { /* Keep the bound label when its key cannot be read. */ }
     return bound.label;
   };
   const [inspectorOpen, setInspectorOpen] = useState(initial?.inspector === true);
@@ -1717,14 +1724,18 @@ export function Server({
   }, [profiles, profilesLoaded, profilesFailed, resolveMemberConnection]);
   function resolveBoundConnection(boundKey: string, action: "Stop" | "Cancel"): { connection: Connection | null; reason: string } {
     const wanted = endpointKey(boundKey);
-    if (endpointKey(connectionKey(latestConnection.current)) === wanted) {
+    const pid = keyProfileId(boundKey);
+    // Lifecycle requests may follow the saved owner across endpoint edits.
+    // The backend verifies that owner against the store. Skip-loop Stop keeps
+    // its strict endpoint match because it has a different ownership contract.
+    const lifecycleOwner = (c: Connection) => action === "Cancel" && !!pid && c.profile_id === pid;
+    if (endpointKey(connectionKey(latestConnection.current)) === wanted || lifecycleOwner(latestConnection.current)) {
       return { connection: latestConnection.current, reason: "" };
     }
-    if (endpointKey(connectionKey(latestPlaceConnections.current.replication)) === wanted) {
+    if (endpointKey(connectionKey(latestPlaceConnections.current.replication)) === wanted || lifecycleOwner(latestPlaceConnections.current.replication)) {
       return { connection: latestPlaceConnections.current.replication, reason: "" };
     }
     const kindWord = action === "Stop" ? "skip loop" : "job";
-    const pid = keyProfileId(boundKey);
     if (!pid) {
       return {
         connection: null,
@@ -1733,7 +1744,7 @@ export function Server({
     }
     const rebuilt = latestResolveMember.current ? latestResolveMember.current(pid) : null;
     if (rebuilt) {
-      if (endpointKey(connectionKey(rebuilt)) === wanted) {
+      if (endpointKey(connectionKey(rebuilt)) === wanted || lifecycleOwner(rebuilt)) {
         return { connection: rebuilt, reason: "" };
       }
       return {
@@ -1802,7 +1813,9 @@ export function Server({
   const jobCancellingRef = useRef(new Set<string>());
   async function cancelJobNow(bound: Bound<LifecycleJob>) {
     const id = bound.report.id;
-    const cancelKey = id ? `${bound.key}:${id}` : "";
+    // Job ids survive owner-key rebinding by the status poller. Keep pending
+    // state and failures with the job so a successful status cannot hide them.
+    const cancelKey = id || "";
     if (!id || jobCancellingRef.current.has(cancelKey)) return;
     const { connection: c, reason } = resolveBoundConnection(bound.key, "Cancel");
     if (!c) {
@@ -1823,10 +1836,11 @@ export function Server({
       const nextLabel = connectionLabel(c);
       setMaintenance((m) => ({
         ...m,
-        jobs: m.jobs.map((b) => (b.key === bound.key && b.report.id === id ? { key: nextKey, label: nextLabel, report: job } : b)),
+        jobs: m.jobs.map((b) => (b.report.id === id ? { key: nextKey, label: lifecycleJobLabel(job, nextKey, nextLabel), report: job } : b)),
       }));
-    } catch {
-      // Maintenance shows job errors; the persistent banner stays quiet.
+    } catch (e) {
+      const failure = writeFailure(e, { audited: true });
+      setJobCancelErrors((prev) => ({ ...prev, [cancelKey]: `${failure.phase === "unknown" ? "Outcome unknown. " : ""}${failure.message}` }));
     } finally {
       jobCancellingRef.current.delete(cancelKey);
       setJobCancelling((pending) => (pending === cancelKey ? "" : pending));
@@ -1920,15 +1934,16 @@ export function Server({
     }
     return parts.join(" ");
   }, [restoredJobs]);
-  // Poll maintenance jobs running on other group members (MaintenanceView
-  // polls only the member on screen): registry only, no database login.
+  // MaintenanceView polls the member on screen once mounted. Until then,
+  // Server also follows that member's restored jobs: registry reads only.
+  const maintenanceMounted = keptViews.includes("maintenance");
   const otherActiveJobs = useMemo(
     () => jobsHere
-      .filter((b) => endpointKey(b.key) !== endpointKey(activeKey) && !!b.report.id)
+      .filter((b) => (!maintenanceMounted || endpointKey(b.key) !== endpointKey(activeKey)) && !!b.report.id)
       .map((b) => `${b.key}\u0000${b.report.id}`)
       .sort()
       .join("\n"),
-    [jobsHere, activeKey],
+    [jobsHere, activeKey, maintenanceMounted],
   );
   const [staleJobKeys, setStaleJobKeys] = useState<string[]>([]);
   useEffect(() => {
@@ -1980,7 +1995,7 @@ export function Server({
             ...m,
             jobs: m.jobs.map((b) => {
               const u = updates.find((item) => item.boundKey === b.key && item.job.id === b.report.id);
-              return u ? { key: u.nextKey, label: u.nextLabel, report: u.job } : b;
+              return u ? { key: u.nextKey, label: lifecycleJobLabel(u.job, u.nextKey, u.nextLabel), report: u.job } : b;
             }),
           }));
         }
@@ -2400,15 +2415,16 @@ export function Server({
                 .filter((b) => kind !== "maintenance" || endpointKey(b.key) !== endpointKey(activeKey))
                 .map((b) => {
                   const cancelKey = b.report.id ? `${b.key}:${b.report.id}` : "";
-                  const cancelling = !!cancelKey && jobCancelling === cancelKey;
-                  const jobError = cancelKey ? jobCancelErrors[cancelKey] || "" : "";
-                  const jobStale = !!cancelKey && endpointKey(b.key) !== endpointKey(activeKey) &&
+                  const cancelling = !!b.report.id && jobCancelling === b.report.id;
+                  const jobError = b.report.id ? jobCancelErrors[b.report.id] || "" : "";
+                  const jobStale = !!cancelKey && (!maintenanceMounted || endpointKey(b.key) !== endpointKey(activeKey)) &&
                     (staleJobKeys.includes(cancelKey) || !resolveBoundConnection(b.key, "Cancel").connection);
+                  const startedElsewhere = lifecycleJobLabel(b.report, b.key, "");
                   const target = memberServerLabel(b) || b.label;
                   return (
                     <div key={b.report.id || b.key} className="ops-loop" role="status" data-maintenance-job={b.report.id || undefined}>
                       <div className="ops-loop-copy">
-                        <strong>{MAINTENANCE_JOB_LABEL[b.report.operation] || b.report.operation} on {target} is running.</strong>
+                        <strong>{MAINTENANCE_JOB_LABEL[b.report.operation] || b.report.operation}{startedElsewhere ? ` ${startedElsewhere}` : ` on ${target}`} is running.</strong>
                         {jobStale && <span className="ops-last ops-loop-stale">Status not refreshed</span>}
                         {jobError && <span className="ops-last ops-loop-error" role="alert">{jobError}</span>}
                       </div>

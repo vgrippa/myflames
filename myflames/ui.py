@@ -1008,53 +1008,58 @@ _LIFECYCLE_OWNERS_LOCK = threading.Lock()
 _UNSET = object()
 
 
-def _lifecycle_profile_id(connection):
-    """The saved-connection id carried by *connection*, or None."""
-    if not isinstance(connection, dict):
+def _lifecycle_profile_id(connection, store):
+    """The saved-connection id verified against the store, or None.
+
+    A draft endpoint carrying a saved id does not own that profile's jobs.
+    Use the same endpoint check as Start, without loading saved credentials.
+    """
+    from . import dbops
+    try:
+        safety = dbops.connection_safety(_request_profile(connection, store), connection, store=store)
+    except ValueError:
         return None
-    profile_id = connection.get("profile_id")
-    if isinstance(profile_id, str) and profile_id and len(profile_id) <= 200:
-        return profile_id
-    return None
+    return safety.get("profile_id") if safety.get("endpoint_matches") else None
 
 
-def _lifecycle_owner(connection, profile_id=_UNSET):
+def _lifecycle_owner(connection, profile_id=None):
     """The owner of a lifecycle job: ``(endpoint, profile_id)``.
 
     *endpoint* is ``dbops.identity_endpoint`` of the request's connection
     identity (saved connection id, host, port, user, TLS and SSH target,
     without type, read-only or group name), so a policy or group-name change
     never cuts a job off. *profile_id* is the owning saved-connection id (or
-    None for an unsaved connection), so editing that saved connection's
+    None for an unsaved connection), verified against the store by the caller,
+    so editing that saved connection's
     endpoint keeps Jobs, Status and Cancel working for the owner while
     refusing every other connection.
     """
     from . import dbops
     endpoint = dbops.identity_endpoint(dbops.connection_identity(connection if isinstance(connection, dict) else {}))
-    if profile_id is _UNSET:
-        owner_id = _lifecycle_profile_id(connection)
-    elif isinstance(profile_id, str) and profile_id and len(profile_id) <= 200:
+    if isinstance(profile_id, str) and profile_id and len(profile_id) <= 200:
         owner_id = profile_id
     else:
         owner_id = None
     return (endpoint, owner_id)
 
 
-def _lifecycle_owner_matches(owner, caller):
-    """Whether *caller* owns the job recorded under *owner*.
+def _lifecycle_owner_match(owner, caller):
+    """How *caller* owns the job: endpoint, saved_connection, or None.
 
     Accepts ``(endpoint, profile_id)`` tuples from :func:`_lifecycle_owner`
     (and plain endpoint strings). Matches when the endpoint matches, or when
-    the job belongs to a saved connection and *caller* carries that same
-    saved-connection id.
+    the job belongs to a saved connection and *caller* has verified that same
+    saved-connection id against the store. The endpoint match takes precedence.
     """
     if owner is None or caller is None:
-        return False
+        return None
     owner_endpoint, owner_profile_id = owner if isinstance(owner, tuple) else (owner, None)
     caller_endpoint, caller_profile_id = caller if isinstance(caller, tuple) else (caller, None)
     if caller_endpoint == owner_endpoint:
-        return True
-    return owner_profile_id is not None and caller_profile_id == owner_profile_id
+        return "endpoint"
+    if owner_profile_id is not None and caller_profile_id == owner_profile_id:
+        return "saved_connection"
+    return None
 
 
 def _lifecycle_owners(workspace):
@@ -1070,6 +1075,8 @@ def _lifecycle_add(workspace, job, target, connection, profile_id=_UNSET):
     """Register a confirmed job with its owner before it starts, so a page whose
     Start reply was lost finds it through /api/lifecycle/jobs."""
     owners = _lifecycle_owners(workspace)
+    if profile_id is _UNSET:
+        profile_id = _lifecycle_profile_id(connection, workspace.store)
     owner = _lifecycle_owner(connection, profile_id=profile_id)
     with _LIFECYCLE_OWNERS_LOCK:
         owners[job.id] = owner
@@ -1098,14 +1105,18 @@ def _lifecycle_jobs_response(payload, workspace):
     connection = payload.get("connection")
     if not isinstance(connection, dict):
         raise ValueError("Send the connection whose jobs to list.")
-    caller = _lifecycle_owner(connection)
+    caller = _lifecycle_owner(connection, _lifecycle_profile_id(connection, workspace.store))
     owners = _lifecycle_owners(workspace)
     with _LIFECYCLE_OWNERS_LOCK:
-        mine = [job_id for job_id, owner in owners.items() if _lifecycle_owner_matches(owner, caller)]
+        mine = []
+        for job_id, owner in owners.items():
+            owner_match = _lifecycle_owner_match(owner, caller)
+            if owner_match is not None:
+                mine.append((job_id, owner_match))
     jobs = []
-    for job_id in mine:
+    for job_id, owner_match in mine:
         try:
-            jobs.append(workspace.lifecycle.get(job_id).snapshot())
+            jobs.append(dict(workspace.lifecycle.get(job_id).snapshot(), owner_match=owner_match))
         except ValueError:
             with _LIFECYCLE_OWNERS_LOCK:
                 owners.pop(job_id, None)
@@ -1129,12 +1140,13 @@ def _lifecycle_response(path, payload, workspace):
         return _lifecycle_jobs_response(payload, workspace)
     if path in ("/api/lifecycle/status", "/api/lifecycle/cancel"):
         connection, job_id = payload.get("connection"), payload.get("id")
-        caller = _lifecycle_owner(connection) if isinstance(connection, dict) else None
+        caller = (_lifecycle_owner(connection, _lifecycle_profile_id(connection, workspace.store))
+                  if isinstance(connection, dict) else None)
         owners = _lifecycle_owners(workspace)
         with _LIFECYCLE_OWNERS_LOCK:
-            matches = (caller is not None and isinstance(job_id, str) and
-                       _lifecycle_owner_matches(owners.get(job_id), caller))
-        if not matches:
+            owner_match = (_lifecycle_owner_match(owners.get(job_id), caller)
+                           if isinstance(job_id, str) else None)
+        if owner_match is None:
             raise ValueError("No such job.")
         try:
             job = workspace.lifecycle.get(job_id)
@@ -1144,7 +1156,7 @@ def _lifecycle_response(path, payload, workspace):
             raise ValueError("No such job.") from None
         if path == "/api/lifecycle/cancel":
             job.cancel()
-        return job.snapshot()
+        return dict(job.snapshot(), owner_match=owner_match)
     if path == "/api/lifecycle/start":
         return _lifecycle_start(payload, workspace)
     if path == "/api/lifecycle/choose-directory":

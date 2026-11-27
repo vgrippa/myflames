@@ -229,6 +229,10 @@ export type LifecycleResult = {
 };
 export type LifecycleJob = {
   schema_version: "lifecycle-job-1.0"; id: string | null; operation: LifecycleOperation;
+  /** Immutable execution target; absent only for a refusal before a job exists. */
+  started_on?: { host: string; port: number };
+  /** Per-request ownership match on registry, status and cancellation replies. */
+  owner_match?: "endpoint" | "saved_connection";
   state: "queued" | "running" | "done" | "failed" | "refused" | "cancelled";
   progress: number | null; detail: CloneProgress | null;
   phase?: string | null; elapsed_s?: number | null;
