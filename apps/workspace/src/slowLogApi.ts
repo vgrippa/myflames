@@ -61,7 +61,7 @@ export type SlowLogReport = {
   source: SlowLogFileSource | SlowLogTableSource;
   engine: "mysql" | "mariadb" | null;
   flavor: string | null;
-  server_product: string | null;
+  server_product: string | null; server_base?: string | null;
   server_version: string | null;
   clock: SlowLogClock;
   time_meaning: { event: "end" | "start" | null; text: string };

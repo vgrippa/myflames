@@ -92,7 +92,7 @@ same defaults) and on live MySQL 8.4, 9.7 and 26.7 and MariaDB 11.4 and 13.0:
   type and enable everything else (M/storage/perfschema/pfs_defaults.cc:
   80-140, Ma/storage/perfschema/pfs_defaults.cc:55-100).
 """
-from .server_info import product_name
+from .server_info import product_name, server_label
 from .connector import ConnectorError
 from .perf_common import (Reader, _bytes_text, _count_text, _duration_text, _number, base_report, denied,
                           lost_note, preflight, reason, table_text)
@@ -1323,7 +1323,7 @@ _STATE_TEXT = {"on": "on", "off": "off", "partial": "partly on", "counted": "on,
 
 
 def format_text(report):
-    head = "%s %s" % (product_name(report), report["server_version"] or "?")
+    head = server_label(report)
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     status = report["status"]
@@ -1373,7 +1373,7 @@ def preset_text(report, key):
     """One preset as runnable SQL with comments, then its my.cnf lines."""
     preset = next(p for p in report["presets"] if p["key"] == key)
     engine = product_name(report)
-    out = ["-- %s (%s %s)" % (preset["label"], engine, report["server_version"] or "?"),
+    out = ["-- %s (%s)" % (preset["label"], server_label(report)),
            "-- %s" % preset["summary"],
            "-- Gain: %s" % preset["gain"],
            "-- Cost (%s, rule of thumb): %s" % (preset["cost"]["level"], preset["cost"]["text"])]

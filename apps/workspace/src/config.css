@@ -283,6 +283,8 @@ ul.variable-problems {
 .parameter-name code { overflow: hidden; text-overflow: ellipsis; }
 .parameter-name .status-dot, .parameter-name .pill { flex: 0 0 auto; }
 .parameter-cell-editor { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.parameter-cell-editor-sensitive { flex-wrap: wrap; }
+.parameter-cell-editor-sensitive > .hint:last-child { flex-basis: 100%; }
 .parameter-cell-editor .variable-input,
 .parameter-cell-editor .select { width: 100%; min-width: 0; }
 .parameter-cell-editor > .variable-input,

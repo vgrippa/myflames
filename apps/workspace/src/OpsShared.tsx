@@ -1,6 +1,7 @@
 // Small pieces shared by Replication and Maintenance (Server > Workload and
 // Setup): exact commands with a neutral Copy, engine facts as label and value
 // rows, and the plain names of replication channels.
+import { villageSQLLabel } from "./serverIdentity";
 import { useEffect, useId, useRef } from "react";
 export { Commands } from "./Commands";
 import { ActionButton, ActionStatus, Fields, useAction } from "./kit";
@@ -140,7 +141,9 @@ export function channelPhrase(engine: string | null | undefined, name: string) {
 /** "MySQL 8.4.11", "MariaDB 11.4.13" (the build suffix of "11.4.13-MariaDB-log" left out),
  * "Percona Server 8.4.11-11" when the server names its product (Percona's release
  * number is part of its version, so it stays). */
-export function engineName(engine: string | null | undefined, version?: string | null, product?: string | null) {
+export function engineName(engine: string | null | undefined, version?: string | null, product?: string | null, base?: string | null) {
+  const village = villageSQLLabel(version, base, product);
+  if (village) return village;
   const name = product || (engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : engine || "Server");
   const pattern = name.startsWith("Percona") ? /^\d+(?:\.\d+)*(?:-\d+(?:\.\d+)?)?/ : /^\d+(?:\.\d+)*/;
   const short = version ? version.match(pattern)?.[0] || version : "";

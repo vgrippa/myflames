@@ -1,0 +1,2 @@
+1	SIMPLE	k	NULL	ALL	PRIMARY	NULL	NULL	NULL	2000	100.00	Using temporary; Using filesort
+1	SIMPLE	l	NULL	eq_ref	PRIMARY	PRIMARY	4	review.k.id	1	100.00	NULL

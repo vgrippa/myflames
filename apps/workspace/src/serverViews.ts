@@ -26,6 +26,10 @@ export const WORKLOAD_VIEWS: { id: ServerKind; label: string; icon: IconName; gr
   { id: "io", label: "I/O", icon: "io", group: "Resources" },
 ];
 export const WORKLOAD_KINDS: ServerKind[] = ["top", "sessions", "memory", "waits", "io"];
-export const ALL_SERVER_VIEWS = [...SERVER_VIEWS, ...WORKLOAD_VIEWS];
+/** Server inserts this only after the active connection is known to be
+ * VillageSQL. Keeping it outside SERVER_VIEWS also keeps generic palette
+ * navigation from offering a product-specific view on other connections. */
+export const EXTENSIONS_VIEW = { id: "extensions" as const, label: "Extensions", icon: "extensions" as const, group: "Setup" };
+export const ALL_SERVER_VIEWS = [...SERVER_VIEWS, EXTENSIONS_VIEW, ...WORKLOAD_VIEWS];
 export const SERVER_GROUPS = ["Overview", "Contention", "Schema", "Setup", "Security"];
 export const WORKLOAD_GROUPS = ["Queries", "Resources"];

@@ -1,0 +1,950 @@
+{
+ "server": "villagesql-8.4",
+ "source": "live",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:extensions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment', 'villagesql_server_version')",
+   "performance_schema\tON\nversion\t8.4.11-villagesql-0.0.8\nversion_comment\tSource distribution\nvillagesql_server_version\tmysql-8.4_0.0.8\n"
+  ],
+  [
+   "/*myflames:extensions*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime'",
+   "Uptime\t2951\n"
+  ],
+  [
+   "/*myflames:extensions*/ SELECT EXTENSION_NAME, EXTENSION_VERSION, PENDING_VERSION, PENDING_REQUESTED_AT, PENDING_LAST_ERROR, PENDING_LAST_ERROR_AT FROM INFORMATION_SCHEMA.EXTENSIONS ORDER BY EXTENSION_NAME",
+   "vsql_ai\t0.0.8\tNULL\tNULL\tNULL\tNULL\nvsql_boolean\t0.0.3\tNULL\tNULL\tNULL\tNULL\nvsql_complex\t0.0.1\tNULL\tNULL\tNULL\tNULL\nvsql_crypto\t0.0.8\tNULL\tNULL\tNULL\tNULL\nvsql_cube\t0.0.8\tNULL\tNULL\tNULL\tNULL\nvsql_fuzzystrmatch\t0.0.2\tNULL\tNULL\tNULL\tNULL\nvsql_http\t0.0.4\tNULL\tNULL\tNULL\tNULL\nvsql_knn_index_test\t0.0.1\tNULL\tNULL\tNULL\tNULL\nvsql_network_address\t0.0.8\tNULL\tNULL\tNULL\tNULL\nvsql_oauth2\t0.0.5\tNULL\tNULL\tNULL\tNULL\nvsql_rest\t0.0.11\tNULL\tNULL\tNULL\tNULL\nvsql_simple\t0.0.1\tNULL\tNULL\tNULL\tNULL\nvsql_trgm\t0.0.5\tNULL\tNULL\tNULL\tNULL\nvsql_tvector\t0.0.1\tNULL\tNULL\tNULL\tNULL\nvsql_uuid\t0.0.9\tNULL\tNULL\tNULL\tNULL\nvsql_vector\t0.0.1\tNULL\tNULL\tNULL\tNULL\n"
+  ],
+  [
+   "/*myflames:extensions*/ SELECT EXTENSION_NAME, NEGOTIATED_PROTOCOL, REGISTRATION_JSON FROM INFORMATION_SCHEMA.EXTENSION_REGISTRATION",
+   "vsql_ai\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[{\"name\":\"ai_prompt\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"STRING\",\"STRING\",\"STRING\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"ai_embedding\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"STRING\",\"STRING\",\"STRING\"],\"deterministic\":false,\"is_aggregate\":false}],\"types\":[]}\nvsql_boolean\t5\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":5,\"funcs\":[{\"name\":\"STRICTBOOL::from_string\",\"return_type\":\"STRICTBOOL\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"STRICTBOOL::to_string\",\"return_type\":\"STRING\",\"params\":[\"STRICTBOOL\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"STRICTBOOL::compare\",\"return_type\":\"INT\",\"params\":[\"STRICTBOOL\",\"STRICTBOOL\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"STRICTBOOL::hash\",\"return_type\":\"INT\",\"params\":[\"STRICTBOOL\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"boolean_to_int\",\"return_type\":\"INT\",\"params\":[\"STRICTBOOL\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"boolean_sum\",\"return_type\":\"INT\",\"params\":[\"STRICTBOOL\"],\"deterministic\":false,\"is_aggregate\":true},{\"name\":\"boolean_avg\",\"return_type\":\"REAL\",\"params\":[\"STRICTBOOL\"],\"deterministic\":false,\"is_aggregate\":true}],\"types\":[{\"name\":\"STRICTBOOL\",\"persisted_length\":1,\"max_decode_buffer_length\":6,\"encode_vdf\":\"STRICTBOOL::from_string\",\"decode_vdf\":\"STRICTBOOL::to_string\",\"compare_vdf\":\"STRICTBOOL::compare\",\"hash_vdf\":\"STRICTBOOL::hash\",\"intrinsic_default_str\":\"false\"}]}\nvsql_complex\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[{\"name\":\"COMPLEX::from_string\",\"return_type\":\"COMPLEX\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"COMPLEX::to_string\",\"return_type\":\"STRING\",\"params\":[\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"COMPLEX::compare\",\"return_type\":\"INT\",\"params\":[\"COMPLEX\",\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"COMPLEX2::from_string\",\"return_type\":\"COMPLEX2\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"COMPLEX2::to_string\",\"return_type\":\"STRING\",\"params\":[\"COMPLEX2\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"COMPLEX2::compare\",\"return_type\":\"INT\",\"params\":[\"COMPLEX2\",\"COMPLEX2\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"COMPLEX2::hash\",\"return_type\":\"INT\",\"params\":[\"COMPLEX2\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_add\",\"return_type\":\"COMPLEX\",\"params\":[\"COMPLEX\",\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_subtract\",\"return_type\":\"COMPLEX\",\"params\":[\"COMPLEX\",\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_multiply\",\"return_type\":\"COMPLEX\",\"params\":[\"COMPLEX\",\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_divide\",\"return_type\":\"COMPLEX\",\"params\":[\"COMPLEX\",\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_real\",\"return_type\":\"REAL\",\"params\":[\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_imag\",\"return_type\":\"REAL\",\"params\":[\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_abs\",\"return_type\":\"REAL\",\"params\":[\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_conjugate\",\"return_type\":\"COMPLEX\",\"params\":[\"COMPLEX\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"complex_sum\",\"return_type\":\"COMPLEX\",\"params\":[\"COMPLEX\"],\"deterministic\":false,\"is_aggregate\":true}],\"types\":[{\"name\":\"COMPLEX\",\"persisted_length\":16,\"max_decode_buffer_length\":64,\"encode_vdf\":\"COMPLEX::from_string\",\"decode_vdf\":\"COMPLEX::to_string\",\"compare_vdf\":\"COMPLEX::compare\",\"intrinsic_default_str\":\"(0,0)\"},{\"name\":\"COMPLEX2\",\"persisted_length\":16,\"max_decode_buffer_length\":64,\"encode_vdf\":\"COMPLEX2::from_string\",\"decode_vdf\":\"COMPLEX2::to_string\",\"compare_vdf\":\"COMPLEX2::compare\",\"hash_vdf\":\"COMPLEX2::hash\",\"intrinsic_default_str\":\"(0,0)\"}]}\nvsql_crypto\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[{\"name\":\"crypto_version\",\"return_type\":\"STRING\",\"params\":[],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"digest\",\"return_type\":\"BINARY\",\"params\":[\"BINARY\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"hmac\",\"return_type\":\"BINARY\",\"params\":[\"BINARY\",\"BINARY\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"gen_random_bytes\",\"return_type\":\"BINARY\",\"params\":[\"INT\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"gen_random_uuid\",\"return_type\":\"STRING\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"encrypt\",\"return_type\":\"BINARY\",\"params\":[\"BINARY\",\"BINARY\",\"STRING\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"decrypt\",\"return_type\":\"BINARY\",\"params\":[\"BINARY\",\"BINARY\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"gen_salt\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"INT\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"crypt\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false}],\"types\":[]}\nvsql_cube\t5\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":5,\"funcs\":[{\"name\":\"cube::int_to_params\",\"return_type\":\"STRING\",\"params\":[\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube::resolve_params\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube::from_string\",\"return_type\":\"cube\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube::to_string\",\"return_type\":\"STRING\",\"params\":[\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube::compare\",\"return_type\":\"INT\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube::hash\",\"return_type\":\"INT\",\"params\":[\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_from_string\",\"return_type\":\"cube\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_to_string\",\"return_type\":\"STRING\",\"params\":[\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_point\",\"return_type\":\"cube\",\"params\":[\"REAL\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_box\",\"return_type\":\"cube\",\"params\":[\"REAL\",\"REAL\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_point_nd\",\"return_type\":\"cube\",\"params\":\"varargs\",\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_box_nd\",\"return_type\":\"cube\",\"params\":\"varargs\",\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_add_dim\",\"return_type\":\"cube\",\"params\":\"varargs\",\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_dim\",\"return_type\":\"INT\",\"params\":[\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_ll_coord\",\"return_type\":\"REAL\",\"params\":[\"cube\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_ur_coord\",\"return_type\":\"REAL\",\"params\":[\"cube\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_is_point\",\"return_type\":\"INT\",\"params\":[\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_coord\",\"return_type\":\"REAL\",\"params\":[\"cube\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_overlaps\",\"return_type\":\"INT\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_contains\",\"return_type\":\"INT\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_contained_by\",\"return_type\":\"INT\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_distance\",\"return_type\":\"REAL\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_taxicab_distance\",\"return_type\":\"REAL\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_chebyshev_distance\",\"return_type\":\"REAL\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_union\",\"return_type\":\"cube\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_inter\",\"return_type\":\"cube\",\"params\":[\"cube\",\"cube\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_enlarge\",\"return_type\":\"cube\",\"params\":[\"cube\",\"REAL\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_subset\",\"return_type\":\"cube\",\"params\":\"varargs\",\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cube_agg\",\"return_type\":\"cube\",\"params\":[\"cube\"],\"deterministic\":false,\"is_aggregate\":true},{\"name\":\"cube_scalar_agg\",\"return_type\":\"cube\",\"params\":[\"REAL\"],\"deterministic\":false,\"is_aggregate\":true}],\"types\":[{\"name\":\"cube\",\"persisted_length\":-1,\"max_decode_buffer_length\":5200,\"encode_vdf\":\"cube::from_string\",\"decode_vdf\":\"cube::to_string\",\"compare_vdf\":\"cube::compare\",\"hash_vdf\":\"cube::hash\",\"int_to_params_vdf\":\"cube::int_to_params\",\"resolve_params_vdf\":\"cube::resolve_params\",\"intrinsic_default_str\":\"(0)\"}]}\nvsql_fuzzystrmatch\t5\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":5,\"funcs\":[{\"name\":\"soundex\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"difference\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"levenshtein\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"levenshtein_cost\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\",\"INT\",\"INT\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"levenshtein_less_equal\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"levenshtein_less_equal_cost\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\",\"INT\",\"INT\",\"INT\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"metaphone\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"dmetaphone\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"dmetaphone_alt\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false}],\"types\":[]}\nvsql_http\t5\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":5,\"funcs\":[{\"name\":\"http_get\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"http_post\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"STRING\",\"STRING\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"http_put\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"STRING\",\"STRING\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"http_delete\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"http_patch\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"STRING\",\"STRING\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"http_request\",\"return_type\":\"STRING\",\"params\":[\"STRING\",\"STRING\",\"STRING\",\"STRING\",\"STRING\",\"STRING\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"url_encode\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"url_decode\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false}],\"types\":[]}\nvsql_knn_index_test\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[{\"name\":\"kvector::from_string\",\"return_type\":\"kvector\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"kvector::from_binary\",\"return_type\":\"kvector\",\"params\":[\"BINARY\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"kvector::to_string\",\"return_type\":\"STRING\",\"params\":[\"kvector\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"kvector::to_binary\",\"return_type\":\"BINARY\",\"params\":[\"kvector\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"kvector::compare\",\"return_type\":\"INT\",\"params\":[\"kvector\",\"kvector\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"kvec_l2_distance\",\"return_type\":\"REAL\",\"params\":[\"kvector\",\"kvector\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"kvec_cos_distance\",\"return_type\":\"REAL\",\"params\":[\"kvector\",\"kvector\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"kvec_scan_begin_count\",\"return_type\":\"INT\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"kvec_scan_fetch_count\",\"return_type\":\"INT\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"kvec_insert_count\",\"return_type\":\"INT\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"kvec_reset_counters\",\"return_type\":\"INT\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false}],\"types\":[{\"name\":\"kvector\",\"persisted_length\":24,\"max_decode_buffer_length\":256,\"variable_length\":false,\"from_binary_vdf\":\"kvector::from_binary\",\"to_binary_vdf\":\"kvector::to_binary\",\"encode_vdf\":\"kvector::from_string\",\"decode_vdf\":\"kvector::to_string\",\"compare_vdf\":\"kvector::compare\",\"intrinsic_default_str\":\"[0,0,0,0]\"}]}\nvsql_network_address\t5\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":5,\"funcs\":[{\"name\":\"CIDR::from_string\",\"return_type\":\"CIDR\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"CIDR::to_string\",\"return_type\":\"STRING\",\"params\":[\"CIDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"CIDR::compare\",\"return_type\":\"INT\",\"params\":[\"CIDR\",\"CIDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"CIDR::hash\",\"return_type\":\"INT\",\"params\":[\"CIDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"INET::from_string\",\"return_type\":\"INET\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"INET::to_string\",\"return_type\":\"STRING\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"INET::compare\",\"return_type\":\"INT\",\"params\":[\"INET\",\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"INET::hash\",\"return_type\":\"INT\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"MACADDR::from_string\",\"return_type\":\"MACADDR\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"MACADDR::to_string\",\"return_type\":\"STRING\",\"params\":[\"MACADDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"MACADDR::compare\",\"return_type\":\"INT\",\"params\":[\"MACADDR\",\"MACADDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"MACADDR::hash\",\"return_type\":\"INT\",\"params\":[\"MACADDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"MACADDR8::from_string\",\"return_type\":\"MACADDR8\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"MACADDR8::to_string\",\"return_type\":\"STRING\",\"params\":[\"MACADDR8\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"MACADDR8::compare\",\"return_type\":\"INT\",\"params\":[\"MACADDR8\",\"MACADDR8\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"MACADDR8::hash\",\"return_type\":\"INT\",\"params\":[\"MACADDR8\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cidr_from_string\",\"return_type\":\"CIDR\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cidr_to_string\",\"return_type\":\"STRING\",\"params\":[\"CIDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_from_string\",\"return_type\":\"INET\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_to_string\",\"return_type\":\"STRING\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"macaddr_from_string\",\"return_type\":\"MACADDR\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"macaddr_to_string\",\"return_type\":\"STRING\",\"params\":[\"MACADDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"macaddr8_from_string\",\"return_type\":\"MACADDR8\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"macaddr8_to_string\",\"return_type\":\"STRING\",\"params\":[\"MACADDR8\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cidr_compare\",\"return_type\":\"INT\",\"params\":[\"CIDR\",\"CIDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_compare\",\"return_type\":\"INT\",\"params\":[\"INET\",\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"macaddr_compare\",\"return_type\":\"INT\",\"params\":[\"MACADDR\",\"MACADDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"macaddr8_compare\",\"return_type\":\"INT\",\"params\":[\"MACADDR8\",\"MACADDR8\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_contains\",\"return_type\":\"INT\",\"params\":[\"INET\",\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_contains_or_equals\",\"return_type\":\"INT\",\"params\":[\"INET\",\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_contained_by\",\"return_type\":\"INT\",\"params\":[\"INET\",\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_contained_by_or_equals\",\"return_type\":\"INT\",\"params\":[\"INET\",\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_overlaps\",\"return_type\":\"INT\",\"params\":[\"INET\",\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_family\",\"return_type\":\"INT\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_masklen\",\"return_type\":\"INT\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_host\",\"return_type\":\"STRING\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_text\",\"return_type\":\"STRING\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_netmask\",\"return_type\":\"INET\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_hostmask\",\"return_type\":\"INET\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_broadcast\",\"return_type\":\"INET\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_network\",\"return_type\":\"CIDR\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_set_masklen\",\"return_type\":\"INET\",\"params\":[\"INET\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cidr_set_masklen\",\"return_type\":\"CIDR\",\"params\":[\"CIDR\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"macaddr_trunc\",\"return_type\":\"MACADDR\",\"params\":[\"MACADDR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inet_abbrev\",\"return_type\":\"STRING\",\"params\":[\"INET\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cidr_abbrev\",\"return_type\":\"STRING\",\"params\":[\"CIDR\"],\"deterministic\":true,\"is_aggregate\":false}],\"types\":[{\"name\":\"CIDR\",\"persisted_length\":19,\"max_decode_buffer_length\":64,\"encode_vdf\":\"CIDR::from_string\",\"decode_vdf\":\"CIDR::to_string\",\"compare_vdf\":\"CIDR::compare\",\"hash_vdf\":\"CIDR::hash\",\"intrinsic_default_str\":\"::/0\"},{\"name\":\"INET\",\"persisted_length\":19,\"max_decode_buffer_length\":64,\"encode_vdf\":\"INET::from_string\",\"decode_vdf\":\"INET::to_string\",\"compare_vdf\":\"INET::compare\",\"hash_vdf\":\"INET::hash\",\"intrinsic_default_str\":\"::\"},{\"name\":\"MACADDR\",\"persisted_length\":6,\"max_decode_buffer_length\":32,\"encode_vdf\":\"MACADDR::from_string\",\"decode_vdf\":\"MACADDR::to_string\",\"compare_vdf\":\"MACADDR::compare\",\"hash_vdf\":\"MACADDR::hash\",\"intrinsic_default_str\":\"00:00:00:00:00:00\"},{\"name\":\"MACADDR8\",\"persisted_length\":8,\"max_decode_buffer_length\":32,\"encode_vdf\":\"MACADDR8::from_string\",\"decode_vdf\":\"MACADDR8::to_string\",\"compare_vdf\":\"MACADDR8::compare\",\"hash_vdf\":\"MACADDR8::hash\",\"intrinsic_default_str\":\"00:00:00:00:00:00:00:00\"}]}\nvsql_oauth2\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[],\"types\":[]}\nvsql_rest\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[],\"types\":[]}\nvsql_simple\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[{\"name\":\"bytearray::from_string\",\"return_type\":\"bytearray\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"bytearray::to_string\",\"return_type\":\"STRING\",\"params\":[\"bytearray\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"bytearray::compare\",\"return_type\":\"INT\",\"params\":[\"bytearray\",\"bytearray\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"rot13\",\"return_type\":\"bytearray\",\"params\":[\"bytearray\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"even_chars\",\"return_type\":\"bytearray\",\"params\":[\"bytearray\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"odd_chars\",\"return_type\":\"bytearray\",\"params\":[\"bytearray\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"ba_concat\",\"return_type\":\"STRING\",\"params\":[\"bytearray\",\"bytearray\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"ba_call_index\",\"return_type\":\"INT\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"ba_len\",\"return_type\":\"INT\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"ba_concat_all\",\"return_type\":\"STRING\",\"params\":\"varargs\",\"deterministic\":false,\"is_aggregate\":false}],\"types\":[{\"name\":\"bytearray\",\"persisted_length\":8,\"max_decode_buffer_length\":8,\"encode_vdf\":\"bytearray::from_string\",\"decode_vdf\":\"bytearray::to_string\",\"compare_vdf\":\"bytearray::compare\"}]}\nvsql_trgm\t5\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":5,\"funcs\":[{\"name\":\"trgm_show\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_similarity\",\"return_type\":\"REAL\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_distance\",\"return_type\":\"REAL\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_similar\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_similar_threshold\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\",\"REAL\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_word_similarity\",\"return_type\":\"REAL\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_word_distance\",\"return_type\":\"REAL\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_word_similar\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_strict_word_similarity\",\"return_type\":\"REAL\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_strict_word_distance\",\"return_type\":\"REAL\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"trgm_strict_word_similar\",\"return_type\":\"INT\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false}],\"types\":[]}\nvsql_tvector\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[{\"name\":\"TVECTOR::int_to_params\",\"return_type\":\"STRING\",\"params\":[\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"TVECTOR::resolve_params\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"TVECTOR::from_string\",\"return_type\":\"TVECTOR\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"TVECTOR::from_binary\",\"return_type\":\"TVECTOR\",\"params\":[\"BINARY\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"TVECTOR::to_string\",\"return_type\":\"STRING\",\"params\":[\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"TVECTOR::to_binary\",\"return_type\":\"BINARY\",\"params\":[\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"TVECTOR::compare\",\"return_type\":\"INT\",\"params\":[\"TVECTOR\",\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_intrinsic_default\",\"return_type\":\"STRING\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"tvector_dot_product\",\"return_type\":\"REAL\",\"params\":[\"TVECTOR\",\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_add\",\"return_type\":\"TVECTOR\",\"params\":[\"TVECTOR\",\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_concat_all\",\"return_type\":\"TVECTOR\",\"params\":\"varargs\",\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_sum_all\",\"return_type\":\"REAL\",\"params\":\"varargs\",\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_concat\",\"return_type\":\"TVECTOR\",\"params\":[\"TVECTOR\",\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_max_element\",\"return_type\":\"REAL\",\"params\":[\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_min_element\",\"return_type\":\"REAL\",\"params\":[\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_max_as_vector\",\"return_type\":\"TVECTOR\",\"params\":[\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_min_as_vector\",\"return_type\":\"TVECTOR\",\"params\":[\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_dim\",\"return_type\":\"INT\",\"params\":[\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_as_double\",\"return_type\":\"TVECTOR\",\"params\":[\"TVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"tvector_scale\",\"return_type\":\"TVECTOR\",\"params\":[\"TVECTOR\",\"REAL\"],\"deterministic\":true,\"is_aggregate\":false}],\"types\":[{\"name\":\"TVECTOR\",\"persisted_length\":-1,\"max_decode_buffer_length\":34,\"variable_length\":false,\"from_binary_vdf\":\"TVECTOR::from_binary\",\"to_binary_vdf\":\"TVECTOR::to_binary\",\"encode_vdf\":\"TVECTOR::from_string\",\"decode_vdf\":\"TVECTOR::to_string\",\"compare_vdf\":\"TVECTOR::compare\",\"int_to_params_vdf\":\"TVECTOR::int_to_params\",\"resolve_params_vdf\":\"TVECTOR::resolve_params\",\"intrinsic_default_vdf\":\"tvector_intrinsic_default\"}]}\nvsql_uuid\t5\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":5,\"funcs\":[{\"name\":\"uuid::from_string\",\"return_type\":\"uuid\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"uuid::to_string\",\"return_type\":\"STRING\",\"params\":[\"uuid\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"uuid::compare\",\"return_type\":\"INT\",\"params\":[\"uuid\",\"uuid\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"uuid::hash\",\"return_type\":\"INT\",\"params\":[\"uuid\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_V1\",\"return_type\":\"uuid\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"UUID_V1MC\",\"return_type\":\"uuid\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"UUID_V3\",\"return_type\":\"uuid\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_V4\",\"return_type\":\"uuid\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"UUID_V5\",\"return_type\":\"uuid\",\"params\":[\"STRING\",\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_V6\",\"return_type\":\"uuid\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"UUID_V7\",\"return_type\":\"uuid\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"UUID_NIL\",\"return_type\":\"uuid\",\"params\":[],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_MAX\",\"return_type\":\"uuid\",\"params\":[],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_NS_DNS\",\"return_type\":\"STRING\",\"params\":[],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_NS_URL\",\"return_type\":\"STRING\",\"params\":[],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_NS_OID\",\"return_type\":\"STRING\",\"params\":[],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_NS_X500\",\"return_type\":\"STRING\",\"params\":[],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_IS_VALID\",\"return_type\":\"INT\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_COMPARE\",\"return_type\":\"INT\",\"params\":[\"uuid\",\"uuid\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_VERSION\",\"return_type\":\"INT\",\"params\":[\"uuid\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_TIMESTAMP\",\"return_type\":\"STRING\",\"params\":[\"uuid\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"UUID_EPOCH\",\"return_type\":\"INT\",\"params\":[\"uuid\"],\"deterministic\":true,\"is_aggregate\":false}],\"types\":[{\"name\":\"uuid\",\"persisted_length\":16,\"max_decode_buffer_length\":37,\"encode_vdf\":\"uuid::from_string\",\"decode_vdf\":\"uuid::to_string\",\"compare_vdf\":\"uuid::compare\",\"hash_vdf\":\"uuid::hash\",\"intrinsic_default_str\":\"00000000-0000-0000-0000-000000000000\"}]}\nvsql_vector\t6\t{\"extension_name\":\"\",\"extension_version\":\"\",\"sdk_version\":\"0.0.8\",\"requested_protocol\":6,\"funcs\":[{\"name\":\"SVECTOR::from_string\",\"return_type\":\"SVECTOR\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"SVECTOR::to_string\",\"return_type\":\"STRING\",\"params\":[\"SVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"SVECTOR::compare\",\"return_type\":\"INT\",\"params\":[\"SVECTOR\",\"SVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"SVECTOR::int_to_params\",\"return_type\":\"STRING\",\"params\":[\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"SVECTOR::resolve_params\",\"return_type\":\"STRING\",\"params\":[\"STRING\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"vector_hex\",\"return_type\":\"STRING\",\"params\":[\"SVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"vector_norm\",\"return_type\":\"REAL\",\"params\":[\"SVECTOR\"],\"deterministic\":false,\"is_aggregate\":false},{\"name\":\"vector_dimension\",\"return_type\":\"INT\",\"params\":[\"SVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"vector_max_dimension\",\"return_type\":\"INT\",\"params\":[],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"vector_format\",\"return_type\":\"STRING\",\"params\":[\"SVECTOR\",\"INT\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"l1_distance\",\"return_type\":\"REAL\",\"params\":[\"SVECTOR\",\"SVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"l2_distance\",\"return_type\":\"REAL\",\"params\":[\"SVECTOR\",\"SVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"cosine_distance\",\"return_type\":\"REAL\",\"params\":[\"SVECTOR\",\"SVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"inner_product\",\"return_type\":\"REAL\",\"params\":[\"SVECTOR\",\"SVECTOR\"],\"deterministic\":true,\"is_aggregate\":false},{\"name\":\"vector_default\",\"return_type\":\"STRING\",\"params\":[],\"deterministic\":false,\"is_aggregate\":false}],\"types\":[{\"name\":\"SVECTOR\",\"persisted_length\":-1,\"max_decode_buffer_length\":274,\"encode_vdf\":\"SVECTOR::from_string\",\"decode_vdf\":\"SVECTOR::to_string\",\"compare_vdf\":\"SVECTOR::compare\",\"int_to_params_vdf\":\"SVECTOR::int_to_params\",\"resolve_params_vdf\":\"SVECTOR::resolve_params\",\"intrinsic_default_vdf\":\"vector_default\"}]}\n"
+  ],
+  [
+   "/*myflames:extensions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('veb_dir','vsql_allow_preview_extensions','villagesql_vef_server_protocol','villagesql_schema_version','villagesql_server_version','villagesql_build_info') OR Variable_name LIKE '%.%'",
+   "veb_dir\t/usr/lib/veb/\nvillagesql_build_info\t{\"git_sha\":\"unknown\",\"is_dirty\":false,\"files_added\":0,\"files_deleted\":0,\"files_modified\":0,\"build_timestamp\":\"\",\"build_host\":\"\",\"build_os\":\"Linux-7.0.0-1017-azure\",\"build_arch\":\"aarch64\"}\nvillagesql_schema_version\tmysql-8.4_0.0.8\nvillagesql_server_version\tmysql-8.4_0.0.8\nvillagesql_vef_server_protocol\t6\nvsql_allow_preview_extensions\tON\nvsql_oauth2.audience\t\nvsql_oauth2.auto_create\tOFF\nvsql_oauth2.auto_grant\tOFF\nvsql_oauth2.issuer\t\nvsql_oauth2.jwks_http_timeout\t5\nvsql_oauth2.jwks_refresh_interval\t3600\nvsql_oauth2.jwks_url\t\nvsql_oauth2.public_key\t\nvsql_oauth2.roles_claim\t\nvsql_oauth2.roles_filter\t\nvsql_oauth2.roles_transform_pattern\t\nvsql_oauth2.roles_transform_replacement\t\nvsql_oauth2.username_claim\tsub\nvsql_rest.allowed_routines\t\nvsql_rest.allowed_tables\t\nvsql_rest.jwt_public_key\t\nvsql_rest.jwt_secret\t\nvsql_rest.max_rows\t1000\nvsql_rest.port\t3000\nvsql_rest.require_auth\tOFF\nvsql_rest.schema\t\nvsql_rest.schema_ttl\t60\nvsql_rest.ssl_cert\t\nvsql_rest.ssl_key\t\nvsql_rest.ssl_port\t3443\nvsql_rest.table_methods\t\nvsql_rest.vsql_rest_enabled\tOFF\nvsql_vector.ef_search\t40\n"
+  ],
+  [
+   "/*myflames:extensions*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Villagesql_veb_cache_repaired','Com_install_extension','Com_uninstall_extension') OR Variable_name LIKE '%.%'",
+   "Com_install_extension\t28\nCom_uninstall_extension\t8\nVillagesql_veb_cache_repaired\t0\nvsql_oauth2.jwks_fetch_failures\t0\nvsql_rest.connections_total\t0\nvsql_rest.http_port\t0\nvsql_rest.https_port\t0\nvsql_rest.requests_active\t0\nvsql_rest.requests_total\t0\n"
+  ],
+  [
+   "/*myflames:extensions*/ SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE DATA_TYPE LIKE '%.%' AND TABLE_SCHEMA NOT IN ('mysql', 'performance_schema', 'information_schema', 'sys', 'villagesql') ORDER BY 1,2,3 LIMIT 501",
+   "review\tvsql_knn\tvec\tvsql_vector.SVECTOR\nreview\tvsql_types\tcomplex_col\tvsql_complex.COMPLEX\nreview\tvsql_types\tinet_col\tvsql_network_address.INET\nreview\tvsql_types\tuuid_col\tvsql_uuid.uuid\nreview_knn\tt\tv\tvsql_knn_index_test.kvector\n"
+  ],
+  [
+   "/*myflames:extensions*/ SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE, PARAMETER_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.PARAMETERS WHERE DATA_TYPE LIKE '%.%' AND SPECIFIC_SCHEMA NOT IN ('mysql', 'performance_schema', 'information_schema', 'sys', 'villagesql') ORDER BY 1,2,3,4 LIMIT 201",
+   "review\tvsql_proc\tPROCEDURE\tp\tvsql_complex.COMPLEX\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "extensions-1.0",
+  "engine": "mysql",
+  "flavor": "villagesql",
+  "server_product": "VillageSQL",
+  "server_version": "8.4.11-villagesql-0.0.8",
+  "taken_at": "2026-11-27T13:06:57.380473+00:00",
+  "uptime_s": 2951,
+  "performance_schema": true,
+  "server_base": "mysql",
+  "available": true,
+  "reason": null,
+  "settings": {
+   "veb_dir": "/usr/lib/veb/",
+   "preview_extensions": true,
+   "server_protocol": 6,
+   "schema_version": "mysql-8.4_0.0.8",
+   "codebase": "mysql-8.4_0.0.8",
+   "build": {
+    "git_sha": "unknown",
+    "is_dirty": false
+   }
+  },
+  "status": {
+   "veb_cache_repaired": 0,
+   "install_count": 28,
+   "uninstall_count": 8
+  },
+  "extensions": [
+   {
+    "name": "vsql_ai",
+    "version": "0.0.8",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "ai_prompt",
+     "ai_embedding"
+    ],
+    "types": [],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_boolean",
+    "version": "0.0.3",
+    "pending": null,
+    "protocol": 5,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "STRICTBOOL::from_string",
+     "STRICTBOOL::to_string",
+     "STRICTBOOL::compare",
+     "STRICTBOOL::hash",
+     "boolean_to_int",
+     "boolean_sum",
+     "boolean_avg"
+    ],
+    "types": [
+     "STRICTBOOL"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_complex",
+    "version": "0.0.1",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "COMPLEX::from_string",
+     "COMPLEX::to_string",
+     "COMPLEX::compare",
+     "COMPLEX2::from_string",
+     "COMPLEX2::to_string",
+     "COMPLEX2::compare",
+     "COMPLEX2::hash",
+     "complex_add",
+     "complex_subtract",
+     "complex_multiply",
+     "complex_divide",
+     "complex_real",
+     "complex_imag",
+     "complex_abs",
+     "complex_conjugate",
+     "complex_sum"
+    ],
+    "types": [
+     "COMPLEX",
+     "COMPLEX2"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 1,
+     "sample": [
+      {
+       "schema": "review",
+       "table": "vsql_types",
+       "column": "complex_col",
+       "data_type": "vsql_complex.COMPLEX"
+      }
+     ],
+     "truncated": false
+    },
+    "routines": {
+     "count": 1,
+     "sample": [
+      {
+       "schema": "review",
+       "routine": "vsql_proc",
+       "routine_type": "PROCEDURE",
+       "parameter": "p",
+       "data_type": "vsql_complex.COMPLEX"
+      }
+     ],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_crypto",
+    "version": "0.0.8",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "crypto_version",
+     "digest",
+     "hmac",
+     "gen_random_bytes",
+     "gen_random_uuid",
+     "encrypt",
+     "decrypt",
+     "gen_salt",
+     "crypt"
+    ],
+    "types": [],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_cube",
+    "version": "0.0.8",
+    "pending": null,
+    "protocol": 5,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "cube::int_to_params",
+     "cube::resolve_params",
+     "cube::from_string",
+     "cube::to_string",
+     "cube::compare",
+     "cube::hash",
+     "cube_from_string",
+     "cube_to_string",
+     "cube_point",
+     "cube_box",
+     "cube_point_nd",
+     "cube_box_nd",
+     "cube_add_dim",
+     "cube_dim",
+     "cube_ll_coord",
+     "cube_ur_coord",
+     "cube_is_point",
+     "cube_coord",
+     "cube_overlaps",
+     "cube_contains",
+     "cube_contained_by",
+     "cube_distance",
+     "cube_taxicab_distance",
+     "cube_chebyshev_distance",
+     "cube_union",
+     "cube_inter",
+     "cube_enlarge",
+     "cube_subset",
+     "cube_agg",
+     "cube_scalar_agg"
+    ],
+    "types": [
+     "cube"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_fuzzystrmatch",
+    "version": "0.0.2",
+    "pending": null,
+    "protocol": 5,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "soundex",
+     "difference",
+     "levenshtein",
+     "levenshtein_cost",
+     "levenshtein_less_equal",
+     "levenshtein_less_equal_cost",
+     "metaphone",
+     "dmetaphone",
+     "dmetaphone_alt"
+    ],
+    "types": [],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_http",
+    "version": "0.0.4",
+    "pending": null,
+    "protocol": 5,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "http_get",
+     "http_post",
+     "http_put",
+     "http_delete",
+     "http_patch",
+     "http_request",
+     "url_encode",
+     "url_decode"
+    ],
+    "types": [],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_knn_index_test",
+    "version": "0.0.1",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "kvector::from_string",
+     "kvector::from_binary",
+     "kvector::to_string",
+     "kvector::to_binary",
+     "kvector::compare",
+     "kvec_l2_distance",
+     "kvec_cos_distance",
+     "kvec_scan_begin_count",
+     "kvec_scan_fetch_count",
+     "kvec_insert_count",
+     "kvec_reset_counters"
+    ],
+    "types": [
+     "kvector"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 1,
+     "sample": [
+      {
+       "schema": "review_knn",
+       "table": "t",
+       "column": "v",
+       "data_type": "vsql_knn_index_test.kvector"
+      }
+     ],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_network_address",
+    "version": "0.0.8",
+    "pending": null,
+    "protocol": 5,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "CIDR::from_string",
+     "CIDR::to_string",
+     "CIDR::compare",
+     "CIDR::hash",
+     "INET::from_string",
+     "INET::to_string",
+     "INET::compare",
+     "INET::hash",
+     "MACADDR::from_string",
+     "MACADDR::to_string",
+     "MACADDR::compare",
+     "MACADDR::hash",
+     "MACADDR8::from_string",
+     "MACADDR8::to_string",
+     "MACADDR8::compare",
+     "MACADDR8::hash",
+     "cidr_from_string",
+     "cidr_to_string",
+     "inet_from_string",
+     "inet_to_string",
+     "macaddr_from_string",
+     "macaddr_to_string",
+     "macaddr8_from_string",
+     "macaddr8_to_string",
+     "cidr_compare",
+     "inet_compare",
+     "macaddr_compare",
+     "macaddr8_compare",
+     "inet_contains",
+     "inet_contains_or_equals",
+     "inet_contained_by",
+     "inet_contained_by_or_equals",
+     "inet_overlaps",
+     "inet_family",
+     "inet_masklen",
+     "inet_host",
+     "inet_text",
+     "inet_netmask",
+     "inet_hostmask",
+     "inet_broadcast",
+     "inet_network",
+     "inet_set_masklen",
+     "cidr_set_masklen",
+     "macaddr_trunc",
+     "inet_abbrev",
+     "cidr_abbrev"
+    ],
+    "types": [
+     "CIDR",
+     "INET",
+     "MACADDR",
+     "MACADDR8"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 1,
+     "sample": [
+      {
+       "schema": "review",
+       "table": "vsql_types",
+       "column": "inet_col",
+       "data_type": "vsql_network_address.INET"
+      }
+     ],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_oauth2",
+    "version": "0.0.5",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [],
+    "types": [],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [
+     {
+      "name": "vsql_oauth2.audience",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.auto_create",
+      "value": "OFF",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.auto_grant",
+      "value": "OFF",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.issuer",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.jwks_http_timeout",
+      "value": "5",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.jwks_refresh_interval",
+      "value": "3600",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.jwks_url",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.public_key",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.roles_claim",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.roles_filter",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.roles_transform_pattern",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.roles_transform_replacement",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.username_claim",
+      "value": "sub",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_oauth2.jwks_fetch_failures",
+      "value": "0",
+      "kind": "status"
+     }
+    ],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_rest",
+    "version": "0.0.11",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [],
+    "types": [],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [
+     {
+      "name": "vsql_rest.allowed_routines",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.allowed_tables",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.jwt_public_key",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.jwt_secret",
+      "value": "[redacted]",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.max_rows",
+      "value": "1000",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.port",
+      "value": "3000",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.require_auth",
+      "value": "OFF",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.schema",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.schema_ttl",
+      "value": "60",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.ssl_cert",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.ssl_key",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.ssl_port",
+      "value": "3443",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.table_methods",
+      "value": "",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.vsql_rest_enabled",
+      "value": "OFF",
+      "kind": "system"
+     },
+     {
+      "name": "vsql_rest.connections_total",
+      "value": "0",
+      "kind": "status"
+     },
+     {
+      "name": "vsql_rest.http_port",
+      "value": "0",
+      "kind": "status"
+     },
+     {
+      "name": "vsql_rest.https_port",
+      "value": "0",
+      "kind": "status"
+     },
+     {
+      "name": "vsql_rest.requests_active",
+      "value": "0",
+      "kind": "status"
+     },
+     {
+      "name": "vsql_rest.requests_total",
+      "value": "0",
+      "kind": "status"
+     }
+    ],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_simple",
+    "version": "0.0.1",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "bytearray::from_string",
+     "bytearray::to_string",
+     "bytearray::compare",
+     "rot13",
+     "even_chars",
+     "odd_chars",
+     "ba_concat",
+     "ba_call_index",
+     "ba_len",
+     "ba_concat_all"
+    ],
+    "types": [
+     "bytearray"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_trgm",
+    "version": "0.0.5",
+    "pending": null,
+    "protocol": 5,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "trgm_show",
+     "trgm_similarity",
+     "trgm_distance",
+     "trgm_similar",
+     "trgm_similar_threshold",
+     "trgm_word_similarity",
+     "trgm_word_distance",
+     "trgm_word_similar",
+     "trgm_strict_word_similarity",
+     "trgm_strict_word_distance",
+     "trgm_strict_word_similar"
+    ],
+    "types": [],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_tvector",
+    "version": "0.0.1",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "TVECTOR::int_to_params",
+     "TVECTOR::resolve_params",
+     "TVECTOR::from_string",
+     "TVECTOR::from_binary",
+     "TVECTOR::to_string",
+     "TVECTOR::to_binary",
+     "TVECTOR::compare",
+     "tvector_intrinsic_default",
+     "tvector_dot_product",
+     "tvector_add",
+     "tvector_concat_all",
+     "tvector_sum_all",
+     "tvector_concat",
+     "tvector_max_element",
+     "tvector_min_element",
+     "tvector_max_as_vector",
+     "tvector_min_as_vector",
+     "tvector_dim",
+     "tvector_as_double",
+     "tvector_scale"
+    ],
+    "types": [
+     "TVECTOR"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_uuid",
+    "version": "0.0.9",
+    "pending": null,
+    "protocol": 5,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "uuid::from_string",
+     "uuid::to_string",
+     "uuid::compare",
+     "uuid::hash",
+     "UUID_V1",
+     "UUID_V1MC",
+     "UUID_V3",
+     "UUID_V4",
+     "UUID_V5",
+     "UUID_V6",
+     "UUID_V7",
+     "UUID_NIL",
+     "UUID_MAX",
+     "UUID_NS_DNS",
+     "UUID_NS_URL",
+     "UUID_NS_OID",
+     "UUID_NS_X500",
+     "UUID_IS_VALID",
+     "UUID_COMPARE",
+     "UUID_VERSION",
+     "UUID_TIMESTAMP",
+     "UUID_EPOCH"
+    ],
+    "types": [
+     "uuid"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 1,
+     "sample": [
+      {
+       "schema": "review",
+       "table": "vsql_types",
+       "column": "uuid_col",
+       "data_type": "vsql_uuid.uuid"
+      }
+     ],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [],
+    "variables_truncated": false
+   },
+   {
+    "name": "vsql_vector",
+    "version": "0.0.1",
+    "pending": null,
+    "protocol": 6,
+    "protocol_state": "current",
+    "protocol_note": null,
+    "sdk_version": "0.0.8",
+    "functions": [
+     "SVECTOR::from_string",
+     "SVECTOR::to_string",
+     "SVECTOR::compare",
+     "SVECTOR::int_to_params",
+     "SVECTOR::resolve_params",
+     "vector_hex",
+     "vector_norm",
+     "vector_dimension",
+     "vector_max_dimension",
+     "vector_format",
+     "l1_distance",
+     "l2_distance",
+     "cosine_distance",
+     "inner_product",
+     "vector_default"
+    ],
+    "types": [
+     "SVECTOR"
+    ],
+    "functions_truncated": false,
+    "types_truncated": false,
+    "columns": {
+     "count": 1,
+     "sample": [
+      {
+       "schema": "review",
+       "table": "vsql_knn",
+       "column": "vec",
+       "data_type": "vsql_vector.SVECTOR"
+      }
+     ],
+     "truncated": false
+    },
+    "routines": {
+     "count": 0,
+     "sample": [],
+     "truncated": false
+    },
+    "variables": [
+     {
+      "name": "vsql_vector.ef_search",
+      "value": "40",
+      "kind": "system"
+     }
+    ],
+    "variables_truncated": false
+   }
+  ],
+  "other_variables": [],
+  "other_variables_truncated": false,
+  "summary": {
+   "installed": 16,
+   "pending": 0,
+   "failing": 0,
+   "deprecated_protocol": 0,
+   "unsupported_protocol": 0
+  },
+  "notes": [
+   "Sensitive extension variable values are redacted."
+  ]
+ }
+}

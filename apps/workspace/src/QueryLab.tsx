@@ -2708,7 +2708,7 @@ export const QueryLab = forwardRef<
     : rt.probed && !session ? "No session" : undefined;
   useWindowStatus(`query:${statusKey}:${tab.id}`, {
     connectionState: tabConnection.host ? connectionLabel(tabConnection) : "No connection",
-    engineVersion: statusSession?.server_version ? `${statusSession.server_product || (statusSession.engine === "mariadb" ? "MariaDB" : statusSession.engine === "mysql" ? "MySQL" : "Server")} ${statusSession.server_version}` : undefined,
+    engineVersion: statusSession?.server_version ? engineName(statusSession.engine, statusSession.server_version, statusSession.server_product, statusSession.server_base) : undefined,
     sessionState: sessionText ? `${sessionText}${fileDirty ? " · Edited" : ""}` : fileDirty ? "Edited" : undefined,
     // The transaction state is in the editor toolbar, and the rows and time
     // of the run in its result tabs: the footer does not repeat them.

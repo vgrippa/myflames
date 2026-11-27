@@ -15,7 +15,7 @@ TAG = '/*myflames:readiness*/ '
 TIMEOUT = 3
 _VARIABLES = ('version', 'version_comment', 'read_only', 'super_read_only',
               'performance_schema', 'partial_revokes', 'wsrep_on', 'wsrep_provider',
-              'group_replication_group_name')
+              'group_replication_group_name', 'villagesql_server_version')
 BASE_SQL = (TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" %
             ','.join("'%s'" % name for name in _VARIABLES) + TAG +
             "SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_cluster_status','wsrep_cluster_size');\n" +
@@ -54,7 +54,8 @@ def read_readiness(conn):
     version = variables.get('version')
     if not version:
         raise ConnectorError('The server did not return its readiness facts.')
-    identity = product_identity(version, variables.get('version_comment', ''))
+    identity = product_identity(version, variables.get('version_comment', ''),
+                                variables.get('villagesql_server_version'))
     maria = identity['engine'] == 'mariadb'
     ps = _on(variables.get('performance_schema'))
     model = privileges.parse_grants(grants, identity['engine'], version,
@@ -113,6 +114,8 @@ def read_readiness(conn):
                   super_read_only=_on(variables.get('super_read_only')), performance_schema=ps,
                   replica=replica, group_member=group, galera_member=galera,
                   privileges=gates, actions=actions, notes=notes, checked_at=now())
+    if identity['flavor'] == 'villagesql':
+        result['server_base'] = identity['base']
     return result
 
 

@@ -608,9 +608,9 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     ? !report.available
       ? "Replication status not available"
       : !report.replica
-        ? `Not a replica · ${engineName(report.engine, report.server_version)}`
+        ? `Not a replica · ${engineName(report.engine, report.server_version, report.server_product, report.server_base)}`
         : [
-            engineName(report.engine, report.server_version, report.server_product),
+            engineName(report.engine, report.server_version, report.server_product, report.server_base),
             plural(report.summary.channels, word),
             report.summary.failed ? `${report.summary.failed.toLocaleString()} failed` : "",
             lagUnknown ? "lag unknown" : `max lag ${durationText(report.summary.lag_max_s)}`,

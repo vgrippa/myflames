@@ -38,12 +38,21 @@ from .server_info import detect_flavor, product_identity, server_version_tuple a
 
 #: Schemas never reported as user data.
 SYSTEM_SCHEMAS = ("mysql", "performance_schema", "information_schema", "sys")
+VILLAGESQL_INTERNAL_SCHEMAS = ("villagesql",)
+
+
+def system_schemas(flavor=None):
+    """Internal schemas for a known flavor; unknown identity keeps legacy SQL."""
+    return SYSTEM_SCHEMAS + (VILLAGESQL_INTERNAL_SCHEMAS if flavor == "villagesql" else ())
+
+
 PICO_PER_MS = 1e9
 #: Over-a-window views (waits, I/O) sample this many seconds apart.
 DEFAULT_WINDOW = 10
 MIN_WINDOW, MAX_WINDOW = 2, 60
 #: The variables every view's preflight reads.
-PREFLIGHT_VARIABLES = ("version", "version_comment", "performance_schema", "userstat")
+PREFLIGHT_VARIABLES = ("version", "version_comment", "performance_schema", "userstat",
+                       "villagesql_server_version")
 
 _LOST_SQL = ("SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' "
              "OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'")
@@ -318,12 +327,13 @@ class Server(object):
         self.status = status or {}
         self.version = self.variables.get("version") or ""
         comment = self.variables.get("version_comment") or ""
-        identity = product_identity(self.version, comment)
+        identity = product_identity(self.version, comment, self.variables.get("villagesql_server_version"))
         self.engine = identity["engine"]
         #: mysql, percona or mariadb; Percona Server keeps engine "mysql".
         self.flavor = identity["flavor"]
         #: The name to show: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB.
         self.product = identity["product"]
+        self.base = identity.get("base")
         self.version_tuple = _version_tuple(self.version)
         self.ps_on = (self.variables.get("performance_schema") or "").upper() in ("ON", "1")
         self.uptime = _number(self.status.get("Uptime"))
@@ -343,13 +353,18 @@ class Server(object):
                       and (_number(value) or 0) > 0)
 
     def describe(self):
-        return {"engine": self.engine, "flavor": self.flavor, "product": self.product,
-                "version": self.version or None, "uptime_s": self.uptime,
-                "performance_schema": self.ps_on}
+        result = {"engine": self.engine, "flavor": self.flavor, "product": self.product,
+                  "version": self.version or None, "uptime_s": self.uptime,
+                  "performance_schema": self.ps_on}
+        if self.flavor == "villagesql":
+            result["server_base"] = self.base
+        return result
 
 
 def show_variables(reader, names):
     names = sorted(set(names))
+    # SHOW omits unknown names on every supported engine, so optional product
+    # metadata belongs in this existing statement instead of a follow-up read.
     return reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)"
                         % ", ".join("'%s'" % n for n in names))
 
@@ -436,13 +451,37 @@ def restarted(first, second):
     return a is not None and b is not None and b < a
 
 
-def identity_fields(engine, version, version_comment=None):
+def identity_fields(engine, version, version_comment=None, codebase=None):
     """``flavor`` and ``server_product`` for a report built from engine and
     version alone; the comment decides Percona (see server_info)."""
-    identity = product_identity(version, version_comment or "")
+    identity = product_identity(version, version_comment or "", codebase)
     if engine == "mariadb" and identity["engine"] != "mariadb":
         identity = {"flavor": "mariadb", "product": "MariaDB"}
-    return {"flavor": identity["flavor"], "server_product": identity["product"]}
+    fields = {"flavor": identity["flavor"], "server_product": identity["product"]}
+    if identity["flavor"] == "villagesql":
+        fields["server_base"] = identity["base"]
+    return fields
+
+
+def connection_codebase(conn, version, version_comment=""):
+    """Read optional VillageSQL metadata only after identifying the product.
+
+    Older adapters without the cached reader may still provide query_rows.
+    Missing metadata must not prevent a performance view from opening.
+    """
+    if product_identity(version, version_comment)["flavor"] != "villagesql":
+        return None
+    try:
+        reader = getattr(conn, "villagesql_server_version", None)
+        if callable(reader):
+            return reader(version, version_comment)
+        query = getattr(conn, "query_rows", None)
+        if callable(query):
+            rows = query("SELECT @@villagesql_server_version")
+            return rows[0][0] if rows and rows[0] else None
+    except ConnectorError:
+        pass
+    return None
 
 
 def conn_identity(conn, engine, version):
@@ -459,11 +498,11 @@ def conn_identity(conn, engine, version):
                 comment = reader()
             except ConnectorError:
                 comment = None
-    return identity_fields(engine, version, comment)
+    return identity_fields(engine, version, comment, connection_codebase(conn, version, comment))
 
 
 def base_report(schema_version, server, taken_at=None):
-    return {
+    report = {
         "schema_version": schema_version,
         "engine": server.engine,
         "flavor": getattr(server, "flavor", "mariadb" if server.engine == "mariadb" else "mysql"),
@@ -473,6 +512,9 @@ def base_report(schema_version, server, taken_at=None):
         "uptime_s": server.uptime,
         "performance_schema": server.ps_on,
     }
+    if report["flavor"] == "villagesql":
+        report["server_base"] = getattr(server, "base", None)
+    return report
 
 
 def ms_text(ms):
@@ -541,11 +583,11 @@ def all_schemas_note(limit=ALL_SCHEMAS_TABLE_LIMIT, engine=None):
 ALL_SCHEMAS_NOTE = all_schemas_note()
 
 
-def is_system_schema(name):
-    """mysql, sys, performance_schema, information_schema (any case), and the
+def is_system_schema(name, flavor=None):
+    """The flavor's internal schemas (any case), and the
     ``#mysql50#`` names MariaDB gives datadir directories it cannot decode
     (lost+found, for example; filename_to_tablename, Ma/sql/sql_table.cc:446-448)."""
-    return (name or "").lower() in SYSTEM_SCHEMAS or (name or "").startswith("#mysql50#")
+    return (name or "").lower() in system_schemas(flavor) or (name or "").startswith("#mysql50#")
 
 
 def _table_count_sql(server, group, scope=None):
@@ -580,7 +622,7 @@ def check_schemas(schemas):
     return tuple(out) or None
 
 
-def scope_sql(column, schemas):
+def scope_sql(column, schemas, flavor=None):
     """``column = x`` for one schema (MariaDB then reads only that schema's
     directory), ``column IN (...)`` for several (MariaDB still checks the name
     before opening a table, Ma/sql/sql_show.cc:5639), else every non-system
@@ -589,7 +631,7 @@ def scope_sql(column, schemas):
         return "%s = %s" % (column, literal(schemas[0]))
     if schemas:
         return "%s IN (%s)" % (column, ", ".join(literal(s) for s in schemas))
-    return "%s NOT IN (%s)" % (column, ", ".join("'%s'" % s for s in SYSTEM_SCHEMAS))
+    return "%s NOT IN (%s)" % (column, ", ".join("'%s'" % s for s in system_schemas(flavor)))
 
 
 def scope_text(schemas):
@@ -613,7 +655,7 @@ def list_schemas(reader, server):
             counts[row[0]] = int(_number(row[1]) or 0)
             if row[0] not in names:
                 names.append(row[0])
-    out = [{"name": n, "tables": counts.get(n, 0), "system": is_system_schema(n)} for n in names]
+    out = [{"name": n, "tables": counts.get(n, 0), "system": is_system_schema(n, server.flavor)} for n in names]
     out.sort(key=lambda s: (s["system"], s["name"].lower()))
     return out
 
@@ -634,7 +676,7 @@ def schema_catalog(conn, tag="/*myflames:schemas*/ "):
     report = base_report(CATALOG_VERSION, server)
     report.update({"schemas": catalog, "user_tables": user_table_count(catalog),
                    "all_limit": ALL_SCHEMAS_TABLE_LIMIT, "all_note": all_schemas_note(engine=server.engine),
-                   "system": list(SYSTEM_SCHEMAS)})
+                   "system": list(system_schemas(server.flavor))})
     return report
 
 
@@ -642,7 +684,7 @@ def require_choice(reader, server, schemas, limit=ALL_SCHEMAS_TABLE_LIMIT, what=
     """Gate the selected scope before costly metadata reads; None opts out."""
     if limit is None:
         return None
-    rows = reader.rows(_table_count_sql(server, False, scope_sql("TABLE_SCHEMA", schemas)))
+    rows = reader.rows(_table_count_sql(server, False, scope_sql("TABLE_SCHEMA", schemas, server.flavor)))
     total = int(_number(rows[0][0]) or 0) if rows and rows[0] else 0
     if total > limit:
         raise ValueError("The selected scope (%s) has %s tables, more than %s, so %s needs %s or an explicit "

@@ -1,0 +1,1 @@
+vsql_knn	CREATE TABLE `vsql_knn` (\n  `id` int NOT NULL,\n  `vec` vsql_vector.SVECTOR(4) NOT NULL,\n  `payload` int DEFAULT NULL,\n  PRIMARY KEY (`id`),\n  KEY `knn_vec` (`vec` `vsql_vector`.`hnsw_l2`) USING EXTENDED(`vsql_vector`.`hnsw`) WITH (`ef_construction` = 64, `m` = 8)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci

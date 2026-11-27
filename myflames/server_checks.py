@@ -890,6 +890,16 @@ def _version_support(server, as_of=None):
               "Listed end dates come from vendor policy/release pages, not server source or tag timestamps. "
               "Month-only dates use the first day after the final maintenance month. "
               "Verify vendor policy before scheduling an upgrade; this table can become stale.")
+    if getattr(server, "flavor", None) == "villagesql":
+        # VillageSQL has its own release maturity; upstream dates are reference only.
+        upstream = ("MySQL %d.%d maintenance ends %s" %
+                    (server.version_tuple[0], server.version_tuple[1], row[1])) if row and row[1] else (
+                        "MySQL %d.%d has no proved maintenance end date" % server.version_tuple[:2])
+        return _check("version_support", "observability", "Version support", "unknown",
+                      "VillageSQL %s: VillageSQL publishes pre-1.0 releases without lifecycle dates "
+                      "(for reference, %s)" % (server.version, upstream), "version_support", caveat=caveat,
+                      numbers=numbers, value="unknown", sources=["version", "version_comment"],
+                      action={"text": "Check VillageSQL's release maturity and support policy."})
     if row is None:
         return _check("version_support", "observability", "Version support", "unknown",
                       "No reviewed lifecycle entry for %s %s" % (server.engine, server.version or "unknown"),

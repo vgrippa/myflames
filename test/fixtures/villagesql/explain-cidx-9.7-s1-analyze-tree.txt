@@ -1,0 +1,3 @@
+-> Limit: 10 row(s)  (cost=202 rows=10) (actual time=1.07..1.08 rows=10 loops=1)
+    -> Custom index distance scan on idx_v  (cost=202 rows=2005) (actual time=1.06..1.07 rows=10 loops=1)
+

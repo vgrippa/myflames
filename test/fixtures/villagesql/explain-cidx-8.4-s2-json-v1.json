@@ -1,0 +1,32 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "401.30"
+    },
+    "ordering_operation": {
+      "using_filesort": false,
+      "table": {
+        "table_name": "t",
+        "access_type": "index_distance",
+        "possible_keys": [
+          "PRIMARY"
+        ],
+        "rows_examined_per_scan": 2003,
+        "rows_produced_per_join": 2003,
+        "filtered": "100.00",
+        "cost_info": {
+          "read_cost": "201.00",
+          "eval_cost": "200.30",
+          "prefix_cost": "401.30",
+          "data_read_per_join": "62K"
+        },
+        "used_columns": [
+          "id",
+          "v"
+        ],
+        "attached_condition": "(`review_knn`.`t`.`id` > 2)"
+      }
+    }
+  }
+}

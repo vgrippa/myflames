@@ -3,10 +3,11 @@ import { readReadiness, type Connection, type Readiness } from "./api";
 import { connectionKey } from "./binding";
 import { InfoPopover } from "./kit";
 import { relativeTime } from "./session";
+import { villageSQLLabel } from "./serverIdentity";
 import "./connections-readiness.css";
 
 const STORAGE = "myflames.connectionReadiness.v1";
-type Facts = Pick<Readiness, "product" | "version" | "read_only" | "super_read_only" | "performance_schema" | "replica" | "group_member" | "galera_member" | "checked_at">;
+type Facts = Pick<Readiness, "flavor" | "product" | "version" | "server_base" | "read_only" | "super_read_only" | "performance_schema" | "replica" | "group_member" | "galera_member" | "checked_at">;
 type Entry = { facts?: Facts; stale?: boolean; pending?: boolean; error?: string };
 let cache: Record<string, Entry> = {};
 const listeners = new Set<() => void>();
@@ -34,6 +35,8 @@ function credentialDigest(password: string | undefined): string {
 function factsOf(r: Facts): Facts {
   const flag = (v: unknown) => typeof v === "boolean" ? v : null;
   return { product: String(r.product).slice(0, 128), version: String(r.version).slice(0, 128),
+    flavor: ["mysql", "percona", "mariadb", "readyset", "villagesql"].includes(r.flavor) ? r.flavor : "",
+    server_base: r.server_base === "mysql" || r.server_base === "percona" ? r.server_base : null,
     read_only: flag(r.read_only), super_read_only: flag(r.super_read_only),
     performance_schema: flag(r.performance_schema), replica: flag(r.replica),
     group_member: flag(r.group_member), galera_member: flag(r.galera_member), checked_at: r.checked_at };
@@ -105,7 +108,7 @@ export function copyReadiness(from: Connection, to: Connection) {
   persist();
 }
 export function readinessLine(f: Facts): string {
-  return [`${f.product} ${f.version}`, f.replica === true ? "replica" : f.replica === null ? "replica unknown" : "",
+  return [villageSQLLabel(f.version, f.server_base, f.product) || `${f.product} ${f.version}`, f.replica === true ? "replica" : f.replica === null ? "replica unknown" : "",
     f.group_member === null ? "group unknown" : f.group_member ? "group member" : "",
     f.galera_member === null ? "Galera unknown" : f.galera_member ? "Galera member" : "",
     f.super_read_only ? "super read-only" : f.read_only ? "read-only" : "",

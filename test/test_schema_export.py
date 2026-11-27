@@ -24,6 +24,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _schema_replay as replay  # noqa: E402
+from test_vsql_fix2_fx8a import SchemaReplayConnection as ReplayConn  # noqa: E402
 
 from myflames import schema_export, schema_versions, schema_versions_api, schema_versions_cli  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402
@@ -603,7 +604,7 @@ class TestContracts(unittest.TestCase):
 class TestCapture57(unittest.TestCase):
     def test_capture_reads_mysql_57(self):
         record = fixture('capture-mysql-5.7')
-        conn = replay.ReplayConn(record)
+        conn = ReplayConn(record)
         conn.query_timeout = 120
         with mock.patch.object(schema_versions, 'coverage', return_value=COMPLETE):
             snapshot = schema_versions.capture(conn, 'xp_src', {'host': '127.0.0.1', 'port': 3306})
@@ -682,7 +683,7 @@ class TestCli(Isolated):
                 self.assertIn(message, err)
 
     def test_export_sql_of_a_live_database(self):
-        conn = replay.ReplayConn(fixture('capture-mysql-5.7'))
+        conn = ReplayConn(fixture('capture-mysql-5.7'))
         conn.query_timeout = 120
         with mock.patch.object(schema_versions_cli, 'MySQLConnection', return_value=conn), \
                 mock.patch.object(schema_versions, 'coverage', return_value=COMPLETE):

@@ -39,8 +39,8 @@ import uuid
 from . import dbops, privileges
 from .connection_groups import ProfileReadError
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
-from .perf_common import Reader, literal
-from .server_info import detect_flavor
+from .perf_common import Reader, conn_identity, literal, system_schemas
+from .server_info import detect_flavor, product_identity
 
 TAG = '/*myflames:accounts*/ '
 PLAN_SCHEMA = 'account-plan-1.0'
@@ -425,7 +425,7 @@ def _catalog(conn, engine, version):
         rows = Reader(conn, TAG).rows('SHOW PRIVILEGES')
     except ConnectorError:
         rows = None
-    return privileges.privilege_catalog(engine, version, rows)
+    return privileges.privilege_catalog(engine, version, rows, flavor=conn_identity(conn, engine, version)["flavor"])
 
 
 def _grant_scopes(account, databases=()):
@@ -436,6 +436,7 @@ def _grant_scopes(account, databases=()):
     grant. Keep scopes even when they are absent from the visible catalog.
     """
     engine, version = account['engine'], account['version']
+    flavor = account.get('flavor') or product_identity(version, account.get('version_comment'))['flavor']
     scopes = {}
 
     def scope(level, **target):
@@ -457,7 +458,7 @@ def _grant_scopes(account, databases=()):
                     label = target['kind'] + ' ' + label + '.' + privileges.quote_identifier(target['routine'])
             scopes[key] = dict(target, id=hashlib.sha256(key.encode('utf-8')).hexdigest()[:24],
                                label=label, level=level, cells=[],
-                               system=target.get('database') in ('mysql', 'sys', 'information_schema', 'performance_schema'))
+                               system=target.get('database') in system_schemas(flavor))
         return scopes[key]
 
     def cell(s, name, direct, grantable, via=None, restricted=False):

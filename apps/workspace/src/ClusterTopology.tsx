@@ -103,10 +103,10 @@ export function memberEngine(report: ClusterReport, m: ClusterMember): string {
   const engine = report.kind === "pxc" ? "PXC" : report.engine === "mariadb" ? "MariaDB" : "MySQL";
   // A Group Replication member reports only its version: on a Percona Server
   // group the other members' product is not read, so only the local one is named.
-  if (m.version && m.local && report.flavor === "percona" && report.kind !== "pxc")
-    return engineName(report.engine, m.version, report.server_product);
-  if (m.version) return report.flavor === "percona" && report.kind !== "pxc" ? m.version : `${engine} ${m.version}`;
-  if (m.local) return report.kind === "pxc" ? `${engine} ${report.server_version || ""}`.trim() : engineName(report.engine, report.server_version, report.server_product);
+  if (m.version && m.local && (report.flavor === "percona" || report.flavor === "villagesql") && report.kind !== "pxc")
+    return engineName(report.engine, m.version, report.server_product, report.server_base);
+  if (m.version) return (report.flavor === "percona" || report.flavor === "villagesql") && report.kind !== "pxc" ? m.version : `${engine} ${m.version}`;
+  if (m.local) return report.kind === "pxc" ? `${engine} ${report.server_version || ""}`.trim() : engineName(report.engine, report.server_version, report.server_product, report.server_base);
   return "";
 }
 

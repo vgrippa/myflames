@@ -1,0 +1,281 @@
+{
+ "server": "villagesql-percona-8.4",
+ "source": "live",
+ "args": {
+  "schema": "review"
+ },
+ "calls": [
+  [
+   "/*myflames:indexes*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment', 'villagesql_server_version')",
+   "performance_schema\tON\nuserstat\tON\nversion\t8.4.11-villagesql-0.0.8\nversion_comment\tSource distribution\nvillagesql_server_version\tpercona-8.4_0.0.8\n"
+  ],
+  [
+   "/*myflames:indexes*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime' OR Variable_name LIKE 'Performance\\_schema\\_%\\_lost'",
+   "Performance_schema_accounts_lost\t0\nPerformance_schema_cond_classes_lost\t0\nPerformance_schema_cond_instances_lost\t0\nPerformance_schema_digest_lost\t0\nPerformance_schema_file_classes_lost\t0\nPerformance_schema_file_handles_lost\t0\nPerformance_schema_file_instances_lost\t0\nPerformance_schema_hosts_lost\t0\nPerformance_schema_index_stat_lost\t0\nPerformance_schema_locker_lost\t0\nPerformance_schema_logger_lost\t0\nPerformance_schema_memory_classes_lost\t0\nPerformance_schema_metadata_lock_lost\t0\nPerformance_schema_meter_lost\t0\nPerformance_schema_metric_lost\t0\nPerformance_schema_mutex_classes_lost\t0\nPerformance_schema_mutex_instances_lost\t0\nPerformance_schema_nested_statement_lost\t0\nPerformance_schema_prepared_statements_lost\t0\nPerformance_schema_program_lost\t0\nPerformance_schema_rwlock_classes_lost\t0\nPerformance_schema_rwlock_instances_lost\t0\nPerformance_schema_session_connect_attrs_lost\t0\nPerformance_schema_socket_classes_lost\t0\nPerformance_schema_socket_instances_lost\t0\nPerformance_schema_stage_classes_lost\t0\nPerformance_schema_statement_classes_lost\t0\nPerformance_schema_table_handles_lost\t0\nPerformance_schema_table_instances_lost\t0\nPerformance_schema_table_lock_stat_lost\t0\nPerformance_schema_thread_classes_lost\t0\nPerformance_schema_thread_instances_lost\t0\nPerformance_schema_users_lost\t0\nUptime\t9513\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_TYPE IN ('BASE TABLE', 'SYSTEM VERSIONED') AND TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "9\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT NAME, ENABLED FROM performance_schema.setup_instruments WHERE NAME = 'wait/io/table/sql/handler'",
+   "wait/io/table/sql/handler\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT NAME, ENABLED FROM performance_schema.setup_consumers WHERE NAME IN ('global_instrumentation', 'thread_instrumentation')",
+   "global_instrumentation\tYES\nthread_instrumentation\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT HOST, USER, ROLE, ENABLED FROM performance_schema.setup_actors",
+   "%\t%\t%\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, ENABLED FROM performance_schema.setup_objects WHERE OBJECT_TYPE = 'TABLE'",
+   "mysql\t%\tNO\nperformance_schema\t%\tNO\ninformation_schema\t%\tNO\n%\t%\tYES\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT OBJECT_SCHEMA, OBJECT_NAME, INDEX_NAME, COUNT_STAR, COUNT_FETCH, SUM_TIMER_FETCH FROM performance_schema.table_io_waits_summary_by_index_usage WHERE OBJECT_TYPE = 'TABLE' AND OBJECT_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tno_pk_events\tNULL\t21000\t18000\t3383203837\nreview\tredundant_idx\tPRIMARY\t0\t0\t0\nreview\tredundant_idx\tidx_customer\t18000\t18000\t1468912293\nreview\tredundant_idx\tidx_customer_status\t6\t6\t10939286\nreview\tredundant_idx\tNULL\t3000\t0\t0\nreview\tparent_accounts\tPRIMARY\t5394\t5394\t1655715215\nreview\tparent_accounts\tNULL\t100\t0\t0\nreview\tchild_invoices\tPRIMARY\t0\t0\t0\nreview\tchild_invoices\tfk_invoice_account\t0\t0\t0\nreview\tchild_invoices\tNULL\t7006\t6006\t528008438\nreview\tchurn\tPRIMARY\t36001\t18001\t5449225783\nreview\tchurn\tidx_bucket\t240\t240\t37034911\nreview\tchurn\tNULL\t20000\t0\t0\nreview\tlock_probe\tPRIMARY\t19\t10\t1508055939265\nreview\tlock_probe\tNULL\t2\t0\t0\nreview\tmdl_probe\tPRIMARY\t0\t0\t0\nreview\tmdl_probe\tNULL\t1\t0\t0\nreview\trepl_probe\tPRIMARY\t0\t0\t0\nreview\tvsql_types\tPRIMARY\t3\t3\t416235657\nreview\tvsql_types\tNULL\t3\t0\t0\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, ROWS_READ FROM information_schema.INDEX_STATISTICS WHERE TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tlock_probe\tPRIMARY\t9\nreview\tchurn\tidx_bucket\t240\nreview\tredundant_idx\tidx_customer\t18000\nreview\tparent_accounts\tPRIMARY\t5394\nreview\tchild_invoices\tPRIMARY\t6000\nreview\tchurn\tPRIMARY\t18000\nreview\tvsql_types\tPRIMARY\t3\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ FROM information_schema.TABLE_STATISTICS WHERE TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tmdl_probe\t0\nreview\tno_pk_events\t18000\nreview\tvsql_types\t3\nreview\tchild_invoices\t6000\nreview\tredundant_idx\t18000\nreview\tparent_accounts\t5394\nreview\tchurn\t18240\nreview\tlock_probe\t9\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, COLLATION, INDEX_TYPE, IS_VISIBLE, EXPRESSION, IF(SEQ_IN_INDEX = 1, (SELECT c.DATA_TYPE FROM information_schema.COLUMNS AS c WHERE c.TABLE_SCHEMA = s.TABLE_SCHEMA AND c.TABLE_NAME = s.TABLE_NAME AND c.COLUMN_NAME = s.COLUMN_NAME), NULL) AS FIRST_COLUMN_TYPE FROM information_schema.STATISTICS AS s WHERE TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tredundant_idx\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tredundant_idx\tidx_customer\t1\t1\tcustomer_id\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tredundant_idx\tidx_customer_status\t1\t1\tcustomer_id\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tredundant_idx\tidx_customer_status\t1\t2\tstatus\tNULL\tA\tBTREE\tYES\tNULL\tNULL\nreview\tparent_accounts\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tchild_invoices\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tchild_invoices\tfk_invoice_account\t1\t1\taccount_id\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tchurn\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tchurn\tidx_bucket\t1\t1\tbucket\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tlock_probe\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tmdl_probe\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\trepl_probe\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\tint\nreview\tvsql_types\tPRIMARY\t0\t1\tid\tNULL\tA\tBTREE\tYES\tNULL\tint\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_NAME IS NOT NULL AND TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4)",
+   "review\tchild_invoices\tfk_invoice_account\taccount_id\t1\treview\tparent_accounts\tid\n"
+  ],
+  [
+   "/*myflames:indexes*/ SELECT TABLE_SCHEMA, TABLE_NAME, CREATE_OPTIONS FROM information_schema.TABLES WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = CONVERT(X'726576696577' USING utf8mb4) AND (TABLE_NAME = CONVERT(X'6368696c645f696e766f69636573' USING utf8mb4))",
+   "review\tchild_invoices\t\n"
+  ]
+ ],
+ "report": {
+  "schema_version": "indexes-1.0",
+  "engine": "mysql",
+  "flavor": "villagesql",
+  "server_product": "VillageSQL",
+  "server_version": "8.4.11-villagesql-0.0.8",
+  "taken_at": "2026-11-27T14:56:20.052324+00:00",
+  "uptime_s": 9513,
+  "performance_schema": true,
+  "server_base": "percona",
+  "scope": {
+   "schema": "review",
+   "schemas": [
+    "review"
+   ],
+   "server_wide": false
+  },
+  "source": "performance_schema",
+  "available": true,
+  "userstat": {
+   "enabled": true,
+   "read": true,
+   "role": "evidence"
+  },
+  "unused": [
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "index": "fk_invoice_account",
+    "columns": "account_id",
+    "visible": true,
+    "foreign_keys": [
+     "child side of fk_invoice_account (references review.parent_accounts)"
+    ],
+    "verdict": "keep",
+    "keep_reason": "foreign_key",
+    "userstat_rows_read": 0,
+    "why": "Shows no use since server start or the last change to this table's indexes, but it backs a foreign key (child side of fk_invoice_account (references review.parent_accounts)). InnoDB checks foreign keys without going through the counters, so keep it."
+   }
+  ],
+  "redundant": [
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "idx_customer",
+    "columns": "customer_id",
+    "unique": false,
+    "visible": true,
+    "dominant": "idx_customer_status",
+    "dominant_columns": "customer_id, status",
+    "reason": "is a leftmost prefix of",
+    "foreign_keys": [],
+    "why": "idx_customer (customer_id) is a leftmost prefix of idx_customer_status (customer_id, status), so idx_customer_status serves every lookup idx_customer serves. Each extra index slows writes and uses buffer pool memory.",
+    "test_sql": "ALTER TABLE `review`.`redundant_idx` ALTER INDEX `idx_customer` INVISIBLE;",
+    "drop_sql": "ALTER TABLE `review`.`redundant_idx` DROP INDEX `idx_customer`;",
+    "caveat": "Check for FORCE INDEX or USE INDEX hints that name it. Make it invisible first and run a full business cycle (month-end jobs, reports, replicas) before dropping it: an invisible index is still maintained on writes, but the optimizer stops using it, and making it visible again is instant. Queries with an index hint that names it fail while it is invisible."
+   }
+  ],
+  "full_scans": [
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "rows_without_index": 6006,
+    "rows_with_index": 0,
+    "share_rows": 1,
+    "fetch_ms_without_index": 0.528,
+    "fetch_ms_with_index": 0,
+    "share_time": 1,
+    "mostly": true,
+    "why": "6,006 rows read without an index, 0 through indexes; 528 µs of read time without an index (100% of this table's read time). Rows read without an index are table scans and row-position reads (for example after a sort). A scan of a small lookup table is normal; look at the time and at the statements in Top statements for this schema."
+   }
+  ],
+  "no_data": [
+   {
+    "schema": "review",
+    "table": "repl_probe",
+    "indexes": 1,
+    "reason": "no_activity"
+   }
+  ],
+  "foreign_keys": 1,
+  "notes": [
+   "Unused means no row read, written or looked up through the index since the server started (2 h 38 min ago), or since an index on that table was added, dropped or renamed, or the table was renamed or rebuilt by copying, any of which restarts its counts. An index used only by a weekly or monthly job looks unused until the job runs.",
+   "Tables with no row read or written since the counts started (never opened, or opened only to read their definition) are listed under No data, never as unused. A TRUNCATE of a Performance Schema summary table also resets the counts.",
+   "User statistics are on (userstat=ON), so an index that Performance Schema shows unused but information_schema.INDEX_STATISTICS shows read is marked keep. They count from when userstat was turned on or the last FLUSH INDEX_STATISTICS.",
+   "The server has been up only 2 h 38 min, so infrequent jobs may not have run yet.",
+   "PRIMARY and UNIQUE indexes are never listed as unused: they enforce constraints even when no query reads them. Indexes that back a foreign key are marked keep: InnoDB checks foreign keys without going through the usage counters.",
+   "Foreign keys declared in other schemas that reference review are not checked; a non-unique parent index they use could look unused.",
+   "Counts are per server: reads on replicas are not included."
+  ],
+  "summary": {
+   "tables": 8,
+   "indexes": 12,
+   "unused": 1,
+   "unused_candidates": 0,
+   "keep_foreign_key": 1,
+   "keep_userstat": 0,
+   "redundant": 1,
+   "full_scans": 1,
+   "mostly_full_scans": 1,
+   "no_data": 1
+  },
+  "indexes": [
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "child_invoices",
+    "index": "fk_invoice_account",
+    "columns": "account_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "churn",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "churn",
+    "index": "idx_bucket",
+    "columns": "bucket",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "lock_probe",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "mdl_probe",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "parent_accounts",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "idx_customer",
+    "columns": "customer_id",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "redundant_idx",
+    "index": "idx_customer_status",
+    "columns": "customer_id, status",
+    "unique": false,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "repl_probe",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   },
+   {
+    "schema": "review",
+    "table": "vsql_types",
+    "index": "PRIMARY",
+    "columns": "id",
+    "unique": true,
+    "type": "BTREE",
+    "visible": true
+   }
+  ],
+  "more": {
+   "indexes": 0,
+   "unused": 0,
+   "redundant": 0,
+   "full_scans": 0,
+   "no_data": 0
+  }
+ }
+}

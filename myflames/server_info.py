@@ -52,8 +52,12 @@ def detect_flavor(version, version_comment=""):
 
 
 #: Product names by flavor; Percona XtraDB Cluster has its own name.
-PRODUCT_NAMES = {"mysql": "MySQL", "mariadb": "MariaDB", "percona": "Percona Server", "readyset": "Readyset"}
+PRODUCT_NAMES = {"mysql": "MySQL", "mariadb": "MariaDB", "percona": "Percona Server",
+                 "readyset": "Readyset", "villagesql": "VillageSQL"}
 PXC_PRODUCT = "Percona XtraDB Cluster"
+_VILLAGESQL_CODEBASE = re.compile(
+    r"^(mysql|percona)-\d+\.\d+_\d+\.\d+\.\d+"
+    r"(?:-[a-z0-9-]+(?:\.[a-z0-9-]+)*)?(?:\+[a-z0-9-]+(?:\.[a-z0-9-]+)*)?$", re.ASCII)
 
 
 def is_readyset_comment(version_comment):
@@ -61,7 +65,7 @@ def is_readyset_comment(version_comment):
     return str(version_comment or "").strip().lower() == "readyset"
 
 
-def product_identity(version, version_comment=""):
+def product_identity(version, version_comment="", codebase=None):
     """``{"engine", "flavor", "product"}`` from ``@@version`` and ``@@version_comment``.
 
     engine is ``mysql`` or ``mariadb`` (the rules that apply), flavor is
@@ -75,6 +79,15 @@ def product_identity(version, version_comment=""):
     comment = str(version_comment or "").lower()
     if engine == "mariadb":
         return {"engine": engine, "flavor": "mariadb", "product": PRODUCT_NAMES["mariadb"]}
+    if "-villagesql-" in str(version or "").lower() or "villagesql" in comment:
+        # Only the documented build-version shape can establish capabilities.
+        # Never copy server-controlled metadata into product names or labels.
+        codebase = str(codebase or "")
+        match = _VILLAGESQL_CODEBASE.fullmatch(codebase.lower()) if len(codebase) <= 128 else None
+        base = (match.group(1) if match else
+                "percona" if not codebase and "percona" in comment else None)
+        return {"engine": "mysql", "flavor": "villagesql", "product": PRODUCT_NAMES["villagesql"],
+                "base": base}
     if "percona xtradb cluster" in comment:
         return {"engine": engine, "flavor": "percona", "product": PXC_PRODUCT}
     if "percona server" in comment:
@@ -83,6 +96,26 @@ def product_identity(version, version_comment=""):
 
 
 _PERCONA_RELEASE = re.compile(r"^\s*\d+\.\d+\.\d+-\d+(?:\.\d+)?\s*$")
+_VILLAGESQL_VERSION = re.compile(
+    r"-villagesql-([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)(?:-[0-9a-f]{7,40})?(?=\s|$)",
+    re.I | re.ASCII)
+
+
+def villagesql_version(version):
+    """VillageSQL release, retaining prerelease labels and dropping a git hash."""
+    match = _VILLAGESQL_VERSION.search(str(version or ""))
+    return match.group(1) if match else None
+
+
+def base_version(version):
+    """Leading upstream version, without product suffixes; None if unreadable."""
+    match = re.match(r"^\s*(\d+\.\d+\.\d+)", str(version or ""), re.ASCII)
+    return match.group(1) if match else None
+
+
+def has_percona_features(flavor, base=None):
+    """Percona additions are available on Percona and VillageSQL's Percona codebase."""
+    return flavor == "percona" or (flavor == "villagesql" and base == "percona")
 
 
 def identity_from_version(version):
@@ -108,12 +141,21 @@ def product_name(report):
     product = report.get("server_product")
     if product:
         return product
+    if report.get("flavor") == "villagesql" or villagesql_version(report.get("server_version")):
+        return PRODUCT_NAMES["villagesql"]
     return "MariaDB" if report.get("engine") == "mariadb" else "MySQL"
 
 
 def server_label(report, version_key="server_version"):
     """"Percona Server 8.4.11-11", "MySQL 8.4.11", "MariaDB 11.8.9-MariaDB"."""
     report = report or {}
+    version = report.get(version_key)
+    if product_name(report) == PRODUCT_NAMES["villagesql"]:
+        release = villagesql_version(version)
+        upstream = base_version(version) or "?"
+        base = report.get("server_base")
+        label = PRODUCT_NAMES.get(base) if base in ("mysql", "percona") else None
+        return "VillageSQL %s (%s)" % (release or "?", "%s %s" % (label, upstream) if label else upstream)
     return "%s %s" % (product_name(report), report.get(version_key) or "?")
 
 
@@ -151,13 +193,24 @@ PERCONA_VARIABLES = frozenset((
 _UPSTREAM_SINCE = {"table_open_cache_triggers": (9, 0)}
 
 
-def percona_variable(name, flavor, version_tuple=None):
+VILLAGESQL_VARIABLES = frozenset((
+    "villagesql_server_version", "villagesql_schema_version", "villagesql_build_info",
+    "villagesql_vef_server_protocol", "vsql_allow_preview_extensions", "veb_dir",
+))
+
+
+def villagesql_variable(name, flavor):
+    """Only VillageSQL owns these variables; an unrecognized name is unmarked."""
+    return flavor == "villagesql" and str(name or "").lower() in VILLAGESQL_VARIABLES
+
+
+def percona_variable(name, flavor, version_tuple=None, base=None):
     """True when *name* is a variable Percona Server adds, on a Percona server.
 
     Always False on MySQL and MariaDB, where names such as thread_pool_size
     belong to the server itself (MariaDB's thread pool, MySQL Enterprise).
     """
-    if flavor != "percona":
+    if not has_percona_features(flavor, base):
         return False
     name = str(name or "").lower()
     if name not in PERCONA_VARIABLES:
@@ -220,7 +273,7 @@ def unsupported_version_note(version, version_comment=""):
         return None
     name = "MariaDB" if engine == "mariadb" else "MySQL"
     floor = SUPPORTED_MINIMUM[engine]
-    if identity["flavor"] == "percona":
+    if identity["flavor"] in ("percona", "villagesql"):
         # Percona Server follows MySQL's floor; its release number is part of the version.
         return ("myflames supports MySQL %d.%d or later, including %s %d.%d; this server is %s %s, so "
                 "some results may be missing or wrong." % (floor[0], floor[1], identity["product"], floor[0],

@@ -80,7 +80,7 @@ def _discover_response(path, payload, workspace=None):
     elif path == "/api/live/explain-connection":
         # MariaDB waits up to 30 s for the target thread to answer SHOW EXPLAIN.
         options["query_timeout"] = 40
-    elif path in ("/api/live/indexes", "/api/live/tables", "/api/live/report"):
+    elif path in ("/api/live/indexes", "/api/live/tables", "/api/live/report", "/api/live/extensions"):
         # A server-wide information_schema.STATISTICS read is slow on MariaDB.
         options["query_timeout"] = 60
     elif path in ("/api/live/io", "/api/live/config", "/api/live/innodb", "/api/live/error-log", "/api/live/cluster",
@@ -253,6 +253,9 @@ def _discover_response(path, payload, workspace=None):
             if path == "/api/live/instruments":
                 from .ps_instruments import instruments_report
                 return instruments_report(conn)
+            if path == "/api/live/extensions":
+                from .extensions import extensions_report
+                return extensions_report(conn)
             result = discover.explain_connection(conn, payload.get("connection_id"))
             result["capture"] = discover.explain_capture(result)
             return result
@@ -1646,12 +1649,12 @@ _SERVER_VIEW_PATHS = ("/api/live/sessions/history", "/api/live/index-suggestion"
                       "/api/live/innodb", "/api/live/error-log", "/api/live/cluster", "/api/live/health",
                       "/api/live/watch", "/api/live/watch/capture",
                       "/api/live/memory", "/api/live/waits", "/api/live/indexes", "/api/live/tables", "/api/live/schemas",
-                      "/api/live/io", "/api/live/config", "/api/live/instruments",
+                      "/api/live/io", "/api/live/config", "/api/live/instruments", "/api/live/extensions",
                       "/api/live/report", "/api/live/explain-connection", "/api/live/proxysql",
                       "/api/live/proxysql/digests", "/api/live/readyset", "/api/live/readyset/explain-cache",
                       "/api/live/readyset/export-caches", "/api/live/digest-histogram", "/api/live/digest-tables")
 _SINGLE_FLIGHT_READ_PATHS = ("/api/live/health", "/api/live/waits", "/api/live/io", "/api/live/memory",
-                            "/api/live/locks", "/api/live/indexes", "/api/live/tables")
+                            "/api/live/locks", "/api/live/indexes", "/api/live/tables", "/api/live/extensions")
 #: /api/live/kill is the one write: a confirmed KILL of one session (locks.kill_session).
 #: It fills the saved password itself, after the connection's write policy.
 #: The Query editor's run and commit (editor_session.py) are writes too: the
@@ -1835,7 +1838,8 @@ def _connection_test_details(conn, options, password):
             version = "Readyset"
     else:
         version = conn.server_version()
-    identity = product_identity(version, comment)
+    from .perf_common import connection_codebase
+    identity = product_identity(version, comment, connection_codebase(conn, version, comment))
     databases = []
     databases_truncated = False
     databases_error = ""
@@ -1855,6 +1859,8 @@ def _connection_test_details(conn, options, password):
         "databases": databases,
         "databases_truncated": databases_truncated,
     }
+    if identity["flavor"] == "villagesql":
+        result["server_base"] = identity["base"]
     if databases_error:
         result["databases_error"] = databases_error
     from .ssh_tunnel import through_text
@@ -2312,6 +2318,12 @@ def _variable_response(path, payload, workspace):
         plan["expect"]["connection_identity"] = dbops.connection_identity(payload.get("connection"), safety)
     plan["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text", "connection_type",
                                                     "read_only")}
+    if plan.get("status") == "ready" and plan.get("expect") is not None:
+        identity = plan["expect"]["connection_identity"]
+        details = {"name": name, "mode": mode, "requested": plan["requested"], "expect": dict(plan["expect"])}
+        # Keep the token beside expect so every single and batch confirmation
+        # carries it, without exposing a second way to authorize this write.
+        plan["expect"]["review_token"] = _review_tokens(workspace).issue("variable", identity, details)
     return plan
 
 
@@ -2347,11 +2359,13 @@ def _variable_apply(payload, workspace):
         if reviewed is not None and (not isinstance(reviewed, str) or len(reviewed) > variables.MAX_VALUE_LENGTH * 3):
             raise ValueError("The reviewed statement must be text or null.")
         target = dict(payload.get("expect") or {}, **request)
+        target.pop("review_token", None)
         result = variables.unsent_result(name, mode, request["requested"], "declined", "Nothing was sent.")
         result["audit_id"] = audit.outcome([variables.TAG + reviewed] if reviewed else [], "declined",
                                            outcome="declined", message=result["message"], target=target)
         return result
-    expect = variables.check_expect(payload.get("expect"), name, mode)
+    expect = dict(variables.check_expect(payload.get("expect"), name, mode))
+    token = expect.pop("review_token", None)  # Review credentials never enter the audit trail.
     blocked = dbops.gate(decision, confirmed=payload.get("confirmed") is True)
     if blocked:
         result = variables.unsent_result(name, mode, request["requested"], blocked[0], blocked[1])
@@ -2365,6 +2379,21 @@ def _variable_apply(payload, workspace):
         result["audit_id"] = audit.outcome([variables.TAG + expect["statement"]], "refused",
                                            outcome="changed", message=message, target=expect)
         return result
+    identity = dbops.connection_identity(connection, safety)
+    details = dict(request, expect=expect)
+    try:
+        consume = _review_tokens(workspace).consumer(token, "variable", identity, details)
+    except ValueError as exc:
+        result = variables.unsent_result(name, mode, request["requested"], "refused", str(exc))
+        result["audit_id"] = audit.outcome([variables.TAG + expect["statement"]], "refused",
+                                           outcome="review_changed", message=result["message"], target=expect)
+        return result
+
+    def before_send():
+        if _review_identity(connection, workspace) != identity:
+            raise ValueError("The connection or its policy changed. Review again; nothing was sent.")
+        consume()
+
     password = audit.password
     try:
         filled = _with_saved_password(payload, workspace)
@@ -2374,13 +2403,19 @@ def _variable_apply(payload, workspace):
         audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
         with _group_guarded_connection(options, connection, workspace.store,
                                        dbops.connection_identity(connection, safety)) as conn:
-            return variables.apply_change(conn, request, expect, decision=decision, confirmed=True, audit=audit)
+            return variables.apply_change(conn, request, expect, decision=decision, confirmed=True, audit=audit,
+                                          before_send=before_send)
     except ProfileReadError as exc:
         result = variables.unsent_result(name, mode, request["requested"], "refused", str(exc))
         result["audit_id"] = _group_login_refusal(audit, [variables.TAG + expect["statement"]], exc, expect)
         return result
     except (ValueError, ConnectorError) as exc:
         audit.fail(exc, [variables.TAG + expect["statement"]])
+        if param_compare.sensitive(name) and getattr(exc, "variable_write_unknown", False):
+            # Preserve uncertainty through HTTP: a 400 would label this as a
+            # known refusal in the single-variable and batch result panels.
+            return variables._result(request, "unknown", str(exc), outcome="unknown", audit_id=audit.id,
+                                     statement=expect["statement"], sent=[expect["statement"]])
         _reraise_redacted(exc, password)
 
 
@@ -3263,14 +3298,8 @@ def api_response(path, payload, workspace=None):
                 from .output_sidecar import validate_sidecar
                 validate_sidecar(original)
                 if hidden:
-                    from .parser import flatten_nodes, hide_parsed_plan_literals
-                    from .plan_privacy import hide_analysis_literals
-                    redacted = hide_parsed_plan_literals(root)
-                    labels = {}
-                    for old, new in zip(flatten_nodes(root), flatten_nodes(redacted)):
-                        for key in ("short_label", "full_label", "folded_label"):
-                            labels[old[key]] = new[key]
-                    original = hide_analysis_literals(original, labels)
+                    from .plan_privacy import hide_analysis_literals, plan_literal_labels
+                    original = hide_analysis_literals(original, plan_literal_labels(root))
                 return {"analysis": original}
             if hidden:
                 from .parser import hide_plan_json_literals, parse_explain
@@ -3930,7 +3959,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                              "/api/live/health", "/api/live/watch", "/api/live/watch/capture",
                              "/api/live/memory", "/api/live/waits", "/api/live/indexes",
                              "/api/live/tables", "/api/live/schemas",
-                             "/api/live/io", "/api/live/config", "/api/live/instruments",
+                             "/api/live/io", "/api/live/config", "/api/live/instruments", "/api/live/extensions",
                              "/api/live/report", "/api/report/export",
                              "/api/live/explain-connection",
                              "/api/session/load", "/api/session/save", "/api/session/clear",

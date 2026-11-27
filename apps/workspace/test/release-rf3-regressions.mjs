@@ -173,8 +173,10 @@ const digest = source('../src/QueryDigest.tsx');
 const load = find(digest, n => ts.isCallExpression(n) && n.expression.getText() === 'reads.run');
 const footer = find(digest, n => ts.isCallExpression(n) && n.expression.getText() === 'useWindowStatus');
 const current = find(digest, n => ts.isVariableDeclaration(n) && n.name.getText() === 'current');
-const engineName = run(`(${named(source('../src/OpsShared.tsx'), 'engineName')})`, {});
+const villageSQLLabel = run(`(${named(source('../src/serverIdentity.ts'), 'villageSQLLabel')})`, {});
+const engineName = run(`(${named(source('../src/OpsShared.tsx'), 'engineName')})`, { villageSQLLabel });
 for (const filter of ['time']) for (const [engine, server_version, server_product, label] of [
+  ['mysql', '8.4.11-villagesql-0.0.8', 'VillageSQL', 'VillageSQL 0.0.8 (8.4.11)'],
   ['mysql', '8.4.11-11', 'Percona Server', 'Percona Server 8.4.11-11'],
   ['mysql', '8.4.11-11.1', 'Percona XtraDB Cluster', 'Percona XtraDB Cluster 8.4.11-11.1'],
   ['mysql', '8.4.11', undefined, 'MySQL 8.4.11'],
@@ -204,7 +206,7 @@ for (const filter of ['time']) for (const [engine, server_version, server_produc
   // engineName call as the footer, whose label is asserted above per engine.
   const textReport = find(digest, n => ts.isFunctionDeclaration(n) && n.name?.text === 'textReport');
   assert.ok(textReport, 'the digest export (textReport)');
-  assert.match(textReport.getText(), /# Server: \$\{engineName\(report\.engine, report\.version, report\.server_product\)\}/);
+  assert.match(textReport.getText(), /# Server: \$\{engineName\(report\.engine, report\.version, report\.server_product, report\.server_base\)\}/);
 });
 
 // Render the real Settings page root's JSX attributes, then run the runner's

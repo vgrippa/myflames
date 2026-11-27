@@ -528,9 +528,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const dumpToolOptions: ["auto" | "sql", string][] = [];
   if (tools && !noDumpTool) {
     const sqlName = tools.offered.dump.find(name => name !== "mysqlsh") || (tools.server.engine === "mariadb" ? "mariadb-dump" : "mysqldump");
-    // Automatic names what it will run here: without MySQL Shell it is the SQL dump tool.
-    dumpToolOptions.push(["auto", rawTools?.used?.shell ? `Automatic (MySQL Shell ${rawTools.used.shell.version} first)`
-      : tools.offered.dump.includes("mysqlsh") ? "Automatic (MySQL Shell first)" : `Automatic (${sqlName}; no MySQL Shell found)`]);
+    // Detection alone does not make a tool compatible with this server.
+    dumpToolOptions.push(["auto", tools.offered.dump.includes("mysqlsh")
+      ? rawTools?.used?.shell ? `Automatic (MySQL Shell ${rawTools.used.shell.version} first)` : "Automatic (MySQL Shell first)"
+      : `Automatic (${sqlName})`]);
     if (sqlDumpOffered) dumpToolOptions.push(["sql", rawTools?.used?.dump ? `SQL dump (${rawTools.used.dump.program} ${rawTools.used.dump.version} · ${rawTools.used.dump.origin_label})` : `SQL dump (${sqlName})`]);
   }
   useEffect(() => { if (!sqlDumpOffered) setSqlDump(false); }, [sqlDumpOffered]);
@@ -976,11 +977,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const versions = [...new Set([...targetVersions, shellVersion].filter((v) => VERSION.test(v)))];
   const version = chosenVersion();
   // Newest first; the suggested target says so. Without a target list (still
-  // reading, or it failed) the MySQL Shell version stays the one offer.
+  // reading, or it failed) the MySQL Shell version stays the one offer for
+  // upstream products only; VillageSQL has its own release series.
   const targetOptions: [string, string][] = targetReport && targetReport.targets.length
     ? [...targetReport.targets].reverse().map((t): [string, string] => [t.version,
       [t.version, t.path_label, shellBlocked(t) ? shellNeeds(t) : "", t.version === suggestedTarget ? "suggested" : ""].filter(Boolean).join(" · ")])
-    : targetReport?.server.engine === "mariadb" ? [] : versions.map((v): [string, string] => [v, v]);
+    : targetReport?.server.engine === "mariadb" || (targetReport?.server || tools?.server)?.flavor === "villagesql"
+      ? [] : versions.map((v): [string, string] => [v, v]);
   // Chosen tables come from the loaded list: one a reload no longer lists blocks the preflight.
   const dumpValid = !!directory.trim() && validInteger(threads, 1, 64) && (scope === "instance" || schemas.length > 0) && !unknownTables.length && !missingTables.length;
   const restoreValid = !!restoreDirectory.trim() && validInteger(threads, 1, 64);
@@ -1001,12 +1004,12 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const kindOfCheck = upgrade ? (upgrade.method === "mariadb_upgrade_guidance" ? "mariadb-upgrade steps" : upgrade.partial ? "Partial check (native subset)" : "MySQL Shell") : "";
   const summary = section === "upgrade" && upgrade
     ? [
-        `${engineName(upgrade.server.engine, upgrade.server.version, upgrade.server.product)} to ${upgrade.target_version}`,
+        `${engineName(upgrade.server.engine, upgrade.server.version, upgrade.server.product, upgrade.server.server_base)} to ${upgrade.target_version}`,
         kindOfCheck,
         upgrade.method === "mariadb_upgrade_guidance" ? "" : [plural(counts?.error || 0, "error"), plural(counts?.warning || 0, "warning"), plural(counts?.notice || 0, "notice")].join(", "),
       ].filter(Boolean).join(" · ")
     : tools
-      ? `${toolsMissing ? "Server unreadable" : engineName(tools.server.engine, tools.server.version, tools.server.product)} · ${SECTION_LABEL[section]}`
+      ? `${toolsMissing ? "Server unreadable" : engineName(tools.server.engine, tools.server.version, tools.server.product, tools.server.server_base)} · ${SECTION_LABEL[section]}`
       : "";
   const upgradeNotes = section === "upgrade" && upgrade ? upgrade.limitations : undefined;
   return <>
@@ -1104,6 +1107,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
               <Select id="ops-dump-tool" label="Tool" value={sqlDump ? "sql" : "auto"} options={dumpToolOptions} onChange={(v) => setSqlDump(v === "sql")} />
             )}
           </FormRow>
+          {tools.server.flavor === "villagesql" && <p className="hint">MySQL Shell cannot dump VillageSQL custom data types (for example vsql_vector.SVECTOR); use mysqldump.</p>}
           <div className={`ops-folder-check${folderFailure ? " ops-invalid" : ""}`} role="group" aria-label="Output folder" aria-invalid={!!folderFailure || undefined}><DumpFolderField key={`dump:${key}`} value={directory} stem={dumpStem} onChange={changeDirectory} onPicking={picking => { directoryEdit.current++; setDirectoryPicking(picking); }} disabled={formDisabled} />{directoryError && <p className="form-error" role="alert">{directoryError}</p>}{folderFailure && <p className="form-error">{folderFailure.reason}</p>}</div>
         </FormGrid>
         <details className="ops-dump-options"><summary>Options{dumpToolName ? ` for ${dumpToolName}` : ""}{dumpCapabilities && <span className="hint">{optionsSummary(dumpCapabilities, dumpOptions, dumpToolName === "mysqlsh" ? threads : undefined) || "Tool defaults"}</span>}</summary>
@@ -1207,7 +1211,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           ["Recipient type", `${TYPE_LABEL[sheet.report.expect.recipient.type]}${sheet.report.expect.recipient.read_only ? ", read-only" : ""}`],
           ["Donor address used by recipient", sheet.report.expect.donor_address],
         ] as [string, string][] : []),
-        ["Server", engineName(sheet.report.server.engine, sheet.report.server.version, sheet.report.server.product)],
+        ["Server", engineName(sheet.report.server.engine, sheet.report.server.version, sheet.report.server.product, sheet.report.server.server_base)],
         !!sheet.report.server.identity?.hostname && ["Host name", String(sheet.report.server.identity.hostname)],
         ["Tool", <span className="ops-tool-line">{planToolLine(sheet.report).line}{sheet.report.tool.path ? <><br /><code className="client-path hint">{sheet.report.tool.path}</code></> : null}</span>],
         ["Preflight", `${plural(sheet.report.checks.filter((c) => c.status === "passed").length, "check")} passed${sheet.report.checks.some((c) => c.status === "not_checked") ? `, ${sheet.report.checks.filter((c) => c.status === "not_checked").length.toLocaleString()} not checked` : ""}`],

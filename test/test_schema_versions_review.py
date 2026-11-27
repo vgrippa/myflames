@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _schema_replay as R  # noqa: E402
+from test_vsql_fix2_fx8a import SchemaReplayConnection as ReplayConn  # noqa: E402
 from myflames import schema_ddl, schema_sync, schema_versions  # noqa: E402
 from myflames.connector import ConnectorError  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402
@@ -151,7 +152,7 @@ class CaptureAndStore(unittest.TestCase):
             if "'myflames_who'" in sql:
                 raise ConnectorError('mysql client exited 1: ERROR 1045 (28000): login %s failed' % secret)
             return call
-        conn = R.ReplayConn(record, edit=edit)
+        conn = ReplayConn(record, edit=edit)
         conn.password = secret
         snapshot = schema_versions.capture(conn, record['database'], record['source'])
         self.assertNotIn(secret, json.dumps(snapshot))
@@ -161,7 +162,7 @@ class CaptureAndStore(unittest.TestCase):
         from _reviewed_replay import evidence_options, read_statements
         record = R.recording('mysql-8.4', 'before')
         seen = []
-        conn = R.ReplayConn(record)
+        conn = ReplayConn(record)
         conn.query_timeout = 600
         original = conn.run
 

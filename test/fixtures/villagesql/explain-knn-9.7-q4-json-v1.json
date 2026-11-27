@@ -1,0 +1,33 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "2201.75"
+    },
+    "ordering_operation": {
+      "using_temporary_table": true,
+      "using_filesort": true,
+      "cost_info": {
+        "sort_cost": "2000.00"
+      },
+      "table": {
+        "table_name": "vsql_knn",
+        "access_type": "ALL",
+        "rows_examined_per_scan": 2000,
+        "rows_produced_per_join": 2000,
+        "filtered": "100.00",
+        "cost_info": {
+          "read_cost": "1.75",
+          "eval_cost": "200.00",
+          "prefix_cost": "201.75",
+          "data_read_per_join": "78K"
+        },
+        "used_columns": [
+          "id",
+          "vec",
+          "payload"
+        ]
+      }
+    }
+  }
+}

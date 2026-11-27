@@ -1,0 +1,35 @@
+{
+  "query": "/* select#1 */ select `review`.`vsql_knn`.`id` AS `id`,`review`.`vsql_knn`.`payload` AS `payload` from `review`.`vsql_knn` order by vsql_vector.l2_distance(`review`.`vsql_knn`.`vec`,'[0.100000001,0.200000003,0.300000012,0.400000006]')",
+  "query_plan": {
+    "inputs": [
+      {
+        "inputs": [
+          {
+            "operation": "Table scan on vsql_knn",
+            "table_name": "vsql_knn",
+            "access_type": "table",
+            "schema_name": "review",
+            "used_columns": [
+              "id",
+              "vec",
+              "payload"
+            ],
+            "estimated_rows": 2000.0,
+            "estimated_total_cost": 201.75
+          }
+        ],
+        "operation": "Stream results",
+        "access_type": "stream",
+        "estimated_rows": 2000.0,
+        "estimated_total_cost": 201.75
+      }
+    ],
+    "operation": "Sort: vsql_vector.l2_distance(review.vsql_knn.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]')",
+    "access_type": "sort",
+    "sort_fields": [
+      "vsql_vector.l2_distance(review.vsql_knn.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]')"
+    ]
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

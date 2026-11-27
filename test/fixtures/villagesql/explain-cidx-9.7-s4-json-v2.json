@@ -1,0 +1,28 @@
+{
+  "query": "/* select#1 */ select `review_knn`.`t`.`id` AS `id` from `review_knn`.`t` order by vsql_knn_index_test.kvec_l2_distance(`review_knn`.`t`.`v`,'[1,0,0,0]')",
+  "query_plan": {
+    "inputs": [
+      {
+        "operation": "Table scan on t",
+        "table_name": "t",
+        "access_type": "table",
+        "schema_name": "review_knn",
+        "used_columns": [
+          "id",
+          "v"
+        ],
+        "estimated_rows": 2005.0,
+        "estimated_total_cost": 202.0
+      }
+    ],
+    "operation": "Sort: vsql_knn_index_test.kvec_l2_distance(t.v,'[1,0,0,0]')",
+    "access_type": "sort",
+    "sort_fields": [
+      "vsql_knn_index_test.kvec_l2_distance(t.v,'[1,0,0,0]')"
+    ],
+    "estimated_rows": 2005.0,
+    "estimated_total_cost": 202.0
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

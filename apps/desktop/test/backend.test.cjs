@@ -41,6 +41,29 @@ test('Parameters documentation links open only the official manuals', () => {
     'https://user@docs.percona.com/x', 'https://docs.percona.com:8443/x', 'https://percona.com/x', 'https://forums.percona.com/x'])
     assert.equal(externalLink(value), null);
 });
+test('VillageSQL documentation requires the exact HTTPS host', () => {
+  for (const value of ['https://villagesql.com/', 'https://villagesql.com/docs/en/8.4/stable/reference.md#extensions'])
+    assert.equal(externalLink(value), value);
+  // Empty usernames still allow password-only userinfo in a parsed URL.
+  const passwordOnly = ['https://', ':', 'fixture-password', '@', 'villagesql.com', '/docs/'].join('');
+  assert.equal(new URL(passwordOnly).username, '');
+  assert.notEqual(new URL(passwordOnly).password, '');
+  assert.equal(externalLink(passwordOnly), null);
+  for (const value of [
+    'http://villagesql.com/docs/',
+    'ftp://villagesql.com/docs/',
+    'https://docs.villagesql.com/docs/',
+    'https://www.villagesql.com/docs/',
+    'https://villagesql.com.evil.test/docs/',
+    'https://villagesql.com@evil.test/docs/',
+    'https://user@villagesql.com/docs/',
+    'https://user:secret@villagesql.com/docs/',
+    'https://villagesql.com./docs/',
+    'https://villagesql.com:8443/docs/',
+    // U+0456 CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I, not Latin i.
+    'https://vіllagesql.com/docs/',
+  ]) assert.equal(externalLink(value), null, value);
+});
 test('Home news links open in the default browser, never in the app window', () => {
   // Headline links from myflames/news.py: the MySQL team's posts and mariadb.org.
   for (const value of ['https://blogs.oracle.com/mysql/troubleshooting-mysql-with-opentelemetry-metrics', 'https://mariadb.org/amazic-joins-mariadb-foundation-as-a-silver-sponsor/'])

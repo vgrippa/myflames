@@ -99,20 +99,28 @@ tag, Ma/ = mariadb-server 13.0 and the 10.11 and 11.4 tags):
   Ma/sql/wsrep_var.cc:171).
 """
 import datetime
+import hashlib
+import hmac
+import json
 import math
 import re
+import secrets
 from decimal import Decimal, DecimalException, localcontext
 
 from . import dbops, mysql_sysvars
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
-from .perf_common import _bytes_text, _number, _version_tuple, literal, reason
-from .server_info import percona_variable, product_identity, server_label
+from .perf_common import _bytes_text, _number, _version_tuple, connection_codebase, literal, reason
+from .server_info import percona_variable, product_identity, server_label, villagesql_variable
 
 _unescape = unescape_mysql
 
 READ_SCHEMA = "variable-1.0"
 PLAN_SCHEMA = "variable-plan-1.0"
 CHANGE_SCHEMA = "variable-change-1.0"
+# Never persist this key: old reviews must be repeated after a process restart.
+# A keyed digest does not disclose low-entropy credentials by offline guessing.
+_VALUE_BINDING_KEY = secrets.token_bytes(32)
+_BOUND_VALUES = ("global_value", "session_value", "persisted_value", "persisted_state")
 TAG = "/*myflames:variable*/ "
 MODES = ("global", "persist", "persist_only", "session", "reset_persist")
 #: The audit trail's operation name per mode (dbops.PRIVILEGE_OPERATIONS style).
@@ -478,7 +486,7 @@ def _read(conn, name):
     session_rows = {r[0]: (r[1] if len(r) > 1 else "") for r in parts.get("session", []) if r and r[0]}
     version = global_rows.get("version") or ""
     comment = global_rows.get("version_comment") or ""
-    product = product_identity(version, comment)
+    product = product_identity(version, comment, connection_codebase(conn, version, comment))
     engine = product["engine"]
     identity_keys = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
     server_identity = {key: global_rows.get(key) for key in identity_keys}
@@ -502,6 +510,8 @@ def _read(conn, name):
             "session_value": session_rows.get(name), "persisted_globals_load": global_rows.get("persisted_globals_load"),
             "related": {k: v for k, v in global_rows.items() if k not in ("version", "version_comment", name)},
             "catalog": None, "info": None, "persisted": None, "metadata": None, "notes": []}
+    if product["flavor"] == "villagesql":
+        info["server_base"] = product.get("base")
     try:
         if engine == "mariadb":
             rows = _sections(conn.run(TAG + (
@@ -544,7 +554,8 @@ def _read(conn, name):
         text = str(exc)
         if "ERROR 2002" in text or "ERROR 2003" in text or "ERROR 2013" in text or "timed out" in text:
             raise
-        info["notes"].append("Could not read the variable's details: %s" % reason(exc))
+        info["notes"].append("Could not read the variable's details: %s"
+                             % _diagnostic(name, exc, getattr(conn, "password", None)))
     return info
 
 
@@ -740,6 +751,13 @@ def _default(info):
     return str(value) if value is not None else None
 
 
+def _value_binding(v, field, value):
+    """Bind exact private state to its variable, field and reviewed server."""
+    payload = [v["name"], v["engine"], v["server_version"], v.get("server_identity"), field, value]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(_VALUE_BINDING_KEY, encoded, hashlib.sha256).hexdigest()
+
+
 def describe(info):
     """The public ``variable-1.0`` shape of a :func:`_read` result."""
     scope, scope_source = _scope(info)
@@ -755,23 +773,45 @@ def describe(info):
         description = info["catalog"].get("comment")
     elif info.get("metadata"):
         description = info["metadata"].get("documentation")
+    global_value = info["global_value"] if info["in_global"] else (
+        info["catalog"].get("global_value") if info.get("catalog") else None)
+    # SHOW SESSION VARIABLES also lists global-only variables (with the global value).
+    session_value = None if scope == "global" else info["session_value"]
+    default = _default(info)
+    persisted_state = _persisted_state(persisted, _persist_supported(info))
+    value_bindings = None
+    if dbops.sensitive(info["name"]):
+        private_values = (global_value, session_value,
+                          persisted_state["value"] if persisted_state["present"] else None, persisted_state)
+        value_bindings = {key: _value_binding(info, key, value)
+                          for key, value in zip(_BOUND_VALUES, private_values)}
+        if global_value is not None:
+            global_value = dbops.REDACTED
+        if session_value is not None:
+            session_value = dbops.REDACTED
+        if default is not None:
+            default = dbops.REDACTED
+        if persisted_state.get("value") is not None:
+            persisted_state = dict(persisted_state, value=dbops.REDACTED)
+        values = None
     out = {
         "schema_version": READ_SCHEMA, "engine": info["engine"], "flavor": info.get("flavor"),
         "server_product": info.get("server_product"), "server_version": info["server_version"],
-        "vendor": "percona" if percona_variable(info["name"], info.get("flavor"), info.get("version_tuple")) else None,
+        "vendor": ("villagesql" if villagesql_variable(info["name"], info.get("flavor")) else
+                   "percona" if percona_variable(info["name"], info.get("flavor"), info.get("version_tuple"),
+                                                 info.get("server_base")) else None),
         "server_identity": info.get("server_identity"), "platform": info.get("platform"),
         "read_at": info.get("read_at"), "nullable": info["name"] == "character_set_results",
-        "name": info["name"], "exists": exists, "scope": scope, "scope_source": scope_source,
+        "name": info["name"], "sensitive": dbops.sensitive(info["name"]),
+        "exists": exists, "scope": scope, "scope_source": scope_source,
         "dynamic": _dynamic(info), "type": kind, "values": values, "min": low, "max": high, "block_size": block,
-        "global_value": info["global_value"] if info["in_global"] else (
-            info["catalog"].get("global_value") if info.get("catalog") else None),
-        # SHOW SESSION VARIABLES also lists global-only variables (with the global value).
-        "session_value": None if scope == "global" else info["session_value"],
-        "default": _default(info), "set_by": set_by, "source": raw_source,
+        "global_value": global_value,
+        "session_value": session_value,
+        "default": default, "set_by": set_by, "source": raw_source,
         "source_path": (info.get("info") or {}).get("path") or (info.get("catalog") or {}).get("path") or None,
         "set_time": (info.get("info") or {}).get("set_time"), "set_user": (info.get("info") or {}).get("set_user"),
         "set_host": (info.get("info") or {}).get("set_host"),
-        "persisted": dict(_persisted_state(persisted, _persist_supported(info)),
+        "persisted": dict(persisted_state,
                           supported=_persist_supported(info),
                           load=None if load is None else load.upper() in ("ON", "1")),
         "non_persistent": "np" in flags, "persist_as_read_only": "pro" in flags,
@@ -779,6 +819,14 @@ def describe(info):
         "description": (description or "")[:600] or None,
         "notes": list(info.get("notes") or []),
     }
+    if value_bindings is not None:
+        out["value_bindings"] = value_bindings
+    if info.get("flavor") == "villagesql":
+        out["server_base"] = info.get("server_base")
+    if out["vendor"] == "villagesql":
+        from .parameters import documentation
+        out["documentation"] = documentation(info["engine"], info.get("version_tuple"), info["name"],
+                                               info.get("flavor"))
     if (info["engine"] == "mysql" and info["name"] not in MYSQL_VARIABLES
             and info["name"] not in mysql_sysvars.SYSVARS and exists):
         out["notes"].append("myflames has no source-verified record of whether %s can change while the server runs; "
@@ -789,9 +837,35 @@ def describe(info):
     return out
 
 
+def _diagnostic(name, exc, password=None):
+    """A sensitive-variable diagnostic may itself contain an unknown secret."""
+    if not dbops.sensitive(name):
+        return dbops.redact(reason(exc), password)
+    code = dbops.error_code(str(exc))
+    return ("ERROR %s; " % code if code is not None else "") + "details hidden for a sensitive variable"
+
+
+def _private_read_error(exc):
+    """Public diagnostic after all evidence checks, without partial output."""
+    error = ConnectorError if isinstance(exc, ConnectorError) else ValueError
+    code = dbops.error_code(str(exc))
+    safe = error("Could not read or plan the sensitive variable%s; diagnostic details are hidden." %
+                 (" (ERROR %s)" % code if code is not None else ""))
+    safe.guarded_unknown = dbops.may_have_run(exc)
+    if getattr(exc, "identity_outcome", None):
+        safe.identity_outcome = exc.identity_outcome
+    return safe
+
+
 def read_variable(conn, name):
     """The ``variable-1.0`` description of one variable. Reads only."""
-    return describe(_read(conn, name))
+    name = check_name(name)
+    try:
+        return describe(_read(conn, name))
+    except (ValueError, ConnectorError) as exc:
+        if not dbops.sensitive(name):
+            raise
+        raise _private_read_error(exc) from None
 
 
 def _modes(v):
@@ -1024,6 +1098,8 @@ def config_line(name, value):
 
 def _undo(v, mode):
     name = v["name"]
+    if dbops.sensitive(name):
+        return []
     out = []
     current = v["global_value"] if mode != "session" else v["session_value"]
     persisted = v["persisted"]
@@ -1252,6 +1328,14 @@ def build_plan(v, value, mode, grants=None):
                        "source_metadata": _source_metadata(v), "read_at": v.get("read_at")},
             "undo": [], "effect": None, "caveats": [], "privileges": None, "classification": None,
             "expect": None, "variable": v, "alternative": None}
+    if dbops.sensitive(name) and isinstance(value, str) and dbops.REDACTED in value:
+        # The display marker is never an instruction to replace a credential,
+        # including when it is embedded in an otherwise plausible value.
+        plan["requested"] = value
+        plan["status"] = "refused"
+        problems.append(_problem("redacted_value", "Enter a new sensitive value; the hidden-value marker "
+                                 "cannot be used as a replacement. Nothing was sent."))
+        return plan
     if mode == "reset_persist":
         normalized = {"literal": None, "value": None, "number": None, "display": None, "problems": []}
     else:
@@ -1303,6 +1387,8 @@ def build_plan(v, value, mode, grants=None):
                       "source_metadata": plan["before"]["source_metadata"],
                       "engine": v["engine"], "server_version": v["server_version"],
                       "server_identity": v.get("server_identity")}
+    if dbops.sensitive(name):
+        plan["expect"]["value_bindings"] = dict(v.get("value_bindings") or {})
     try:
         plan["session_guard"] = dbops.target_session_guard(v["engine"], v.get("server_identity"))
     except ValueError as exc:
@@ -1312,10 +1398,22 @@ def build_plan(v, value, mode, grants=None):
     return plan
 
 
-@dbops.target_evidence
 def plan_change(conn, name, value, mode, grants=True):
     """Read the variable (and the account's grants unless *grants* is False)
     and return the ``variable-plan-1.0``. Reads only."""
+    name = check_name(name)
+    try:
+        return _plan_change(conn, name, value, mode, grants)
+    except (ValueError, ConnectorError) as exc:
+        if not dbops.sensitive(name):
+            raise
+        # The evidence decorator can raise its original sticky diagnostic
+        # after an inner reader sanitizes it. Redact outside that boundary.
+        raise _private_read_error(exc) from None
+
+
+@dbops.target_evidence
+def _plan_change(conn, name, value, mode, grants):
     check_mode(mode)
     v = read_variable(conn, name)
     lines = None
@@ -1325,7 +1423,8 @@ def plan_change(conn, name, value, mode, grants=True):
             lines = [row[0] for row in _sections(conn.run(TAG + "SHOW GRANTS", extra_flags=["--comments"]))[""]
                      if row and row[0]]
         except ConnectorError as exc:
-            v["notes"].append("Could not read the account's grants (%s); the server decides." % reason(exc))
+            v["notes"].append("Could not read the account's grants (%s); the server decides." %
+                              _diagnostic(v["name"], exc, getattr(conn, "password", None)))
     return build_plan(v, value, mode, lines)
 
 # ---- applying one change ------------------------------------------------------------------
@@ -1372,6 +1471,12 @@ def check_expect(expect, name, mode):
             raise ValueError("expect.%s is missing. Review a new plan before applying it." % key)
     if expect.get("engine") not in ("mysql", "mariadb") or not isinstance(expect.get("server_version"), str):
         raise ValueError("The confirmed server identity is missing. Review a new plan before applying it.")
+    if dbops.sensitive(name):
+        bindings = expect.get("value_bindings")
+        if not isinstance(bindings, dict) or any(
+                not isinstance(bindings.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", bindings[key])
+                for key in _BOUND_VALUES):
+            raise ValueError("The private value binding is missing. Review a new plan before applying it.")
     return expect
 
 
@@ -1485,6 +1590,8 @@ def _persisted_matches_running(v, after):
 
 def _shown(v, text):
     """A value as the server returned it, readable: sizes in KiB, MiB, GiB."""
+    if text is not None and dbops.sensitive(v["name"]):
+        return dbops.REDACTED
     if text is None:
         return "SQL NULL" if v.get("nullable") else "(none)"
     if text == "":
@@ -1495,10 +1602,20 @@ def _shown(v, text):
     return str(text)
 
 
+def _same_reviewed_value(v, field, actual, public_before):
+    """Compare a readback without treating the redaction marker as a value."""
+    if not dbops.sensitive(v["name"]):
+        return _same(actual, public_before)
+    binding = (v.get("value_bindings") or {}).get(field)
+    return isinstance(binding, str) and hmac.compare_digest(binding, _value_binding(v, field, actual))
+
+
 def _change_message(v, plan, after, matched):
     name, mode = v["name"], plan["mode"]
     if mode == "reset_persist":
-        return ("Removed %s from mysqld-auto.cnf. The running value stays %s." % (name, _shown(v, after.get("global")))
+        running = (dbops.REDACTED if dbops.sensitive(name) and after.get("global") is not None
+                   else after.get("global"))
+        return ("Removed %s from mysqld-auto.cnf. The running value stays %s." % (name, _shown(v, running))
                 if matched else "Sent RESET PERSIST %s, but mysqld-auto.cnf still has a value for it." % name)
     target = {"global": "globally", "persist": "globally and in mysqld-auto.cnf", "session": "in a myflames session",
               "persist_only": "in mysqld-auto.cnf for the next restart"}[mode]
@@ -1507,17 +1624,19 @@ def _change_message(v, plan, after, matched):
     before = plan["before"]["persisted"] if mode == "persist_only" else plan["before"]["session"] \
         if mode == "session" else plan["before"]["global"]
     if matched is False:
-        if _same(got, before):
+        field = "persisted_value" if mode == "persist_only" else "session_value" if mode == "session" else "global_value"
+        if _same_reviewed_value(v, field, got, before):
             return ("The server kept %s at %s: it did not take %s. It may have refused with only a warning%s." % (
-                name, _shown(v, got), plan["display"],
+                name, _shown(v, got), dbops.REDACTED if dbops.sensitive(name) else plan["display"],
                 " (innodb_buffer_pool_size under 1 GiB with several instances, or a resize already running)"
                 if name == "innodb_buffer_pool_size" else ""))
         got_text, want_text = _shown(v, got), _shown(v, plan["value"])
-        if got_text == want_text and _number(got) is not None and _number(plan["value"]) is not None:
+        if not dbops.sensitive(name) and got_text == want_text and _number(got) is not None and _number(plan["value"]) is not None:
             got_text, want_text = "{:,}".format(_number(got)), "{:,}".format(_number(plan["value"]))
         return "Set %s %s; the server made it %s instead of %s." % (name, target, got_text, want_text)
     text = "Set %s %s: %s -> %s." % (name, target, _shown(v, before),
-                                      _shown(v, got) if got is not None else plan["display"])
+                                      _shown(v, got) if got is not None else
+                                      dbops.REDACTED if dbops.sensitive(name) else plan["display"])
     if mode == "session":
         text += " That session has ended; run the statement in your own session to use it."
     if name == "innodb_buffer_pool_size" and after.get("resize_status"):
@@ -1525,19 +1644,49 @@ def _change_message(v, plan, after, matched):
     return text
 
 
+def _public_result(result):
+    """Copy-only privacy boundary, including nested plans and unsent attempts."""
+    if not dbops.sensitive(result.get("name") or ""):
+        return result
+    out = _SensitiveAudit._safe(result)
+    status = result.get("status")
+    summary = {
+        "changed": "Changed the variable", "unchanged": "The variable is unchanged",
+        "applied_unverified": "Sent the change, but could not verify its complete effect; read the variable before retrying",
+        "denied": "The server refused the change for lack of privileges",
+        "refused_by_server": "The server refused the change", "interrupted": "The change was interrupted",
+        "failed": "The change failed", "declined": "Nothing was sent",
+        "unknown": "The write may have run; its outcome is unknown. Read the variable before retrying",
+        "needs_confirmation": "Confirmation is required; nothing was sent",
+        "refused": "The change was refused; nothing was sent",
+    }.get(status, "Sensitive variable change")
+    if result.get("outcome") == "changed_variable":
+        summary = "The reviewed variable state changed; nothing was sent. Review it again"
+    if status == "unchanged":
+        if result.get("value_matched") is True:
+            summary = "The requested value was already set; the variable is unchanged"
+        elif result.get("value_matched") is False:
+            summary = "The server kept the previous value and did not take the requested change"
+    out["message"] = "%s. Values: %s." % (summary, dbops.REDACTED)
+    return out
+
+
 def _result(plan, status, message, **extra):
     out = {"schema_version": CHANGE_SCHEMA, "engine": plan.get("engine"), "server_version": plan.get("server_version"),
            "name": plan.get("name"), "mode": plan.get("mode"), "statement": None, "status": status,
            "message": message, "requested": plan.get("requested"), "value": plan.get("value"),
-           "before": plan.get("before"), "after": None, "adjusted": False, "verified": [], "plan": plan}
+           "before": plan.get("before"), "after": None, "adjusted": False, "value_matched": None,
+           "verified": [], "plan": plan}
     out.update(sent=[], session_guard=list(plan.get("session_guard") or []))
     out.update(extra)
-    return out
+    return _public_result(out)
 
 
 def _unsent(plan, audit, status, outcome, message, expect, verified=None):
     result = _result(plan, status, message, outcome=outcome, verified=list(verified or []))
     if audit is not None:
+        if dbops.sensitive(plan.get("name") or "") and not isinstance(audit, _SensitiveAudit):
+            audit = _SensitiveAudit(audit)
         statement = plan.get("statement") or (expect or {}).get("statement")
         if not statement and plan.get("name") and plan.get("mode") in MODES:
             statement = typed_statement(plan["name"], plan["mode"], plan.get("requested"))
@@ -1548,14 +1697,16 @@ def _unsent(plan, audit, status, outcome, message, expect, verified=None):
 
 
 class _SensitiveAudit(object):
-    """Redact secret-variable values at persistence without changing results.
+    """Redact secret-variable values at persistence and in public result copies.
 
     Connection passwords are covered by AuditTrail. A variable can contain
     an unrelated credential, including a numeric password, so redact by its
     explicit variable policy instead of trying to recognize secret text.
     """
     _VALUES = frozenset(('statement', 'requested', 'value', 'default', 'global_value', 'session_value',
-                         'persisted_value', 'global', 'session', 'persisted'))
+                         'persisted_value', 'global', 'session', 'persisted', 'display', 'literal',
+                         'config_line', 'sent', 'statements', 'undo', 'message', 'error', 'text',
+                         'description', 'notes', 'caveats', 'reasons', 'reason', 'note', 'values'))
 
     def __init__(self, audit):
         self.audit = audit
@@ -1570,13 +1721,12 @@ class _SensitiveAudit(object):
             setattr(self.audit, name, value)
 
     @classmethod
-    def _safe(cls, value):
+    def _safe(cls, value, field=None):
         if isinstance(value, dict):
-            return {key: dbops.REDACTED if key in cls._VALUES and item is not None else cls._safe(item)
-                    for key, item in value.items()}
+            return {key: cls._safe(item, key) for key, item in value.items()}
         if isinstance(value, list):
-            return [cls._safe(item) for item in value]
-        return value
+            return [cls._safe(item, field) for item in value]
+        return dbops.REDACTED if value is not None and field in cls._VALUES else value
 
     def attempt(self, statements, target=None, verified=None):
         return self.audit.attempt([dbops.REDACTED for _ in statements],
@@ -1601,7 +1751,7 @@ class _SensitiveAudit(object):
         return dbops.AuditTrail.fail(self, exc, statements)
 
 
-def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None):
+def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None, before_send=None):
     """Send one confirmed change and report before and after (``variable-change-1.0``).
 
     *plan* names the change (``name``, ``mode``, ``requested``: a plan this
@@ -1616,6 +1766,30 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     ``interrupted``, ``failed``); a lost connection raises ValueError. *audit*
     (:class:`dbops.AuditTrail`) records every attempt.
     """
+    sensitive = (isinstance(plan, dict) and isinstance(plan.get("name"), str)
+                 and dbops.sensitive(check_name(plan["name"])))
+    try:
+        return _public_result(_apply_change(conn, plan, expect, decision, confirmed, audit, before_send))
+    except (ValueError, ConnectorError) as exc:
+        if not sensitive:
+            raise
+        # Client/server diagnostics can quote arbitrary values without naming
+        # the variable. Preserve the public exception family and error code,
+        # never its free-form payload.
+        code = dbops.error_code(str(exc))
+        error = ConnectorError if isinstance(exc, ConnectorError) else ValueError
+        unknown = dbops.may_have_run(exc)
+        safe = error("Could not complete the sensitive variable change%s (%s). %s" % (
+            " (ERROR %s)" % code if code is not None else "", dbops.REDACTED,
+            "The write may have run; its outcome is unknown. Read the variable before retrying."
+            if unknown else "Review the variable before retrying."))
+        safe.guarded_unknown = unknown
+        safe.variable_write_unknown = bool(getattr(exc, "variable_write_unknown", False))
+        raise safe from None
+
+
+def _apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None, before_send=None):
+    """Internal execution and verification; public copies are redacted last."""
     if not isinstance(plan, dict):
         raise ValueError("Send the change to make (name, mode and value).")
     name, mode = check_name(plan.get("name")), check_mode(plan.get("mode"))
@@ -1665,7 +1839,11 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
     for key, now, label in checks:
         if problem:
             break
-        if not _same(now, expect.get(key)):
+        same = _same(now, expect.get(key))
+        if dbops.sensitive(name) and key in _BOUND_VALUES:
+            binding = (v.get("value_bindings") or {}).get(key)
+            same = isinstance(binding, str) and hmac.compare_digest(binding, expect["value_bindings"][key])
+        if not same:
             if key == "server_identity":
                 drift_outcome = "identity_mismatch"
             elif key in ("engine", "server_version"):
@@ -1673,11 +1851,14 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
             problem = ("The %s of %s changed since you reviewed it (%s, now %s), so nothing was sent. Review it "
                        "again." % (label, name, expect.get(key) if expect.get(key) is not None else "none",
                                    now if now is not None else "none"))
+            if dbops.sensitive(name):
+                problem = ("The %s of %s changed since you reviewed it (%s). Nothing was sent. Review it again."
+                           % (label, name, dbops.REDACTED))
         else:
             verified.append(label)
     if problem:
         return _unsent(fresh, audit, "refused", drift_outcome, problem, expect, verified)
-    statement = fresh["statement"]
+    statement = expect["statement"]
     try:
         guard = dbops.target_session_guard(expect["engine"], expect["server_identity"])
         body = TAG + statement
@@ -1689,6 +1870,11 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
         script, packet_lines = dbops.target_guarded_script(guard, [body])
     except ValueError as exc:
         return _unsent(fresh, audit, "refused", "identity_unavailable", str(exc), expect, verified)
+    if before_send is not None:
+        try:
+            before_send()
+        except ValueError as exc:
+            return _unsent(fresh, audit, "refused", "review_changed", str(exc), expect, verified)
     result = _result(fresh, None, None, statement=statement, verified=verified)
     if audit is not None:
         try:
@@ -1729,7 +1915,10 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
             if audit is not None:
                 audit.complete("unknown" if unknown else "error", outcome="timeout" if unknown else "error",
                                error=str(exc), message=message)
-            raise ValueError(message)
+            failure = ValueError(message)
+            failure.guarded_unknown = unknown
+            failure.variable_write_unknown = unknown
+            raise failure
         result["status"], result["message"] = error_status(exc)
         result["sent"] = [] if dbops.target_not_connected(exc) else [statement]
         if audit is not None:
@@ -1757,18 +1946,27 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None)
         expected_server = dict(v, server_identity=identity)
     identity_matches = after and all(after.get(key) == expected_server.get(key) for key in
                                      ("engine", "server_version", "server_identity"))
+    # Verification uses private readback values. Only this non-secret verdict
+    # crosses the redaction boundary; callers must not compare placeholders.
+    result["value_matched"] = matched if identity_matches else None
     unverified = matched is None or not identity_matches or (
         mode == "persist" and not _persisted_matches_running(v, after)) or (
         mode == "persist_only" and matched is not True)
     already_matched = matched is True and _matches(v, mode, normalized, fresh["before"]) is True
+    if dbops.sensitive(name) and matched is True and mode != "reset_persist":
+        fields = {"global": ("global",), "session": ("session",),
+                  "persist": ("global", "persisted"), "persist_only": ("persisted",)}[mode]
+        already_matched = all(_same_reviewed_value(v, key + "_value", after.get(key), fresh["before"][key])
+                              for key in fields)
     if unverified:
         result["status"] = "applied_unverified"
     elif already_matched:
         result["status"] = "unchanged"
     elif mode == "reset_persist" and matched is False:
         result["status"] = "unchanged"
-    elif after and matched is False and mode != "reset_persist" and _same(got, before) and \
-            not _same(before, normalized.get("value")):
+    elif after and matched is False and mode != "reset_persist" and _same_reviewed_value(
+            v, "persisted_value" if mode == "persist_only" else "session_value" if mode == "session" else "global_value",
+            got, before) and (dbops.sensitive(name) or not _same(before, normalized.get("value"))):
         result["status"] = "unchanged"
     else:
         result["status"] = "changed"
@@ -1892,6 +2090,5 @@ def change_cli(conn, name, value, mode, assume_yes=False, quiet=False, stdin=Non
         return 1, _unsent(plan, audit, problem[0], problem[1], problem[2], plan["expect"])
     result = apply_change(conn, plan, plan["expect"], decision=decision, confirmed=True, audit=audit)
     successful = result["status"] == "changed" or (
-        result["status"] == "unchanged" and _matches(plan["variable"], mode,
-            normalize_value(plan["variable"], value) if mode != "reset_persist" else {}, result["after"] or {}) is True)
+        result["status"] == "unchanged" and result.get("value_matched") is True)
     return (0 if successful else 1), result

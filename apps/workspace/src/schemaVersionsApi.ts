@@ -5,6 +5,7 @@
 // summaries, the sync script); this file only carries them.
 import { api, type Connection } from "./api";
 import { sshKey, trimPasted } from "./binding";
+import { villageSQLLabel } from "./serverIdentity";
 import type { AlterPrediction } from "./AlterPrediction";
 
 export type ObjectType =
@@ -26,7 +27,7 @@ export const TYPE_ORDER: ObjectType[] = ["database", "table", "view", "sequence"
 export type SnapshotServer = {
   engine: "mysql" | "mariadb";
   flavor?: string | null;
-  server_product?: string | null;
+  server_product?: string | null; server_base?: string | null;
   server_version?: string | null;
   hostname?: string | null;
   host?: string | null;
@@ -288,7 +289,7 @@ export function serverMatch(server: SnapshotServer, connection: Endpoint, what =
     + `${how(sshTarget(connection))}: the same address can be another server.` };
 }
 export function productText(server: SnapshotServer): string {
-  return [server.server_product, server.server_version].filter(Boolean).join(" ");
+  return villageSQLLabel(server.server_version, server.server_base, server.server_product) || [server.server_product, server.server_version].filter(Boolean).join(" ");
 }
 /** "Version 3" or "Version 3 · before release". */
 export function versionTitle(item: Pick<VersionItem, "number" | "name">): string {

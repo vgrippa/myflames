@@ -87,7 +87,7 @@ long_query_time                 10 s                        10 s, alias of
   SET GLOBAL reaches new connections only. long_query_time is per session on
   both engines.
 """
-from .server_info import product_name
+from .server_info import has_percona_features, product_name, server_label
 from .advisor import buffer_pool_coverage, flush_log_durability
 from .connector import ConnectorError
 from .health import SEVERITY
@@ -215,7 +215,7 @@ def config_report(conn, parameters=False):
     raw = {"sources": None, "tablespaces": None}
     try:
         server = preflight(reader, VARIABLES)
-        if server.flavor == "percona":
+        if has_percona_features(server.flavor, getattr(server, "base", None)):
             server.variables.update(show_variables(reader, PERCONA_SLOW_VARIABLES))
         status = reader.pairs("SHOW GLOBAL STATUS WHERE Variable_name IN (%s)" % ", ".join("'%s'" % n for n in STATUS))
         names = sorted(set(VARIABLES + ("performance_schema",)))
@@ -911,7 +911,7 @@ _MARK = {"ok": "ok", "watch": "WATCH", "problem": "PROBLEM", "info": "-", "unkno
 
 
 def format_text(report):
-    head = "%s %s" % (product_name(report), report["server_version"] or "?")
+    head = server_label(report)
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     s = report["summary"]

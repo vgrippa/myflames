@@ -58,7 +58,7 @@ import uuid
 from . import dbops, privileges, dump_options
 from .connector import (ConnectorError, MySQLConnection, bundled_client_dir, bundled_program,
                         installed_search_path, terminal_text)
-from .perf_common import Reader, ident, literal, now
+from .perf_common import Reader, ident, literal, now, system_schemas
 # Public compatibility export, including MariaDB tool banner precedence.
 from .server_info import detect_flavor, product_identity, tool_version_tuple as version_tuple, unsupported_version_note
 
@@ -70,6 +70,8 @@ COMMON_BIN_DIRS = ('/opt/local/bin', '/usr/sbin', '/opt/mysqlsh/bin', '/opt/home
                    '/opt/homebrew/opt/mysql-shell/bin', '/usr/local/opt/mysql-client/bin',
                    '/opt/homebrew/opt/mariadb/bin', '/usr/local/opt/mariadb/bin')
 MANIFEST = 'myflames-manifest.json'
+_VILLAGESQL_SHELL_DUMP_REASON = ('MySQL Shell cannot dump VillageSQL custom data types '
+                                '(for example vsql_vector.SVECTOR); use mysqldump.')
 # Bound unauthenticated-by-confirmation restore preflights, including empty
 # directory trees and files that grow while being read. Confirmed dumps do
 # not use these limits when writing their manifests.
@@ -113,7 +115,7 @@ _SERVER_VARS = ('version', 'version_comment', 'hostname', 'port', 'server_uuid',
                 'server_id', 'datadir', 'socket', 'local_infile', 'sql_mode',
                 'version_compile_os', 'version_compile_machine', 'character_set_server',
                 'character_set_filesystem', 'collation_server', 'innodb_page_size',
-                'max_allowed_packet', 'clone_valid_donor_list', 'gtid_executed')
+                'max_allowed_packet', 'clone_valid_donor_list', 'gtid_executed', 'villagesql_server_version')
 
 
 _ANSI = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]')
@@ -355,7 +357,7 @@ def offered_tools(server, tools):
     engine, version = server['engine'], version_tuple(server['version'])
     shell = _tool(tools, 'mysqlsh').get('available', False)
     logical = []
-    if engine == 'mysql' and shell and version >= (5, 7, 0):
+    if engine == 'mysql' and shell and version >= (5, 7, 0) and server.get('flavor') != 'villagesql':
         logical.append('mysqlsh')
     for name in (('mariadb-dump', 'mysqldump') if engine == 'mariadb' else ('mysqldump',)):
         entry = _tool(tools, name)
@@ -375,11 +377,15 @@ def read_server(conn, connection=None):
     variables = {str(row[0]).lower(): row[1] for row in rows if len(row) == 2}
     if not variables.get('version') or not variables.get('hostname') or not variables.get('server_id'):
         raise LifecycleError('Could not establish server identity (version, hostname, server_id).')
-    identity = product_identity(variables['version'], variables.get('version_comment'))
-    return {'engine': identity['engine'], 'flavor': identity['flavor'], 'product': identity['product'],
-            'version': variables['version'], 'variables': variables,
-            'identity': {key: variables.get(key, '') for key in
-                         ('server_uuid', 'server_id', 'hostname', 'port', 'version', 'datadir', 'socket')}}
+    identity = product_identity(variables['version'], variables.get('version_comment'),
+                                variables.get('villagesql_server_version'))
+    server = {'engine': identity['engine'], 'flavor': identity['flavor'], 'product': identity['product'],
+              'version': variables['version'], 'variables': variables,
+              'identity': {key: variables.get(key, '') for key in
+                           ('server_uuid', 'server_id', 'hostname', 'port', 'version', 'datadir', 'socket')}}
+    if 'base' in identity:
+        server['server_base'] = identity['base']
+    return server
 
 
 def _options(connection):
@@ -1381,7 +1387,7 @@ def _native_upgrade(conn, server, target):
     reader = Reader(conn, TAG)
     source = version_tuple(server['version'])
     checks = []
-    user = 'NOT IN (' + ','.join("'%s'" % name for name in SYSTEM_SCHEMAS) + ')'
+    user = 'NOT IN (' + ','.join("'%s'" % name for name in _excluded_schemas(server.get('flavor'))) + ')'
 
     def check(check_id, title, sql, severity, doc, description, formatter=_dotted):
         try:
@@ -1667,10 +1673,20 @@ def _privileges_check(conn, groups):
                          'Privilege hint only; server/tool has the final decision.', missing_any_of=missing)
 
 
-def _catalog_where(schemas=None, tables=None, include_system=False):
-    where = "TABLE_SCHEMA NOT IN ('mysql','sys','performance_schema','information_schema')"
-    if include_system:
-        where = "TABLE_SCHEMA NOT IN ('performance_schema','information_schema')"
+def _excluded_schemas(flavor=None, include_system=False):
+    """Preserve lifecycle's SQL order, appending only flavor-specific schemas."""
+    names = ('performance_schema', 'information_schema') if include_system else SYSTEM_SCHEMAS
+    return names + tuple(name for name in system_schemas(flavor) if name not in SYSTEM_SCHEMAS)
+
+
+def _connection_flavor(conn):
+    """Use cached handshake identity only: catalog helpers never probe a server."""
+    return product_identity(getattr(conn, '_version_cache', ''),
+                            getattr(conn, '_version_comment_cache', ''))['flavor']
+
+
+def _catalog_where(schemas=None, tables=None, include_system=False, flavor=None):
+    where = 'TABLE_SCHEMA NOT IN (' + ','.join("'%s'" % s for s in _excluded_schemas(flavor, include_system)) + ')'
     if schemas:
         where = 'TABLE_SCHEMA IN (' + ','.join(literal(s) for s in schemas) + ')'
     if tables:
@@ -1678,16 +1694,16 @@ def _catalog_where(schemas=None, tables=None, include_system=False):
     return where
 
 
-def _catalog(conn, schemas=None, tables=None, include_system=False):
+def _catalog(conn, schemas=None, tables=None, include_system=False, flavor=None):
     return Reader(conn, TAG).rows('SELECT TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE,ENGINE,COALESCE(DATA_LENGTH,0),'
                                   'COALESCE(INDEX_LENGTH,0) FROM information_schema.TABLES WHERE ' +
-                                  _catalog_where(schemas, tables, include_system))
+                                  _catalog_where(schemas, tables, include_system, flavor or _connection_flavor(conn)))
 
 
-def _schema_defaults(conn, schemas, include_system=False):
+def _schema_defaults(conn, schemas, include_system=False, flavor=None):
     """Record database defaults, including selected databases with no tables."""
-    where = ("SCHEMA_NAME NOT IN ('performance_schema','information_schema')" if include_system else
-             "SCHEMA_NAME NOT IN ('mysql','sys','performance_schema','information_schema')")
+    names = _excluded_schemas(flavor or _connection_flavor(conn), include_system)
+    where = 'SCHEMA_NAME NOT IN (' + ','.join("'%s'" % s for s in names) + ')'
     if schemas:
         where = 'SCHEMA_NAME IN (' + ','.join(literal(s) for s in schemas) + ')'
     rows = Reader(conn, TAG).rows('SELECT SCHEMA_NAME,DEFAULT_CHARACTER_SET_NAME,DEFAULT_COLLATION_NAME '
@@ -1715,7 +1731,7 @@ def _dump_size_estimate(conn, server, catalog, schemas, tables, include_system):
             return total(Reader(conn, TAG).rows(
                 'SET SESSION information_schema_stats_expiry=0;\n' + TAG + 'SELECT TABLE_SCHEMA,TABLE_NAME,'
                 'TABLE_TYPE,ENGINE,COALESCE(DATA_LENGTH,0) FROM information_schema.TABLES WHERE ' +
-                _catalog_where(schemas, tables, include_system)))
+                _catalog_where(schemas, tables, include_system, server.get('flavor'))))
         except (ConnectorError, LifecycleError):
             pass  # A cancel is raised again before the tool starts.
     return total(catalog)
@@ -1778,6 +1794,8 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
     if isinstance(schemas, str) or isinstance(tables, str):
         raise ValueError('Schemas and tables must be lists, not strings.')
     schemas, tables = _names(schemas, 'schema'), _names(tables, 'table')
+    if server['flavor'] == 'villagesql' and any(schema.lower() == 'villagesql' for schema in schemas):
+        raise Refused('The villagesql schema is internal to VillageSQL and cannot be selected for a dump.')
     if tables and len(schemas) != 1:
         raise ValueError('Table dumps require exactly one schema.')
     if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 64:
@@ -1786,12 +1804,18 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
     offers = offered_tools(server, tools)['dump']
     if not prefer_shell:
         offers = [name for name in offers if name != 'mysqlsh']
+    if (server['flavor'] == 'villagesql' and prefer_shell and not offers
+            and _tool(tools, 'mysqlsh').get('available')):
+        # The existing table catalog cannot establish custom-column-type
+        # compatibility. Refuse a Shell-only choice before its dryRun too.
+        raise Refused(_VILLAGESQL_SHELL_DUMP_REASON)
     tool = _pick(tools, offers, None) if offers else _pick(tools, ('mariadb-dump',) if server['engine'] == 'mariadb' else ('mysqldump',), server['engine'])
     request = dict(directory=directory, schemas=schemas, tables=tables, threads=threads, prefer_shell=prefer_shell)
     selected_options = dump_options.normalize(options, tool, bool(tables))
     if selected_options:
         request['options'] = selected_options
-    catalog = _catalog(conn, schemas, tables, include_system=tool['name'] != 'mysqlsh' and not schemas)
+    catalog = _catalog(conn, schemas, tables, include_system=tool['name'] != 'mysqlsh' and not schemas,
+                       flavor=server['flavor'])
     estimate = sum(int(row[4] or 0) + int(row[5] or 0) for row in catalog)
     available = shutil.disk_usage(os.path.dirname(missing_parent) if missing_parent else os.path.dirname(directory)).free
     required = [('SELECT', 'ALL', 'ALL PRIVILEGES')]
@@ -2287,8 +2311,10 @@ def _perform_dump(job, conn, plan, connection):
     try:
         job.step('Reading the list of tables.')
         include_system = tool['name'] != 'mysqlsh' and not request['schemas']
-        catalog = _catalog(conn, request['schemas'], request['tables'], include_system=include_system)
-        schema_defaults = _schema_defaults(conn, request['schemas'], include_system=include_system)
+        catalog = _catalog(conn, request['schemas'], request['tables'], include_system=include_system,
+                           flavor=plan['server'].get('flavor'))
+        schema_defaults = _schema_defaults(conn, request['schemas'], include_system=include_system,
+                                           flavor=plan['server'].get('flavor'))
         structure_only = bool(request.get('options', {}).get('structure_only'))
         # Source row counts feed restore's row comparison; a structure-only
         # dump carries no rows, so no counts are sampled or recorded.
@@ -2774,7 +2800,8 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
             raise Refused('Ignoring existing objects is supported only by Shell loads; SQL dumps include DROP TABLE.')
     instance_sql = not shell_dump and not scope['schemas']
     system_sql = not shell_dump and (instance_sql or 'mysql' in scope['schemas'])
-    catalog = _catalog(conn, [schema] if schema else scope['schemas'], scope['tables'], include_system=instance_sql)
+    catalog = _catalog(conn, [schema] if schema else scope['schemas'], scope['tables'],
+                       include_system=instance_sql, flavor=server['flavor'])
     duplicates = ['%s.%s' % (r[0], r[1]) for r in catalog]
     checks.append(_verification('existing_objects', 'failed' if duplicates and existing_objects == 'refuse' else 'passed',
                                 'Existing objects require an explicit drop choice (Shell also supports ignore).', objects=duplicates))
@@ -2929,7 +2956,8 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
             raise LifecycleError('Target identity changed during restore; verification refused.')
         verification = []
         catalog = _catalog(conn, [request['schema']] if request.get('schema') else manifest['scope']['schemas'], manifest['scope']['tables'],
-                           include_system=tool['name'] != 'mysqlsh' and not manifest['scope']['schemas'])
+                           include_system=tool['name'] != 'mysqlsh' and not manifest['scope']['schemas'],
+                           flavor=after_server['flavor'])
         expected = {(request.get('schema') or r[0], r[1], r[2]) for r in manifest.get('object_catalog', [])}
         actual = {(r[0], r[1], r[2]) for r in catalog}
         verification.append(_verification('object_presence', 'passed' if expected <= actual else 'failed',

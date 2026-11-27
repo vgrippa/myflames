@@ -51,6 +51,7 @@ async function component(file, mocks) {
       }
     },
     connectionKey: c => c.host, connectionLabel: c => c.host,
+    engineLabel: report => `${report.engine} ${report.server_version || "?"}`,
     ...mocks,
   };
   vm.runInNewContext(code, context);

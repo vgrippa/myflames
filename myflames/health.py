@@ -263,7 +263,7 @@ import time
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
 # Compatibility exports for one release.
 from .perf_common import _bytes_text, _count_text, _duration_text, _number, _round, _version_tuple
-from .server_info import product_identity, product_name
+from .server_info import product_identity, product_name, server_label
 
 SCHEMA_VERSION = "health-1.0"
 #: Health statements carry the myflames prefix so ``top`` excludes them.
@@ -355,7 +355,7 @@ VARIABLES = ("version", "version_comment", "max_connections", "table_open_cache"
              "table_definition_cache", "thread_cache_size", "thread_handling", "log_bin",
              "binlog_cache_size", "binlog_stmt_cache_size", "open_files_limit", "sort_buffer_size",
              "tmp_table_size", "max_heap_table_size", "temptable_max_ram", "tmp_memory_table_size",
-             "tmp_disk_table_size")
+             "tmp_disk_table_size", "villagesql_server_version")
 #: Read in a second statement only under thread_handling=pool-of-threads
 #: (Percona Server and MariaDB's thread pool; see _thread_pool).
 POOL_VARIABLES = ("thread_pool_size", "thread_pool_max_threads")
@@ -587,9 +587,11 @@ class _Window(object):
         elapsed = (second.get("t") or 0) - (first.get("t") or 0)
         self.elapsed = elapsed if elapsed > 0 else None
         self.version = self.vars.get("version") or ""
-        identity = product_identity(self.version, self.vars.get("version_comment"))
+        identity = product_identity(self.version, self.vars.get("version_comment"),
+                                    self.vars.get("villagesql_server_version"))
         self.engine = identity["engine"]
         self.flavor, self.product = identity["flavor"], identity["product"]
+        self.base = identity.get("base")
         up_a, up_b = _number(self.a.get("Uptime")), _number(self.b.get("Uptime"))
         self.uptime = up_b
         self.restarted = up_a is not None and up_b is not None and up_b < up_a
@@ -1795,7 +1797,7 @@ def _thread_pool(w, key, title, why, settings, sources):
     waiting = w.gauge("Threadpool_requests_waiting_in_queue")
     starved = w.gauge("Threadpool_requests_starved_in_queue")
     size, ceiling = w.var("thread_pool_size"), w.var("thread_pool_max_threads")
-    owner = "MariaDB's" if w.engine == "mariadb" else "%s's" % (w.product if w.flavor == "percona" else "The server")
+    owner = "MariaDB's" if w.engine == "mariadb" else "%s's" % (w.product if w.flavor in ("percona", "villagesql") else "The server")
     headline = "%s threads, %s idle" % (_count_text(threads), _count_text(idle))
     # thread_pool_size: "Number of thread groups in the pool ... roughly equivalent to
     # maximum number of concurrently executing threads" (Ma/sql/sys_vars.cc:4549-4552).
@@ -2157,7 +2159,7 @@ def compute_health(first, second, variables, interval=DEFAULT_INTERVAL):
     elif summary["watch"] or summary["diagnostics"]["watch"]:
         summary["status"] = "watch"
     page_size = w.var("innodb_page_size")
-    return {
+    report = {
         "schema_version": SCHEMA_VERSION,
         "engine": w.engine,
         "flavor": w.flavor,
@@ -2181,6 +2183,9 @@ def compute_health(first, second, variables, interval=DEFAULT_INTERVAL):
         "metrics": metrics,
         "notes": notes,
     }
+    if w.flavor == "villagesql":
+        report["server_base"] = w.base
+    return report
 
 
 def at_or_worse(report, level):
@@ -2216,7 +2221,7 @@ def format_value(metric):
 
 def format_text(report):
     """Compact grouped table with status markers."""
-    head = "%s %s" % (product_name(report), report["server_version"] or "?")
+    head = server_label(report)
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     head += ", sampled over %s s" % (_count_text(report["elapsed_s"]) if report["elapsed_s"] else "?")

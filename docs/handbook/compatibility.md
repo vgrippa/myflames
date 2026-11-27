@@ -1,6 +1,6 @@
 # Engine & platform compatibility
 
-myflames supports MySQL 5.7 (end of life, read with stated gaps), 8.0, 8.4 and 9.x, Percona Server for MySQL 8.0 and 8.4 (including Percona XtraDB Cluster), and MariaDB 10.11, 11.4 and 11.8, alongside ProxySQL 2.x and 3.x and Readyset. The desktop app ships for macOS on Apple Silicon, with a Windows x64 installer available as an unsigned preview.
+myflames supports MySQL 5.7 (end of life, read with stated gaps), 8.0, 8.4 and 9.x, Percona Server for MySQL 8.0 and 8.4 (including Percona XtraDB Cluster), VillageSQL 0.0.8+, and MariaDB 10.11, 11.4 and 11.8, alongside ProxySQL 2.x and 3.x and Readyset. The desktop app ships for macOS on Apple Silicon, with a Windows x64 installer available as an unsigned preview.
 
 ## Engines and versions
 
@@ -53,6 +53,17 @@ myflames supports Percona Server for MySQL 8.0 and 8.4 and Percona XtraDB Cluste
 - **Plans and SQL**: plan formats and **Query editor** features match the corresponding MySQL 8.0 and 8.4 series (`EXPLAIN FORMAT=JSON` on 8.0; `EXPLAIN ANALYZE FORMAT=JSON` and `EXPLAIN FORMAT=JSON` on 8.4).
 - **Diagnostics, tuning and upgrades**: **Server** and **Tuning** add Percona `userstat` index and table counters, thread-pool metrics, `log_slow_rate_limit` checks, and Percona Server documentation links in **Parameters**. **Maintenance** > **Upgrade check** reads Percona's package repositories to offer supported Percona Server upgrade targets.
 - **Percona XtraDB Cluster**: **Cluster** detects PXC (`wsrep_*` and `performance_schema.pxc_cluster_view`, including on PXC 8.4 where `wsrep_on` is session-only) and displays per-node states from `pxc_cluster_view`; reviewed cluster state changes are not offered on PXC.
+
+## VillageSQL
+
+VillageSQL uses MySQL rules. myflames names the VillageSQL release and its base server, such as **VillageSQL 0.0.8 (Percona Server 8.4.11)**, on the MySQL 8.4, Percona Server 8.4 and MySQL 9.7 codebases. Percona diagnostics still apply on the Percona codebase. Prerelease labels such as `-dev`, `-alpha.2` and `-rc.1` remain visible; a trailing git hash after the label is omitted.
+
+- **Plans**: custom-index nearest-neighbor (KNN) scans appear in the plan views with the requested K separate from measured rows. Both the released 0.0.8 distance-scan formats and main (0.0.9-dev) KNN formats are recognized. K is a requested cap; the scan can return fewer rows. Offsets are excluded when K comes from the surrounding limit; an invalid offset leaves that K unknown. Sharing with **Hide literal values** hides query points and shortened previews while keeping K, row counts and timing measurements readable. The extension controls the search algorithm, so the operator carries no Big O or exact-search guarantee.
+- **Server and accounts**: **Server > Setup > Extensions** reads installed versions, registered types and functions, protocol status, variables, objects using extension types and pending updates. **Parameters** marks VillageSQL settings and links to VillageSQL documentation; **Users and roles** includes `EXTENSION_ADMIN`. **Indexes** puts custom indexes under **No data** because Performance Schema does not count their reads.
+- **Dumps and upgrades**: logical dumps use mysqldump, including whole-instance dumps. MySQL Shell dumps are unavailable because Shell cannot dump VillageSQL custom types. Maintenance offers no upstream MySQL upgrade targets or Oracle package guidance for VillageSQL; follow VillageSQL's own 0.0.x releases.
+- **Release scope**: custom types in **Table structure**, **Database diagram**, **Export as SQL** and Query editor completion, extension install/uninstall/update actions, and extension checks for replication, compare, clone, restore and upgrade are planned. Existing operations do not verify extension requirements: `INSTALL EXTENSION` is not replicated, CLONE checks extensions, and VillageSQL 0.0.8 refuses protocol-4 extensions. **Version support** stays unknown for VillageSQL's pre-1.0 releases; MySQL lifecycle dates appear only as reference.
+
+VillageSQL lists its internal `villagesql` schema in database lists but hides its tables from the table, index and column catalogs; statements naming those tables fail with error 3554. myflames excludes it from automatic user-schema reads on VillageSQL. Database pickers follow the connection's classification: a user-created database named `villagesql` stays visible on MySQL, Percona Server and MariaDB. Connections can show internal schemas with **Show system databases**; Schema versions lists user databases and has no such toggle.
 
 ## Platforms
 

@@ -253,6 +253,9 @@ def _sole_base_table_under_sort(sort_node):
         # (no children) with a plain, non-angle-bracket table name.
         is_base_access = (
             fam in ("table_scan", "index_scan", "index_lookup", "range")
+            # A custom nearest-neighbour index is not an ordinary ordered
+            # index that a column-based sort suggestion can replace.
+            and not is_knn_scan(cdetails)
             and ctable
             and not ctable.startswith("<")
         )
@@ -433,6 +436,131 @@ OPERATOR_FAMILIES = (
 )
 
 
+def is_knn_scan(details):
+    """Identify VillageSQL's released and main-branch custom-index paths.
+
+    Released 0.0.8 uses a top-level distance access type; main v1 uses
+    knn_scan. Upstream spatial
+    scans instead have access_type=index and index_access_type=index_distance_scan;
+    that subtype alone is deliberately not a KNN signal.
+    """
+    return ((details.get("index_access_type") or "").lower() == "index_knn_scan"
+            or (details.get("access_type") or "").lower()
+            in ("index_distance_scan", "index_distance", "knn_scan"))
+
+
+def _knn_label(details):
+    identity = ".".join(value for value in (details.get("table_name"),
+                                          details.get("index_name")) if value)
+    label = "KNN SCAN [%s]" % identity
+    if details.get("limit") is not None:
+        label += " K=%s" % details["limit"]
+    return label
+
+
+_KNN_POINT_PREVIEW_CHARS = 128
+_KNN_NUMBER_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
+
+
+def knn_lookup_preview(details):
+    """Bound the query point, retaining the column, distance operator and size.
+
+    A point can be an arbitrary SQL expression. Count values only for a flat
+    numeric list, optionally quoted; otherwise report its character count.
+    The entire shortened point fits the limit, including the size annotation,
+    so applying the helper again leaves a normalized parsed node unchanged.
+    """
+    lookup = details.get("lookup_condition") or ""
+    column, separator, point = lookup.partition(" <-> ")
+    if not separator:
+        column, point = "", lookup
+    if len(point) <= _KNN_POINT_PREVIEW_CHARS:
+        return lookup
+    body = point.strip()
+    quote = body[0] if body[:1] in ("'", '"') and body[-1:] == body[:1] else ""
+    if quote:
+        body = body[1:-1]
+    values = body[1:-1].split(",") if body.startswith("[") and body.endswith("]") else []
+    if values and all(_KNN_NUMBER_RE.fullmatch(value.strip()) for value in values):
+        suffix = "…]%s (%s values)" % (quote, len(values))
+    else:
+        suffix = "…%s (%s characters)" % (quote, len(point))
+    preview = point[:_KNN_POINT_PREVIEW_CHARS - len(suffix)] + suffix
+    return column + separator + preview
+
+
+def _knn_display_node(node, parent_limit=None):
+    """Normalize KNN display fields without changing the source plan JSON.
+
+    Parsed details also feed the workspace inspector directly, so bounding
+    only chart-data would still expose the full point there. Keep the other
+    server operation annotations when its lookup matches the structured field.
+    """
+    node = dict(node)
+    if not node.get("index_name"):
+        # 0.0.8 reports only the index in its operation, never the table.
+        # Anchor the whole prefix so names containing optimizer words stay data.
+        match = re.match(r"\ACustom index distance scan on (.+)\Z",
+                         node.get("operation") or "", re.I | re.S)
+        if match:
+            node["index_name"] = match.group(1)
+    if node.get("limit") is None and parent_limit is not None:
+        node["limit"] = parent_limit
+    lookup = node.get("lookup_condition") or ""
+    preview = knn_lookup_preview(node)
+    if preview == lookup:
+        return node
+    _column, separator, point = lookup.partition(" <-> ")
+    point = point if separator else lookup
+    preview_point = preview.partition(" <-> ")[2] if separator else preview
+
+    def bound(value):
+        if isinstance(value, str):
+            return value.replace(point, preview_point)
+        if isinstance(value, list):
+            return [bound(item) for item in value]
+        return value
+
+    result = dict(node)
+    result["lookup_condition"] = preview
+    # The server can repeat the point in pushed-index predicates and engine
+    # annotations. Bound those copies too, including inspector expression
+    # fields, without rewriting child operators or mutating the input arrays.
+    for field in ("condition", "ranges", "hash_condition", "sort_fields"):
+        if field in node:
+            result[field] = bound(node[field])
+    operation = node.get("operation") or ""
+    if lookup in operation:
+        result["operation"] = bound(operation)
+    else:
+        # Incomplete or inconsistent pasted operation text cannot restore a
+        # discarded literal. The structured fields still describe the access.
+        operation = "%sindex KNN scan on %s using %s (%s)" % (
+            "Covering " if node.get("covering") else "",
+            node.get("table_name") or "", node.get("index_name") or "", preview)
+        if node.get("limit") is not None:
+            operation += ", limit %s" % node["limit"]
+        result["operation"] = operation[0].upper() + operation[1:]
+    return result
+
+
+def knn_description(details):
+    """One semantic sentence shared by SVG tooltips and chart-data consumers.
+
+    The extension chooses its search algorithm; no complexity or exactness
+    guarantee follows from the KNN access path itself. K is requested:
+    offsets, filters and joins may require reading additional candidates.
+    """
+    if not is_knn_scan(details):
+        return ""
+    nearest = ("Up to %s nearest rows requested" % details["limit"]
+               if details.get("limit") is not None else "Nearest rows")
+    lookup = knn_lookup_preview(details)
+    return "%s%s through custom index %s" % (
+        nearest, " by " + lookup if lookup else "",
+        details.get("index_name") or "(not reported)")
+
+
 def operator_family(details):
     """Classify a node into one of :data:`OPERATOR_FAMILIES`.
 
@@ -444,6 +572,10 @@ def operator_family(details):
     """
     if not isinstance(details, dict):
         return "other"
+    # Keep the existing family, but do not let names or distance expressions
+    # containing words such as "sort" or "hash join" override the subtype.
+    if is_knn_scan(details):
+        return "index_scan"
     at = (details.get("access_type") or "").lower()
     iat = (details.get("index_access_type") or "").lower()
     ja = (details.get("join_algorithm") or "").lower()
@@ -500,7 +632,9 @@ def build_folded_label(node):
     index = node.get("index_name") or ""
     rows = node.get("actual_rows")
     loops = node.get("actual_loops", 1)
-    if re.match(r"^Table scan", op, re.I):
+    if is_knn_scan(node):
+        label = _knn_label(node)
+    elif re.match(r"^Table scan", op, re.I):
         label = f"TABLE SCAN [{table}]"
     elif re.match(r"^Index range scan", op, re.I):
         label = f"INDEX RANGE SCAN [{table}.{index}]"
@@ -560,7 +694,7 @@ def build_folded_label(node):
     return label.replace(";", "_")
 
 
-def parse_node(node):
+def parse_node(node, parent_limit=None):
     if not isinstance(node, dict):
         return None
     # Pasted JSON is untrusted input. Validate before labels, complexity and
@@ -568,11 +702,17 @@ def parse_node(node):
     # values would otherwise silently become "" through ``value or ""``.
     for field in ("operation", "table_name", "index_name", "condition", "access_type",
                   "schema_name", "join_algorithm", "join_type", "heading",
-                  "using_join_buffer", "index_access_type"):
+                  "using_join_buffer", "index_access_type", "lookup_condition"):
         value = node.get(field)
         if value is not None and not isinstance(value, str):
             raise ValueError("Plan node %s must be a string or null, got %s."
                              % (field, type(value).__name__))
+    if is_knn_scan(node):
+        node = _knn_display_node(node, parent_limit)
+        if node.get("limit") is not None:
+            limit = node["limit"]
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+                raise ValueError("Plan KNN limit must be a nonnegative integer or null.")
     operation = node.get("operation")
     op = (operation or "unknown").replace("`", "")
     op = re.sub(r"DATE'(\d{4}-\d{2}-\d{2})'", r"\1", op)
@@ -598,8 +738,30 @@ def parse_node(node):
     subqueries_in_total = bool(node.get("subqueries_in_total"))
     children = []
     children_time = 0
+    # Only a direct input of Limit may inherit K. Filters can consume more
+    # than K rows, and joins change cardinality. Separate subqueries below
+    # are not bounded by the enclosing iterator's limit either.
+    child_limit = node.get("limit") if (
+        (node.get("access_type") or "").lower() == "limit"
+        or op.lower().startswith("limit")) else None
+    # HA_POS_ERROR may be serialized as -1 or as its unsigned maximum.
+    # count_all_rows drains the input for SQL_CALC_FOUND_ROWS, not just K.
+    if (node.get("count_all_rows")
+            or (isinstance(child_limit, int) and not isinstance(child_limit, bool)
+                and (child_limit < 0 or child_limit >= 18446744073709551615))):
+        child_limit = None
+    # Released VillageSQL passes the query count to KNN, whereas Limit's
+    # stop count includes its offset. An access's own limit still wins.
+    offset = node.get("limit_offset", 0)
+    if isinstance(child_limit, int) and not isinstance(child_limit, bool):
+        if (isinstance(offset, int) and not isinstance(offset, bool)
+                and 0 <= offset <= child_limit):
+            child_limit -= offset
+        else:
+            # An invalid offset cannot establish K or fail a usable plan.
+            child_limit = None
     for c in children_refs:
-        child = parse_node(c)
+        child = parse_node(c, parent_limit=child_limit)
         if child:
             children.append(child)
             children_time += child["total_time"]
@@ -623,6 +785,8 @@ def parse_node(node):
         node.get("condition"),
     )
     folded = build_folded_label(node)
+    if is_knn_scan(node):
+        short = _knn_label(node)
     details = {
         "operation": node.get("operation") or "",
         "table_name": node.get("table_name") or "",
@@ -686,6 +850,11 @@ def parse_node(node):
         "loops": loops,
         "children": children,
     }
+    # Preserve zero and null. Long KNN points were bounded in the display copy
+    # above; the caller's source plan JSON stays unchanged.
+    for field in ("lookup_condition", "limit"):
+        if field in node:
+            details[field] = node[field]
     # Attach Big O complexity once so every downstream consumer (flamegraph,
     # bargraph, tree, diagram, JSON sidecar) reads the same field. Returns
     # None for unknowns; we only insert the key when we have a real answer.
@@ -852,6 +1021,9 @@ def _mariadb_access_type_to_operation(access_type, table_name, key, using_index=
         if idx:
             return "Index scan on {} using {}".format(tbl, idx)
         return "Index scan on {}".format(tbl) if tbl else "Index scan"
+    if at in ("INDEX_DISTANCE", "KNN_SCAN"):
+        # VillageSQL JSON v1 names the table but may omit the key.
+        return "Index KNN scan on {}".format(tbl) if tbl else "Index KNN scan"
     if at == "CONST" or at == "SYSTEM":
         if idx:
             return "Single-row index lookup on {} using {}".format(tbl, idx)
@@ -1227,6 +1399,8 @@ def _normalize_mariadb_table(tbl, ctx=None):
         mysql_access_type = "range"
     elif access_type_raw == "INDEX":
         mysql_access_type = "index"
+    elif access_type_raw in ("INDEX_DISTANCE", "KNN_SCAN"):
+        mysql_access_type = access_type_raw.lower()
     elif access_type_raw in ("UNIQUE_SUBQUERY", "INDEX_SUBQUERY"):
         mysql_access_type = "ref"
     elif access_type_raw == "FULLTEXT":
@@ -2164,6 +2338,8 @@ def hide_parsed_plan_literals(root):
         operation = details.get("operation") or "unknown"
         node["short_label"] = build_short_label(operation, details.get("table_name"),
                                                  details.get("index_name"), details.get("condition"))
+        if is_knn_scan(details):
+            node["short_label"] = _knn_label(details)
         node["full_label"] = operation.replace("`", "")
         node["folded_label"] = build_folded_label(details)
     return result
@@ -2385,6 +2561,9 @@ def enhance_tooltip_flame(original, op_details):
         lines.append(f"Table: {t}{idx}")
     if best.get("access_type"):
         lines.append(f"Access: {best['access_type']}")
+    nearest = knn_description(best)
+    if nearest:
+        lines.append(nearest)
     if best.get("actual_rows") is not None:
         ri = f"Rows: {float(best['actual_rows']):.0f} actual"
         if best.get("estimated_rows") is not None:
@@ -2568,7 +2747,8 @@ def _detect_optimizer_switches(root):
 
     def _walk(node):
         details = node.get("details") or {}
-        op = (details.get("operation") or "").lower()
+        # KNN names and point expressions are data, not optimizer signatures.
+        op = "" if is_knn_scan(details) else (details.get("operation") or "").lower()
         access = (details.get("access_type") or "").lower()
         idx_access = (details.get("index_access_type") or "").lower()
         join_algo = (details.get("join_algorithm") or "").lower()
@@ -2805,7 +2985,7 @@ def _detect_nonsargable_joins(root):
 
     def _walk(node):
         details = node.get("details") or {}
-        op = details.get("operation") or ""
+        op = "" if is_knn_scan(details) else details.get("operation") or ""
         access = (details.get("access_type") or "").lower()
         cond = details.get("condition") or ""
         join_algo = (details.get("join_algorithm") or "").lower()
@@ -3139,7 +3319,11 @@ def _row_misestimate(node, engine="mysql", early_stop=False, cte_names=frozenset
     ratio = high / low
     if ratio < _MISESTIMATE_RATIO or high * loops < _MISESTIMATE_MIN_ROWS:
         return None
-    if (early_stop or engine == "mariadb") and actual < estimated:
+    # A KNN access can carry its requested K without a visible Limit
+    # ancestor. Fewer candidates do not establish a statistics error,
+    # including when a filter sits directly above the access.
+    capped_knn = is_knn_scan(target) and target.get("limit") is not None
+    if (early_stop or capped_knn or engine == "mariadb") and actual < estimated:
         return None
     # MySQL format 2 reports schema_name beside the base table name. Keep
     # that identity on filters too, using their access child's details.
@@ -3360,7 +3544,7 @@ def analyze_plan(root):
     def _scan(node):
         nonlocal has_icp, has_bka, has_semijoin, has_antijoin, has_nested_loop, has_bnl, has_covering
         details = node.get("details") or {}
-        op = (details.get("operation") or "").lower()
+        op = "" if is_knn_scan(details) else (details.get("operation") or "").lower()
         access_type = (details.get("access_type") or "").lower()
         join_algo = (details.get("join_algorithm") or "").lower()
         using_join_buffer = (details.get("using_join_buffer") or "").lower()

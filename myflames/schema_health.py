@@ -165,12 +165,12 @@ mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
 import re
 import time
 
-from .server_info import galera_enabled, product_name
+from .server_info import galera_enabled, product_name, server_label
 from .connector import ConnectorError
 from .health import SEVERITY
 from .perf_common import (Reader, _bytes_text, _count_text, _duration_text, _number, _round, base_report, check_limit,
                           check_schemas, denied, ident, preflight, reason, scope_sql, scope_text, table_text,
-                          TABLE_TYPES_SQL, ALL_SCHEMAS_TABLE_LIMIT, require_choice)
+                          TABLE_TYPES_SQL, ALL_SCHEMAS_TABLE_LIMIT, require_choice, system_schemas)
 
 SCHEMA_VERSION = "schema-2.0"
 TABLES_TAG = "/*myflames:tables*/ "
@@ -206,15 +206,15 @@ def _on(value):
     return (value or "").upper() in ("ON", "1")
 
 
-def _tables_sql(schemas):
+def _tables_sql(schemas, flavor=None):
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE, TABLE_ROWS, DATA_LENGTH, INDEX_LENGTH, DATA_FREE, "
             "CREATE_OPTIONS FROM information_schema.TABLES WHERE %s AND %s"
-            % (TABLE_TYPES_SQL, scope_sql("TABLE_SCHEMA", schemas)))
+            % (TABLE_TYPES_SQL, scope_sql("TABLE_SCHEMA", schemas, flavor)))
 
 
-def _userstat_sql(schemas):
+def _userstat_sql(schemas, flavor=None):
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ, ROWS_CHANGED FROM information_schema.TABLE_STATISTICS "
-            "WHERE %s" % scope_sql("TABLE_SCHEMA", schemas))
+            "WHERE %s" % scope_sql("TABLE_SCHEMA", schemas, flavor))
 
 
 def _activity(rows):
@@ -232,7 +232,7 @@ def _keys_sql(server, schemas, columns=None):
     expression = (columns or {}).get("EXPRESSION", "EXPRESSION") if server.engine == "mysql" else "NULL"
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, NULLABLE, "
             "INDEX_TYPE, %s FROM information_schema.STATISTICS WHERE NON_UNIQUE = 0 AND %s"
-            % (expression, scope_sql("TABLE_SCHEMA", schemas)))
+            % (expression, scope_sql("TABLE_SCHEMA", schemas, server.flavor)))
 
 
 def _columns_sql(server, schemas):
@@ -243,7 +243,7 @@ def _columns_sql(server, schemas):
     if server.engine == "mysql":
         names = "(%s OR EXTRA LIKE '%%VIRTUAL GENERATED%%')" % names
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, EXTRA FROM information_schema.COLUMNS WHERE %s AND %s"
-            % (names, scope_sql("TABLE_SCHEMA", schemas)))
+            % (names, scope_sql("TABLE_SCHEMA", schemas, server.flavor)))
 
 
 #: MySQL: INNODB_TABLESPACES reads the dictionary's tablespace records one by
@@ -270,7 +270,7 @@ def table_report(conn, schemas=None, fresh=False, limit=DEFAULT_LIMIT,
     """Return the ``schema-2.0`` report. Read-only; see the module docstring.
 
     *schemas* (a list of names) limits the read; None reads every schema
-    except mysql, sys, performance_schema and information_schema. *fresh*
+    except the system schemas (including villagesql only on VillageSQL). *fresh*
     reads MySQL's table statistics from the storage engine instead of the
     information_schema cache, for this connection only. The selected scope
     is capped at *require_choice_above* (default 2,000); None is an explicit
@@ -289,14 +289,14 @@ def table_report(conn, schemas=None, fresh=False, limit=DEFAULT_LIMIT,
         server = preflight(reader, VARIABLES)
         require_choice(reader, server, schemas, require_choice_above, "Table health")
         mysql = server.engine == "mysql"
-        sql = _tables_sql(schemas)
+        sql = _tables_sql(schemas, server.flavor)
         if fresh and mysql and server.var("information_schema_stats_expiry") is not None:
             # A session variable: it lasts for this one client call.
             sql = "SET SESSION information_schema_stats_expiry = 0; " + TABLES_TAG + sql
             raw["fresh_applied"] = True
         raw["tables"] = reader.rows(sql)
         if server.userstat:
-            raw["table_stats"] = reader.optional(_userstat_sql(schemas), "information_schema.TABLE_STATISTICS",
+            raw["table_stats"] = reader.optional(_userstat_sql(schemas, server.flavor), "information_schema.TABLE_STATISTICS",
                                                  notes)
         prefix = ""
         if mysql and (server.var("show_gipk_in_create_table_and_information_schema") or "").upper() in ("OFF", "0"):
@@ -642,9 +642,12 @@ def compute_tables(server, raw, schemas=None, fresh=False, limit=DEFAULT_LIMIT, 
     expiry = _number(server.var("information_schema_stats_expiry"))
     # MySQL 5.7 has no information_schema statistics cache (no such variable).
     cache = server.engine == "mysql" and expiry is not None
+    # Keep the report's historical display order on existing server flavors.
+    excluded = ["mysql", "sys", "performance_schema", "information_schema"]
+    excluded.extend(name for name in system_schemas(server.flavor) if name not in excluded)
     report.update({
         "scope": {"schemas": list(schemas) if schemas else None, "all_user_schemas": schemas is None,
-                  "excluded": ["mysql", "sys", "performance_schema", "information_schema"] if schemas is None else []},
+                  "excluded": excluded if schemas is None else []},
         "statistics": {
             "fresh_requested": bool(fresh), "fresh": bool(raw.get("fresh_applied")) or not cache
             or expiry == 0, "cache_expiry_s": expiry if cache else None,
@@ -1106,7 +1109,8 @@ def _notes(server, raw, report, schemas, fresh, notes):
                      "names myflames cannot decode, or tables created during the read); their free space "
                      "is not judged.")
     if schemas is None:
-        notes.append("Read every schema except mysql, sys, performance_schema and information_schema.")
+        excluded = report["scope"]["excluded"]
+        notes.append("Read every schema except %s and %s." % (", ".join(excluded[:-1]), excluded[-1]))
 
 
 def at_or_worse(report, level):
@@ -1138,7 +1142,7 @@ def _rows_text(value):
 
 
 def format_text(report):
-    head = "%s %s" % (product_name(report), report["server_version"] or "?")
+    head = server_label(report)
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     head += ", %s" % scope_text(report["scope"]["schemas"])

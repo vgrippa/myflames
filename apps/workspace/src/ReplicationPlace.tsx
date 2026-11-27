@@ -150,7 +150,7 @@ export function ReplicationPlace({
   const current = report && report.key === key ? report.report : null;
   useWindowStatus(`replication:${key}`, {
     connectionState: connection.host ? connectionLabel(connection) : "No connection",
-    engineVersion: current && current.server_version ? engineName(current.engine, current.server_version) : undefined,
+    engineVersion: current && current.server_version ? engineName(current.engine, current.server_version, current.server_product, current.server_base) : undefined,
   });
 
   const showBar =

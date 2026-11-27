@@ -69,7 +69,7 @@ type DigestReport = {
   statements: TopStatement[];
   engine: string;
   version: string;
-  server_product?: string | null;
+  server_product?: string | null; server_base?: string | null;
   source?: string;
   filter: DigestFilterMode;
   coverage?: TopCoverage;
@@ -121,7 +121,7 @@ function sourceTable(report: DigestReport) {
 function fromSlow(res: SlowLogReport, kind: "table" | "file"): DigestReport {
   return {
     kind, slow: res, statements: res.statements as unknown as TopStatement[], engine: res.engine || "",
-    version: res.server_version || "", server_product: res.server_product, source: kind === "table" ? "mysql.slow_log" : "slow_log_file",
+    version: res.server_version || "", server_product: res.server_product, server_base: res.server_base, source: kind === "table" ? "mysql.slow_log" : "slow_log_file",
     filter: "time", notes: res.notes || [], totals: null, others: null, cpu: null,
   };
 }
@@ -456,7 +456,7 @@ const BASELINE_RULE = <>
 /** A Performance Schema report as Save baseline sends it (the server keeps a part). */
 export function digestReading(r: DigestReport): DigestReading {
   return {
-    schema_version: "top-1.0", engine: r.engine, server_version: r.version, server_product: r.server_product ?? null,
+    schema_version: "top-1.0", engine: r.engine, server_version: r.version, server_product: r.server_product ?? null, server_base: r.server_base,
     order: r.filter, limit: r.limit ?? r.statements.length, read_at: r.read_at || new Date().toISOString(),
     coverage: r.coverage ? { uptime_s: r.coverage.uptime_s, counting_since: r.coverage.counting_since ?? null,
       oldest_first_seen: r.coverage.oldest_first_seen ?? null, digest_lost: r.coverage.digest_lost } : null,
@@ -611,7 +611,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onAnaly
         const res = await api<TopReport>("live/top", { connection: c, order: filter as TopOrder, limit, extra_metrics: true, with_identity: true }, signal);
         return {
           kind: "pfs", statements: res.statements || [], engine: res.engine, version: res.server_version,
-          server_product: res.server_product,
+          server_product: res.server_product, server_base: res.server_base,
           coverage: "coverage" in res ? res.coverage : undefined, notes: res.notes || [], filter,
           totals: "totals" in res ? res.totals : undefined, others: "others" in res ? res.others : undefined,
           cpu: "cpu" in res ? res.cpu : undefined, read_at: new Date().toISOString(), limit, reading_server: readingServerOf(res),
@@ -721,7 +721,7 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onAnaly
   const current = isFile ? null : bound?.key === reads.key ? report : null;
   useWindowStatus(`digest:${reads.key}`, {
     connectionState: connection.host ? connectionLabel(connection) : "No connection",
-    engineVersion: current?.version ? engineName(current.engine, current.version, current.server_product) : undefined,
+    engineVersion: current?.version ? engineName(current.engine, current.version, current.server_product, current.server_base) : undefined,
     refreshing: !!reads.loading || !!fileRead.loading,
   });
   function openRow(row: DigestRow, callback: QueryDigestProps["onExplain"], explain = false) {
@@ -973,12 +973,12 @@ export function QueryDigestView({ connection, onOpenInEditor, onExplain, onAnaly
   function textReport() {
     if (!report) return "";
     const lines = ["# myflames query digest",
-      ...(report.kind === "file" ? [] : [`# Server: ${engineName(report.engine, report.version, report.server_product)}`,
+      ...(report.kind === "file" ? [] : [`# Server: ${engineName(report.engine, report.version, report.server_product, report.server_base)}`,
         `# Connection: ${bound?.label}`]),
       `# Generated at: ${new Date().toISOString()}`,
       ...(slow ? [`# Rank by: ${SLOW_ORDERS.find(([k]) => k === slow.order)?.[1] || slow.order}`] : [`# Filter mode: ${report.filter}`]),
       `# Source: ${sourceOf(report)} (${sourceTable(report)})`,
-      ...(slow && slow.engine ? [`# Logged by: ${engineName(slow.engine, slow.server_version || "", slow.server_product)}`] : []),
+      ...(slow && slow.engine ? [`# Logged by: ${engineName(slow.engine, slow.server_version || "", slow.server_product, slow.server_base)}`] : []),
       `# Coverage: ${periodOf(report)}`,
       ...(slow ? [`# Clock: ${slow.clock.text}`,
         `# Time range: ${slow.range.applied ? `${slow.range.from || "the start"} to ${slow.range.to || "the end"}` : "any time"}`,

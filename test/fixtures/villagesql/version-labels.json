@@ -1,0 +1,653 @@
+[
+  {
+    "name": "unparseable-explicit-villagesql-release",
+    "version": "8.4.11-villagesql-unknown",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unparseable-explicit-villagesql-upstream",
+    "version": "unreadable",
+    "base": "percona",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_explicit_label": "VillageSQL ? (Percona Server ?)"
+  },
+  {
+    "name": "empty-explicit-villagesql-unknown-base",
+    "version": "",
+    "base": null,
+    "expected_release": null,
+    "expected_label": null,
+    "expected_explicit_label": "VillageSQL ? (?)"
+  },
+  {
+    "name": "stable-0.0.8",
+    "version": "8.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL 8.4.11)"
+  },
+  {
+    "name": "stable-unknown-base",
+    "version": "8.4.11-villagesql-0.0.8",
+    "base": null,
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (8.4.11)"
+  },
+  {
+    "name": "percona-codebase",
+    "version": "8.4.11-villagesql-0.0.8",
+    "base": "percona",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (Percona Server 8.4.11)"
+  },
+  {
+    "name": "development-build",
+    "version": "9.7.2-villagesql-0.0.9-dev-543f42e0601",
+    "base": "mysql",
+    "expected_release": "0.0.9-dev",
+    "expected_label": "VillageSQL 0.0.9-dev (MySQL 9.7.2)"
+  },
+  {
+    "name": "release-candidate-build",
+    "version": "8.4.11-villagesql-0.0.9-rc.1-543f42e0601",
+    "base": "mysql",
+    "expected_release": "0.0.9-rc.1",
+    "expected_label": "VillageSQL 0.0.9-rc.1 (MySQL 8.4.11)"
+  },
+  {
+    "name": "hex-prerelease",
+    "version": "8.4.11-villagesql-0.0.9-deadbee",
+    "base": "mysql",
+    "expected_release": "0.0.9-deadbee",
+    "expected_label": "VillageSQL 0.0.9-deadbee (MySQL 8.4.11)"
+  },
+  {
+    "name": "hex-prerelease-followed-by-hash",
+    "version": "8.4.11-villagesql-0.0.9-deadbee-543f42e0601",
+    "base": "mysql",
+    "expected_release": "0.0.9-deadbee",
+    "expected_label": "VillageSQL 0.0.9-deadbee (MySQL 8.4.11)"
+  },
+  {
+    "name": "single-hash-shaped-label",
+    "version": "8.4.11-villagesql-0.0.9-543f42e0601",
+    "base": "mysql",
+    "expected_release": "0.0.9-543f42e0601",
+    "expected_label": "VillageSQL 0.0.9-543f42e0601 (MySQL 8.4.11)"
+  },
+  {
+    "name": "forty-hex-prerelease",
+    "version": "8.4.11-villagesql-0.0.9-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base": "mysql",
+    "expected_release": "0.0.9-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected_label": "VillageSQL 0.0.9-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (MySQL 8.4.11)"
+  },
+  {
+    "name": "forty-hex-build",
+    "version": "8.4.11-villagesql-0.0.9-dev-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base": "mysql",
+    "expected_release": "0.0.9-dev",
+    "expected_label": "VillageSQL 0.0.9-dev (MySQL 8.4.11)"
+  },
+  {
+    "name": "seven-hex-build",
+    "version": "8.4.11-villagesql-0.0.9-dev-aBcDeF0",
+    "base": "mysql",
+    "expected_release": "0.0.9-dev",
+    "expected_label": "VillageSQL 0.0.9-dev (MySQL 8.4.11)"
+  },
+  {
+    "name": "forty-one-hex-build-refused",
+    "version": "8.4.11-villagesql-0.0.9-dev-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "six-hex-build-refused",
+    "version": "8.4.11-villagesql-0.0.9-dev-abc123",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "nonhex-build-refused",
+    "version": "8.4.11-villagesql-0.0.9-dev-zzzzzzz",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "ascii-prerelease-dev",
+    "version": "8.4.11-villagesql-0.0.9-dev",
+    "base": "mysql",
+    "expected_release": "0.0.9-dev",
+    "expected_label": "VillageSQL 0.0.9-dev (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-alpha",
+    "version": "8.4.11-villagesql-0.0.9-alpha",
+    "base": "mysql",
+    "expected_release": "0.0.9-alpha",
+    "expected_label": "VillageSQL 0.0.9-alpha (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-rc.1",
+    "version": "8.4.11-villagesql-0.0.9-rc.1",
+    "base": "mysql",
+    "expected_release": "0.0.9-rc.1",
+    "expected_label": "VillageSQL 0.0.9-rc.1 (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-Beta.2",
+    "version": "8.4.11-villagesql-0.0.9-Beta.2",
+    "base": "mysql",
+    "expected_release": "0.0.9-Beta.2",
+    "expected_label": "VillageSQL 0.0.9-Beta.2 (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-RC1",
+    "version": "8.4.11-villagesql-0.0.9-RC1",
+    "base": "mysql",
+    "expected_release": "0.0.9-RC1",
+    "expected_label": "VillageSQL 0.0.9-RC1 (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-DEV",
+    "version": "8.4.11-villagesql-0.0.9-DEV",
+    "base": "mysql",
+    "expected_release": "0.0.9-DEV",
+    "expected_label": "VillageSQL 0.0.9-DEV (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-K",
+    "version": "8.4.11-villagesql-0.0.9-K",
+    "base": "mysql",
+    "expected_release": "0.0.9-K",
+    "expected_label": "VillageSQL 0.0.9-K (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-I",
+    "version": "8.4.11-villagesql-0.0.9-I",
+    "base": "mysql",
+    "expected_release": "0.0.9-I",
+    "expected_label": "VillageSQL 0.0.9-I (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-i",
+    "version": "8.4.11-villagesql-0.0.9-i",
+    "base": "mysql",
+    "expected_release": "0.0.9-i",
+    "expected_label": "VillageSQL 0.0.9-i (MySQL 8.4.11)"
+  },
+  {
+    "name": "ascii-prerelease-s",
+    "version": "8.4.11-villagesql-0.0.9-s",
+    "base": "mysql",
+    "expected_release": "0.0.9-s",
+    "expected_label": "VillageSQL 0.0.9-s (MySQL 8.4.11)"
+  },
+  {
+    "name": "hyphen-preview",
+    "version": "8.4.11-villagesql-0.0.9-preview-2",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "hyphen-preview-build",
+    "version": "8.4.11-villagesql-0.0.9-preview-2-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "underscore-custom",
+    "version": "8.4.11-villagesql-0.0.9-custom_build",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "underscore-custom-build",
+    "version": "8.4.11-villagesql-0.0.9-custom_build-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "escape-injection",
+    "version": "8.4.11-villagesql-0.0.9-rc.1\u001b[31m",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "escape-injection-build",
+    "version": "8.4.11-villagesql-0.0.9-rc.1\u001b[31m-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "html-injection",
+    "version": "8.4.11-villagesql-0.0.9-<b>rc.1</b>",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "html-injection-build",
+    "version": "8.4.11-villagesql-0.0.9-<b>rc.1</b>-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "escape-prefix",
+    "version": "8.4.11-villagesql-0.0.9-\u001b[31mdev",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "escape-prefix-build",
+    "version": "8.4.11-villagesql-0.0.9-\u001b[31mdev-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "slash-injection",
+    "version": "8.4.11-villagesql-0.0.9-dev/owned",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "slash-injection-build",
+    "version": "8.4.11-villagesql-0.0.9-dev/owned-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "metadata-plus",
+    "version": "8.4.11-villagesql-0.0.9-dev+build",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "metadata-plus-build",
+    "version": "8.4.11-villagesql-0.0.9-dev+build-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "kelvin-casefold",
+    "version": "8.4.11-villagesql-0.0.9-\u212a",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "kelvin-casefold-build",
+    "version": "8.4.11-villagesql-0.0.9-\u212a-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "capital-dotted-i-casefold",
+    "version": "8.4.11-villagesql-0.0.9-\u0130",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "capital-dotted-i-casefold-build",
+    "version": "8.4.11-villagesql-0.0.9-\u0130-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "dotless-i-casefold",
+    "version": "8.4.11-villagesql-0.0.9-\u0131",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "dotless-i-casefold-build",
+    "version": "8.4.11-villagesql-0.0.9-\u0131-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "long-s-casefold",
+    "version": "8.4.11-villagesql-0.0.9-\u017f",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "long-s-casefold-build",
+    "version": "8.4.11-villagesql-0.0.9-\u017f-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "accented-label",
+    "version": "8.4.11-villagesql-0.0.9-r\u00e7.1",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "accented-label-build",
+    "version": "8.4.11-villagesql-0.0.9-r\u00e7.1-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "unicode-digit",
+    "version": "8.4.11-villagesql-0.0.9-\u0661",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "unicode-digit-build",
+    "version": "8.4.11-villagesql-0.0.9-\u0661-543f42e0601",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "ordinary-mysql",
+    "version": "8.4.11",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "ordinary-percona",
+    "version": "8.4.11-11",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "ordinary-mariadb",
+    "version": "11.4.13-MariaDB",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "empty-version",
+    "version": "",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "uppercase-product-marker",
+    "version": "8.4.11-VILLAGESQL-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-product-marker",
+    "version": "8.4.11-v\u0131llagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null
+  },
+  {
+    "name": "ascii-whitespace-space",
+    "version": " 8.4.11-villagesql-0.0.8 ",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL 8.4.11)",
+    "expected_upstream": "8.4.11"
+  },
+  {
+    "name": "ascii-whitespace-tab",
+    "version": "\t8.4.11-villagesql-0.0.8\t",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL 8.4.11)",
+    "expected_upstream": "8.4.11"
+  },
+  {
+    "name": "ascii-whitespace-cr",
+    "version": "\r8.4.11-villagesql-0.0.8\r",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL 8.4.11)",
+    "expected_upstream": "8.4.11"
+  },
+  {
+    "name": "ascii-whitespace-lf",
+    "version": "\n8.4.11-villagesql-0.0.8\n",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL 8.4.11)",
+    "expected_upstream": "8.4.11"
+  },
+  {
+    "name": "ascii-whitespace-ff",
+    "version": "\f8.4.11-villagesql-0.0.8\f",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL 8.4.11)",
+    "expected_upstream": "8.4.11"
+  },
+  {
+    "name": "ascii-whitespace-vt",
+    "version": "\u000b8.4.11-villagesql-0.0.8\u000b",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL 8.4.11)",
+    "expected_upstream": "8.4.11"
+  },
+  {
+    "name": "unicode-leading-nbsp",
+    "version": "\u00a08.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-boundary-nbsp",
+    "version": "8.4.11-villagesql-0.0.8\u00a0",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-leading-nel",
+    "version": "\u00858.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-boundary-nel",
+    "version": "8.4.11-villagesql-0.0.8\u0085",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-leading-ogham",
+    "version": "\u16808.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-boundary-ogham",
+    "version": "8.4.11-villagesql-0.0.8\u1680",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-leading-em-space",
+    "version": "\u20038.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-boundary-em-space",
+    "version": "8.4.11-villagesql-0.0.8\u2003",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-leading-line-separator",
+    "version": "\u20288.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-boundary-line-separator",
+    "version": "8.4.11-villagesql-0.0.8\u2028",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-leading-paragraph-separator",
+    "version": "\u20298.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-boundary-paragraph-separator",
+    "version": "8.4.11-villagesql-0.0.8\u2029",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-leading-ideographic",
+    "version": "\u30008.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-boundary-ideographic",
+    "version": "8.4.11-villagesql-0.0.8\u3000",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-leading-bom",
+    "version": "\ufeff8.4.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-boundary-bom",
+    "version": "8.4.11-villagesql-0.0.8\ufeff",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-upstream-digits-arabic-indic",
+    "version": "\u0668.\u0664.\u0661\u0661-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-digits-arabic-indic",
+    "version": "8.4.11-villagesql-\u0668.\u0664.\u0661\u0661",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-upstream-digits-fullwidth",
+    "version": "\uff18.\uff14.\uff11\uff11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-digits-fullwidth",
+    "version": "8.4.11-villagesql-\uff18.\uff14.\uff11\uff11",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  },
+  {
+    "name": "unicode-upstream-digits-mixed",
+    "version": "8.\uff14.11-villagesql-0.0.8",
+    "base": "mysql",
+    "expected_release": "0.0.8",
+    "expected_label": "VillageSQL 0.0.8 (MySQL ?)",
+    "expected_upstream": null
+  },
+  {
+    "name": "unicode-release-digits-mixed",
+    "version": "8.4.11-villagesql-8.\uff14.11",
+    "base": "mysql",
+    "expected_release": null,
+    "expected_label": null,
+    "expected_upstream": "8.4.11",
+    "expected_explicit_label": "VillageSQL ? (MySQL 8.4.11)"
+  }
+]

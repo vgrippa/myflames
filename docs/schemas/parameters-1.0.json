@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/parameters-1.0.json",
+  "title": "myflames parameters-1.0",
+  "required": [
+    "schema_version",
+    "items"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "parameters-1.0"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/parameter"
+      }
+    }
+  },
+  "$defs": {
+    "parameter": {
+      "type": "object",
+      "required": [
+        "name",
+        "value",
+        "sensitive"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sensitive": {
+          "type": "boolean",
+          "description": "True for an inventory secret. Displayed values are redacted; editors must start empty and require an explicit replacement. The redaction marker is never a replacement value."
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

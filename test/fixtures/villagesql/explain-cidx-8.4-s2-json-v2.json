@@ -1,0 +1,27 @@
+{
+  "limit": 10,
+  "query": "/* select#1 */ select `review_knn`.`t`.`id` AS `id` from `review_knn`.`t` where (`review_knn`.`t`.`id` > 2) order by vsql_knn_index_test.kvec_l2_distance(`review_knn`.`t`.`v`,'[1,0,0,0]') limit 10",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "operation": "Custom index distance scan on idx_v",
+          "access_type": "index_distance_scan",
+          "estimated_rows": 2003.0,
+          "estimated_total_cost": 401.3001552886024
+        }
+      ],
+      "condition": "(t.id > 2)",
+      "operation": "Filter: (t.id > 2)",
+      "access_type": "filter",
+      "estimated_rows": 2003.0,
+      "estimated_total_cost": 401.3001552886024
+    }
+  ],
+  "operation": "Limit: 10 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "limit_offset": 0,
+  "estimated_rows": 10.0,
+  "estimated_total_cost": 401.3001552886024
+}

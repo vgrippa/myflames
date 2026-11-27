@@ -111,6 +111,12 @@ def _normalize_kind(node):
     idx_access = (details.get("index_access_type") or "").strip().lower()
     op = _extra_text(node)
 
+    # VillageSQL custom indexes choose their own KNN search algorithm.
+    # Keep this distinct from a full index walk, including when a join
+    # inspects its inner child. No dispatch entry means no Big O claim.
+    if idx_access == "index_knn_scan" or access in ("index_distance_scan", "index_distance", "knn_scan"):
+        return "index_knn_scan"
+
     # Joins and operations pass through directly.
     if access in (
         "join", "sort", "group", "union", "weedout", "semijoin", "materialize",

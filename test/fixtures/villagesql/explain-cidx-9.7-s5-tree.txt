@@ -1,0 +1,5 @@
+-> Table scan on s  (cost=205..207 rows=10)
+    -> Materialize  (cost=204..204 rows=10)
+        -> Limit: 10 row(s)  (cost=202 rows=10)
+            -> Custom index distance scan on idx_v  (cost=202 rows=2005)
+

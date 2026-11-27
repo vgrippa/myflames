@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "$id": "https://github.com/vgrippa/myflames/docs/schemas/variable-1.0.json",
+  "title": "myflames variable-1.0",
+  "required": [
+    "schema_version",
+    "name",
+    "sensitive"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "variable-1.0"
+    },
+    "name": {
+      "type": "string"
+    },
+    "sensitive": {
+      "type": "boolean",
+      "description": "True for an inventory secret. Displayed values are redacted; editors must start empty and require an explicit replacement. The redaction marker is never a replacement value."
+    },
+    "global_value": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "session_value": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "default": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "value_bindings": {
+      "type": "object",
+      "description": "Opaque private-state bindings, not authorization to execute a change."
+    }
+  }
+}

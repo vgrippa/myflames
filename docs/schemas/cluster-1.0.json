@@ -187,11 +187,12 @@
       "type": "string",
       "enum": [
         "mysql",
-        "percona",
+        "percona", "villagesql",
         "mariadb"
       ],
       "description": "Product family. Percona Server and Percona XtraDB Cluster are MySQL builds: engine mysql, flavor percona."
     },
+    "server_base": {"enum": ["mysql", "percona", null]},
     "server_product": {
       "type": "string",
       "description": "MySQL, Percona Server, Percona XtraDB Cluster or MariaDB."

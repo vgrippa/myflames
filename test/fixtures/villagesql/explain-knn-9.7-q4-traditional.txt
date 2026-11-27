@@ -1,0 +1,1 @@
+1	SIMPLE	vsql_knn	NULL	ALL	NULL	NULL	NULL	NULL	2000	100.00	Using temporary; Using filesort

@@ -6,8 +6,8 @@ not appear. Scope, type, bounds and mutability share the single-variable
 reader's rules. A label describes application timing, not permission or a
 promise that an arbitrary value will pass the separate change review.
 """
-from . import mysql_sysvar_help, sysvar_docs, variables
-from .server_info import percona_variable
+from . import dbops, mysql_sysvar_help, sysvar_docs, variables
+from .server_info import has_percona_features, percona_variable, product_identity, villagesql_variable
 
 
 SCHEMA_VERSION = "parameters-1.0"
@@ -71,16 +71,19 @@ def source_help(version_tuple, name):
     return mysql_sysvar_help.HELP.get(name)
 
 
-def documentation(engine, version_tuple, name, flavor=None):
+def documentation(engine, version_tuple, name, flavor=None, base=None):
     """``{"url", "source"}``: the official manual page for system variable
     *name* on this server, or None. Nothing is fetched; sysvar_docs is
     generated from saved reference pages. MySQL and Percona servers use the
     MySQL Reference Manual; a name it does not document links to Percona's
-    manuals only on a Percona server (flavor "percona"). MariaDB uses its own
-    documentation."""
+    manuals on Percona Server or VillageSQL's proved Percona base. MariaDB
+    uses its own documentation."""
     name = (name or "").lower()
     if not variables._NAME.match(name):
         return None
+    if villagesql_variable(name, flavor):
+        return {"url": "https://villagesql.com/docs/en/8.4/stable/reference.md",
+                "source": "VillageSQL documentation"}
     if engine == "mariadb":
         found = _location(sysvar_docs.MARIADB.get(name), ("0.0",), (0, 0))
         if not found:
@@ -94,7 +97,7 @@ def documentation(engine, version_tuple, name, flavor=None):
         version, page, anchor = found
         return {"url": sysvar_docs.MYSQL_URL % (version, sysvar_docs.MYSQL_PAGES[page], anchor or "sysvar_" + name),
                 "source": "MySQL %s Reference Manual" % version}
-    if flavor != "percona":
+    if not has_percona_features(flavor, base):
         return None
     for table, versions, pages, url, product in (
             (sysvar_docs.PERCONA, sysvar_docs.PERCONA_VERSIONS, sysvar_docs.PERCONA_PAGES, sysvar_docs.PERCONA_URL,
@@ -124,18 +127,16 @@ def _check_names(checks):
 
 
 def _flavor(engine, flavor, globals_):
-    """mysql, percona or mariadb: the server's own flavor when the caller
-    knows it, else Percona's @@version_comment ("Percona Server (GPL), ...",
-    "Percona XtraDB Cluster (GPL), ...")."""
+    """Prefer the caller's flavor, otherwise use the server's version fields."""
     if engine == "mariadb":
         return "mariadb"
-    if flavor in ("mysql", "percona"):
+    if flavor in ("mysql", "percona", "villagesql", "readyset"):
         return flavor
-    return "percona" if "percona" in str(globals_.get("version_comment") or "").lower() else "mysql"
+    return product_identity(globals_.get("version"), globals_.get("version_comment"))["flavor"]
 
 
 def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persisted_rows=None,
-                       metadata_rows=None, catalog_rows=None, checks=None, notes=None, flavor=None):
+                       metadata_rows=None, catalog_rows=None, checks=None, notes=None, flavor=None, base=None):
     """Build ``parameters-1.0`` from decoded positional rows, without I/O.
 
     Row order follows the SELECT constants above; ``rows`` is SHOW GLOBAL
@@ -144,9 +145,9 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
     catalog_rows, or SHOW rows as an incomplete fallback. Values are already
     unescaped by perf_common.Reader.
     modifiable="none" means the server sets the value; no option or SET changes it.
-    *flavor* (``percona`` on Percona Server) marks the variables Percona adds
-    with ``vendor: "percona"`` (server_info.PERCONA_VARIABLES); every other
-    item has ``vendor: None``.
+    *flavor* marks VillageSQL additions with ``vendor: "villagesql"`` and
+    Percona additions with ``vendor: "percona"`` on Percona Server or the
+    VillageSQL Percona codebase. Every other item has ``vendor: None``.
     """
     mysql = engine == "mysql"
     # MySQL 5.7 has neither performance_schema.variables_info nor
@@ -166,6 +167,9 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
                 {name: row.get("global_value") for name, row in catalog.items()})
     associations = _check_names(checks)
     flavor = _flavor(engine, flavor, globals_)
+    if flavor == "villagesql" and base is None:
+        base = product_identity(globals_.get("version"), globals_.get("version_comment"),
+                                globals_.get("villagesql_server_version")).get("base")
     items = []
     for name, value in sorted(globals_.items()):
         info = {"name": name, "engine": engine, "version_tuple": version_tuple,
@@ -192,24 +196,36 @@ def compute_parameters(engine, version_tuple, rows=None, info_rows=None, persist
                 # MySQL 5.7 has no SET PERSIST_ONLY: only the option file changes it.
                 modifiable = "option_file" if not mysql or mysql57 or "np" in flags else "restart"
         description = cat.get("comment") if not mysql else meta.get("documentation") or source_help(version_tuple, name)
+        is_sensitive = dbops.sensitive(name)
+        default = variables._default(info)
         items.append({
-            "name": name, "value": value[:variables.MAX_VALUE_LENGTH] if value is not None else None,
-            "truncated": value_truncated(value, engine, catalog=catalog_rows is not None and not mysql),
+            "name": name,
+            "value": (None if value is None else dbops.REDACTED if is_sensitive
+                      else value[:variables.MAX_VALUE_LENGTH]),
+            "sensitive": is_sensitive,
+            "truncated": False if is_sensitive else value_truncated(
+                value, engine, catalog=catalog_rows is not None and not mysql),
             "scope": scope, "apply_type": None if dynamic is None else "dynamic" if dynamic else "static",
-            "modifiable": modifiable, "type": kind, "values": values, "min": low, "max": high,
-            "block_size": block, "default": variables._default(info), "source": source,
+            "modifiable": modifiable, "type": kind, "values": None if is_sensitive else values,
+            "min": low, "max": high, "block_size": block,
+            "default": None if default is None else dbops.REDACTED if is_sensitive else default,
+            "source": source,
             "source_label": source_label, "source_path": detail.get("path") or cat.get("path") or None,
             "set_time": detail.get("set_time"), "set_user": detail.get("set_user"), "set_host": detail.get("set_host"),
             "persisted": name in persisted if persisted is not None else None,
             "modified": source.upper() not in (("COMPILED",) if mysql else ("COMPILE-TIME", "AUTO")) if source else None,
             "description": description[:600] if description else None,
-            "documentation": documentation(engine, version_tuple, name, flavor),
+            "documentation": documentation(engine, version_tuple, name, flavor, base),
             "checks": sorted(associations.get(name, ())),
-            "vendor": "percona" if percona_variable(name, flavor, version_tuple) else None,
+            "vendor": ("villagesql" if villagesql_variable(name, flavor) else
+                       "percona" if percona_variable(name, flavor, version_tuple, base) else None),
         })
-    return {"schema_version": SCHEMA_VERSION, "complete": all(rowset is not None for rowset in required),
-            "notes": list(notes or []), "flavor": flavor or ("mariadb" if engine == "mariadb" else "mysql"),
-            "items": items}
+    report = {"schema_version": SCHEMA_VERSION, "complete": all(rowset is not None for rowset in required),
+              "notes": list(notes or []), "flavor": flavor or ("mariadb" if engine == "mariadb" else "mysql"),
+              "items": items}
+    if flavor == "villagesql":
+        report["server_base"] = base
+    return report
 
 
 def _before_80(version_tuple):
@@ -244,7 +260,7 @@ def read_parameters(reader, server, notes, checks):
     # The enclosing report may already say the same thing (config_review's 5.7 note).
     notes.extend(n for n in local_notes if n not in notes)
     report = compute_parameters(server.engine, server.version_tuple, checks=checks, notes=local_notes,
-                                flavor=getattr(server, "flavor", None), **data)
+                                flavor=getattr(server, "flavor", None), base=getattr(server, "base", None), **data)
     if not resolved:
         # SQL NULL and the text NULL are still indistinguishable for some values.
         report["complete"] = False

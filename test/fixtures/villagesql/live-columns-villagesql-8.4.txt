@@ -1,0 +1,4 @@
+review	vsql_types	id	int	int	NULL	NULL	10	0
+review	vsql_types	uuid_col	vsql_uuid.uuid	vsql_uuid.uuid	16	16	NULL	NULL
+review	vsql_types	complex_col	vsql_complex.COMPLEX	vsql_complex.COMPLEX	16	16	NULL	NULL
+review	vsql_types	inet_col	vsql_network_address.INET	vsql_network_address.INET	19	19	NULL	NULL

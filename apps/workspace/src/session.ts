@@ -110,6 +110,7 @@ export const SERVER_KINDS = [
   "diagram",
   "config",
   "instruments",
+  "extensions",
   "maintenance",
   "accounts",
 ] as const;
@@ -226,6 +227,7 @@ export const TABLE_IDS = [
   "instruments.groups",
   "instruments.consumers",
   "instruments.list",
+  "extensions.list",
   "parameters.all",
   "parameters.versions",
 ] as const;

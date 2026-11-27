@@ -150,8 +150,8 @@ function localPhrase(report: ClusterReport, me: ClusterMember, stale: boolean) {
 
 /** One line (at most 120 characters) naming the cluster and its state. */
 export function summaryText(report: ClusterReport, stale = false): string {
-  if (!report.available) return engineName(report.engine, report.server_version, report.server_product);
-  if (report.kind === "none") return engineName(report.engine, report.server_version, report.server_product);
+  if (!report.available) return engineName(report.engine, report.server_version, report.server_product, report.server_base);
+  if (report.kind === "none") return engineName(report.engine, report.server_version, report.server_product, report.server_base);
   const c = report.cluster;
   const parts = [`${kindLabel(report)}${c.name ? ` ${c.name}` : ""}`];
   const me = report.members.find((m) => m.local);
@@ -219,7 +219,7 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
   const current = report && report.key === key ? report.report : null;
   useWindowStatus(`cluster:${key}`, {
     connectionState: connection.host ? connectionLabel(connection) : "No connection",
-    engineVersion: current && current.server_version ? engineName(current.engine, current.server_version, current.server_product) : undefined,
+    engineVersion: current && current.server_version ? engineName(current.engine, current.server_version, current.server_product, current.server_base) : undefined,
   });
   return (
     <InspectorContext.Provider value={inspector}>

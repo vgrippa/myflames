@@ -445,6 +445,19 @@
         "index_access_type": {
           "type": "string"
         },
+        "limit": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Reported row limit for an index access, including VillageSQL KNN K."
+        },
+        "lookup_condition": {
+          "type": "string",
+          "description": "VillageSQL KNN distance-expression preview. The query-point portion is capped at 128 characters, including an ellipsis and value-count or character-count annotation when shortened."
+        },
+        "access_description": {
+          "type": "string",
+          "description": "Python-owned explanation of a custom-index nearest-neighbour read."
+        },
         "condition": {
           "type": "string"
         },

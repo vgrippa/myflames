@@ -34,7 +34,7 @@ export type SkipIdentity = {
   server_identity: Facts;
 };
 /** The product family: Percona Server and Percona XtraDB Cluster are MySQL builds (engine "mysql"). */
-export type Flavor = "mysql" | "percona" | "mariadb";
+export type Flavor = "mysql" | "percona" | "mariadb" | "villagesql";
 export type SkipPlan = Partial<ReceiverGuard> & {
   channel: string; engine: string; server_version: string | null;
   available: boolean; message: string | null; method: string | null;
@@ -46,7 +46,7 @@ export type SkipPlan = Partial<ReceiverGuard> & {
 export type SourceVersion = {
   version: string | null; version_comment: string | null; engine: "mysql" | "mariadb" | null;
   /** Percona Server keeps engine "mysql"; a relay log names it by its release suffix. */
-  flavor?: Flavor | null; product?: string | null;
+  flavor?: Flavor | null; product?: string | null; server_base?: string | null;
   provenance: "saved_connection" | "relay_log" | null; label: string;
   profile_id: string | null; profile_name: string | null; relay_log_file: string | null;
   verified: boolean; caveat: string | null; reason: string | null; hint: string | null; attempts: string[];
@@ -63,7 +63,7 @@ export type ReplicationChannel = {
 };
 export type ReplicationReport = Partial<ReceiverGuard> & {
   schema_version: "replication-1.0"; engine: string; server_version: string | null;
-  flavor?: Flavor | null; server_product?: string | null;
+  flavor?: Flavor | null; server_product?: string | null; server_base?: string | null;
   captured_at: string; uptime_s: number | null; available: boolean;
   message: string | null; replica: boolean; statement: string;
   gtid: Facts; settings: Facts; channels: ReplicationChannel[];
@@ -160,7 +160,7 @@ export type Tool = { dump_capabilities?: DumpCapabilities; dump_table_capabiliti
 export type LifecycleServer = {
   engine: string; version: string; identity?: Facts; variables?: Facts;
   /** mysql, percona or mariadb, and the product name (Percona Server keeps engine "mysql"). */
-  flavor?: string; product?: string;
+  flavor?: string; product?: string; server_base?: string | null;
 };
 export type LifecycleTools = {
   schema_version: "lifecycle-tools-2.0"; tools: Record<string, Tool>;
@@ -200,7 +200,7 @@ export type UpgradeTarget = {
 };
 export type UpgradeTargets = {
   schema_version: "upgrade-targets-1.0";
-  server: { engine: "mysql" | "mariadb"; flavor: string; product: string; version: string };
+  server: { engine: "mysql" | "mariadb"; flavor: string; product: string; server_base?: string | null; version: string };
   install: { method: InstallMethod; label: string; confidence: "high" | "medium" | "low"; evidence: string[]; package: string | null; build_id: string | null; container: boolean };
   source: { kind: "release_notes" | "percona_repository" | "bundled" | "none"; label: string; urls: string[]; checked_at: string | null; error: string | null };
   guidance: { text: string; command: string | null; url: string | null };

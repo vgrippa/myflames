@@ -3546,7 +3546,7 @@ def predict(alter_sql, create_table_sql, engine, version, facts=None):
     """
     facts = dict(facts or {})
     engine = (engine or "").lower()
-    if engine == "percona":
+    if engine in ("percona", "villagesql"):
         engine = "mysql"
     result = {"predicted": False, "algorithm": None, "rebuild": None, "concurrent_dml": None, "summary": None,
               "text": None, "reason": "", "source": "", "clauses": [], "notes": [], "needs": [], "engine": engine,
