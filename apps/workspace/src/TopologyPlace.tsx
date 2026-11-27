@@ -362,9 +362,10 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     if (tab !== "map" || !report?.map || !selection.key) return null;
     const peer = report.map.nodes.find((node) => node.id === selection.key);
     if (!peer || peer.kind !== "peer") return null;
+    const peerLabel = !peer.host && /^\?(?::\d+)?$/.test(peer.label) ? "Replica without a reported address" : peer.label;
     return {
       key: peer.id,
-      title: peer.label,
+      title: peerLabel,
       meta: <Pill tone="neutral">Not in this group</Pill>,
       body: <>
         <InspectorSection title="Reported peer">
@@ -372,7 +373,9 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             ["Address", mapAddress(peer)],
             ["Reported by", peer.seen_by.map(memberName).join(", ") || "Not reported"],
           ]} />
-          <p>Not in this group: add a saved connection for {mapAddress(peer)} to this group to read it.</p>
+          <p>{peer.host
+            ? `Not in this group: add a saved connection for ${mapAddress(peer)} to this group to read it.`
+            : "Not in this group: add a saved connection for this server to this group to read it."}</p>
         </InspectorSection>
         <MapNodeLinks report={report} nodeId={peer.id} />
       </>,

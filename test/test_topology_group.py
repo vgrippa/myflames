@@ -118,6 +118,17 @@ def run_one(part_sql):
         emit(['@@version_comment'], [[comment]])
     elif lower == 'select @@version':
         emit(['@@version'], [[variables['version']]])
+    elif lower == 'select @@server_uuid':
+        if cfg.get('proxied_uuid_error'):
+            fail(cfg['proxied_uuid_error'])
+        if 'proxied_server_uuid' in cfg:
+            val = cfg['proxied_server_uuid']
+            emit(['@@server_uuid'], [[val]] if val is not None else [])
+        elif cfg.get('proxy') == 'readyset':
+            emit(['@@server_uuid'], [])
+        else:
+            val = variables.get('server_uuid')
+            emit(['@@server_uuid'], [[val]] if val is not None else [])
     elif lower.startswith('select @@global.'):
         name = lower[len('select @@global.'):]
         if cfg.get('exact_denied'):
@@ -132,6 +143,8 @@ def run_one(part_sql):
     elif lower == 'show readyset status':
         emit(['name', 'value'], [['Status', 'Online'], ['CDC Server', cfg.get('cdc_server')]])
     elif 'from replication_status limit 0' in lower:
+        if cfg.get('readyset_adapter'):
+            fail("ERROR 1146 (42S02): Table 'replication_status' doesn't exist")
         emit([], [])
     elif 'from readyset.upstream_servers' in lower or 'from upstream_servers' in lower:
         rows = cfg.get('upstreams', [])
@@ -216,6 +229,12 @@ def run_one(part_sql):
             emit(['MEMBER_ROLE', 'MEMBER_STATE'], [[role, state]] if present else [])
     elif 'from performance_schema.replication_group_member_stats' in lower:
         emit(['COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE'], [[cfg.get('queue', 0)]])
+    elif 'performance_schema.user_variables_by_thread' in lower:
+        if cfg.get('dump_threads_error'):
+            fail(cfg['dump_threads_error'])
+        rows = cfg.get('readyset_replicas', [])
+        emit(['replica_uuid', 'PROCESSLIST_HOST', 'PROCESSLIST_USER'],
+             [[row.get('uuid'), row.get('host'), row.get('user')] for row in rows])
     elif 'from performance_schema.session_connect_attrs' in lower:
         if cfg.get('attrs_error'):
             fail(cfg['attrs_error'])
@@ -3106,6 +3125,277 @@ class TopologyReadTests(GroupCase):
         self.assertEqual((edge['from'], edge['to'], edge['kind']), ('active', 'source', 'cache_upstream'))
         self.assertEqual(edge['evidence'], 'endpoint')
         self.assertIs(edge['verified'], False)
+
+    def test_map_readyset_proxied_uuid_verifies_upstream_without_copying_identity(self):
+        self.save('primary', 'G', host='203.0.113.10', port=3307)
+        readyset = member_fixture(
+            proxy='readyset',
+            readyset_adapter=True,
+            proxied_server_uuid=UUID_B,
+            cdc_server='internal-primary:3306',
+            upstreams=[{
+                'host': 'internal-primary', 'port': '3306', 'user': 'secret_upstream_user',
+                'database': 'secret_table', 'purpose': 'cdc, proxy', 'active_cdc': '1',
+                'health': 'up', 'password': 'secret_channel_password',
+            }],
+        )
+        readyset['variables']['version_comment'] = 'Readyset'
+        primary = member_fixture(UUID_B)
+        primary['variables'].update(hostname='vox1-host', port='3307')
+        with self.clients({'active.example': readyset, '203.0.113.10': primary}):
+            report = self.read('map')
+        nodes = self.assert_map_schema(report)
+        # Readyset never stores the proxied UUID as its own server_uuid or alias.
+        rs_member = next(m for m in report['members'] if m['profile_id'] == 'active')
+        self.assertIsNone(rs_member['server_uuid'])
+        self.assertIsNone(rs_member['duplicate_of'])
+        self.assertIsNone(nodes['active']['server_uuid'])
+        self.assertIsNone(nodes['active']['duplicate_of'])
+        self.assertEqual(set(nodes), {'active', 'primary'}, 'unmatched upstream address must not create a peer card')
+        self.assertEqual(len(report['map']['edges']), 1)
+        edge = report['map']['edges'][0]
+        self.assertEqual((edge['from'], edge['to'], edge['kind'], edge['evidence'], edge['verified'],
+                          edge['state'], edge['label']),
+                         ('active', 'primary', 'cache_upstream', 'proxied_identity', True, 'up', 'Upstream'))
+
+    def test_map_readyset_multi_upstream_labels_queries_and_preserves_other_address_evidence(self):
+        self.save('primary', 'G')
+        self.save('replica', 'G')
+        cases = (
+            ('queries_only', UUID_C, 'primary.example:3306', 'replica.example', 'replica', 'Upstream (queries)', 'primary'),
+            ('queries_unmatched_host', UUID_C, 'primary.example:3306', 'internal-replica', 'replica', 'Upstream (queries)', 'primary'),
+            ('cdc_matches_proxied', UUID_B, 'primary.example:3306', 'replica.example', 'primary', 'Upstream', 'replica'),
+        )
+        for name, proxied_uuid, cdc_server, query_host, verified_to, expected_label, addr_to in cases:
+            with self.subTest(case=name):
+                readyset = member_fixture(
+                    proxy='readyset',
+                    readyset_adapter=True,
+                    proxied_server_uuid=proxied_uuid,
+                    cdc_server=cdc_server,
+                    upstreams=[
+                        {'host': 'primary.example', 'port': '3306', 'purpose': 'cdc, proxy' if verified_to == 'primary' else 'cdc',
+                         'active_cdc': '1', 'health': 'up'},
+                        {'host': query_host, 'port': '3306', 'purpose': 'proxy', 'active_cdc': '0', 'health': 'up'},
+                    ],
+                )
+                readyset['variables']['version_comment'] = 'Readyset'
+                with self.clients({
+                    'active.example': readyset,
+                    'primary.example': member_fixture(UUID_B),
+                    'replica.example': member_fixture(UUID_C),
+                }):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(set(nodes), {'active', 'primary', 'replica'})
+                edges = {edge['to']: edge for edge in report['map']['edges']}
+                self.assertEqual(set(edges), {'primary', 'replica'})
+                self.assertEqual((edges[verified_to]['evidence'], edges[verified_to]['verified'], edges[verified_to]['label']),
+                                 ('proxied_identity', True, expected_label))
+                self.assertEqual((edges[addr_to]['evidence'], edges[addr_to]['verified'], edges[addr_to]['label']),
+                                 ('endpoint', False, 'Upstream'))
+
+    def test_map_readyset_registration_attributed_positively_on_mysql8_and_mysql57(self):
+        rs_replica_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        ext_replica_uuid = 'eeeeeeee-0000-4000-8000-000000000005'
+        self.save('replica', 'G')
+        self.save('readyset', 'G', port=3309)
+        cases = (
+            ('mysql84_show_replicas', '8.4.13', None, [
+                {'Server_Id': '103', 'Host': 'mf-rs-readyset', 'Port': '3307', 'Source_Id': '101', 'Replica_UUID': rs_replica_uuid},
+                {'Server_Id': '102', 'Host': 'replica.example', 'Port': '3306', 'Source_Id': '101', 'Replica_UUID': UUID_B},
+                {'Server_Id': '104', 'Host': 'ext-replica.example', 'Port': '3306', 'Source_Id': '101', 'Replica_UUID': ext_replica_uuid},
+            ]),
+            ('mysql57_show_slave_hosts', '5.7.44-48', 'SHOW REPLICAS', [
+                {'Server_id': '103', 'Host': '', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': rs_replica_uuid},
+                {'Server_id': '102', 'Host': 'replica.example', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': UUID_B},
+                {'Server_id': '104', 'Host': 'ext-replica.example', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': ext_replica_uuid},
+            ]),
+        )
+        for name, version, err_on, replica_rows in cases:
+            with self.subTest(case=name):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=replica_rows,
+                    readyset_replicas=[{'uuid': rs_replica_uuid, 'host': '192.168.112.4', 'user': 'secret_upstream_user'}],
+                )
+                primary['variables']['version'] = version
+                if err_on:
+                    primary['error_on'] = err_on
+                    primary['query_error'] = "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax near 'REPLICAS'"
+                replica = member_fixture(UUID_B, channels=[{
+                    'Source_UUID': UUID_A, 'Source_Host': 'active.example', 'Source_Port': '3306',
+                    'Replica_IO_Running': 'Yes', 'Replica_SQL_Running': 'Yes',
+                }])
+                readyset = member_fixture(
+                    proxy='readyset',
+                    readyset_adapter=True,
+                    proxied_server_uuid=UUID_A,
+                    cdc_server='internal-primary:3306',
+                    upstreams=[{'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy',
+                                'active_cdc': '1', 'health': 'up', 'user': 'secret_upstream_user'}],
+                )
+                readyset['variables']['version_comment'] = 'Readyset'
+                with self.clients({
+                    'active.example': primary,
+                    'replica.example': replica,
+                    'readyset.example': readyset,
+                }):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                # Readyset registration must not produce a peer card; the real unsaved replica must stay a peer.
+                self.assertEqual(set(nodes), {'active', 'replica', 'readyset', 'peer:' + ext_replica_uuid})
+                rs_edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertEqual((rs_edge['from'], rs_edge['to'], rs_edge['evidence'], rs_edge['verified']),
+                                 ('readyset', 'active', 'proxied_identity', True))
+                self.assertEqual(rs_edge['reason'], 'Also registered on active as a replica (server ID 103)')
+                self.assertNotIn('estimate', rs_edge['reason'])
+                # No separate replication edge to Readyset or a Readyset peer.
+                repl_targets = {e['to'] for e in report['map']['edges'] if e['kind'] == 'replication'}
+                self.assertEqual(repl_targets, {'replica', 'peer:' + ext_replica_uuid})
+
+    def test_map_readyset_registration_endpoint_positive_and_fallback_boundaries(self):
+        rs_replica_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        other_uuid = 'eeeeeeee-0000-4000-8000-000000000005'
+        self.save('readyset', 'G', port=3309)
+
+        def rs_fixture(proxied=UUID_A, host='internal-primary'):
+            f = member_fixture(
+                proxy='readyset',
+                readyset_adapter=True,
+                proxied_server_uuid=proxied,
+                cdc_server=host + ':3306',
+                upstreams=[{'host': host, 'port': '3306', 'purpose': 'cdc, proxy', 'active_cdc': '1', 'health': 'up'}],
+            )
+            f['variables']['version_comment'] = 'Readyset'
+            return f
+
+        # 1. Positive discriminator B: endpoint matches Readyset saved host + port even without performance_schema
+        # (and with a second unmatched real replica present so the single-row fallback cannot fire).
+        with self.subTest(case='positive_endpoint_match'):
+            primary = member_fixture(UUID_A, replicas=[
+                {'Server_Id': '103', 'Host': 'readyset.example', 'Port': '3309', 'Replica_UUID': rs_replica_uuid},
+                {'Server_Id': '205', 'Host': 'ext.example', 'Port': '3306', 'Replica_UUID': other_uuid},
+            ])
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset', 'peer:' + other_uuid})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103)')
+            self.assertEqual([e['to'] for e in report['map']['edges'] if e['kind'] == 'replication'],
+                             ['peer:' + other_uuid])
+
+        # 1b. SQL error on SELECT @@server_uuid (for example a MariaDB upstream) stays optional and keeps address evidence.
+        with self.subTest(case='proxied_uuid_sql_error_falls_back_to_address'):
+            rs_err = rs_fixture(proxied=None, host='active.example')
+            rs_err['proxied_uuid_error'] = "ERROR 1193 (HY000) at line 1: Unknown system variable 'server_uuid'"
+            with self.clients({'active.example': member_fixture(UUID_A), 'readyset.example': rs_err}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset'})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual((edge['evidence'], edge['verified']), ('endpoint', False))
+
+        # 2. Exact fallback (estimate): verified CDC upstream, 1 unmatched registration row, 1 Readyset, no pfs rows.
+        with self.subTest(case='fallback_estimate_mysql57_empty_host'):
+            primary = member_fixture(
+                UUID_A,
+                error_on='SHOW REPLICAS',
+                query_error="ERROR 1064 (42000) at line 1: syntax error near 'REPLICAS'",
+                replicas=[{'Server_id': '103', 'Host': '', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': rs_replica_uuid}],
+            )
+            primary['variables']['version'] = '5.7.44'
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset'})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertTrue(edge['verified'])
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103) (estimate)')
+
+        # 3. Fallback refused when source has 2 unmatched registration rows (neither is guessed away).
+        with self.subTest(case='fallback_refused_two_unmatched_rows'):
+            primary = member_fixture(UUID_A, replicas=[
+                {'Server_id': '103', 'Host': '', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': rs_replica_uuid},
+                {'Server_id': '205', 'Host': '', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': other_uuid},
+            ])
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_replica_uuid, nodes)
+            self.assertIn('peer:' + other_uuid, nodes)
+            self.assertEqual(nodes['peer:' + rs_replica_uuid]['label'],
+                             'Replica without a reported address (server ID 103, port 3306)')
+            self.assertEqual(nodes['peer:' + other_uuid]['label'],
+                             'Replica without a reported address (server ID 205, port 3306)')
+            self.assertNotIn('?:3306', json.dumps(report))
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertNotIn('reason', edge)
+
+        # 4. Fallback refused when Readyset upstream is only an address estimate (not verified by Rule 1).
+        with self.subTest(case='fallback_refused_unverified_upstream'):
+            primary = member_fixture(UUID_A, replicas=[
+                {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_replica_uuid},
+            ])
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture(proxied=None, host='active.example')}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_replica_uuid, nodes)
+            self.assertEqual(nodes['peer:' + rs_replica_uuid]['label'],
+                             'Replica without a reported address (server ID 103, port 3306)')
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertFalse(edge['verified'])
+            self.assertNotIn('reason', edge)
+
+        # 5. Fallback refused when two Readyset members use the same source without positive disambiguation.
+        with self.subTest(case='fallback_refused_two_readysets'):
+            self.save('readyset2', 'G', port=3310)
+            primary = member_fixture(UUID_A, replicas=[
+                {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_replica_uuid},
+            ])
+            with self.clients({
+                'active.example': primary,
+                'readyset.example': rs_fixture(),
+                'readyset2.example': rs_fixture(),
+            }):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_replica_uuid, nodes)
+            self.assertEqual(nodes['peer:' + rs_replica_uuid]['label'],
+                             'Replica without a reported address (server ID 103, port 3306)')
+            for edge in report['map']['edges']:
+                if edge['kind'] == 'cache_upstream':
+                    self.assertNotIn('reason', edge)
+
+    def test_map_hostless_registration_peer_never_uses_question_mark_label(self):
+        cases = (
+            ('mysql57_uuid', '5.7.44', 'SHOW REPLICAS',
+             {'Server_id': '42', 'Host': '', 'Port': '3306', 'Master_id': '1', 'Slave_UUID': UUID_C},
+             'peer:' + UUID_C),
+            ('mysql84_uuid', '8.4.13', None,
+             {'Server_Id': '42', 'Host': '', 'Port': '3306', 'Source_Id': '1', 'Replica_UUID': UUID_C},
+             'peer:' + UUID_C),
+            ('mysql57_no_uuid', '5.7.44', 'SHOW REPLICAS',
+             {'Server_id': '42', 'Host': '', 'Port': '3306', 'Master_id': '1', 'Slave_UUID': ''},
+             'peer:active:server-id:42:3306'),
+        )
+        for name, version, err_on, row, expected_id in cases:
+            with self.subTest(case=name):
+                primary = member_fixture(UUID_A, replicas=[row])
+                primary['variables']['version'] = version
+                if err_on:
+                    primary['error_on'] = err_on
+                    primary['query_error'] = "ERROR 1064 (42000) at line 1: syntax error near 'REPLICAS'"
+                with self.clients({'active.example': primary}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertIn(expected_id, nodes)
+                peer = nodes[expected_id]
+                self.assertEqual(peer['label'], 'Replica without a reported address (server ID 42, port 3306)')
+                self.assertIsNone(peer['host'])
+                self.assertEqual(peer['port'], 3306)
+                self.assertNotIn('?:3306', json.dumps(report))
 
     def test_map_external_source_deduplicates_peer_uuid_across_member_reads(self):
         self.save('second', 'G')

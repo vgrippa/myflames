@@ -38,7 +38,7 @@ const CLUSTER: Record<MapCluster["kind"], string> = {
 };
 
 export function mapAddress(node: MapNode): string {
-  if (!node.host) return "Address not reported";
+  if (!node.host) return node.port === null ? "Address not reported" : `Address not reported (port ${node.port})`;
   const bare = node.host.replace(/^\[|\]$/g, "");
   const host = bare.includes(":") ? `[${bare}]` : bare;
   return node.port === null ? host : `${host}:${node.port}`;
@@ -438,13 +438,14 @@ export function TopologyMap({ map, selection }: { map: MapReport; selection: Sel
             const tone = peer ? "unknown" : node.outcome === "failed" ? "problem" : node.outcome === "not_reached" ? "watch" : stateTone(node.state);
             const status = peer ? "Not in this group" : node.outcome !== "read" ? OUTCOME[node.outcome] : node.state || "State not reported";
             const engine = peer ? "Reported peer" : [node.product || (node.engine === "mariadb" ? "MariaDB" : node.engine === "mysql" ? "MySQL" : "Server"), node.version].filter(Boolean).join(" ");
+            const nodeLabel = peer && !node.host && /^\?(?::\d+)?$/.test(node.label) ? "Replica without a reported address" : node.label;
             return <button key={node.id} type="button" className={`topology-map-node tone-${tone}${peer ? " is-peer" : ""}${selection.key === key ? " is-selected" : ""}`}
               data-node={node.id} data-row-key={key} data-outcome={peer ? undefined : node.outcome}
-              aria-pressed={selection.key === key} aria-label={[node.label, mapAddress(node), engine, !peer && node.role ? ROLE[node.role] || node.role : "", aliasOf ? `Alias of ${aliasOf}` : "", status].filter(Boolean).join(", ")}
-              title={`${node.label}\n${mapAddress(node)}\n${engine}${aliasOf ? `\nAlias of ${aliasOf}` : ""}\n${status}`}
+              aria-pressed={selection.key === key} aria-label={[nodeLabel, mapAddress(node), engine, !peer && node.role ? ROLE[node.role] || node.role : "", aliasOf ? `Alias of ${aliasOf}` : "", status].filter(Boolean).join(", ")}
+              title={`${nodeLabel}\n${mapAddress(node)}\n${engine}${aliasOf ? `\nAlias of ${aliasOf}` : ""}\n${status}`}
               style={{ left: x, top: y, width: CARD_W, height: CARD_H }} onClick={() => selection.select(key, true)}>
               <span className="topology-eyebrow"><ServerGlyph /><span>{engine}</span></span>
-              <strong className="topology-map-node-name">{node.label}</strong>
+              <strong className="topology-map-node-name">{nodeLabel}</strong>
               <span className="topology-map-node-address">{mapAddress(node)}</span>
               {aliasOf && <span className="topology-map-alias">Alias of {aliasOf}</span>}
               <span className="topology-map-node-state">{!peer && node.role ? `${ROLE[node.role] || node.role} · ` : ""}{status}</span>
