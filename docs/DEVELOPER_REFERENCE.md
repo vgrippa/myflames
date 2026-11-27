@@ -9068,50 +9068,80 @@ logs in.
     `SHOW READYSET STATUS` supplies `CDC Server` and `Replication Status`, and
     the `upstream_servers` rows supply host, port, purpose, `active_cdc`,
     health and user. On a MySQL source with replicas when the group has a
-    Readyset member (`has_readyset`), `_read_dump_threads` collects Binlog
-    Dump sessions with their replica/slave UUID, client host, client user and
-    all connect attributes within `DUMP_QUERY_SECONDS = 5` s, classifying each
-    session as `mysqld` (`program_name`/`_program_name` `mysqld` or
-    `_client_role` `binary_log_listener`), `unknown` (attributes unreadable,
-    or `Performance_schema_session_connect_attrs_lost` NULL or above 0),
-    `none` (no attributes) or `other`; the READYSET% client read
-    (`_READYSET_CLIENTS_SQL`) runs only when a `none` class exists.
+    Readyset member (`has_readyset`), `_read_dump_threads` runs best-effort
+    queries via `_dump_guard` with an isolated `DUMP_QUERY_SECONDS = 5` s
+    per-query timeout so a query timeout never latches `_ReadConnection.failure`
+    or `TargetEvidenceConnection.problem` (non-timeout failures and identity
+    mismatches still propagate to the member guard). It reads
+    `performance_schema` and `performance_schema_session_connect_attrs_size`,
+    and when attribute storage is enabled (`performance_schema` `ON` and
+    `performance_schema_session_connect_attrs_size` > 0) also reads
+    `Performance_schema_session_connect_attrs_lost`, then collects Binlog Dump
+    sessions with their replica/slave UUID, client host, client user and all
+    connect attributes. When attribute storage size is 0 or unknown (or
+    `performance_schema` is not `ON`), `_classify_dump_attrs` marks every dump
+    session `unknown` (checked before `mysqld` attributes); otherwise each
+    session is classified as `mysqld` (`program_name`/`_program_name` `mysqld`
+    or `_client_role` `binary_log_listener`), `unknown` (truncated last
+    session or `Performance_schema_session_connect_attrs_lost` NULL or above
+    0), `none` (no attributes) or `other`. The READYSET% client read
+    (`_READYSET_CLIENTS_SQL`, also under `DUMP_QUERY_SECONDS = 5` s) runs only
+    when a `none` class exists, and if it times out every non-`mysqld` dump
+    session becomes `unknown`. When `performance_schema` is `OFF`, any of the
+    three initial dump queries times out, `_DUMP_THREADS_SQL` returns `None`, or
+    `dump_threads` is empty with `performance_schema` unknown or `attrs_lost`
+    unreadable while storage is enabled, `dump_read_failed` is set.
 
     | Read | What it proves | Line or note |
     | --- | --- | --- |
     | Proxied `@@server_uuid` (with `@@hostname`, `@@port`) forwarded by Readyset | which read MySQL member serves Readyset's queries | `cache_upstream` with evidence `proxied_identity`, verified (solid) |
     | `CDC Server` plus `upstream_servers` purpose and `active_cdc` | the same member also feeds base-table replication (CDC) | the proxied edge is labelled `Upstream`; without CDC evidence the label is `Upstream (queries)` |
     | An `upstream_servers` row resolving only by address | a possible upstream | `cache_upstream` dashed (address match, not verified), or a peer |
-    | A source Binlog Dump session (UUID, one host, matching user or READYSET% client, class `none`) | this Readyset member owns a `SHOW REPLICAS` row | a registration note on its verified upstream edge instead of a stray replica peer |
-    | A single `SHOW REPLICAS` row with no reported Host, dump evidence unavailable, one CDC-verified Readyset with Replication Status `Running` | the probable owner of that row | the same note with ` (estimate)` |
+    | A source Binlog Dump session (UUID, one host, matching upstream user or READYSET% client when no upstream user is exposed, class `none`) | this Readyset member owns a `SHOW REPLICAS` row | a registration note on its verified upstream edge instead of a stray replica peer |
+    | A single `SHOW REPLICAS` row with no reported Host, row dump evidence unavailable, one CDC-verified Readyset with Replication Status `Running` | the probable owner of that row | the same note with ` (estimate)` |
 
-    CDC evidence for the proxied member needs one of: (a) one real upstream
-    row whose purpose covers both CDC and proxy (or one purpose-less row),
-    not contradicted by a resolved endpoint to another member, (b) `CDC
-    Server` equal to the proxied `@@hostname:@@port` read in the same pass, or
-    (c) the CDC address resolving by endpoint to the proxied member (or
-    unresolved with no other active CDC upstream and a CDC upstream resolving
-    to it). An unmatched CDC-only upstream is never swallowed: it keeps its
-    own edge or peer unless one unmatched proxy upstream covers the proxied
-    member. Registration attribution tries a database source's unmatched
-    `SHOW REPLICAS` rows against the Readyset members with CDC evidence on
-    that source (`readyset_cdc`), ignoring an Admin listener whose deployment
-    signature (saved host, SSH host, upstream endpoints, `CDC Server`) matches
-    an adapter listener. A dump row attributes only when its class is `none`,
-    its UUID appears with exactly one dump host, its user matches the Readyset
-    member's upstream users or the READYSET% client set, and its host matches
-    the Readyset member's endpoint under the loopback rules; a single host
-    match wins (pass A), else a sole CDC-verified Readyset with one user
-    candidate wins (pass B), and each Readyset member claims at most one
-    registration per source. Its verified upstream edge gains
+    A `CDC Server` endpoint not already present in `upstream_servers` is added
+    as a synthetic `cdc` upstream (`_from_cdc_server: True`), so a different
+    `CDC Server` (resolved or unresolved) is kept instead of being hidden. CDC
+    evidence for the proxied member needs one of: (a) a single real
+    `upstream_servers` row (`len(resolved) == 1` and not `_from_cdc_server`)
+    whose purpose covers both CDC and proxy or has no purpose, with neither
+    that row nor `CDC Server` resolving to another member, (b) `CDC Server`
+    equal to the proxied `@@hostname:@@port` read in the same pass (with `CDC
+    Server` not resolving to another member), or (c) `CDC Server` resolving by
+    endpoint to the proxied member (or unresolved with no other active CDC
+    upstream resolving elsewhere and a CDC upstream resolving to it). An
+    unmatched CDC-only upstream (or different `CDC Server`) is never swallowed
+    and keeps its own edge or peer; when no row matched `proxied_target`
+    directly, only a single unmatched proxy (non-CDC) upstream can fold into
+    the proxied edge. Registration attribution tries a database source's
+    unmatched `SHOW REPLICAS` rows against the Readyset members with CDC
+    evidence on that source (`readyset_cdc`), ignoring an Admin listener whose
+    deployment signature (saved host, SSH host, upstream endpoints, `CDC
+    Server`) matches an adapter listener. A dump row attributes only when its
+    class is `none`, its UUID appears with exactly one dump host, and its user
+    matches the Readyset member's upstream users (or, only when that Readyset
+    member exposes no upstream user, the READYSET% client `(host_key, user)`
+    set). Pass A claims single direct host matches under the loopback rules
+    first (ambiguity across multiple matching owners yields nothing); Pass B
+    (`"sole"`) claims only when the owner is unclaimed after Pass A, is the
+    sole owner on that source, has `verified_cdc` and `Replication Status`
+    `Running`, has one user candidate, has a READYSET% client attribute on the
+    dump row's host, and has exactly one remaining unmatched row resolving to
+    it (otherwise competing rows stay peers). Each Readyset member claims at
+    most one registration per source. Its verified upstream edge gains
     `Also registered on <source> as a replica (server ID <n>)` (without the
-    server ID when it is not a positive integer). The estimate fallback fires
-    only when dump evidence is unavailable (the dump read failed or every
-    session is `unknown`), exactly one unmatched row remains, it reports no
-    Host, its dump class is neither `mysqld` nor `other`, and the single
-    CDC-verified Readyset reports `Replication Status` `Running`; every other
-    unmatched row becomes a `Replica without a reported address` peer (with
-    its server ID and port when reported). A `SHOW REPLICAS` `Port` of 0
+    server ID when it is not a positive integer). The estimate fallback inspects
+    the row's own evidence and fires only when a single unmatched `SHOW
+    REPLICAS` row exists and remains unmatched, a single CDC-verified owner on
+    that source reports `Replication Status` `Running`, the row reports no
+    Host, the row's dump evidence is unavailable (`dump_read_failed`, row
+    class `unknown`, or `dump_attrs_lost`), its dump class is none of `mysqld`,
+    `other` or `none`, and its dump user(s) when known are not disjoint from
+    the owner's upstream users; every other unmatched row becomes a peer
+    (labelled `Replica without a reported address`, with its server ID and port
+    when reported, whenever it reports no host and has a UUID or positive
+    server ID). A `SHOW REPLICAS` `Port` of 0
     means no port: `topology_links._probe_connection` keeps it `None` instead
     of coercing 3306, so the peer label shows the host alone rather than an
     invented `(port 3306)`. Bounds: dump attribute rows at
@@ -9498,26 +9528,43 @@ logs in.
   title ends with `Opens the <Place> place on this member`, while its
   **Details** button (`Details for <label>`, only on navigating cards) opens
   the inspector instead. The click records the member in
-  `memberByPlace[<place>]`: Readyset, ProxySQL, Cluster and Replication route
-  every read of the place to that member's own saved connection
-  (`memberRequest`, the member's endpoint under the group's strictest safety,
-  with the group name so membership is re-checked at every login), falling
-  back to the active member (the primary or source the backend picked) when
-  no choice exists or the member left the group (which sets the removal
-  notice `<names> is/are not in this group any more; its views moved to
-  <member>.`). The top bar's `Using <member> from group <group>.` note is
-  derived per place from the request that place reads (`placeRequest`), so it
-  can never name another member, shows only when the place reads a member
-  other than the connection in use, and yields to the removal notice; the
-  connection's group label (`Group connection <group> · N servers ·
-  <member>`) names the member in use. Focus lands on the place heading after
-  a card opens a place, and the Back chip returns to Topology with its tab,
-  scroll and selection, returning focus to the card that was activated.
-  Sidebar badges, muted states and staleness compare each place's report
-  against `connectionKey` of its own request (`proxyRequest`,
-  `readysetRequest`, `clusterRequest`, `replicationRequest`), never the
-  window's `request`, and the connection type strip shows
-  `placeRequest.read_only`, so a member read through a non-active saved
+  `memberByPlace[<place>]`: Server (via `serverRequest`, covering Server,
+  Workload, Tuning and Database diagram), Query editor (via `queryRequest` for
+  new tabs), Readyset (`readysetRequest`), ProxySQL (`proxyRequest`), Cluster
+  (`clusterRequest`) and Replication (`replicationRequest`) route reads to
+  that member's own saved connection (`memberRequest`, the member's endpoint
+  under the group's strictest safety, with the group name so membership is
+  re-checked at every login), falling back to the active member (the primary
+  or source the backend picked) when no choice exists or the member left the
+  group (which sets the removal notice `<names> is/are not in this group any
+  more; its views moved to <member>.`). `usingNote` derives
+  `Using <member> from group <group>.` from each place's own request when it
+  reads a member other than the group's active member (`req.profile_id !==
+  labState.profile_id`), yielding to `memberNote` when set: Readyset,
+  ProxySQL, Cluster and Replication render `memberNote || placeMemberNote` in
+  the top bar (`.nav-member-note`), whereas Server passes `memberNote ||
+  serverMemberNote` via `groupServer.note` to `Server.tsx`, which renders it in
+  each view header (`.group-server-note` via `ViewServerContext` in
+  `kit.tsx`); the connection's group label (`Group connection <group> · N
+  servers · <member>`) names the active member in use. Because Server views
+  use `useOpenRead`, a Server view that already showed another member's report
+  keeps that report greyed (`otherConnection`) until an explicit **Refresh**.
+  Focus lands on the place heading after a card opens a place, and the Back
+  chip returns to Topology with its tab, scroll and selection, returning focus
+  to the card that was activated. In `main.tsx`, `Server` currently receives
+  `topologyConnection={request}`, so `Server`'s Refresh all for `cluster` and
+  `replication` and its skip-loop banner (`loopsBound`, `loopServer`,
+  `stopLoopNow`) follow `topologyConnection` (the active connection) rather
+  than `clusterRequest`/`replicationRequest`, and `ReplicationPlace`
+  `clusterKind` checks `clusterReport?.key` against `clusterRequest`. Sidebar
+  badges and staleness (`clusterState`, `proxyNav`, `readysetDbStale`/
+  `readysetNavState`, `replicationState`) compare each place's report against
+  `connectionKey` of its own request (`clusterRequest`, `proxyRequest`,
+  `readysetRequest`, `replicationRequest`), `isProxyHere` and `isReadysetHere`
+  check `proxyReport`/`proxyRequest` and `readysetReport`/`readysetRequest`,
+  and `clusterMuted`, `proxyMuted`, `readysetMuted` and `replicationMuted`
+  currently OR in those two flags across places; the connection type strip
+  shows `placeRequest.read_only`, so a member read through a non-active saved
   connection keeps its own Read-only badge.
 - **Rolling change UI (`RollingChangeSheet.tsx`, `rollingRuns.ts`)**: a
   **Parameters** row's inspector offers **Change on every member…** (disabled

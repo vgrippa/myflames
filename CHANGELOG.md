@@ -8,12 +8,13 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Improvements
 
-- **Topology**: clicking a server card on the Map opens that server's place (Server, Replication, Cluster, ProxySQL or Readyset) on its own saved connection, with a note in the top bar naming the server in use and **Back to Topology** returning to the map; the card's **Details** button keeps the on-map inspector.
+- Clicking a **Topology** > **Map** server card opens its place (**Server**, **Replication**, **Cluster**, **ProxySQL** or **Readyset**) on its saved connection, with **Back to Topology** returning to the map and **Details** keeping the inspector. Non-active members show `Using <server> from group <group>.` (in **Server** view headers, or the top bar elsewhere), and loaded **Server** views keep the earlier member's report greyed until **Refresh**.
 
 ### Bug fixes
 
-- **Topology map**: the Readyset upstream line no longer claims base-table replication from proxied identity alone, so it says `Upstream (queries)` until CDC evidence confirms the upstream, and an unmatched CDC-only upstream keeps its own line instead of being swallowed. A MySQL source's replica registration is now attributed to the Readyset member whose Binlog Dump session matches instead of drawing a stray `Replica without a reported address`, and a match inferred from a single host-less row with unavailable dump evidence is marked `(estimate)`. A replica that reports port 0 no longer appears with an invented port 3306.
-- **Accessibility and layout**: map member cards name the place they open in their accessible name and tooltip, keyboard focus moves to the place heading when a card opens a place and back to the card on **Back to Topology**, and the top bar's member note keeps its own width so it no longer squeezes the connection picker at the 720 px minimum window width.
+- Fixed an issue where **Topology** > **Map** could claim base-table replication for a Readyset upstream from proxied identity alone or swallow an unmatched CDC-only upstream or differing CDC server. Query-only links now say `Upstream (queries)` until CDC evidence confirms them.
+- Fixed an issue where **Topology** > **Map** drew a stray `Replica without a reported address` when a MySQL source's replica registration matched Readyset, or invented port `3306` for port `0`. Unmatched host-less registrations still show `Replica without a reported address`, and single-row estimates without dump evidence show `(estimate)`.
+- Fixed an issue where **Topology** > **Map** member cards did not name the destination place or restore keyboard focus on **Back to Topology**, and where a long member note in the top bar could squeeze the connection picker at the 720 px window width. Map cards now name the place in their accessible label and tooltip, move focus to the place heading and back to the card on return, and keep their own width in the top bar.
 
 ### Security fixes
 

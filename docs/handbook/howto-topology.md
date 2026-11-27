@@ -61,16 +61,16 @@ Related: [Create a connection group from Home](howto-topology.md#create-a-connec
 Use this when you want to look at one server of the group on its own page instead of the whole-group map.
 
 1. On **Topology** > **Map**, click the server's card. myflames opens that server's place on its own saved connection: a database server opens **Server** (or **Replication** or **Cluster**, depending on its role), a ProxySQL card opens **ProxySQL**, and a Readyset card opens **Readyset**.
-2. Check the note in the top bar: `Using <server> from group <group>.` names the server whose connection the place is reading, so you always know which server you are looking at.
+2. When the place reads a member other than the group's active member, look for `Using <server> from group <group>.` (in the view header beside **Server:** in **Server**, or in the top bar in **Replication**, **Cluster**, **ProxySQL** and **Readyset**); no note is shown when the place already reads the group's active member.
 3. Click **Back to Topology** (the back chip in the top bar) to return to the map as you left it, with your tab and selection kept.
 
-What you see: the place reads that server directly, so its views, numbers and actions belong to that server alone. A card marked **Not in this group** is a reported peer: clicking it opens its details, not a place, because you have no saved connection for it.
+What you see: the place reads that server directly, so its views, numbers and actions belong to that server alone. If a **Server** view already showed another member from an earlier visit, it keeps that previous report greyed until you click **Refresh**. A card marked **Not in this group** is a reported peer: clicking it opens its details, not a place, because you have no saved connection for it.
 
 Good to know:
 
 - **Details**: every card that opens a place also has a **Details** button. Click it to inspect the card on the map (member facts, channels and links) without leaving the page.
 - **The Readyset line**: a solid line from a Readyset card to a database server names the upstream Readyset sends its work to. `Upstream` means the same server also feeds Readyset's base-table replication; `Upstream (queries)` means only the query upstream was confirmed. A note such as `Also registered on <source> as a replica` says the source itself lists this Readyset as a follower; when myflames could only guess the match it says `(estimate)`.
-- **Replica without a reported address**: a source reported a replica that myflames cannot name, either because it is not one of your saved connections in the group or because it reported no address. Save a connection for it and add it to the group to read it; before that it stays outside the group and is never logged in to.
+- **Replica without a reported address**: shown when a source reports a replica without a host and myflames cannot tie it to a saved member in the group or to a Readyset member. Save a connection for it and add it to the group to read it; before that it stays outside the group and is never logged in to.
 
 Related: [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology) and [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server).
 
