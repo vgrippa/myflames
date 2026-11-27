@@ -341,20 +341,11 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
                          'GRANT INSERT ON `data_%`.* TO `monitor`@`%`;')
         self.assertIsNone(m._grant_sql(missing, ACCOUNT, None))
 
-    def test_schema_grant_escapes_backslash_before_both_wildcards(self):
-        database = r'data\_%'
-        need = [(('INSERT',), database, False)]
-        for engine, version, partial in (('mysql', '8.4.11', False), ('mysql', '5.7.44', False),
-                                         ('mysql', '8.0.15', False), ('mariadb', '11.4.13', False),
-                                         ('mysql', '8.4.11', True)):
-            with self.subTest(engine=engine, version=version, partial=partial):
-                suggestion = m._grant_sql(need, ACCOUNT, partial)
-                pattern = database if partial else r'data\\\_\%'
-                self.assertEqual(suggestion, 'GRANT INSERT ON `%s`.* TO `monitor`@`%%`;' % pattern)
-                parsed = privileges.parse_grants([suggestion], engine, version, partial_revokes=partial)
-                self.assertIs(privileges.has(parsed, 'INSERT', 'database', database=database), True)
-                for other in ('dataXX', 'data_%', r'data\XX'):
-                    self.assertIsNot(privileges.has(parsed, 'INSERT', 'database', database=other), True)
+    def test_schema_grant_refuses_backslash_in_database(self):
+        need = [(('INSERT',), r'data\_%', False)]
+        for partial in (False, True, None):
+            with self.subTest(partial=partial):
+                self.assertIsNone(m._grant_sql(need, ACCOUNT, partial))
 
     def test_unknown_partial_revokes_never_produces_an_ambiguous_grant(self):
         conn = GrantsClient('ic-8.4-healthy', grants=[statement(['SUPER'])], variables={'partial_revokes': None})
@@ -404,7 +395,7 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
                                              {'checked': False, 'error': 'read failed'}))
 
     def test_current_user_quoting_never_changes_the_account(self):
-        cases = [("o'reilly@%", "`o'reilly`@`%`"), ('back\\slash@host%', '`back\\slash`@`host%`'),
+        cases = [("o'reilly@%", "`o'reilly`@`%`"),
                  ('tick`user@::1', '`tick``user`@`::1`'), ('user@2001:db8::42', '`user`@`2001:db8::42`'),
                  ('name@inside@%', '`name@inside`@`%`'), ('x`; GRANT SUPER@%', '`x``; GRANT SUPER`@`%`')]
         report = F.report('gr-8.4-two-members')
@@ -412,6 +403,85 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
             with self.subTest(account=account):
                 action = self.action(report, 'switch_to_multi_primary', self.checks([statement(['USAGE'])], account))
                 self.assertEqual(action['grant_sql'], 'GRANT GROUP_REPLICATION_ADMIN ON *.* TO %s;' % quoted)
+
+    def test_hostile_current_user_and_database_return_none_without_raising(self):
+        hostile_accounts = [
+            'dba\x01\\! id #@%', '\x15', '\x15@%', '\x1b[201~', '\x1b[201~@%',
+            '\x7f', '\x7f@%', '\x85', '\x85@%', '\u2028', '\u2028@%', '\u2029@%',
+            '\\', 'back\\slash@host%',
+        ]
+        for account in hostile_accounts:
+            with self.subTest(direct_account=account):
+                self.assertIsNone(m._grant_sql([(('GROUP_REPLICATION_ADMIN',), None, False)], account, False))
+        for partial in (False, True, None):
+            with self.subTest(direct_db_partial=partial):
+                self.assertIsNone(m._grant_sql([(('INSERT',), 'db\x15x', False)], ACCOUNT, partial))
+        for scenario, aid, expected_need in (
+                ('gr-8.4-two-members', 'switch_to_multi_primary', 'Needs GROUP_REPLICATION_ADMIN or SUPER.'),
+                ('galera-11.8-healthy', 'desync_node', 'Needs SUPER.')):
+            report = F.report(scenario)
+            for account in ('dba\x01\\! id #@%', 'dba\x15@%', 'dba\x1b[201~@%', 'dba\x7f@%',
+                            'dba\x85@%', 'dba\u2028@%', 'back\\slash@host%'):
+                with self.subTest(scenario=scenario, account=account):
+                    action = self.action(report, aid, self.checks([statement(['USAGE'])], account))
+                    self.assertFalse(action['enabled'])
+                    self.assertFalse(action['privileges_unreadable'])
+                    self.assertIsNone(action['grant_sql'])
+                    self.assertEqual(action['why_not'], expected_need)
+                    self.assertNotIn('partial_revokes', action['fix'])
+        # S-H1: even if _grant_sql raises ValueError, Cluster action build catches it and keeps the reason.
+        report = F.report('gr-8.4-two-members')
+        with mock.patch.object(m, '_grant_sql', side_effect=ValueError('Names cannot contain NUL or line breaks.')):
+            action = self.action(report, 'switch_to_multi_primary', self.checks([statement(['USAGE'])]))
+        self.assertFalse(action['enabled'])
+        self.assertIsNone(action['grant_sql'])
+        self.assertEqual(action['why_not'], 'Needs GROUP_REPLICATION_ADMIN or SUPER.')
+        self.assertNotIn('partial_revokes', action['fix'])
+
+    def test_non_ascii_current_user_and_database_fall_back_to_grant_unavailable(self):
+        payloads = [
+            '\u00c8' * 6 + 'DROP DATABASE prod;#',
+            '\u0e08DROP DATABASE prod;#',
+            'sales' + '\u0308' * 4 + 'DROP DATABASE prod;#',
+            'caf\u00e9',
+            'a\u00a0b',
+            'a\u00adb',
+            'a\u200bb',
+            'a\u202eb',
+        ]
+        for payload in payloads:
+            for partial in (False, True, None):
+                for account in (payload + '@%', 'monitor@' + payload):
+                    with self.subTest(direct_account=account, partial=partial):
+                        self.assertIsNone(m._grant_sql([(('GROUP_REPLICATION_ADMIN',), None, False)], account, partial))
+                for db in (payload, payload + '_%'):
+                    with self.subTest(direct_db=db, partial=partial):
+                        self.assertIsNone(m._grant_sql([(('INSERT',), db, False)], ACCOUNT, partial))
+        for scenario, aid, expected_need in (
+                ('gr-8.4-two-members', 'switch_to_multi_primary', 'Needs GROUP_REPLICATION_ADMIN or SUPER.'),
+                ('galera-11.8-healthy', 'desync_node', 'Needs SUPER.')):
+            report = F.report(scenario)
+            for payload in payloads:
+                for account in (payload + '@%', 'monitor@' + payload):
+                    with self.subTest(scenario=scenario, account=account):
+                        action = self.action(report, aid, self.checks([statement(['USAGE'])], account))
+                        self.assertFalse(action['enabled'])
+                        self.assertFalse(action['privileges_unreadable'])
+                        self.assertIsNone(action['grant_sql'])
+                        self.assertEqual(action['why_not'], expected_need)
+                        self.assertEqual(action['fix'], m._GRANT_UNAVAILABLE)
+        # Even when partial_revokes is None and a schema requirement has '_', an unsafe account still gets _GRANT_UNAVAILABLE.
+        ic_report = self.report((8, 4, 11), 'ic-8.4-healthy')
+        for payload in payloads:
+            for account in (payload + '@%', 'monitor@' + payload):
+                with self.subTest(scenario='ic-8.4-healthy', account=account):
+                    checks = {'shell': SHELL, 'grants': {'checked': True, 'account': account,
+                                                         'grants': [statement(['SUPER'])], 'partial_revokes': None}}
+                    action = self.action(ic_report, 'switch_to_multi_primary', checks)
+                    self.assertFalse(action['enabled'])
+                    self.assertFalse(action['privileges_unreadable'])
+                    self.assertIsNone(action['grant_sql'])
+                    self.assertEqual(action['fix'], m._GRANT_UNAVAILABLE)
 
     def test_unreadable_empty_unparsed_or_unknown_account_is_not_a_denial(self):
         report = F.report('gr-8.4-two-members')

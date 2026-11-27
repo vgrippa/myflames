@@ -1285,16 +1285,28 @@ try {
   ambiguousRoutes = true;
   await h.refresh();
   await h.select(`${clusterView} .cluster-card[data-row-key="${db2Key}"]`);
-  const useText = await page.$$eval('.view-inspector .cluster-action-why .cluster-use-node', (buttons) => buttons.map((b) => b.textContent.trim()));
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Stop Group Replication…").click());
+  await page.waitForSelector(".view-inspector .cluster-action-why:popover-open .cluster-use-node", { visible: true });
+  const useText = await page.$$eval('.view-inspector .cluster-action-why:popover-open .cluster-use-node', (buttons) => buttons.map((b) => b.textContent.trim()));
   assert.ok(useText.length > 0);
   assert.ok(useText.every((text) => text === "Use db-2"), "action links name the route from the reason, never solo-db's matching address");
   // A reason naming a saved connection outside the group offers no Use link;
   // Edit group… stays, the route being the group's to fix.
   await h.select(`${clusterView} .cluster-card[data-row-key="${db3Key}"]`);
   assert.match(await page.$eval(".view-inspector", (e) => e.textContent), /Connect to solo-db to act on this member/);
-  assert.equal(await page.$$eval(".view-inspector .cluster-action-why .cluster-use-node", (b) => b.length), 0,
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Stop Group Replication…").click());
+  await page.waitForFunction(() => {
+    const open = document.querySelector(".view-inspector .cluster-action-why:popover-open");
+    return !!open && (open.textContent || "").includes("Connect to solo-db");
+  });
+  assert.equal(await page.$$eval(".view-inspector .cluster-action-why:popover-open .cluster-use-node", (b) => b.length), 0,
     "solo-db is not a member of mf-ic: no Use link names it");
-  assert.ok(await page.$(".view-inspector .cluster-edit-group"), "Edit group… stays offered for the unrouted member");
+  assert.ok(await page.$(".view-inspector .cluster-action-why:popover-open .cluster-edit-group"), "Edit group… stays offered for the unrouted member");
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Stop Group Replication…").click());
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
   ambiguousRoutes = false;
 
   // --- A skip loop running on the active member keeps its banner, named by

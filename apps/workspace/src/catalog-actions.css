@@ -1,7 +1,11 @@
-/* The shared ActionGroup (CatalogActions.tsx): a disabled action's reason
-   and fix, under the buttons, full width; a long GRANT scrolls inside its
-   box instead of stretching the page. The class name stays
-   .cluster-action-why: Cluster and Readyset share it. */
+/* The shared ActionGroup (CatalogActions.tsx) and the app-level WhyDisabled
+   host (WhyDisabled.tsx, wired into privileges.ts): an enabled action's note
+   is visible text under the buttons, full width; a disabled action's reason
+   and fix open as a message anchored to the button on click, Enter or Space.
+   The HTML Popover API keeps it in the top layer (no scroll container clips
+   it) and CSS anchor positioning places it under its button, flipping instead
+   of leaving the viewport. A long GRANT scrolls inside its box instead of
+   stretching the message. */
 .cluster-action-why {
   flex-basis: 100%;
   min-width: 0;
@@ -23,4 +27,55 @@
 .cluster-action-why .ops-pre,
 .is-detail .cluster-action-why .ops-pre {
   max-height: 9em;
+}
+
+/* The message itself: the popover chrome. inset/margin reset the popover UA
+   centering; WhyDisabled places it inside the safe viewport so it never covers
+   the fixed status bar or a sticky toolbar, while CSS reserves them too. */
+.why-disabled {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: var(--space-2) 28px var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-popover);
+  max-width: min(28rem, calc(100vw - 16px));
+  max-height: min(60vh, calc(100vh - var(--topbar-height, 38px) - var(--statusbar-h, 26px) - 16px));
+  overflow: auto;
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+}
+
+.why-disabled .ops-pre {
+  max-width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-code-sm);
+  padding: var(--space-2);
+  background: var(--surface-pane);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+}
+
+.why-disabled::backdrop {
+  background: transparent;
+}
+
+.why-disabled p:last-of-type {
+  margin-bottom: 0;
+}
+
+.why-disabled .ops-commands {
+  margin-block: var(--space-1);
+}
+
+.why-disabled-close {
+  position: absolute;
+  inset-block-start: var(--space-1);
+  inset-inline-end: var(--space-1);
 }

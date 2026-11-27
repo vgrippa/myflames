@@ -1196,26 +1196,63 @@ try {
   await h.refresh();
   await page.waitForSelector(nodeButton("p-topo-2"), { visible: true });
 
-  // --- Parameters: a row's inspector offers the rolling change, disabled with
-  // a visible reason where it cannot run.
+  // --- Parameters: a row's inspector offers the rolling change; where it
+  // cannot run the button stays focusable (aria-disabled) with the reason as
+  // its hidden description and title, and click, Enter or Space opens the
+  // shared WhyDisabled message, never a caption and never the sheet.
   await topoTab("Parameters");
   await page.waitForSelector('.topology-place tr[data-row-key="max_connections"]', { visible: true });
   await clickText(".topology-place .drift-controls", "All");
-  const changeAction = () => page.$eval(".view-inspector .topology-member-actions button", (e) => ({ disabled: e.disabled, title: e.title }));
+  const changeButton = ".view-inspector .topology-member-actions button";
+  const changeAction = () => page.$eval(changeButton, (e) => {
+    const description = document.getElementById(e.getAttribute("aria-describedby") || "");
+    return {
+      disabled: e.disabled,
+      ariaDisabled: e.getAttribute("aria-disabled"),
+      title: e.title,
+      descriptionHidden: !!description && description.classList.contains("visually-hidden"),
+      descriptionText: (description?.textContent || "").trim(),
+      captions: e.parentElement.querySelectorAll("p").length,
+    };
+  });
   await h.select('.topology-place tr[data-row-key="server_id"]');
   let action = await changeAction();
-  assert.equal(action.disabled, true, "a per-server row cannot be changed as one");
-  assert.match(await h.inspector(), /Server identity: each member keeps its own value\./);
+  assert.equal(action.disabled, false, "a per-server row's change button is not natively disabled");
+  assert.equal(action.ariaDisabled, "true", "a per-server row cannot be changed as one");
+  assert.equal(action.title, "Server identity: each member keeps its own value.", "the reason is the button's title");
+  assert.equal(action.descriptionHidden, true, "the reason is the button's hidden description");
+  assert.equal(action.descriptionText, "Server identity: each member keeps its own value.");
+  assert.equal(action.captions, 0, "no caption text under the disabled button");
   await h.select('.topology-place tr[data-row-key="audit_log_encryption"]');
   action = await changeAction();
-  assert.equal(action.disabled, true, "a redacted row cannot be changed as one");
-  assert.match(await h.inspector(), /A value was redacted, truncated or unavailable/);
+  assert.equal(action.ariaDisabled, "true", "a redacted row cannot be changed as one");
+  assert.match(action.title, /A value was redacted, truncated or unavailable/);
+  assert.equal(action.captions, 0, "no caption text under the disabled button");
   reports.parameters.effective_safety = { type: "production", read_only: true };
   await h.refresh();
   await h.select('.topology-place tr[data-row-key="max_connections"]');
   action = await changeAction();
-  assert.equal(action.disabled, true, "a Read-only group connection cannot change");
-  assert.match(await h.inspector(), /This Group connection is Read-only\./);
+  assert.equal(action.disabled, false, "a Read-only block keeps the button focusable");
+  assert.equal(action.ariaDisabled, "true", "a Read-only group connection cannot change");
+  assert.equal(action.title, "This Group connection is Read-only.", "the Read-only reason is the button's title");
+  assert.equal(action.descriptionText, "This Group connection is Read-only.", "the Read-only reason is the hidden description");
+  assert.equal(action.captions, 0, "no caption text under the disabled button");
+  const openWhy = async (way) => {
+    await page.$eval(changeButton, (b) => b.focus());
+    if (way === "click") await page.$eval(changeButton, (b) => b.click());
+    else await page.keyboard.press(way);
+    await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+    const message = await page.$eval(".why-disabled:popover-open", (e) => e.textContent.replace(/\s+/g, " ").trim());
+    assert.match(message, /This Group connection is Read-only\./, `${way} on the blocked change opens the message with the reason`);
+    assert.equal(await page.$("dialog.rolling-change-sheet"), null, `${way} on the blocked change opens no change sheet`);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"), { timeout: 5000 });
+    assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Change on every member…",
+      `Escape after ${way} closes the message and keeps focus on the button`);
+  };
+  await openWhy("click");
+  await openWhy("Enter");
+  await openWhy("Space");
   reports.parameters.effective_safety = { type: "production", read_only: false };
   const beforeUnlockRefresh = topologyCalls.length;
   await h.refresh();

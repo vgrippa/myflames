@@ -219,12 +219,13 @@ function Findings({ report, selection }: { report: ClusterReport; selection: Sel
 
 /** One action group (cluster-wide on the overview, or a member's on its
  * page): every action the backend lists, always. A disabled action stays
- * visible, focusable and muted with aria-disabled, its why_not and fix as
- * visible text under the group (its accessible description), the GRANT to run
- * when a privilege is missing, and a Use <connection> link when the fix is to
- * connect to a member this workspace already knows. A Group member without
- * a saved route offers the shared group editor. Clicking a disabled action
- * opens nothing. */
+ * visible, focusable and muted with aria-disabled; its why_not and fix are its
+ * accessible description and open as a message anchored to the button on
+ * click (the shared ActionGroup, WhyDisabled), with the GRANT to run when a
+ * privilege is missing and a Use <connection> link when the fix is to connect
+ * to a member this workspace already knows. A Group member without a saved
+ * route offers the shared group editor. Clicking a disabled action never
+ * plans or sends. */
 function ActionGroup({ list, label, blocked, planning, busy, onStart, report, profiles, onSwitchConnection, groupName, onEditGroup }: {
   list: ClusterAction[];
   label: string;
@@ -241,7 +242,7 @@ function ActionGroup({ list, label, blocked, planning, busy, onStart, report, pr
 }) {
   // The shared ActionGroup does the rendering; the slot adds the
   // Cluster-only extras (Edit group, Use <connection>, GRANT Commands,
-  // privileges_unreadable) inside the reason block.
+  // privileges_unreadable) inside the message a disabled action opens.
   return (
     <CatalogActionGroup list={list} label={label} blocked={blocked} planning={planning} busy={busy} onStart={onStart}
       slot={(a) => {
@@ -464,7 +465,15 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
         </SummaryLine>
         {isCluster && !stale && !!identityText(report, connection.group_name) && <p className="cluster-identity">{identityText(report, connection.group_name)}</p>}
         {!report.available ? (
-          <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
+          <>
+            <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
+            {typeof report.grant_sql === "string" && report.grant_sql.length > 0 && (
+              <div className="cluster-denied-grant">
+                <Commands text={report.grant_sql} label="Grant to read cluster status" />
+                <p className="hint">Run it as an administrator, then Refresh.</p>
+              </div>
+            )}
+          </>
         ) : report.kind === "none" ? (
           <>
             {report.connection_group && (
@@ -552,17 +561,13 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   );
 }
 
-/** An account that cannot read: the reason in one sentence and the grant to
- * run, without the client's error text (kept in the CLI and JSON). */
-function deniedText(message: string | null) {
+/** An account that cannot read: the reason in one sentence, without the
+ * client's error text (kept in the CLI and JSON). Never parses SQL out of the
+ * error message; any advisory GRANT comes from report.grant_sql. */
+function deniedText(message: string | null): string {
   const text = message || "Cluster status is not available for this connection.";
   const reason = text.split(/:\s*(?:mysql client exited \d+:\s*)?ERROR \d+/)[0].replace(/\s*$/, "");
-  const account = text.match(/to user '([^']*)'@'([^']*)'/);
-  const table = text.match(/(performance_schema|mysql)\.\w+/)?.[1];
-  return <>
-    {reason.endsWith(".") ? reason : `${reason}.`}
-    {account && table && <> To grant it: <code className="ops-wrap">{`GRANT SELECT ON ${table}.* TO '${account[1]}'@'${account[2]}';`}</code></>}
-  </>;
+  return reason.endsWith(".") ? reason : `${reason}.`;
 }
 
 /** The backend's sentence without its "Not part of a cluster:" lead, which the title already says. */

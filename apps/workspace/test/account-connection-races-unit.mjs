@@ -28,6 +28,10 @@ async function component(file, mocks) {
     module: { exports: {} }, exports: {}, Date, AbortController,
     jsx: node, createElement: node, Fragment: "Fragment",
     createContext: () => ({ Provider: "Provider" }),
+    // privileges.ts defines an error boundary class and a lazily loaded host
+    // at module load; these tests never render them.
+    Component: class { constructor(props) { this.props = props; } setState() {} },
+    Suspense: "Suspense", lazy: load => load,
     useState(initial) {
       const i = cursor++;
       if (!(i in slots)) slots[i] = typeof initial === "function" ? initial() : initial;

@@ -1140,8 +1140,10 @@ try {
     await refresh(mysql);
 
     // A denied mode cannot lock the Change entry: another mode may work.
-    await h.setPrivileges({ set_global: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN"),
-      set_persist: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN"),
+    const sysVarGrant = "GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO 'root'@'localhost';";
+    await h.setPrivileges({ set_global: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN", { grant_sql: sysVarGrant }),
+      set_persist: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN", { grant_sql: sysVarGrant }),
+      reset_persist: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN", { grant_sql: sysVarGrant }),
       set_session_restricted: privilegeAnswer("denied", "SESSION_VARIABLES_ADMIN"),
       config: privilegeAnswer("denied", "PROCESS", { grey_out: false }) });
     assert.equal(await page.$eval(`${view} [data-action=refresh]`, e => e.disabled), false);
@@ -1177,12 +1179,169 @@ try {
       }
       if (wanted === "denied") {
         const before = applied.length;
-        await page.click(singleConfirm); await page.keyboard.press("Enter");
+        await page.click(singleConfirm);
+        await page.waitForSelector(`${single} .why-disabled:popover-open`, { visible: true });
+        const why = await page.$eval(`${single} .why-disabled:popover-open`, e => ({
+          text: e.textContent || "",
+          grant: e.querySelector(".ops-pre code")?.textContent || "",
+        }));
+        assert.match(why.text, /SYSTEM_VARIABLES_ADMIN/);
+        assert.match(why.text, /Run it as an administrator, then Refresh\./);
+        assert.equal(why.grant, sysVarGrant);
         assert.equal(applied.length, before, "a denied mode sends no write");
+        // Escape closes only the message and returns focus to the confirm button.
+        await page.keyboard.press("Escape");
+        await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+        assert.ok(await page.$(`${single}[open]`), "Escape from message keeps the variable sheet open");
+        assert.equal(await page.$eval(singleConfirm, b => document.activeElement === b), true,
+          "Escape returns focus to the disabled Config SET confirm button");
+        await page.keyboard.press("Enter");
+        await page.waitForSelector(`${single} .why-disabled:popover-open`, { visible: true });
+        assert.equal(applied.length, before, "Enter on a denied Config SET sends no write");
+        // V9: Copy works inside the modal dialog without modal inertness blocking it,
+        // and double-click + Enter/Space bursts on Confirm send 0 applies.
+        if (mode === "global") {
+          await page.evaluate(() => {
+            window.__configCopied = [];
+            Object.defineProperty(navigator, "clipboard", {
+              configurable: true,
+              value: { writeText: (t) => { window.__configCopied.push(t); return Promise.resolve(); } },
+            });
+          });
+          await page.click(`${single} .why-disabled:popover-open .ops-commands button`);
+          await page.waitForFunction((s) => /Copied\./.test(document.querySelector(`${s} .why-disabled:popover-open .ops-commands [role=status]`)?.textContent || ""), {}, single);
+          assert.equal(await page.evaluate(() => window.__configCopied.at(-1)), sysVarGrant, "V9: Copy inside Config SET modal returns exact grant_sql");
+        }
+        await page.click(`${single} .why-disabled:popover-open .why-disabled-close`);
+        await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+        assert.equal(await page.$eval(singleConfirm, b => document.activeElement === b), true,
+          "Close returns focus to the disabled Config SET confirm button");
+        if (mode === "global") {
+          await page.click(singleConfirm, { clickCount: 2 });
+          await page.focus(singleConfirm);
+          for (const k of ["Enter", "Space", "Enter", "Space", "Enter"]) await page.keyboard.press(k);
+          await pause(150);
+          assert.equal(applied.length, before, "V9: double click + Enter/Space burst on denied Config SET confirm sends 0 applies");
+          if (await page.$(`${single} .why-disabled:popover-open`)) {
+            await page.keyboard.press("Escape");
+            await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+          }
+          // V6: switching from denied global mode to session mode unmounts
+          // PrivilegeConfirmLabel and restores the confirm button's attributes.
+          // (max_connections is global-only in the base fixture; enable session
+          // mode on the mock variable + plan here to exercise the live mode transition.)
+          variableReply = body => {
+            const v = variableFor(body.name);
+            v.modes.session.available = true;
+            v.modes.reset_persist.available = true;
+            return { status: 200, body: v };
+          };
+          planReply = body => {
+            const p = planFor(body);
+            p.privileges = body.mode === "session"
+              ? { need: "no privilege", note: "", checked: true, allowed: true, via: "no privilege needed" }
+              : { need: "SYSTEM_VARIABLES_ADMIN", note: "", checked: true, allowed: false, via: null };
+            p.variable.modes.session.available = true;
+            p.variable.modes.reset_persist.available = true;
+            return { status: 200, body: p };
+          };
+          await page.keyboard.press("Escape");
+          await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));
+          await openChange("max_connections");
+          await page.waitForFunction((s) => document.querySelector(s)?.getAttribute("aria-disabled") === "true", {}, singleConfirm);
+          await page.click(`${single} input[value=session]`);
+          await page.waitForFunction((s) => document.querySelector(`${s} .variable-modes input:checked`)?.value === "session", {}, single);
+          await page.waitForFunction((s) => document.querySelector(`${s} .variable-statement`)?.textContent.startsWith("SET SESSION"), {}, single);
+          const sessionBtn = await page.$eval(singleConfirm, (b) => ({
+            ariaDisabled: b.getAttribute("aria-disabled"),
+            privilegeState: b.getAttribute("data-privilege-state"),
+            title: b.getAttribute("title"),
+            describedBy: b.getAttribute("aria-describedby"),
+            hasClass: b.classList.contains("privilege-action"),
+            whyReason: b.getAttribute("data-why-reason"),
+            whyGrant: b.getAttribute("data-why-grant"),
+          }));
+          assert.deepEqual(sessionBtn, {
+            ariaDisabled: null,
+            privilegeState: null,
+            title: null,
+            describedBy: null,
+            hasClass: false,
+            whyReason: null,
+            whyGrant: null,
+          }, "V6: switching VariableSheet to session mode restores confirm button attributes");
+          variableReply = null;
+        }
       }
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));
     }
+    // S-F1 (Config SET): when focus is inside WhyDisabled (S1: on GRANT text;
+    // S2: on Close) and the confirm gate opens, focus never moves to the
+    // enabled confirm button (moves to Cancel or dialog instead) and one
+    // Enter / Space sends 0 /api/live/variable/apply requests.
+    for (const [label, key, targetFocus] of [
+      ["S1", "Enter", "pre"],
+      ["S2", "Space", "close"],
+    ]) {
+      planReply = (body) => {
+        const p = planFor(body);
+        const allow = body.mode === "persist";
+        p.privileges = {
+          need: "SYSTEM_VARIABLES_ADMIN",
+          note: "",
+          checked: true,
+          allowed: allow,
+          via: allow ? "SYSTEM_VARIABLES_ADMIN" : null,
+        };
+        return { status: 200, delay: allow ? 250 : 40, body: p };
+      };
+      await openChange("max_connections");
+      await page.waitForFunction((s) => {
+        const b = document.querySelector(s);
+        return !!b && !b.disabled && b.getAttribute("aria-disabled") === "true";
+      }, {}, singleConfirm);
+      await page.focus(singleConfirm);
+      await page.keyboard.press("Enter");
+      await page.waitForSelector(`${single} .why-disabled:popover-open`, { visible: true });
+      if (targetFocus === "pre") {
+        await page.keyboard.press("Tab");
+        assert.equal(await page.evaluate(() => document.activeElement?.tagName), "PRE", `Config ${label}: focus moved to GRANT text`);
+      } else {
+        await page.focus(`${single} .why-disabled:popover-open .why-disabled-close`);
+        assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Close", `Config ${label}: focus moved to Close`);
+      }
+      const writesBefore = applied.length;
+      // Switch mode without pointerdown outside the popover so focus stays
+      // inside WhyDisabled until the gate change closes it.
+      await page.evaluate((s) => {
+        const radio = document.querySelector(`${s} input[value=persist]`);
+        radio?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      }, single);
+      await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+      await page.waitForFunction((s) => {
+        const b = document.querySelector(s);
+        return !!b && !b.disabled && b.getAttribute("aria-disabled") === "false";
+      }, { timeout: 5000 }, singleConfirm);
+      const focusAfter = await page.evaluate((s) => {
+        const a = document.activeElement;
+        return {
+          isConfirm: !!a?.matches(s),
+          isBody: !a || a === document.body,
+          text: (a?.textContent || "").trim(),
+        };
+      }, singleConfirm);
+      assert.equal(focusAfter.isConfirm, false, `Config S-F1 ${label}: focus never moves onto enabled confirm (${JSON.stringify(focusAfter)})`);
+      assert.equal(focusAfter.isBody, false, `Config S-F1 ${label}: focus never drops to body`);
+      await page.keyboard.press(key);
+      await pause(300);
+      assert.equal(applied.length, writesBefore, `Config S-F1 ${label}: one ${key} after gate opens sends 0 /api/live/variable/apply requests`);
+      if (await page.$(single)) {
+        await page.keyboard.press("Escape");
+        await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));
+      }
+    }
+    planReply = null;
     // A refused plan must still explain permissions, without an apply action.
     planReply = body => {
       const p = planFor(body);

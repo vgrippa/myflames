@@ -14,6 +14,7 @@
 // sidebar back to normal), Refresh, Refresh all feeding the place, keyboard,
 // and the 720 px window.
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
@@ -32,8 +33,9 @@ const nav = '.main-nav button[data-place="cluster"]';
 const plans = [];
 const sends = [];
 const declined = [];
+let planDelay = 0;
 const h = await open("/api/live/cluster", "cluster", {
-  "/api/live/cluster/plan": (body) => { plans.push(body); return { status: 200, body: R["plan-switchover"] }; },
+  "/api/live/cluster/plan": (body) => { plans.push(body); return { status: 200, body: R["plan-switchover"], delay: planDelay }; },
   "/api/live/cluster/action": (body) => { sends.push(body); return { status: 200, body: R["result-switchover"], delay: 1500 }; },
   "/api/live/action/progress": () => ({ status: 200, body: R["progress-sending"] }),
   "/api/audit/declined": (body) => { declined.push(body); return { status: 200, body: { audit_id: "x", status: "declined" } }; },
@@ -56,13 +58,119 @@ async function toggleFinding(pattern) {
 }
 const visible = (selector) => page.$$eval(selector, (els) => els.filter((e) => e.offsetParent || e.getClientRects().length).map((e) => e.textContent.replace(/\s+/g, " ").trim()));
 const shot = (file) => page.screenshot({ path: path.join(h.shots, file), fullPage: false });
+const MOD = process.platform === "darwin" ? "Meta" : "Control";
+const rgbChannels = (cssColor) => {
+  const m = String(cssColor || "").match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+};
+const luminance = (rgb) => (rgb ? 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] : NaN);
+const findAx = (node, pred) => {
+  if (!node) return null;
+  if (pred(node)) return node;
+  for (const child of node.children || []) {
+    const hit = findAx(child, pred);
+    if (hit) return hit;
+  }
+  return null;
+};
 async function answer(report) {
   state.fallback = { status: 200, body: report };
 }
-async function refreshTo(report) {
+/** Select appearance through Settings > Appearance (the app's own preference
+ * flow, without opening the command palette or sending catalog reads) and
+ * wait for persistence so no stale preference reply repaints before a shot (W9). */
+async function setTheme(theme) {
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("myflames-popover", { detail: "" })));
+  await page.keyboard.down(MOD);
+  await page.keyboard.press(",");
+  await page.keyboard.up(MOD);
+  await page.waitForSelector(`.settings-page .theme-card[data-theme-id="${theme}"]`, { visible: true });
+  await page.click(`.settings-page .theme-card[data-theme-id="${theme}"]`);
+  await page.evaluate(async () => { await window.__myflamesFlushUiPreferences?.(); });
+  await page.waitForFunction(async (expected) => {
+    const current = document.documentElement.dataset.theme || "system";
+    if (current !== expected) return false;
+    const reply = await fetch("/api/settings/ui", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" },
+      body: "{}",
+    }).then((r) => r.json());
+    return reply.preferences?.theme === expected;
+  }, {}, theme);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".settings-page"));
+  await page.waitForSelector(view, { visible: true });
+}
+async function assertThemeColors(theme, msgSelector, contextLabel) {
+  const colors = await page.evaluate((sel) => {
+    const msg = document.querySelector(sel);
+    return {
+      attr: document.documentElement.dataset.theme || "system",
+      scheme: getComputedStyle(document.documentElement).colorScheme,
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+      msgBg: msg ? getComputedStyle(msg).backgroundColor : "",
+      msgInk: msg ? getComputedStyle(msg).color : "",
+    };
+  }, msgSelector);
+  assert.equal(colors.attr, theme, `${contextLabel}: data-theme is ${theme}`);
+  assert.equal(colors.scheme, theme, `${contextLabel}: color-scheme is ${theme}`);
+  const bodyL = luminance(rgbChannels(colors.bodyBg));
+  const msgBgL = luminance(rgbChannels(colors.msgBg));
+  const msgInkL = luminance(rgbChannels(colors.msgInk));
+  if (theme === "dark") {
+    assert.ok(bodyL < 80 && msgBgL < 80 && msgInkL > 150, `${contextLabel}: expected dark colors, got ${JSON.stringify(colors)}`);
+  } else {
+    assert.ok(bodyL > 200 && msgBgL > 200 && msgInkL < 120, `${contextLabel}: expected light colors, got ${JSON.stringify(colors)}`);
+  }
+  return colors;
+}
+async function assertNoChromeOverlap(msgSelector, contextLabel) {
+  const check = await page.evaluate((sel) => {
+    const msg = document.querySelector(sel);
+    if (!msg) return { found: false };
+    const r = msg.getBoundingClientRect();
+    const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    const statusBar = document.querySelector(".window-statusbar");
+    const statusRect = statusBar && statusBar.getClientRects().length ? statusBar.getBoundingClientRect() : null;
+    const stickyBars = [...document.querySelectorAll(".topbar-stack, .view-toolbar, .place-toolbar, .editor-toolbar, .teach-toolbar, .connection-group-bar")]
+      .filter((el) => {
+        if (!el.isConnected || el.closest('[hidden], [inert], [aria-hidden="true"]') || !el.getClientRects().length) return false;
+        const pos = getComputedStyle(el).position;
+        return pos === "sticky" || pos === "fixed";
+      })
+      .map((el) => {
+        const b = el.getBoundingClientRect();
+        return { cls: el.className, top: b.top, bottom: b.bottom, left: b.left, right: b.right, overlap: overlaps(r, b) };
+      });
+    return {
+      found: true,
+      rect: { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: window.innerWidth, vh: window.innerHeight },
+      statusBar: statusRect ? { top: statusRect.top, bottom: statusRect.bottom, overlap: overlaps(r, statusRect) } : null,
+      stickyBars,
+    };
+  }, msgSelector);
+  assert.equal(check.found, true, `${contextLabel}: message is open`);
+  assert.ok(
+    check.rect.left >= 0 && check.rect.top >= 0 && check.rect.right <= check.rect.vw && check.rect.bottom <= check.rect.vh,
+    `${contextLabel}: inside viewport: ${JSON.stringify(check.rect)}`,
+  );
+  if (check.statusBar) {
+    assert.equal(check.statusBar.overlap, false, `${contextLabel}: never covers fixed status bar: ${JSON.stringify(check)}`);
+    assert.ok(check.rect.bottom <= check.statusBar.top + 0.5, `${contextLabel}: ends above status bar: ${JSON.stringify(check)}`);
+  }
+  for (const bar of check.stickyBars) {
+    assert.equal(bar.overlap, false, `${contextLabel}: never covers sticky toolbar ${bar.cls}: ${JSON.stringify(check)}`);
+  }
+}
+async function refreshTo(report, { preservePopover = false } = {}) {
   const before = state.seen.length;
   await answer(report);
-  await h.refresh();
+  if (preservePopover) {
+    // A DOM activation refreshes without an outside pointer gesture light-
+    // dismissing the message first, so these cases exercise report updates.
+    await page.evaluate(() => [...document.querySelectorAll("[data-action=refresh]")]
+      .find((b) => !b.closest("[hidden]") && b.getClientRects().length)?.click());
+  } else await h.refresh();
   await page.waitForFunction((n, sel) => !document.querySelector(`${sel} .spinner`), {}, before, view);
   for (let i = 0; i < 50 && state.seen.length === before; i++) await pause(20);
   assert.equal(state.seen.length, before + 1, "Refresh sends one read");
@@ -79,9 +187,11 @@ async function backToList() {
 }
 
 try {
+  await fs.mkdir(h.shots, { recursive: true });
   await api("/api/profiles/save", { value: { name: "Node A", host: "node-a.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await api("/api/profiles/save", { value: { name: "Solo", host: "solo.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await api("/api/profiles/save", { value: { name: "cluster-galera-2", host: "192.168.80.3", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
+  await api("/api/profiles/save", { value: { name: "Read-only", host: "readonly.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", read_only: true } });
   await page.reload({ waitUntil: "networkidle0" });
 
   // Session hydration can finish after networkidle under parallel browser load.
@@ -165,26 +275,175 @@ try {
   assert.deepEqual(overview.map((a) => a.label), R["ic-8.4-healthy"].actions.map((a) => a.label));
   assert.ok(overview.every((a) => a.disabled === "true"), "every mode switch and bare ClusterSet placeholder is disabled here");
   assert.ok(overview.every((a) => a.tab === 0), "a disabled action stays in the tab order");
-  // Each reason is visible text under the group and the button's accessible description.
+  // Each reason is the button's accessible description, in the DOM but not
+  // visible: never a caption under the group before a click.
   const reasons = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
     label: e.textContent.trim(),
-    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
+    title: e.title,
+    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim(),
+    reasonHidden: document.getElementById(e.getAttribute("aria-describedby") || "")?.classList.contains("visually-hidden") || false,
+    controls: document.getElementById(e.getAttribute("aria-describedby") || "")?.querySelectorAll("button, .ops-commands").length })));
   for (const [i, a] of R["ic-8.4-healthy"].actions.entries()) {
     assert.equal(reasons[i].label, a.label);
-    assert.ok(reasons[i].reason.includes(a.why_not), `${a.id}: its reason is visible and described: ${reasons[i].reason}`);
-    assert.ok(reasons[i].reason.includes(a.fix), `${a.id}: its fix is visible: ${reasons[i].reason}`);
+    assert.ok(reasons[i].reason.includes(a.why_not), `${a.id}: its reason is described: ${reasons[i].reason}`);
+    assert.ok(reasons[i].reason.includes(a.fix), `${a.id}: its fix is described: ${reasons[i].reason}`);
+    assert.equal(reasons[i].reasonHidden, true, `${a.id}: the description is visually hidden, not a caption`);
+    assert.equal(reasons[i].title, [...new Set([a.why_not, a.fix].filter(Boolean))].join(" "), `${a.id}: hover explains the disabled action`);
+    assert.equal(reasons[i].controls, 0, `${a.id}: its hidden description contains no controls or Commands`);
   }
-  // Clicking or pressing Enter on a disabled action opens nothing; the reason stays in view.
+  assert.equal(await page.$$eval(`${view} .cluster-actions .cluster-action-why`, (els) =>
+    els.filter((e) => e.getClientRects().length).length), 0, "no reason text is visible under the buttons before a click");
+  // Click, Enter or Space on a disabled action opens the message anchored to
+  // the button with the reason; it plans and sends nothing.
   const plansBeforeDisabled = plans.length;
+  const firstWhy = R["ic-8.4-healthy"].actions[0];
+  const openWhy = `${view} .cluster-actions .cluster-action-why:popover-open`;
   await page.focus(`${view} .cluster-actions .review-actions > button`);
   await page.keyboard.press("Enter");
-  await pause(300);
-  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)][1].click(), view);
+  await page.waitForFunction((sel, text) => {
+    const open = document.querySelector(sel);
+    return !!open && open.textContent.includes(text);
+  }, {}, openWhy, firstWhy.why_not);
+  let whyText = await page.$eval(openWhy, (e) => e.textContent);
+  assert.ok(whyText.includes(firstWhy.why_not) && whyText.includes(firstWhy.fix), `Enter opens the reason message: ${whyText}`);
+  // Escape closes it and focus is back on the button.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-describedby")), overview[0].why,
+    "after Escape the focus is back on the disabled action");
+  // Space opens it too; clicking a second action's button closes the first
+  // message and opens the second; clicking the same button again closes it.
+  const thirdWhy = R["ic-8.4-healthy"].actions[2];
+  const thirdWhyButton = `${view} .cluster-actions .review-actions > button:nth-of-type(3)`;
+  await page.keyboard.press("Space");
+  await page.waitForFunction((sel, text) => {
+    const open = document.querySelector(sel);
+    return !!open && open.textContent.includes(text);
+  }, {}, openWhy, firstWhy.why_not);
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel, text) => {
+    const open = document.querySelector(sel);
+    return !!open && open.textContent.includes(text);
+  }, {}, openWhy, thirdWhy.why_not);
+  whyText = await page.$eval(openWhy, (e) => e.textContent);
+  assert.ok(whyText.includes(thirdWhy.why_not), `the other action's message replaces the first: ${whyText}`);
+  assert.equal(await page.$$eval(".cluster-action-why:popover-open", (els) => els.length), 1, "one message at a time");
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
+  await page.click(thirdWhyButton);
+  await page.waitForSelector(openWhy, { visible: true });
+  await page.click(`${view} .summary-line`);
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
   await pause(300);
   assert.equal(plans.length, plansBeforeDisabled, "a disabled action plans nothing");
+  assert.equal(sends.length, 0, "disabled-action messages send no action requests");
   assert.equal(await page.$("dialog.action-review[open]"), null, "a disabled action opens no review sheet");
-  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-describedby")), overview[0].why,
-    "focus stays on the disabled action, its reason in view");
+
+  // W11: double click plus an Enter/Space burst on a disabled action sends
+  // 0 plans and 0 requests.
+  await page.click(thirdWhyButton, { clickCount: 2 });
+  await page.focus(thirdWhyButton);
+  for (const key of ["Enter", "Space", "Enter", "Space", "Enter"]) await page.keyboard.press(key);
+  await pause(200);
+  assert.equal(plans.length, plansBeforeDisabled, "double click + Enter/Space burst plans nothing");
+  assert.equal(sends.length, 0, "double click + Enter/Space burst sends nothing");
+  assert.equal(await page.$("dialog.action-review[open]"), null, "double click + Enter/Space burst opens no review sheet");
+  if (await page.$(openWhy)) {
+    await page.keyboard.press("Escape");
+    await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
+  }
+
+  // W2: shared popover coordination with About Cluster. Opening About Cluster
+  // while a disabled message is open closes the message, and Escape closes
+  // About Cluster; opening a disabled message while About Cluster is open
+  // closes About Cluster.
+  await page.focus(thirdWhyButton);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(openWhy, { visible: true });
+  await page.click(`${view} button[aria-label="About Cluster"]`);
+  await page.waitForSelector('[role=dialog][aria-label="About Cluster"]', { visible: true });
+  assert.equal(await page.$(openWhy), null, "opening About Cluster closes the older disabled-action message");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="About Cluster"]'));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "About Cluster",
+    "Escape closes About Cluster and returns focus to its button");
+  await page.click(`${view} button[aria-label="About Cluster"]`);
+  await page.waitForSelector('[role=dialog][aria-label="About Cluster"]', { visible: true });
+  await page.focus(thirdWhyButton);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(openWhy, { visible: true });
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="About Cluster"]'));
+  assert.equal(await page.$('[role=dialog][aria-label="About Cluster"]'), null, "opening a disabled-action message closes About Cluster");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
+
+  // W1 (H1): opening with Enter then navigating back with Cmd+[ closes the
+  // hidden place's message immediately, so the very first Escape in the next
+  // place reaches a document listener un-consumed.
+  await page.focus(`${view} .cluster-actions .review-actions > button`);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(openWhy, { visible: true });
+  await page.keyboard.down(MOD);
+  await page.keyboard.press("[");
+  await page.keyboard.up(MOD);
+  await page.waitForFunction((sel) => !document.querySelector(`${sel}.active`), {}, nav);
+  await page.waitForFunction(() => !document.querySelector(".cluster-action-why:popover-open"));
+  await page.evaluate(() => {
+    window.__escRecorded = [];
+    window.__escHandler = (e) => {
+      if (e.key === "Escape") window.__escRecorded.push({ defaultPrevented: e.defaultPrevented });
+    };
+    document.addEventListener("keydown", window.__escHandler);
+  });
+  await page.keyboard.press("Escape");
+  const escRecorded = await page.evaluate(() => {
+    document.removeEventListener("keydown", window.__escHandler);
+    return window.__escRecorded;
+  });
+  assert.equal(escRecorded.length, 1, "first Escape after Cmd+[ reaches the document un-eaten");
+  assert.equal(escRecorded[0].defaultPrevented, false, "hidden WhyDisabled does not preventDefault on Escape");
+  await page.click(nav);
+  await page.waitForSelector(`${nav}.active`);
+  await page.waitForSelector(`${view} .cluster-topology`, { visible: true });
+
+  // W3 (missing button fallback): focus inside the message when a refresh
+  // removes the action altogether moves focus to a visible fallback, never body.
+  await page.click(thirdWhyButton);
+  await page.waitForSelector(`${openWhy} .why-disabled-close`, { visible: true });
+  await page.focus(`${openWhy} .why-disabled-close`);
+  const withoutThird = structuredClone(R["ic-8.4-healthy"]);
+  withoutThird.actions = withoutThird.actions.slice(0, 2);
+  await refreshTo(withoutThird, { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "removing the action closes its message");
+  const fallbackFocus = await page.evaluate(() => ({
+    isBody: document.activeElement === document.body || !document.activeElement,
+    visible: !!document.activeElement && document.activeElement.getClientRects().length > 0,
+  }));
+  assert.equal(fallbackFocus.isBody, false, "focus never drops to body when the action unmounts");
+  assert.equal(fallbackFocus.visible, true, "fallback focus lands on a visible element");
+  await refreshTo(R["ic-8.4-healthy"]);
+
+  // Refresh invalidates an open explanation; server text remains literal in
+  // both the hidden description and the message, even when it resembles HTML
+  // or contains U+200B and U+202E (W11).
+  await page.click(thirdWhyButton);
+  await page.waitForSelector(openWhy, { visible: true });
+  const changedWhy = structuredClone(R["ic-8.4-healthy"]);
+  const literalReason = '<img src=x onerror="window.__whyInjection = true"> needs <script>privileges</script>.';
+  const literalFix = '<svg onload="window.__whyInjection = true">Grant\u200b\u202e it first.';
+  changedWhy.actions[2].why_not = literalReason;
+  changedWhy.actions[2].fix = literalFix;
+  await refreshTo(changedWhy, { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "Refresh closes a message when its explanation changes");
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel, reason) => document.querySelector(sel)?.textContent.includes(reason), {}, openWhy, literalReason);
+  assert.ok((await page.$eval(openWhy, (e) => e.textContent)).includes(literalFix), "fix with markup, U+200B and U+202E stays literal text");
+  assert.equal(await page.$eval(openWhy, (e) => e.querySelectorAll("img, script, svg:not(.why-disabled-close svg)").length), 0, "server text never becomes message markup");
+  assert.equal(await page.$eval(thirdWhyButton, (b) => document.getElementById(b.getAttribute("aria-describedby")).querySelectorAll("img, svg, script").length),
+    0, "server text never becomes hidden-description markup");
+  assert.equal(await page.evaluate(() => window.__whyInjection), undefined, "server text cannot execute");
+  await refreshTo(R["ic-8.4-healthy"], { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "the next explanation change also closes the message");
 
   // Keyboard: arrows move between member cards and select; Enter opens the inspector; Escape returns.
   await page.focus(`${view} .cluster-members .cluster-card`);
@@ -259,7 +518,7 @@ try {
   assert.ok(memberButtons.includes("Make primary…"), memberButtons.join());
   // The member page lists every member action the backend offers, always: on
   // this secondary connection Make primary is enabled, Start Group Replication
-  // stays visible, focusable and disabled with its reason as visible text.
+  // stays visible, focusable and disabled with its reason as its description.
   const onSecondary = await page.$$eval(".view-inspector .review-actions > button", (els) => els.map((e) => ({
     label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true", tab: e.tabIndex,
     reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
@@ -272,11 +531,21 @@ try {
   const plansBeforeMember = plans.length;
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
     .find((b) => b.textContent.trim() === "Start Group Replication…").click());
-  await pause(300);
+  await page.waitForSelector(".view-inspector .cluster-action-why:popover-open", { visible: true });
   assert.equal(plans.length, plansBeforeMember, "a disabled member action plans nothing");
   assert.equal(await page.$("dialog.action-review[open]"), null, "a disabled member action opens no review sheet");
+  // Clicking the same action again closes its message (the inspector stays).
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Start Group Replication…").click());
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
+  planDelay = 1200;
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === "Make primary…").click());
+  await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector .review-actions > button")].some((b) => b.textContent === "Reading…"));
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Start Group Replication…").click());
+  assert.equal(await page.$(".view-inspector .cluster-action-why:popover-open"), null, "a busy group opens no disabled-action message");
   await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  planDelay = 0;
   assert.deepEqual({ action: plans[0].action, member: plans[0].member_key }, { action: "switchover", member: secondary.key });
   const sheet = await page.$eval("dialog.action-review[open]", (d) => ({ eyebrow: d.querySelector(".eyebrow").textContent,
     sql: d.querySelector(".ops-pre code").textContent, confirm: d.querySelector(".sheet-actions button:last-child").textContent }));
@@ -318,9 +587,10 @@ try {
   await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .action-result .text-button`)].find((b) => b.textContent.trim() === "Close").click(), view);
   await backToList();
 
-  // A disabled action that needs a privilege shows the copyable GRANT (the
-  // existing copy pattern) with "Run it as an administrator, then Refresh.",
-  // and the unreadable-privileges line when the server cannot be asked.
+  // A disabled action that needs a privilege opens its message on click: the
+  // reason, the copyable GRANT (the existing copy pattern) with "Run it as an
+  // administrator, then Refresh.", and the unreadable-privileges line on the
+  // action whose privileges the server cannot be asked.
   const grantReport = JSON.parse(JSON.stringify(R["ic-8.4-healthy"]));
   const grantMember = grantReport.members.find((m) => m.local);
   const stopAction = grantMember.actions.find((a) => a.id === "stop_member");
@@ -335,16 +605,125 @@ try {
   await page.evaluate(() => { window.__grants = []; navigator.clipboard.writeText = (t) => (window.__grants.push(t), Promise.resolve()); });
   await refreshTo(grantReport);
   await h.select(`${view} tr[data-row-key="${grantMember.key}"]`);
-  const grantInspector = await h.inspector();
+  const clickMemberAction = async (label) => {
+    const button = await page.evaluateHandle((l) => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+      .find((b) => b.textContent.trim() === l), label);
+    await button.asElement().click();
+    await button.dispose();
+  };
+  const memberWhy = ".view-inspector .cluster-action-why:popover-open";
+  // Before any click the inspector shows no caption: the reasons are hidden descriptions.
+  assert.equal(await page.$$eval(".view-inspector .cluster-action-why", (els) => els.filter((e) => e.getClientRects().length).length),
+    0, "no reason text is visible under the member actions before a click");
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForFunction((sel) => !!document.querySelector(sel)?.textContent.includes("GROUP_REPLICATION_ADMIN"), {}, memberWhy);
+  let grantInspector = await h.inspector();
   assert.match(grantInspector, /This account lacks GROUP_REPLICATION_ADMIN\. Grant it on this server\./);
   assert.match(grantInspector, /Run it as an administrator, then Refresh\./);
-  assert.match(grantInspector, /Privileges could not be read; the server refuses the change if one is missing\./);
-  // A long GRANT scrolls inside its box instead of stretching the page, in both themes.
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
+  await clickMemberAction("Start Group Replication…");
+  await page.waitForFunction((sel) => !!document.querySelector(sel)?.textContent.includes("Privileges could not be read"), {}, memberWhy);
+  assert.match(await h.inspector(), /Privileges could not be read; the server refuses the change if one is missing\./);
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForSelector(`${memberWhy} .ops-pre`, { visible: true });
+  // The top-layer message stays beside its anchor, and follows the button
+  // in DOM order so Tab reaches the scrollable GRANT and then Copy.
+  const anchored = await page.$eval(memberWhy, (message) => {
+    const button = message.previousElementSibling;
+    const a = button.getBoundingClientRect();
+    const b = message.getBoundingClientRect();
+    return { supports: CSS.supports("anchor-name", "--probe") && CSS.supports("position-area", "block-end span-inline-end"),
+      anchor: button.style.getPropertyValue("anchor-name"), target: message.style.getPropertyValue("position-anchor"),
+      distance: Math.min(Math.abs(a.bottom - b.top), Math.abs(a.top - b.bottom)) };
+  });
+  assert.equal(anchored.supports, true, "Puppeteer's Chromium supports CSS anchor positioning");
+  assert.ok(anchored.anchor && anchored.anchor === anchored.target, "the message uses its own button's CSS anchor");
+  assert.ok(anchored.distance <= 1, `the message touches its anchor's block edge: ${JSON.stringify(anchored)}`);
+  await page.$eval(memberWhy, (message) => message.previousElementSibling.focus());
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Grant for Stop Group Replication",
+    "Tab from the action enters its message at the scrollable GRANT");
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Copy: Grant for Stop Group Replication",
+    "the next Tab reaches Copy inside the message");
+  // W5: verify the Chromium accessibility tree exposes the named non-modal
+  // dialog and its controls (Copy, Close).
+  const grantAx = await page.accessibility.snapshot();
+  const grantDialog = findAx(grantAx, (n) => n.role === "dialog" && n.name === "Why Stop Group Replication is unavailable");
+  assert.ok(grantDialog, `accessibility tree exposes named dialog for Stop Group Replication`);
+  assert.ok(findAx(grantDialog, (n) => n.role === "button" && n.name === "Copy: Grant for Stop Group Replication"), "Copy control is inside the named dialog");
+  assert.ok(findAx(grantDialog, (n) => n.role === "button" && n.name === "Close"), "Close control is inside the named dialog");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, memberWhy);
+  assert.ok(await page.$(".view-inspector"), "Escape dismisses only the message, keeping its inspector open");
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Stop Group Replication…",
+    "Escape from inside the message returns focus to the action");
+
+  // W1 (H1): with the message open, moving focus to an inspector control
+  // outside the message lets a single Escape close the inspector.
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForSelector(memberWhy, { visible: true });
+  await page.focus(".view-inspector .detail-back");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  assert.equal(await page.$(memberWhy), null, "inspector closes on one Escape when focus is outside the message");
+
+  // W3 + S-F1: focus inside the message (Copy) never drops to body when a
+  // refresh enables the action and unmounts the message, and never lands on
+  // the newly enabled action button (lands on a safe visible fallback instead).
+  await h.select(`${view} tr[data-row-key="${grantMember.key}"]`);
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForSelector(`${memberWhy} .ops-commands button`, { visible: true });
+  await page.focus(`${memberWhy} .ops-commands button`);
+  const enabledReport = structuredClone(grantReport);
+  const enabledStop = enabledReport.members.find((m) => m.local).actions.find((a) => a.id === "stop_member");
+  enabledStop.enabled = true;
+  enabledStop.why_not = null;
+  enabledStop.fix = null;
+  enabledStop.grant_sql = null;
+  await refreshTo(enabledReport, { preservePopover: true });
+  assert.equal(await page.$(memberWhy), null, "enabling the action closes and unmounts the message");
+  const enabledFocus = await page.evaluate(() => ({
+    text: document.activeElement?.textContent?.trim() || "",
+    isBody: !document.activeElement || document.activeElement === document.body,
+    visible: !!document.activeElement && document.activeElement.getClientRects().length > 0,
+  }));
+  assert.equal(enabledFocus.isBody, false, "W3: focus never drops to body when enabling the action unmounts the message");
+  assert.equal(enabledFocus.visible, true, "W3: focus lands on a visible fallback element");
+  assert.notEqual(enabledFocus.text, "Stop Group Replication…",
+    "S-F1: focus never moves onto the newly enabled action button");
+
+  // W11: fix and grant_sql containing markup plus U+200B and U+202E add no
+  // elements, run no script, and Copy returns grant_sql verbatim.
+  const abuseGrantReport = structuredClone(grantReport);
+  const abuseStop = abuseGrantReport.members.find((m) => m.local).actions.find((a) => a.id === "stop_member");
+  abuseStop.fix = '<img src=x onerror="window.__w11Fix=1"><svg onload="window.__w11Fix=2">Grant\u200b\u202e it.';
+  abuseStop.grant_sql = "GRANT GROUP_REPLICATION_ADMIN ON *.* TO '<img src=x onerror=window.__w11Grant=1><svg onload=window.__w11Grant=2>\u200b\u202e'@'%';";
+  await refreshTo(abuseGrantReport);
+  await page.evaluate(() => { window.__grants = []; navigator.clipboard.writeText = (t) => (window.__grants.push(t), Promise.resolve()); });
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForSelector(`${memberWhy} .ops-commands button`, { visible: true });
+  assert.equal(await page.$eval(memberWhy, (e) => e.querySelectorAll("img, script, svg:not(.why-disabled-close svg)").length), 0, "W11: no element created from fix or grant_sql");
+  assert.equal(await page.evaluate(() => window.__w11Fix || window.__w11Grant || 0), 0, "W11: no script executes");
+  await page.click(`${memberWhy} .ops-commands button`);
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why:popover-open .ops-commands [role=status]")?.textContent || ""));
+  assert.equal(await page.evaluate(() => window.__grants.at(-1)), abuseStop.grant_sql, "W11: Copy returns exact grant_sql including markup, U+200B and U+202E");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, memberWhy);
+  await refreshTo(grantReport);
+
+  // A long GRANT scrolls inside its box instead of stretching the page, in both
+  // real appearances selected through the app's preference flow (W8, W9).
+  const grantBg = {};
   for (const theme of ["light", "dark"]) {
-    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    await setTheme(theme);
+    await clickMemberAction("Stop Group Replication…");
+    await page.waitForSelector(`${memberWhy} .ops-pre`, { visible: true });
     await pause(150);
     const box = await page.evaluate(() => {
-      const e = document.querySelector(".view-inspector .cluster-action-why .ops-pre");
+      const msg = document.querySelector(".view-inspector .cluster-action-why:popover-open");
+      const e = msg?.querySelector(".ops-pre");
       return {
         found: !!e,
         maxH: e ? getComputedStyle(e).maxHeight : "",
@@ -354,15 +733,31 @@ try {
     });
     assert.ok(box.pre > 0, `a long GRANT scrolls inside its box (${theme}): ${JSON.stringify(box)}`);
     assert.ok(box.page <= 0, `no horizontal page scroll with the GRANT open (${theme}): ${box.page}`);
+    const colors = await assertThemeColors(theme, memberWhy, `GRANT 1440 ${theme}`);
+    grantBg[theme] = colors.msgBg;
+    await shot(`cluster-why-grant-1440-${theme}.png`);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction((sel) => !document.querySelector(sel), {}, memberWhy);
   }
-  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  assert.notEqual(grantBg.light, grantBg.dark, `GRANT message background differs between light and dark: ${JSON.stringify(grantBg)}`);
+  await setTheme("system");
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForSelector(`${memberWhy} .ops-pre`, { visible: true });
+  await pause(150);
+  await page.evaluate(() => { window.__grants = []; navigator.clipboard.writeText = (t) => (window.__grants.push(t), Promise.resolve()); });
   await shot("cluster-grant.png");
-  await page.click(".view-inspector .cluster-action-why .ops-commands button");
-  await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why .ops-commands [role=status]")?.textContent || ""));
+  await page.click(".view-inspector .cluster-action-why:popover-open .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why:popover-open .ops-commands [role=status]")?.textContent || ""));
   assert.equal(await page.evaluate(() => window.__grants[0]), stopAction.grant_sql, "Copy puts the GRANT on the clipboard");
+  // The Close button in the message closes it and returns focus to the action.
+  await page.click(`${memberWhy} .why-disabled-close`);
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Stop Group Replication…",
+    "the message's Close button returns focus to its action");
   const plansBeforeGrant = plans.length;
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
     .find((b) => b.textContent.trim() === "Stop Group Replication…").click());
+  await page.waitForSelector(memberWhy, { visible: true });
   await pause(300);
   assert.equal(plans.length, plansBeforeGrant, "the action with the missing privilege still plans nothing");
   await backToList();
@@ -600,15 +995,23 @@ try {
     cut: [...w.querySelectorAll("td")].filter((td) => td.scrollWidth > td.clientWidth + 1).map((td) => td.textContent) }));
   assert.ok(fit.scroll <= fit.client, JSON.stringify(fit));
   assert.deepEqual(fit.cut, []);
-  // A node action that must run on that node shows its reason and fix, with
-  // the saved connection for that node's address (Use cluster-galera-2).
+  // A node action that must run on that node opens its message on click: the
+  // reason and fix, with the saved connection for that node's address (Use
+  // cluster-galera-2), which switches the connection.
   const galera2 = R["galera-11.8-healthy"].members.find((m) => m.name === "galera-2");
   await h.select(`${view} tr[data-row-key="${galera2.key}"]`);
   const nodeInspector = await h.inspector();
   assert.match(nodeInspector, /Desync runs on the node it changes, galera-2; this connection is to galera-1\./);
   assert.match(nodeInspector, /Connect to galera-2 to desync it\./);
-  const useFix = await page.$$eval(".view-inspector .cluster-action-why .cluster-use-node", (els) => els.map((e) => e.textContent));
-  assert.ok(useFix.includes("Use cluster-galera-2"), `the fix carries the saved connection: ${useFix}`);
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Desync this node…").click());
+  await page.waitForSelector(".view-inspector .cluster-action-why:popover-open .cluster-use-node", { visible: true });
+  const useFix = await page.$$eval(".view-inspector .cluster-action-why:popover-open .cluster-use-node", (els) => els.map((e) => e.textContent));
+  assert.deepEqual(useFix, ["Use cluster-galera-2"], `the message carries the saved connection: ${useFix}`);
+  await page.click(".view-inspector .cluster-action-why:popover-open .cluster-use-node");
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("cluster-galera-2"));
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
+  assert.equal(await page.$(".view-inspector .cluster-action-why:popover-open"), null, "the message does not carry over to another connection");
   await backToList();
   await tab("Topology");
   await refreshTo(R["galera-11.8-donor"]);
@@ -659,10 +1062,43 @@ try {
   assert.deepEqual(await visible(`${view} .cluster-card.is-local .cluster-mark`), ["Donor/Desynced"]);
   await shot("cluster-pxc-topology.png");
 
-  // An account that cannot read: one sentence, no muted sidebar.
+  // An account that cannot read: one sentence, backend grant_sql in Commands, no muted sidebar.
   await refreshTo(R["gr-8.4-denied"]);
-  assert.match(await h.text(`${view} .gate`), /cannot read performance_schema\.replication_group_members/);
+  const deniedGate = await h.text(`${view} .gate`);
+  assert.match(deniedGate, /cannot read performance_schema\.replication_group_members/);
+  assert.doesNotMatch(deniedGate, /\bGRANT\b/i, "deniedText never builds a GRANT inside .gate");
+  assert.equal(await page.$(`${view} .gate code`), null, "no browser-built GRANT code element in .gate");
+  assert.equal(await page.$eval(`${view} .cluster-denied-grant .ops-pre code`, (e) => e.textContent),
+    R["gr-8.4-denied"].grant_sql, "backend grant_sql renders in Commands block");
+  assert.ok(await page.$(`${view} .cluster-denied-grant button[aria-label="Copy: Grant to read cluster status"]`),
+    "Commands block carries its Copy button");
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
+
+  // S-F4 abuse cases: hostile user/host text in report.message never produces a GRANT
+  // when backend grant_sql is null or absent (nor does a plain message without grant_sql).
+  const deniedLead = "This account cannot read performance_schema.replication_group_members (it needs SELECT on performance_schema): ";
+  for (const [label, user, host, grantSql] of [
+    ["ctrl-a", "\u0001\\! touch /tmp/x #", "%", null],
+    ["egrave", "\u00c8".repeat(7) + "\\! touch /tmp/x #", "%", null],
+    ["esc-host", "app", "h\u001b[201~", null],
+    ["benign-msg-omitted-grant", "app", "%", undefined],
+  ]) {
+    const abused = structuredClone(R["gr-8.4-denied"]);
+    abused.message = `${deniedLead}ERROR 1142 (42000) at line 1: SELECT command denied to user '${user}'@'${host}' for table 'replication_group_members'`;
+    if (grantSql === undefined) delete abused.grant_sql;
+    else abused.grant_sql = grantSql;
+    await refreshTo(abused);
+    const body = await page.$eval(view, (e) => ({
+      gate: e.querySelector(".gate")?.textContent || "",
+      gateCode: !!e.querySelector(".gate code"),
+      grantBlock: !!e.querySelector(".cluster-denied-grant, .ops-commands"),
+      all: e.textContent || "",
+    }));
+    assert.match(body.gate, /cannot read performance_schema\.replication_group_members/, `${label}: keeps reason`);
+    assert.equal(body.gateCode, false, `${label}: no <code> inside .gate`);
+    assert.equal(body.grantBlock, false, `${label}: no Commands block without backend grant_sql`);
+    assert.doesNotMatch(body.all, /\bGRANT\b/i, `${label}: no GRANT text shown`);
+  }
 
   // Not part of a cluster: a calm state naming the three kinds, and a muted
   // sidebar item that stays focusable and opens the place.
@@ -736,15 +1172,21 @@ try {
   assert.deepEqual(stale.chips, ["Read here"]);
   assert.equal(await page.$(`${nav} .status-dot`), null, "no marker from another connection");
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
-  // Another connection's report offers no change.
+  // Another connection's report offers no change: one blocked line under the
+  // group, and a click opens the message leading with that line.
   const galeraLocal = R["galera-11.8-healthy"].members.find((m) => m.local);
   await page.click(`${view} .cluster-card[data-row-key="${galeraLocal.key}"]`);
   await page.waitForSelector(".view-inspector .review-actions button");
   assert.equal(await page.$eval(".view-inspector .review-actions button", (b) => b.getAttribute("aria-disabled")), "true");
   const plansBefore = plans.length;
   await page.click(".view-inspector .review-actions button");
-  await pause(300);
+  await page.waitForFunction((sel) => !!document.querySelector(sel)?.textContent.includes("This report was read on"), {},
+    ".view-inspector .cluster-action-why:popover-open");
+  const blockedMsg = await page.$eval(".view-inspector .cluster-action-why:popover-open", (e) => e.textContent);
+  assert.match(blockedMsg, /^This report was read on/, `the blocked line leads the message: ${blockedMsg}`);
   assert.equal(plans.length, plansBefore, "nothing is planned on another connection's report");
+  await page.click(".view-inspector .review-actions button");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
   await backToList();
   await page.keyboard.press("Escape");
   await pause(300);
@@ -867,6 +1309,37 @@ try {
   assert.equal(state.seen.at(-1).connection.host, "node-a.test");
   assert.deepEqual((await findingStates()).filter((f) => f.expanded === "true"), [], "a new connection starts with every finding closed");
 
+  // A read-only connection keeps a client block even when eligibility changes.
+  // A slot-only disabled reason has the same sentence as an enabled-but-blocked
+  // action, so the enabled transition must close it independently of text.
+  await chooseConnection(page, await connectionOption(page, "Read-only"));
+  const blockedReport = structuredClone(R["ic-8.4-healthy"]);
+  Object.assign(blockedReport.actions[2], {
+    enabled: false, why_not: null, fix: null, privileges_unreadable: true,
+  });
+  await refreshTo(blockedReport);
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel) => document.querySelector(sel)?.textContent.includes("Privileges could not be read"), {}, openWhy);
+  const blockedReason = "This connection is read-only in myflames, so changes are refused.";
+  assert.equal(await page.$eval(openWhy, (e) => e.querySelector("p")?.textContent), blockedReason,
+    "the client block is the message's first sentence");
+  assert.equal(await page.$eval(thirdWhyButton, (b) => b.title), blockedReason, "a blocked action's hover text is the client block");
+  assert.equal(await page.$$eval(`${view} .cluster-actions .review-actions > .hint`, (els) => els.length), 1,
+    "the group keeps one visible blocked line");
+  const newlyEnabled = structuredClone(blockedReport);
+  Object.assign(newlyEnabled.actions[2], { enabled: true, privileges_unreadable: false });
+  await refreshTo(newlyEnabled, { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "an enabled transition closes the message even when the blocked sentence is unchanged");
+  await page.click(thirdWhyButton);
+  await page.waitForFunction((sel, text) => document.querySelector(sel)?.textContent === text, {}, openWhy, blockedReason);
+  await pause(100);
+  assert.ok(await page.$(openWhy), "an already enabled but blocked action can still explain the client block");
+  await refreshTo(blockedReport, { preservePopover: true });
+  assert.ok(await page.$(openWhy), "the unchanged blocked message may stay open when the catalog disables the action");
+  await refreshTo(newlyEnabled, { preservePopover: true });
+  assert.equal(await page.$(openWhy), null, "a later enabled transition also closes a message first opened while enabled and blocked");
+  await chooseConnection(page, await connectionOption(page, "Node A"));
+
   // The app's 720 px minimum window: no page scroll sideways; the cards wrap
   // inside the frame; the sections stay reachable; the first tab's content
   // starts above the fold.
@@ -884,20 +1357,43 @@ try {
   assert.equal(narrow.tabs, 3);
   assert.equal(narrow.frame, 0, "the cards wrap instead of running off the right edge");
   assert.ok(narrow.top < narrow.fold - 24, `the topology starts above the fold: ${JSON.stringify(narrow)}`);
-  // The action band and its reasons wrap at 720 px in both themes.
+  // The action band wraps at 720x520, and a disabled action's open message
+  // never covers the fixed status bar or a sticky toolbar (W6), in both real
+  // appearances selected through the app's preference flow (W8, W9).
+  const narrowBg = {};
+  const narrowWhySel = `${view} .cluster-actions .cluster-action-why:popover-open`;
   for (const theme of ["light", "dark"]) {
-    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
-    await pause(200);
+    await setTheme(theme);
+    await page.evaluate((sel) => document.querySelector(`${sel} .cluster-actions`)?.scrollIntoView({ block: "end" }), view);
+    await pause(150);
+    await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+      .find((b) => b.getAttribute("aria-disabled") === "true").click(), view);
+    await page.waitForFunction((sel) => {
+      const open = document.querySelector(sel);
+      return !!open && open.getClientRects().length > 0 && (open.textContent || "").length > 0;
+    }, {}, narrowWhySel);
+    await pause(150);
     const wrap = await page.evaluate((sel) => ({
       overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      reasons: [...document.querySelectorAll(`${sel} .cluster-action-why`)].map((e) => e.scrollWidth - e.clientWidth),
-      band: document.querySelector(`${sel} .cluster-actions`) ? 1 : 0 }), view);
+      band: document.querySelector(`${sel} .cluster-actions`) ? 1 : 0,
+    }), view);
     assert.equal(wrap.band, 1, "the overview action band is present at 720 px");
     assert.ok(wrap.overflow <= 0, `horizontal page scroll at 720 px (${theme}): ${wrap.overflow}`);
-    assert.ok(wrap.reasons.length > 0 && wrap.reasons.every((d) => d <= 0), `reasons wrap at 720 px (${theme}): ${wrap.reasons}`);
+    await assertNoChromeOverlap(narrowWhySel, `Cluster 720x520 bottom (${theme})`);
+    const colors = await assertThemeColors(theme, narrowWhySel, `Cluster 720x520 (${theme})`);
+    narrowBg[theme] = colors.msgBg;
     await shot(`cluster-720-${theme}.png`);
+    await shot(`cluster-why-720-${theme}.png`);
+    // Also verify no overlap when the anchor sits near the top sticky toolbar.
+    await page.evaluate((sel) => document.querySelector(`${sel} .cluster-actions`)?.scrollIntoView({ block: "start" }), view);
+    await pause(150);
+    await assertNoChromeOverlap(narrowWhySel, `Cluster 720x520 top (${theme})`);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction((sel) => !document.querySelector(sel), {}, narrowWhySel);
   }
-  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  assert.notEqual(narrowBg.light, narrowBg.dark, `720 px message background differs between light and dark: ${JSON.stringify(narrowBg)}`);
+  await setTheme("system");
+  await pause(150);
   await shot("cluster-720.png");
   await tab("Members");
   await pause(200);
