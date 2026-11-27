@@ -8,6 +8,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Improvements
 
+- Secret redaction now skips unneeded variable-inventory, follow-up and REPLACE scans on large SQL scripts and uses faster linear scanning for SET statements and inventory literals, reducing redaction time without changing what is redacted.
 - Clicking a **Topology** > **Map** server card opens its place (**Server**, **Replication**, **Cluster**, **ProxySQL** or **Readyset**) on its saved connection, with **Back to Topology** returning to the map and **Details** keeping the inspector. Non-active members show `Using <server> from group <group>.` (in **Server** view headers, or the top bar elsewhere), and loaded **Server** views keep the earlier member's report greyed until **Refresh**.
 
 ### Bug fixes

@@ -4780,6 +4780,48 @@ class TestRedaction(unittest.TestCase):
         self.assertEqual(dbops.redact_value({'a': ['pw is pw1'], 'password': 'pw1', 'n': 3}, 'pw1'),
                          {'a': ['pw is [redacted]'], 'n': 3})
 
+    def test_r352_redaction_speed_guards_preserve_edge_cases(self):
+        # Fast outside-SET and anchored inventory-literal scans must stay
+        # identical to full token walks on symbol/comment joins, $-prefixed
+        # SET words, prefix overlaps and post-pass REPLACE chains.
+        cases = (
+            ("SELECT $SET GLOBAL wsrep_sst_auth = 'S3cr3t'",
+             "SELECT $SET GLOBAL wsrep_sst_auth = '[redacted]'"),
+            ("SELECT \\$SET GLOBAL wsrep_sst_auth = 'S3cr3t' tail",
+             "SELECT \\$SET GLOBAL wsrep_sst_auth = '[redacted]'"),
+            ("IDENTIFIED BY \\# it's\n\\SET GLOBAL wsrep_sst_auth = 'S3cr3t' */",
+             "IDENTIFIED BY \\# it's\n\\SET GLOBAL wsrep_sst_auth = '[redacted]' */"),
+            ("SELECT :=# it's\nSET GLOBAL wsrep_sst_auth = 'S3cr3t'",
+             "SELECT :=# it's\nSET GLOBAL wsrep_sst_auth = '[redacted]'"),
+            ("SELECT :# it's\nSET GLOBAL wsrep_sst_auth = 'S3cr3t'",
+             "SELECT :# it's\nSET GLOBAL wsrep_sst_auth = '[redacted]'"),
+            ("SELECT --- it's\nSET GLOBAL wsrep_sst_auth = 'S3cr3t'",
+             "SELECT --- it's\nSET GLOBAL wsrep_sst_auth = '[redacted]'"),
+            ("DELIMITER END\nSELECT 1ENDSET GLOBAL wsrep_sst_auth = 'S3cr3t'END\nSELECT 'oops",
+             "DELIMITER END\nSELECT 1ENDSET GLOBAL wsrep_sst_auth = '[redacted]'"),
+            ('x@@GLOBAL."wsrep_sst_auth" = \'S3cr3t\'',
+             'x@@GLOBAL."wsrep_sst_auth" = \'[redacted]\''),
+            ("myGLOBAL.wsrep_sst_auth = 'S3cr3t'",
+             "myGLOBAL.wsrep_sst_auth = '[redacted]'"),
+            ('SELECT "foo"wsrep_sst_auth = \'S3cr3t\'',
+             'SELECT "foo"wsrep_sst_auth = \'[redacted]\''),
+            ('GLOBAL."wsrep_sst_auth = \'S3cr3t\'',
+             'GLOBAL."wsrep_sst_auth = \'[redacted]\''),
+            ("echo handlersocket_plain_secret_wr := 'S3cr3t'",
+             "echo handlersocket_plain_secret_wr := '[redacted]'"),
+            ("@@GLOBAL.`telemetry` . `otel_exporter_otlp_logs_headers` = 'S3cr3t'",
+             "@@GLOBAL.`telemetry` . `otel_exporter_otlp_logs_headers` = '[redacted]'"),
+            ("SET GLOBAL w/**/srep_sst_auth = 'S3cr3t' REPLACE 'OldPw'",
+             "SET GLOBAL w/**/srep_sst_auth = '[redacted]'"),
+            ("SET PASSWORD = 'S3cr3t' REPLACE 'OldPw'",
+             "SET PASSWORD = '[redacted]' REPLACE '[redacted]'"),
+            ("SET a = 1\x0cSET GLOBAL wsrep_sst_auth = 'S3cr3t'",
+             "SET a = 1\x0cSET GLOBAL wsrep_sst_auth = '[redacted]'"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(dbops.redact(raw), expected)
+
     def test_error_code(self):
         self.assertEqual(dbops.error_code('mysql client exited 1: ERROR 1095 (HY000) at line 1: x'), 1095)
         self.assertIsNone(dbops.error_code('Lost connection'))
