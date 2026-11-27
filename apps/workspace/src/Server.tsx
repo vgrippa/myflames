@@ -290,6 +290,23 @@ function othersMarker(tones: (Tone | undefined)[]): ViewSwitcherShared["others"]
   return { tone: problems ? "problem" : "watch", count, text };
 }
 
+/** Keep the original public SSH route in both banners and Maintenance cards.
+ * Maintenance receives these labels through its memory, alongside Cancel errors. */
+function lifecycleTargetLabel(job: LifecycleJob, key: string, label: string): string {
+  const start = job.started_on;
+  if (!start) return label;
+  let edited = lifecycleJobLabel(job, key, "") !== "";
+  try {
+    const parts: unknown = JSON.parse(key);
+    if (Array.isArray(parts)) {
+      const ssh = Array.isArray(parts[6]) ? parts[6] : null;
+      edited = edited || (ssh?.[1] || "") !== (start.ssh_host || "") ||
+        (!!start.ssh_host && (Number(ssh?.[3]) || 22) !== (start.ssh_port || 22));
+    }
+  } catch { /* The snapshot still supplies the public starting route. */ }
+  return edited || !!start.ssh_host ? `started on ${start.host}:${start.port}${start.ssh_host ? ` via ${start.ssh_host}:${start.ssh_port || 22}` : ""}` : label;
+}
+
 export function Server({
   place = "server",
   onScreen = true,
@@ -471,8 +488,24 @@ export function Server({
   // The scope the member resolver sees: the connection in use and the open
   // group's membership, as a stable value so an effect can depend on it.
   const groupScopeKey = groupServer
-    ? `${groupServer.group.group_name}:${[...groupServer.group.members.map((m) => m.profile_id)].sort().join(",")}`
+    ? JSON.stringify([groupServer.group.group_name, groupServer.group.members.map((m) => m.profile_id).sort()])
     : "";
+  // The open group's member list can lag an external saved-connection edit.
+  // Lifecycle registry reads and Cancel require consent from the latest
+  // successful profiles read as well as the open group, before rebuilding a
+  // request for another member. A plain active connection needs no group.
+  const lifecycleMemberConnection = useCallback((id: string): Connection | null => {
+    if (!id) return null;
+    const own = id === connection.profile_id;
+    if (own && !connection.group_name) return connection;
+    if (!profilesLoaded || profilesFailed) return null;
+    const current = profiles.find((p) => p.id === connection.profile_id);
+    const target = profiles.find((p) => p.id === id);
+    const group = groupServer?.group.group_name || connection.group_name || (current?.group || "").trim();
+    if (!group || !current || !target || (current.group || "").trim() !== group || (target.group || "").trim() !== group) return null;
+    if (groupServer && !groupServer.group.members.some((m) => m.profile_id === id)) return null;
+    return own ? connection : resolveMemberConnection?.(id) || null;
+  }, [activeKey, profiles, profilesLoaded, profilesFailed, groupScopeKey, resolveMemberConnection]);
   const groupKeyInScope = useCallback(
     (key: string) => {
       if (endpointKey(key) === endpointKey(activeKey)) return true;
@@ -562,6 +595,10 @@ export function Server({
    * never reach the session (session.ts keeps the section, the loop flag and
    * the running jobs' saved member ids). */
   const [maintenance, setMaintenance] = useState<MaintenanceMemory>(emptyMaintenance);
+  const maintenancePresentation = useMemo(() => ({
+    ...maintenance,
+    jobs: maintenance.jobs.map((b) => ({ ...b, label: lifecycleTargetLabel(b.report, b.key, b.label) })),
+  }), [maintenance]);
   // Members with running jobs when the workspace was saved (S14): after a
   // reload each same-group member's job registry is listed (registry read
   // only, no database login), members outside the active connection's group
@@ -1467,11 +1504,11 @@ export function Server({
   // polled or read for a badge.
   const jobInScope = useCallback(
     (key: string) => {
-      if (groupKeyInScope(key)) return true;
+      if (endpointKey(key) === endpointKey(activeKey)) return true;
       const pid = keyProfileId(key);
-      return !!pid && !!resolveMemberConnection && !!resolveMemberConnection(pid);
+      return !!pid && !!lifecycleMemberConnection(pid);
     },
-    [groupKeyInScope, resolveMemberConnection],
+    [activeKey, lifecycleMemberConnection],
   );
   const maintenanceJobsNow = maintenance.jobs.filter(
     (b) => b.key === activeKey || (jobActive(b.report) && jobInScope(b.key)),
@@ -1621,6 +1658,8 @@ export function Server({
   // capture, policy loading and on a read-only connection.
   const latestResolveMember = useRef(resolveMemberConnection);
   latestResolveMember.current = resolveMemberConnection;
+  const latestLifecycleMember = useRef(lifecycleMemberConnection);
+  latestLifecycleMember.current = lifecycleMemberConnection;
   const latestProfiles = useRef(profiles);
   latestProfiles.current = profiles;
   const latestProfilesStatus = useRef({ loaded: profilesLoaded, failed: profilesFailed });
@@ -1664,7 +1703,7 @@ export function Server({
     const ids = JSON.parse(restoredJobSpec) as string[];
     const controller = new AbortController();
     async function run() {
-      const resolve = latestResolveMember.current;
+      const resolve = latestLifecycleMember.current;
       const known = latestProfiles.current;
       const reads: { id: string; c: Connection }[] = [];
       const outside: { id: string; name: string; group: string; hadGroup: boolean; listFailed: boolean }[] = [];
@@ -1708,7 +1747,7 @@ export function Server({
     }
     void run();
     return () => controller.abort();
-  }, [restoredJobSpec, profilesLoaded, profilesFailed]);
+  }, [restoredJobSpec, profiles, profilesLoaded, profilesFailed, activeKey, groupScopeKey]);
   // Failed registry reads retry every JOB_POLL_MS through the same resolver;
   // a read that succeeds drops the member from the failed list.
   useEffect(() => {
@@ -1725,20 +1764,19 @@ export function Server({
   // Outside members that became resolvable again (a connection or group
   // switch into their scope, or a rejoined group) queue for a fresh registry
   // read; a deleted saved connection drops out of the note and the saved ids.
-  // A member whose running job was adopted meanwhile (opened in Maintenance)
-  // leaves the note and the retry list: its own banner and poller carry it.
+  // A different job on the same saved id does not prove the registry was
+  // listed: only a successful listing clears an unresolved restore.
   // Entries that stay outside follow the saved connection's current name and
   // group, and say "group unknown" while the list cannot be read.
+  const outsideJobIds = JSON.stringify(restoredJobs.outside.map((o) => o.id).sort());
   useEffect(() => {
-    if ((!profilesLoaded && !profilesFailed) || (!restoredJobsRef.current.outside.length && !restoredJobsRef.current.failed.length)) return;
-    const resolve = latestResolveMember.current;
+    if ((!profilesLoaded && !profilesFailed) || !restoredJobsRef.current.outside.length) return;
+    const resolve = latestLifecycleMember.current;
     setRestoredJobs((prev) => {
-      const adopted = new Set(activeJobMemberIds);
       let changed = false;
       const keep: typeof prev.outside = [];
       const requeue: string[] = [];
       for (const o of prev.outside) {
-        if (adopted.has(o.id)) { changed = true; continue; }
         if (profilesFailed) {
           if (!o.listFailed) { changed = true; keep.push({ ...o, listFailed: true }); }
           else keep.push(o);
@@ -1754,12 +1792,10 @@ export function Server({
           keep.push(fresh);
         } else keep.push(o);
       }
-      const failed = prev.failed.filter((f) => !adopted.has(f.id));
-      if (failed.length !== prev.failed.length) changed = true;
       if (!changed) return prev;
-      return { ...prev, outside: keep, failed, pending: [...prev.pending, ...requeue.filter((id) => !prev.pending.includes(id))] };
+      return { ...prev, outside: keep, pending: [...prev.pending, ...requeue.filter((id) => !prev.pending.includes(id))] };
     });
-  }, [profiles, profilesLoaded, profilesFailed, resolveMemberConnection, activeKey, groupScopeKey, activeJobMemberIds]);
+  }, [profiles, profilesLoaded, profilesFailed, resolveMemberConnection, activeKey, groupScopeKey, outsideJobIds]);
   function resolveBoundConnection(boundKey: string, action: "Stop" | "Cancel"): { connection: Connection | null; reason: string } {
     const wanted = endpointKey(boundKey);
     const pid = keyProfileId(boundKey);
@@ -1767,10 +1803,12 @@ export function Server({
     // The backend verifies that owner against the store. Skip-loop Stop keeps
     // its strict endpoint match because it has a different ownership contract.
     const lifecycleOwner = (c: Connection) => action === "Cancel" && !!pid && c.profile_id === pid;
-    if (endpointKey(connectionKey(latestConnection.current)) === wanted || lifecycleOwner(latestConnection.current)) {
+    const active = latestConnection.current;
+    const activeConsent = action === "Stop" || !active.group_name || (!!pid && !!latestLifecycleMember.current(pid));
+    if (activeConsent && (endpointKey(connectionKey(active)) === wanted || lifecycleOwner(active))) {
       return { connection: latestConnection.current, reason: "" };
     }
-    if (endpointKey(connectionKey(latestPlaceConnections.current.replication)) === wanted || lifecycleOwner(latestPlaceConnections.current.replication)) {
+    if (action === "Stop" && endpointKey(connectionKey(latestPlaceConnections.current.replication)) === wanted) {
       return { connection: latestPlaceConnections.current.replication, reason: "" };
     }
     const kindWord = action === "Stop" ? "skip loop" : "job";
@@ -1780,7 +1818,7 @@ export function Server({
         reason: `Could not send ${action}: the active connection changed since this ${kindWord} started.`,
       };
     }
-    const rebuilt = latestResolveMember.current ? latestResolveMember.current(pid) : null;
+    const rebuilt = action === "Cancel" ? latestLifecycleMember.current(pid) : latestResolveMember.current?.(pid);
     if (rebuilt) {
       if (endpointKey(connectionKey(rebuilt)) === wanted || lifecycleOwner(rebuilt)) {
         return { connection: rebuilt, reason: "" };
@@ -2457,7 +2495,7 @@ export function Server({
                   const jobError = b.report.id ? jobCancelErrors[b.report.id] || "" : "";
                   const jobStale = !!cancelKey && (!maintenanceMounted || endpointKey(b.key) !== endpointKey(activeKey)) &&
                     (staleJobKeys.includes(cancelKey) || !resolveBoundConnection(b.key, "Cancel").connection);
-                  const startedElsewhere = lifecycleJobLabel(b.report, b.key, "");
+                  const startedElsewhere = lifecycleTargetLabel(b.report, b.key, "");
                   const target = memberServerLabel(b) || b.label;
                   return (
                     <div key={b.report.id || b.key} className="ops-loop" role="status" data-maintenance-job={b.report.id || undefined}>
@@ -2562,9 +2600,10 @@ export function Server({
                     selection={selection("maintenance")}
                     section={maintenanceSection}
                     onSection={setMaintenanceSection}
-                    memory={maintenance}
+                    memory={maintenancePresentation}
                     onMemory={setMaintenance}
                     profiles={profiles}
+                    jobCancelErrors={jobCancelErrors}
                   />
                   </ViewOnScreenContext.Provider>
                   </ViewSwitcherContext.Provider>

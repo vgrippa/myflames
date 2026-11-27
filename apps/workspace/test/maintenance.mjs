@@ -90,6 +90,7 @@ const next = { upgrade: native, prepare: [], start: [], reveal: [] };
 /** Registry-only replies include the immutable start address and how this
  * request matched the owner. Database endpoints remain intercepted below. */
 const held = new Map();
+const cancelFailures = new Map();
 const owners = new Map();
 const savedEndpoints = new Map();
 const endpoint = (c) => JSON.stringify([c?.profile_id || "", c?.host, c?.port, c?.user, c?.ssl_mode || "", c?.ssl_ca || ""]);
@@ -128,6 +129,7 @@ const h = await open("/api/lifecycle/tools", "maintenance", {
   },
   [STATUS]: (body) => (held.has(body.id) && ownerMatch(body.id, body.connection) ? { status: 200, body: snapshot(held.get(body.id), body.connection) } : { status: 400, body: { error: "No such job." } }),
   [CANCEL]: (body) => {
+    if (cancelFailures.has(body.id)) return cancelFailures.get(body.id);
     if (!held.has(body.id) || !ownerMatch(body.id, body.connection)) return { status: 400, body: { error: "No such job." } };
     const after = job(cancelled, body.id, { operation: held.get(body.id)?.operation || "dump" });
     held.set(body.id, after);
@@ -759,6 +761,38 @@ try {
   await page.waitForSelector(sheet);
   await page.click(confirmButton);
   await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=running]`);
+  await closedSheet();
+  // Round 2: a banner Cancel reply can fail after the user has opened
+  // Maintenance. Its failure must stay visible even on a different task.
+  await h.view("health");
+  const cancelBanner = '.server-content > .ops-loop[data-maintenance-job="job-3"]';
+  await page.waitForSelector(cancelBanner, { visible: true });
+  cancelFailures.set("job-3", { status: 502, body: { error: "Cancellation reply was lost after navigation." }, delay: 1800 });
+  const bannerCancels = calls(CANCEL).length;
+  await page.$eval(`${cancelBanner} button.action-button`, button => button.click());
+  await settle(CANCEL, bannerCancels + 1, "the banner sent Cancel before opening Maintenance");
+  await page.$$eval(`${cancelBanner} button`, buttons => buttons.find(b => b.textContent.trim() === "Open Maintenance").click());
+  await page.waitForSelector(view, { visible: true });
+  // The Start reply focused/scrolled its job card. Use the control directly
+  // so a moving sticky header cannot intercept this navigation probe.
+  const cancelTask = async label => {
+    await page.$$eval(`${view} [aria-label="Maintenance task"] button`, (buttons, wanted) => {
+      const button = buttons.find(b => b.textContent.trim() === wanted);
+      if (!button || button.disabled) throw new Error(`Maintenance task ${wanted} is unavailable`);
+      button.click();
+    }, label);
+    await page.waitForFunction((v, wanted) => document.querySelector(`${v} .segmented [aria-pressed=true]`)?.textContent === wanted, {}, view, label);
+  };
+  await cancelTask("Tools");
+  await page.waitForFunction(v => [...document.querySelectorAll(`${v} [role=alert]`)]
+    .some(e => e.getClientRects().length && /Outcome unknown.*Cancellation reply was lost after navigation/s.test(e.textContent)), {}, view);
+  await cancelTask("Dump");
+  assert.match(await text(`${view} .ops-job[data-job=job-3] [role=alert]`), /Outcome unknown.*Cancellation reply was lost after navigation/s,
+    "the banner Cancel failure follows its job into Maintenance");
+  await pause(1700);
+  assert.match(await text(`${view} .ops-job[data-job=job-3] [role=alert]`), /Outcome unknown/,
+    "successful status polling does not erase a banner Cancel failure");
+  cancelFailures.delete("job-3");
   await connect("Archive");
   await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-other-connection]`);
   assert.match(await text(`${view} .ops-job[data-job=job-3]`), /Switch back to that connection to manage this job\./);

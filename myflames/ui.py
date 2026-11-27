@@ -1043,6 +1043,27 @@ def _lifecycle_owner(connection, profile_id=None):
     return (endpoint, owner_id)
 
 
+def _lifecycle_caller(connection, store):
+    """Verify a claimed group against the current store before owner matching.
+
+    Even an endpoint match cannot authorize a stale group route. Registry
+    access reads only public profile fields, never credentials or a server.
+    Plain connections keep their endpoint and saved-owner access.
+    """
+    if not isinstance(connection, dict):
+        return None
+    if connection.get('group_name') is not None:
+        from .connection_groups import validate_group
+        try:
+            group = validate_group(connection['group_name'])
+            profile = _request_profile(connection, store)
+        except ValueError:
+            return None
+        if not group or not profile or profile.get('group') != group:
+            return None
+    return _lifecycle_owner(connection, _lifecycle_profile_id(connection, store))
+
+
 def _lifecycle_owner_match(owner, caller):
     """How *caller* owns the job: endpoint, saved_connection, or None.
 
@@ -1105,7 +1126,7 @@ def _lifecycle_jobs_response(payload, workspace):
     connection = payload.get("connection")
     if not isinstance(connection, dict):
         raise ValueError("Send the connection whose jobs to list.")
-    caller = _lifecycle_owner(connection, _lifecycle_profile_id(connection, workspace.store))
+    caller = _lifecycle_caller(connection, workspace.store)
     owners = _lifecycle_owners(workspace)
     with _LIFECYCLE_OWNERS_LOCK:
         mine = []
@@ -1140,8 +1161,7 @@ def _lifecycle_response(path, payload, workspace):
         return _lifecycle_jobs_response(payload, workspace)
     if path in ("/api/lifecycle/status", "/api/lifecycle/cancel"):
         connection, job_id = payload.get("connection"), payload.get("id")
-        caller = (_lifecycle_owner(connection, _lifecycle_profile_id(connection, workspace.store))
-                  if isinstance(connection, dict) else None)
+        caller = _lifecycle_caller(connection, workspace.store)
         owners = _lifecycle_owners(workspace)
         with _LIFECYCLE_OWNERS_LOCK:
             owner_match = (_lifecycle_owner_match(owners.get(job_id), caller)

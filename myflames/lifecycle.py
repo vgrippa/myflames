@@ -911,6 +911,9 @@ class LifecycleJob(object):
         # changes. Only these public fields belong in a snapshot.
         self.started_on = {'host': str(self.connection.get('host') or '127.0.0.1'),
                            'port': int(self.connection.get('port') or 3306)}
+        if self.connection.get('ssh_host'):
+            self.started_on.update(ssh_host=str(self.connection['ssh_host']),
+                                   ssh_port=int(self.connection.get('ssh_port') or 22))
         self.passwords = tuple(passwords) + (self.connection.get('password'),)
         self.state, self.error, self.result = 'queued', '', None
         self.progress = None

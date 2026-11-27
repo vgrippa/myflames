@@ -79,25 +79,35 @@ class Isolated(unittest.TestCase):
 
 
 class JobSnapshots(Isolated):
-    def test_started_on_keeps_only_the_original_host_and_port(self):
+    def test_started_on_keeps_only_the_original_public_destination(self):
         for operation in ('dump', 'restore', 'clone'):
             with self.subTest(operation=operation):
                 connection = {'host': 'original.example', 'port': 3310, 'user': 'private-user',
-                              'password': PASSWORD, 'ssh_host': 'private-bastion',
-                              'ssh_user': 'private-ssh-user', 'profile_id': 'private-profile'}
+                              'password': PASSWORD, 'ssh_host': 'original-bastion', 'ssh_port': 2222,
+                              'ssh_user': 'private-ssh-user', 'ssh_key': '/private/key',
+                              'ssh_password': 'private-ssh-password', 'profile_id': 'private-profile'}
                 job = lc.LifecycleJob(operation, lambda unused: {'status': 'completed'}, connection)
                 # Neither editing the caller's connection nor a returned
                 # snapshot may change the endpoint shown by later snapshots.
-                connection.update(host='edited.example', port=3311)
+                connection.update(host='edited.example', port=3311, ssh_host='edited-bastion', ssh_port=2200)
                 snapshot = job.snapshot()
-                self.assertEqual(snapshot['started_on'], {'host': 'original.example', 'port': 3310})
+                expected = {'host': 'original.example', 'port': 3310,
+                            'ssh_host': 'original-bastion', 'ssh_port': 2222}
+                self.assertEqual(snapshot['started_on'], expected)
                 self.assertIsInstance(snapshot['started_on']['host'], str)
                 self.assertIsInstance(snapshot['started_on']['port'], int)
-                for private in (PASSWORD, 'private-user', 'private-bastion',
-                                'private-ssh-user', 'private-profile'):
+                for private in (PASSWORD, 'private-user', '/private/key', 'private-ssh-password',
+                                'private-ssh-user', 'private-profile', 'edited-bastion'):
                     self.assertNotIn(private, json.dumps(snapshot))
-                snapshot['started_on'].update(host='spoofed.example', port=3312)
-                self.assertEqual(job.run()['started_on'], {'host': 'original.example', 'port': 3310})
+                snapshot['started_on'].update(host='spoofed.example', port=3312, ssh_host='spoofed-bastion')
+                self.assertEqual(job.run()['started_on'], expected)
+
+    def test_started_on_plain_connection_and_default_ssh_port(self):
+        for connection, expected in (({}, {'host': '127.0.0.1', 'port': 3306}),
+                                     ({'ssh_host': 'bastion'}, {'host': '127.0.0.1', 'port': 3306,
+                                                               'ssh_host': 'bastion', 'ssh_port': 22})):
+            with self.subTest(connection=connection):
+                self.assertEqual(lc.LifecycleJob('dump', lambda unused: None, connection).snapshot()['started_on'], expected)
 
 
 class UpgradeCheckCli(Isolated):
@@ -742,6 +752,38 @@ class Endpoints(Isolated):
             cancel.assert_called_once_with()
         running.wait(5)
         self.assertEqual(running.snapshot()['state'], 'cancelled')
+
+    def test_stale_group_cannot_list_check_or_cancel_even_with_a_matching_owner(self):
+        store = self.workspace.store
+        owner = store.save('profile', {'name': 'member', 'host': '127.0.0.1', 'port': 3306, 'user': 'u'})
+        store.save_connection_group('before', [owner['id']])
+        original = dict(self.connection, profile_id=owner['id'])
+        job = lc.LifecycleJob('dump', lambda unused: {'status': 'completed'}, original)
+        ui._lifecycle_add(self.workspace, job, 'target', original)
+        job.wait(5)
+        store.save('profile', dict(owner, host='edited.example'), owner['id'])
+        store.save_connection_group('after', [owner['id']])
+        edited = dict(original, host='edited.example')
+        with mock.patch.object(job, 'cancel', wraps=job.cancel) as cancel, \
+                mock.patch.object(lc, '_connect', side_effect=AssertionError('registry must not connect')), \
+                mock.patch.object(store, 'connection_with_saved_password',
+                                  side_effect=AssertionError('registry must not load passwords')):
+            # Both the old endpoint match and the edited saved-owner match
+            # must fail under a revoked group claim. A plain open still works.
+            for connection in (original, edited):
+                for group in ('before', '', 'missing'):
+                    stale = dict(connection, group_name=group)
+                    with self.subTest(connection=connection, group=group):
+                        self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': stale})['jobs'], [])
+                        for route in ('status', 'cancel'):
+                            with self.assertRaisesRegex(ValueError, 'No such job'):
+                                self.call('/api/lifecycle/' + route, {'connection': stale, 'id': job.id})
+            cancel.assert_not_called()
+            for connection in (original, edited, dict(edited, group_name='after')):
+                self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': connection})['jobs'][0]['id'], job.id)
+                self.assertEqual(self.call('/api/lifecycle/status', {'connection': connection, 'id': job.id})['id'], job.id)
+            self.call('/api/lifecycle/cancel', {'connection': dict(edited, group_name='after'), 'id': job.id})
+            cancel.assert_called_once_with()
 
     def test_saved_connection_owner_can_check_list_and_cancel_after_endpoint_edit(self):
         store = self.workspace.store

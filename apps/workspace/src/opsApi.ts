@@ -231,7 +231,7 @@ export type LifecycleJob = {
   schema_version: "lifecycle-job-1.0"; id: string | null; operation: LifecycleOperation;
   /** Where the job was started (non-secret): stays the truth when the owning
    * saved connection's endpoint is edited afterwards. */
-  started_on?: { host: string; port: number };
+  started_on?: { host: string; port: number; ssh_host?: string; ssh_port?: number };
   /** How this caller owns the job: the endpoint it runs on, or the saved
    * connection it started from (survives an endpoint edit). */
   owner_match?: "endpoint" | "saved_connection";
