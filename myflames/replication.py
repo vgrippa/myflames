@@ -137,7 +137,7 @@ import threading
 import time
 import uuid
 
-from . import dbops, privileges
+from . import dbops, privileges, request_secrets
 from .connection_groups import ProfileReadError, grouped_read, probe_note, record_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, _duration_text, _version_tuple, denied, now, preflight, reason
@@ -3488,6 +3488,7 @@ class SkipLoopRegistry(object):
                 if job.job_id == job_id:
                     if not _same_endpoint(key, identity):
                         raise ValueError("This skip loop belongs to another connection.")
+                    request_secrets.capture(getattr(job.conn, "password", None))
                     return job
         raise ValueError("No skip loop with this id (loops never survive a myflames restart).")
 
@@ -3497,6 +3498,8 @@ class SkipLoopRegistry(object):
             return self._find(identity, job_id).status()
         with self._lock:
             jobs = [job for key, job in self._jobs if _same_endpoint(key, identity)]
+        for job in jobs:
+            request_secrets.capture(getattr(job.conn, "password", None))
         return {"schema_version": LOOP_SCHEMA_VERSION, "loops": [job.status() for job in jobs]}
 
     def stop(self, identity, job_id):

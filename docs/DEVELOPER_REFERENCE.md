@@ -2021,19 +2021,56 @@ socket.timeout)` returns with `close_connection = True` and without writing; mal
 others: `"Could not complete the request. Try again or use the CLI."`) and log
 a redacted traceback; any other unexpected exception answers HTTP `500` with
 that neutral sentence and logs a redacted traceback. `ui._log_unexpected_error`
-strips `ui._secret_values(payload, store)` (non-empty string values under any
+strips `ui._secret_values(payload)` (non-empty string values under any
 request key containing `password` or equal to `secret` through nesting depth
-12, saved passwords of connections naming
-`profile_id` without a password, and saved member passwords of an explicitly
-named `group_name`, in raw, `repr()` and JSON-escaped forms), followed by
+12) plus `request_secrets.values()` (passwords already obtained by this
+request), in raw, `repr()` and JSON-escaped forms, followed by
 `dbops.redact` over the complete traceback to hide recognized SQL and URL credentials
 absent from the request payload, and caps the logged traceback at 65,536
 characters (`64 * 1024`) before the truncation marker
-(`"\n[traceback truncated]\n"`) and log prefix. Tests:
+(`"\n[traceback truncated]\n"`) and log prefix. Neither redaction helper
+accepts a store or retrieves saved passwords, profiles or Group membership.
+
+`request_secrets.scoped` surrounds `WorkspaceHandler.do_POST`, including its
+error handling, and direct `api_response` and `topology_group.read_group`
+calls; nested entries reuse the current scope. Payload password fields are
+captured before dispatch, and `WorkspaceStore.connection_with_saved_password`
+captures a typed or saved password only when returning validated connection
+settings. Identity-checked editor-session, table-snapshot, capture-job,
+lifecycle-job and skip-loop lookups capture only credentials already held by
+the selected objects. Editor lookups cover run before its policy gate, commit,
+rollback, Use, Status, Close and in-session plan capture; Stop also captures
+the retained run options when consent refusal prevents a new login. When a
+concurrent open wins, `_open_session` captures that session's credential after
+its identity check, even if it differs from the new request's resolved
+password. Lifecycle jobs contribute all their passwords, including the clone
+donor. List routes
+capture only matching owners; refused identities capture nothing from those
+objects. `ssh_connections.open_session` captures the supplied or saved SSH
+secret after the saved-secret binding and missing-secret checks, before
+constructing the SFTP session. Cached browsing sessions also capture their
+in-memory password after `sftp_api._session` matches the saved connection's
+cache key. None of these captures adds a store lookup.
+`_reraise_redacted` captures its already-used password argument so
+the outer logger also redacts the original exception context. The registry is
+thread-safe and cleared when its owning request ends, including failure and
+cancellation; a late worker cannot repopulate it. A departed peer's previously
+used password remains available for redaction until that request ends, without
+another lookup. Unopened members and recreated groups grant no redaction lookup.
+Registry values may be read only by `ui._log_unexpected_error` and the two
+shared-report transfers (`report._Flight.__init__` seeds the flight and
+`report.run_single_flight` copies its values back). The AST invariant in
+`test/test_request_secrets_readers.py` pins those consumers; the registry is
+not a source for responses, audit records or files. Tests:
+`test/test_request_secrets_reuse.py`, `test/test_request_secrets_jobs.py`,
+`test/test_request_secrets.py`, `test/test_topology_group.py`
+(Group worker failures without further credential reads),
 `test/test_ui.py`
 (`test_unexpected_error_is_neutral_for_live_reads_and_logged_to_stderr`,
 `test_unexpected_error_log_redacts_every_password_form`) and
 `test/test_workspace_api.py` (`test_request_shape_errors_are_logged_redacted_400s`,
+`test_error_paths_never_read_saved_secrets_or_group_members`,
+`test_removed_peer_and_unopened_member_are_not_read_during_error_logging`,
 `test_other_backend_errors_remain_logged_redacted_500s`,
 `test_write_internal_errors_after_send_are_logged_redacted_500s`,
 `test_cancel_routes_unexpected_error_after_cancel_returns_500_outcome_unknown`,
@@ -2091,6 +2128,15 @@ one-analysis-per-connection refusal when settings differ. Group-scoped shared
 reads verify consent (`live_guard` plus `(group, group_generation)`) before and
 after execution. Tests: `test/test_live_cancel.py`.
 
+Group discovery, all Topology pool phases and the Full analysis pool explicitly
+borrow `request_secrets.current()` with `request_secrets.scope(registry)`.
+Shared reads own a separate registry initialized from the initiating request.
+Each caller copies the shared read's captured passwords into its own registry
+before a result or exception leaves `run_single_flight`. The last caller joins
+the worker and clears the shared registry. Disconnecting the initiating caller
+therefore cannot remove another caller's redaction context. Tests:
+`test/test_request_secrets.py`.
+
 ### Client and local-storage boundaries
 
 The desktop renderer uses an in-memory session partition, so UI preferences belong in the workspace SQLite store, not localStorage. Theme, sidebar width, Server inspector width, Server view navigation collapse, Health auto-refresh, Diagram wheel zoom speed, Query editor Explain format, and File transfer hidden-file and Transfers-panel choices are persisted through `/api/settings/ui`. Browser development reads legacy localStorage once as a fallback and never promotes it over the backend answer. The renderer's session proof remains origin-scoped localStorage authentication data. Query editor split height remains part of the autosaved `editor_layout` session state.
@@ -2113,7 +2159,9 @@ never share option files; close() remains idempotent and cannot remove another
 invocation's credentials.
 
 `connection_with_saved_password` copies and validates connection fields and
-profile policy metadata before looking up a secret. Arbitrary executable,
+profile policy metadata before looking up a secret. Returned passwords enter
+only the current request's in-memory redaction registry; error logging never
+calls this method or the credential store. Arbitrary executable,
 socket, client-certificate/key, option-file, and initialization overrides do not
 pass through the browser's saved-credential path. CLI connection flags remain
 an explicit local choice. Clone checks the recipient's negotiated TLS before

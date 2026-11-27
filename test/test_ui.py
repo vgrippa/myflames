@@ -1330,7 +1330,13 @@ class TestWorkspaceHTTP(unittest.TestCase):
                    'other': {'password': typed}, 'current_password': current}
         err = io.StringIO()
         message = 'saved=%s typed=%r json=%s current=%s' % (saved, typed, json.dumps(saved), current)
-        with mock.patch.object(ui, 'api_response', side_effect=RuntimeError(message)), \
+
+        def used_then_failed(path, request, workspace):
+            # Only the ordinary request path may retrieve this password.
+            workspace.store.connection_with_saved_password(request['connection'])
+            raise RuntimeError(message)
+
+        with mock.patch.object(ui, 'api_response', side_effect=used_then_failed), \
                 mock.patch.object(ui.sys, 'stderr', err):
             status, body, _ = self.request('POST', '/api/live/sessions', payload)
         self.assertEqual(status, 500)

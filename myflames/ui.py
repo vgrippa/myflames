@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .connector import ConnectorError, client_missing_error
 from .connection_groups import ProfileReadError
-from . import read_cancel
+from . import read_cancel, request_secrets
 from .parser import analyze_plan
 # Compatibility exports for one release; validation is independent of HTTP.
 from .plan_input import MAX_PLAN, _plan
@@ -375,6 +375,9 @@ def _export_response(payload):
 
 def _reraise_redacted(exc, password):
     from .dbops import redact
+    # The original exception remains in the traceback's context. Remember
+    # this already-used password so the outer logger can redact that too.
+    request_secrets.capture(password)
     text = str(exc)
     scrubbed = redact(text, password)
     if scrubbed != text:
@@ -1147,7 +1150,9 @@ def _lifecycle_jobs_response(payload, workspace):
     jobs = []
     for job_id, owner_match in mine:
         try:
-            jobs.append(dict(workspace.lifecycle.get(job_id).snapshot(), owner_match=owner_match))
+            job = workspace.lifecycle.get(job_id)
+            request_secrets.capture_many(job.passwords)
+            jobs.append(dict(job.snapshot(), owner_match=owner_match))
         except ValueError:
             with _LIFECYCLE_OWNERS_LOCK:
                 owners.pop(job_id, None)
@@ -1186,6 +1191,7 @@ def _lifecycle_response(path, payload, workspace):
             with _LIFECYCLE_OWNERS_LOCK:
                 owners.pop(job_id, None)
             raise ValueError("No such job.") from None
+        request_secrets.capture_many(job.passwords)
         if path == "/api/lifecycle/cancel":
             job.cancel()
         return dict(job.snapshot(), owner_match=owner_match)
@@ -1987,17 +1993,19 @@ def _connect_response(payload, workspace):
     others = [p for p in members if p["id"] != active["id"]]
     if probe and others:
         from concurrent.futures import ThreadPoolExecutor
+        registry = request_secrets.current()
 
         def probe_one(profile):
-            try:
-                _report, facts = open_member(profile, True)
-                return profile["id"], facts, True
-            except Exception as exc:
-                if not isinstance(exc, (ConnectorError, ValueError, OSError)):
-                    _log_unexpected_error('/api/connect', sys.exc_info(), active_route, store)
-                # A member that cannot be read is reported unreachable; its
-                # response contains neither the error nor any secret in it.
-                return profile["id"], None, False
+            with request_secrets.scope(registry):
+                try:
+                    _report, facts = open_member(profile, True)
+                    return profile["id"], facts, True
+                except Exception as exc:
+                    if not isinstance(exc, (ConnectorError, ValueError, OSError)):
+                        _log_unexpected_error('/api/connect', sys.exc_info(), active_route)
+                    # A member that cannot be read is reported unreachable; its
+                    # response contains neither the error nor any secret in it.
+                    return profile["id"], None, False
 
         with ThreadPoolExecutor(max_workers=_CONNECT_PROBE_CONCURRENCY) as pool:
             for pid, facts, ok in pool.map(probe_one, others[:max(0, _CONNECT_PROBE_BUDGET - 1)]):
@@ -2905,9 +2913,11 @@ def _session_capture_response(payload, workspace):
     return {"id": job.id, "state": job.state}
 
 
+@request_secrets.scoped
 def api_response(path, payload, workspace=None):
     if not isinstance(payload, dict):
         raise ValueError("Expected a JSON request object.")
+    request_secrets.capture_many(_secret_values(payload))
     if path == "/api/connections/import":
         from .connection_import import response
         return response(payload)
@@ -3105,6 +3115,7 @@ def api_response(path, payload, workspace=None):
             identity = (dbops.identity_endpoint(dbops.connection_identity(connection))
                         if isinstance(connection, dict) else None)
             job = workspace.jobs.get(payload.get("id"), identity)
+            request_secrets.capture(job.options.get("password"))
             if path == "/api/live/cancel":
                 job.cancel()
             return job.snapshot()
@@ -3596,10 +3607,8 @@ def request_error_text(exc, prefix=True):
     return "Could not complete the request: %s" % text
 
 
-def _secret_values(value, store=None, found=None, depth=0):
-    """Every non-empty string stored under a key that names a password (any
-    depth), and the saved password of each connection that names a profile
-    and sends none, so a traceback never carries one."""
+def _secret_values(value, found=None, depth=0):
+    """Password-named strings in the payload, without any saved-secret reads."""
     found = set() if found is None else found
     if depth > 12:
         return found
@@ -3608,45 +3617,26 @@ def _secret_values(value, store=None, found=None, depth=0):
             if isinstance(key, str) and ("password" in key.lower() or key.lower() == "secret") and isinstance(item, str) and item:
                 found.add(item)
             else:
-                _secret_values(item, store, found, depth + 1)
-        if store is not None and value.get("profile_id") and not value.get("password"):
-            try:
-                saved = store.connection_with_saved_password(value).get("password")
-            except Exception:
-                saved = None
-            if isinstance(saved, str) and saved:
-                found.add(saved)
-        # Group probes have only group_name and active_member_profile_id in
-        # their request. A failure can originate in any saved member, whose
-        # password must be hidden too. Read only the explicitly named group;
-        # this opens no server connection and never scans unrelated secrets.
-        group = value.get("group_name")
-        if store is not None and isinstance(group, str) and group:
-            try:
-                from .workspace_store import ENDPOINT_FIELDS
-                for profile in store.list("profile"):
-                    if not isinstance(profile, dict) or profile.get("group") != group:
-                        continue
-                    member = {key: profile.get(key) for key in ENDPOINT_FIELDS}
-                    member["profile_id"] = profile.get("id")
-                    _secret_values(member, store, found, depth + 1)
-            except Exception:
-                pass
+                _secret_values(item, found, depth + 1)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _secret_values(item, store, found, depth + 1)
+            _secret_values(item, found, depth + 1)
     return found
 
 
-def _log_unexpected_error(path, exc_info, payload=None, store=None):
+def _log_unexpected_error(path, exc_info, payload=None):
     """Write the traceback of an unexpected error to stderr, never to the
-    response, with request passwords and SQL/URL credentials removed."""
+    response, with request passwords and SQL/URL credentials removed.
+
+    Only payload strings and already-captured request secrets are considered;
+    diagnostics must never read the store, even if group consent has changed.
+    """
     import traceback
     from .dbops import redact
     try:
         text = "".join(traceback.format_exception(*exc_info))
         variants = set()
-        for secret in _secret_values(payload, store):
+        for secret in _secret_values(payload) | request_secrets.values():
             # Also as it reads inside a repr or JSON text of the exception.
             variants.update((secret, repr(secret)[1:-1], json.dumps(secret)[1:-1]))
         for secret in sorted(variants, key=len, reverse=True):
@@ -3876,6 +3866,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 watcher.join()
             self.connection.settimeout(timeout)
 
+    @request_secrets.scoped
     def do_POST(self):
         if not self._local_request():
             return
@@ -3949,6 +3940,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 # Decoder limits describe malformed input. A RecursionError
                 # from endpoint code still reaches the logged response below.
                 raise ValueError("Request JSON is too deeply nested.") from None
+            request_secrets.capture_many(_secret_values(payload))
             if (self.path in _CANCELLABLE_READ_PATHS and self.path not in _WRITE_PATHS
                     and hasattr(self, "connection")):
                 result = self._cancellable_read(payload)
@@ -3996,7 +3988,7 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 # example during read-back). Only explicit refusals above
                 # establish a 4xx outcome; an unexpected write failure is
                 # uncertain, including malformed-field exception types.
-                _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+                _log_unexpected_error(self.path, sys.exc_info(), payload)
                 self._send(500, {"error": _unexpected_error_message(self.path)})
             elif isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
                                   TimeoutError, socket.timeout)):
@@ -4006,10 +3998,10 @@ class WorkspaceHandler(BaseHTTPRequestHandler):
                 # Handlers may detect malformed request fields by indexing
                 # or using their expected type. Preserve the 400 contract,
                 # while logging redacted diagnostics for possible code bugs.
-                _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+                _log_unexpected_error(self.path, sys.exc_info(), payload)
                 self._send(400, {"error": _unexpected_error_message(self.path)})
             else:
-                _log_unexpected_error(self.path, sys.exc_info(), payload, getattr(self.server, "store", None))
+                _log_unexpected_error(self.path, sys.exc_info(), payload)
                 self._send(500, {"error": _unexpected_error_message(self.path)})
 
 

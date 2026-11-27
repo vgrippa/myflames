@@ -117,6 +117,7 @@ import time
 import uuid
 import weakref
 
+from . import request_secrets
 from .connector import ConnectorError, MySQLConnection
 from .server_info import identity_from_version, parse_version_tuple, product_identity
 from .editor_insights import EditorInsights
@@ -3833,6 +3834,9 @@ def _session_for(registry, tab_id, identity):
     session = registry.get(tab_id)
     if session is not None and session.identity != identity:
         raise EditorError(_MISMATCH, "identity_mismatch")
+    if session is not None and session._conn is not None:
+        # Reuse releases the session's existing credential only to its owner.
+        request_secrets.capture(session._conn.password)
     return session
 
 
@@ -3845,6 +3849,8 @@ def _owned_session(registry, tab_id, identity):
     session = registry.get(tab_id)
     if session is not None and dbops.identity_endpoint(session.identity) != dbops.identity_endpoint(identity):
         raise EditorError(_MISMATCH, "identity_mismatch")
+    if session is not None and session._conn is not None:
+        request_secrets.capture(session._conn.password)
     return session
 
 
@@ -5380,6 +5386,9 @@ def _open_session(registry, tab_id, options, identity, safety, name, payload, de
         session.ready.wait(HELPER_TIMEOUT + 30)
         if session.identity != identity:
             raise EditorError(_MISMATCH, "identity_mismatch")
+        if session._conn is not None:
+            # A concurrent opener may have authenticated with another password.
+            request_secrets.capture(session._conn.password)
         if session.ended:
             raise ConnectorError(session.end_message or SESSION_ENDED_TEXT)
         return session
@@ -6098,6 +6107,8 @@ def api_response(path, payload, workspace, fill_password=None):
             # session's own authenticated run options instead.
             run = session.run
             full = dict(run.options) if run is not None and run.options is not None else None
+            if full is not None:
+                request_secrets.capture(full.get("password"))
         result = session.stop(full, force=payload.get("force") is True)
         if full and full.get("password") and result.get("message"):
             result["message"] = result["message"].replace(full["password"], "[redacted]")

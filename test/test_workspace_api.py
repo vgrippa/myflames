@@ -18,6 +18,107 @@ from myflames.ui import ASSET_DIR, WorkspaceServer, api_response
 PLAN = (Path(__file__).parent / 'mysql-explain-json-sample.json').read_text(encoding="utf-8")
 
 
+class TestUnexpectedErrorSecretAccess(unittest.TestCase):
+    """Diagnostics have no authority to retrieve a connection's password."""
+
+    def post(self, path, payload, store):
+        from email.message import Message
+        from myflames import ui
+        handler = object.__new__(ui.WorkspaceHandler)
+        handler.path = path
+        handler.server = types.SimpleNamespace(store=store, token='test-token')
+        handler.headers = Message()
+        body = json.dumps(payload).encode('utf-8')
+        handler.headers['Content-Type'] = 'application/json'
+        handler.headers['Content-Length'] = str(len(body))
+        handler.headers['X-Myflames-Token'] = handler.server.token
+        handler._local_request = lambda: True
+        handler._authenticated = lambda: True
+        handler._read_body = lambda size: body
+        handler._send = MagicMock()
+        handler.do_POST()
+        return handler._send.call_args[0][:2]
+
+    def test_error_paths_never_read_saved_secrets_or_group_members(self):
+        from myflames import ui
+        typed = 'typed-error-path-password'
+        payload = {'connection': {'profile_id': 'unopened', 'group_name': 'G'},
+                   'nested': [{'password': typed}], 'group_name': 'G'}
+        paths = ('/api/profiles/list', '/api/live/topology') + tuple(ui._SQL_OUTCOME_PATHS)
+        for path in paths:
+            for error_type in (KeyError, RuntimeError):
+                with self.subTest(path=path, error_type=error_type.__name__):
+                    store = MagicMock()
+                    store.connection_with_saved_password.side_effect = AssertionError(
+                        'diagnostics must never look up a secret')
+                    store.list.side_effect = AssertionError(
+                        'diagnostics must never enumerate group members')
+                    log = io.StringIO()
+                    with patch.object(ui, 'api_response', side_effect=error_type(typed)), \
+                            patch.object(ui.sys, 'stderr', log):
+                        status, response = self.post(path, payload, store)
+                    self.assertEqual(status, 400 if error_type is KeyError
+                                     and path not in ui._SQL_OUTCOME_PATHS else 500)
+                    self.assertIn('[redacted]', log.getvalue())
+                    self.assertNotIn(typed, log.getvalue())
+                    self.assertNotIn(typed, json.dumps(response))
+                    store.connection_with_saved_password.assert_not_called()
+                    store.list.assert_not_called()
+
+    def test_removed_peer_and_unopened_member_are_not_read_during_error_logging(self):
+        from myflames import secret_store, ui
+        from myflames.workspace_store import WorkspaceStore
+        with tempfile.TemporaryDirectory() as home, \
+                patch.dict(os.environ, {'HOME': home, 'USERPROFILE': home,
+                                       'MYFLAMES_SECRET_BACKEND': 'vault'}):
+            store = WorkspaceStore()
+            saved = 'used-saved-peer-password'
+            typed = "typed-'password\\with-newline\nvalue"
+            peer = store.save('profile', {'name': 'peer', 'host': 'peer.example',
+                             'port': 3306, 'user': 'dba', 'group': 'G'},
+                             'peer', password=saved, remember=True)
+            store.save('profile', {'name': 'never opened', 'host': 'unused.example',
+                       'port': 3306, 'user': 'dba', 'group': 'G'},
+                       'unused', password='never-read-secret', remember=True)
+            route = {'profile_id': peer['id'], 'host': peer['host'], 'port': 3306,
+                     'user': 'dba', 'group_name': 'G'}
+            payload = {'connection': route, 'group_name': 'G',
+                       'donor': {'host': 'typed.example', 'user': 'dba', 'password': typed}}
+            obtained = []
+
+            def used_then_failed(path, request, workspace):
+                obtained.append(store.connection_with_saved_password(request['connection'])['password'])
+                obtained.append(store.connection_with_saved_password(request['donor'])['password'])
+                # The error arrives after consent changed. Nothing here
+                # authorizes rereading this peer or opening another member.
+                store.assign_profile_group(['peer'], '')
+                request['donor'].pop('password')
+                lookup.reset_mock()
+                members.reset_mock()
+                secrets.reset_mock()
+                raise RuntimeError('used %s and %s' % tuple(obtained))
+
+            log = io.StringIO()
+            with patch.object(store, 'connection_with_saved_password',
+                              wraps=store.connection_with_saved_password) as lookup, \
+                    patch.object(store, 'list', wraps=store.list) as members, \
+                    patch.object(secret_store, 'get_secret', wraps=secret_store.get_secret) as secrets, \
+                    patch.object(ui, 'api_response', side_effect=used_then_failed), \
+                    patch.object(ui.sys, 'stderr', log):
+                status, response = self.post('/api/connect', payload, store)
+            self.assertEqual(obtained, [saved, typed])
+            self.assertEqual(status, 500)
+            lookup.assert_not_called()
+            members.assert_not_called()
+            secrets.assert_not_called()
+            self.assertIn('RuntimeError', log.getvalue())
+            self.assertIn('[redacted]', log.getvalue())
+            for password in (saved, typed):
+                for variant in (password, repr(password)[1:-1], json.dumps(password)[1:-1]):
+                    self.assertNotIn(variant, log.getvalue())
+                self.assertNotIn(password, json.dumps(response))
+
+
 class TestWorkspaceAPI(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -367,12 +468,14 @@ class TestWorkspaceAPI(unittest.TestCase):
         lc_job = types.SimpleNamespace(
             id='lc-cancel-outcome', state='running', thread=None, created=time.monotonic(),
             lock=threading.Lock(), connection_id=None, cancelled=threading.Event(),
+            passwords=(secret,),
             start=lambda: None, cancel=lc_cancel, snapshot=lc_snapshot, close=lambda: None)
         ui._lifecycle_add(self.server, lc_job, 'target', connection)
 
         identity = dbops.identity_endpoint(dbops.connection_identity(connection))
         live_job = types.SimpleNamespace(
             id='live-cancel-outcome', identity=identity, created=time.monotonic(), state='running',
+            options={'password': secret},
             cancel=lambda: cancelled.append('/api/live/cancel'),
             snapshot=fail_snapshot, _request_cancel=lambda: None)
         with self.server.jobs.lock:
