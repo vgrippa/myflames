@@ -128,13 +128,24 @@ type Confirmation = {
 
 export type ReplicationSubTab = "topology" | "channels" | "lag" | "gtid" | "recovery";
 
-export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, onLoops, restoredLoop = false, onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster, onOpenReadyset, onOpenProxySql, onSwitchConnection, topologyHeader }: {
+export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, sameEndpoint: sameEndpointProp, onLoops, otherLoops = [], otherLoopStopping = null, onStopOtherLoop, restoredLoop = false, restoredStoppedKey = "", onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster, onOpenReadyset, onOpenProxySql, onSwitchConnection, topologyHeader }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   report: Bound<ReplicationReport> | null; onReport: (report: Bound<ReplicationReport>) => void;
-  /** Memory only, owned by Server. Keep this view mounted while hidden. */
-  loops: Bound<SkipLoop[]> | null; onLoops: (loops: Bound<SkipLoop[]>) => void;
+  /** Memory only, owned by the shell (this connection key's entry). Keep this view mounted while hidden. */
+  loops: Bound<SkipLoop[]> | null;
+  /** True when the shell holds loop state for this endpoint under an earlier key (policy change). */
+  sameEndpoint?: boolean;
+  onLoops: (loops: Bound<SkipLoop[]>) => void;
+  /** Active skip loops running on other members of the active group (or a
+   * restored same-group member), shown with their server label and Stop. */
+  otherLoops?: { bound: Bound<SkipLoop[]>; server: string }[];
+  otherLoopStopping?: { key: string; id: string } | null;
+  onStopOtherLoop?: (bound: Bound<SkipLoop[]>, loop: SkipLoop) => void;
   /** The only loop state a restored workspace may retain is this warning flag. */
-  restoredLoop?: boolean; onLoopActivity?: (active: boolean) => void;
+  restoredLoop?: boolean;
+  /** Key whose restored skip loop was confirmed stopped by a restart. */
+  restoredStoppedKey?: string;
+  onLoopActivity?: (active: boolean) => void;
   missingPrivileges?: MissingPrivileges;
   activeTab?: ReplicationSubTab;
   onTabChange?: (tab: ReplicationSubTab) => void;
@@ -158,7 +169,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   // (dbops.identity_endpoint), so after a change of type or Read-only on the
   // same saved connection the loop is read again under the new key and keeps
   // its Stop. Any other connection has its own loops.
-  const sameEndpoint = !!boundLoops && endpointKey(boundLoops.key) === endpointKey(reads.key);
+  const sameEndpoint = sameEndpointProp ?? (!!boundLoops && endpointKey(boundLoops.key) === endpointKey(reads.key));
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const confirmationRef = useRef(confirmation);
   confirmationRef.current = confirmation;
@@ -208,8 +219,9 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   // workspace says a loop ran), again while a loop runs, and after Start or
   // Stop. Polling never starts a loop; a loop whose Start reply was lost is
   // found here, without sending Start again.
-  const pollEnabled = !!(bound?.key === key && report?.available && report.replica) || sameEndpoint || restoredLoop;
   const [restoredKey] = useState(key);
+  const isRestoredKey = restoredLoop && endpointKey(key) === endpointKey(restoredKey);
+  const pollEnabled = !!(bound?.key === key && report?.available && report.replica) || sameEndpoint || isRestoredKey;
   const [pollRetry, setPollRetry] = useState(0);
   const [loopChecked, setLoopChecked] = useState("");
   const [loopFailure, setLoopFailure] = useState("");
@@ -218,21 +230,22 @@ export function ReplicationView({ connection, disabled, selection, report: bound
     const controller = new AbortController();
     let timer: number | undefined;
     const c = { ...cRef.current };
+    const ownKey = connectionKey(c);
     async function poll() {
       try {
         const answer = await readSkipLoops(c, controller.signal);
-        if (controller.signal.aborted) return;
-        publishLoops.current({ key, label: connectionLabel(c), report: answer.loops });
+        if (controller.signal.aborted || ownKey !== key) return;
+        publishLoops.current({ key: ownKey, label: connectionLabel(c), report: answer.loops });
         const running = answer.loops.some(loopActive);
         activity.current?.(running);
-        setLoopChecked(key);
+        setLoopChecked(ownKey);
         setLoopFailure("");
         setFailure((f) => (f?.loop ? null : f));
         if (running) timer = window.setTimeout(() => { void poll(); }, LOOP_POLL_MS);
       } catch (e) {
         if (!controller.signal.aborted) {
-          setLoopFailure(key);
-          setFailure({ key, loop: true, text: `Skip loop status could not be read: ${(e as Error).message}. Recovery stays off until it is read.` });
+          setLoopFailure(ownKey);
+          setFailure({ key: ownKey, loop: true, text: `Skip loop status could not be read: ${(e as Error).message}. Recovery stays off until it is read.` });
         }
       }
     }
@@ -540,8 +553,10 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   const judged = report ? report.channels.filter((r) => r.judged) : [];
   // Loops are read for the connection in use (by endpoint), apart from the report.
   const loopsShown = loops;
-  // The restored flag belongs to the connection the workspace was saved with.
-  const restartNote = restoredLoop && key === restoredKey && loopChecked === key && !loops.length;
+  // The restored flag belongs only to the connection key that ran the loop.
+  const restartNote =
+    (isRestoredKey && loopChecked === key && !loops.length) ||
+    (!!restoredStoppedKey && key === restoredStoppedKey && !loops.length);
   // Only the backend's judged channels contribute a health status. Group
   // Replication channels have a different contract and remain unjudged here.
   const replicaFailed = judged.some(ch => ch.status === "problem" && !!(ch.io.error.errno || ch.sql.error.errno));
@@ -615,6 +630,18 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         <p>{loopResult.report.message}</p><p className="hint">Sent on {loopResult.label}, not the connection in use.</p>
       </section>}
       {loopsShown.length > 0 && <ReplicationLoopBanner loops={loopsShown} stopping={stopping} onStop={(l) => { void stop(l); }} />}
+      {otherLoops.map(({ bound: otherBound, server }) => {
+        const active = otherBound.report.filter(loopActive);
+        return active.length > 0 ? (
+          <ReplicationLoopBanner
+            key={otherBound.key}
+            loops={active}
+            server={server}
+            stopping={otherLoopStopping?.key === otherBound.key ? otherLoopStopping.id : ""}
+            onStop={(l) => { onStopOtherLoop?.(otherBound, l); }}
+          />
+        ) : null;
+      })}
       {result && resultTone && <section tabIndex={-1} className="ops-result" aria-label="Skip result" role="status" data-status={result.status}>
           <div className="ops-result-head"><StatusPill tone={resultTone[0]} label={resultTone[1]} /><strong>{channelPhrase(engine, result.channel)}</strong></div>
           <p>{result.message}</p>

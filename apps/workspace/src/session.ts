@@ -159,6 +159,9 @@ export type SlowState = {
   /** Replication: a skip loop was active when the workspace was saved. The
    * only loop state a restore keeps; it warns that nothing resumes. */
   replication_loop_active?: boolean;
+  /** Saved-connection id of the member running an active skip loop, so a
+   * reload polls that member rather than the window's active connection. */
+  replication_loop_member?: string;
   /** Column layout of the workspace tables (Server's views and the Cluster
    * place) by table id (TABLE_IDS): widths and hidden columns. Versioned
    * key: a new layout format gets a new key. */
@@ -526,6 +529,9 @@ export function normalizeLab(raw: unknown): LabState {
         ? (s.maintenance_section as "tools" | "upgrade" | "dump" | "restore" | "clone")
         : "tools",
       ...(s.replication_loop_active === true ? { replication_loop_active: true } : {}),
+      ...(s.replication_loop_active === true && text(s.replication_loop_member, "", 200)
+        ? { replication_loop_member: text(s.replication_loop_member, "", 200) }
+        : {}),
       ...(s.report_run === true ? { report_run: true } : {}),
       ...(Object.keys(columnLayouts(s.columns_v1)).length ? { columns_v1: columnLayouts(s.columns_v1) } : {}),
     },

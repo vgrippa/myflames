@@ -498,10 +498,13 @@ try {
   assert.equal(calls(START).length, 2, "a restored workspace never starts a loop");
   await h.savedSlow((s) => s.replication_loop_active !== true);
 
-  // A loop keeps its Stop after the connection's type changes (same endpoint).
+  // A loop keeps its Stop after the connection's type changes (same endpoint),
+  // persists its member profile id with replication_loop_active, and survives
+  // View > Reload when the registry still holds it running.
   const replicaOption = await connectionOption(page, "Replica");
   await chooseConnection(page, replicaOption);
   await page.waitForFunction(() => /replica\.test/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  assert.equal(await page.$(`${view} .ops-note`), null, "the restarted note belongs only to the saved loop's key");
   await h.refresh();
   await waitRow("");
   await h.select(row(""));
@@ -511,6 +514,14 @@ try {
   await settle(START, 3);
   assert.equal(calls(START)[2].body.connection.type, "development");
   await page.waitForSelector(`${view} .ops-loop[data-loop=running]`);
+  await h.savedSlow((s) => s.replication_loop_active === true && s.replication_loop_member === replica.id);
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector(`${view} .ops-loop[data-loop=running]`, { visible: true });
+  assert.equal(await page.$(`${view} .ops-note`), null, "View > Reload with a running registry shows no restart note");
+  await h.refresh();
+  await channelsTab();
+  await waitRow("");
   await api("/api/profiles/save", {
     id: replica.id,
     value: { name: "Replica", host: "replica.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production" },
@@ -525,6 +536,7 @@ try {
   await settle(STOP, stops + 1);
   assert.equal(calls(STOP).at(-1).body.connection.type, "production");
   await page.waitForSelector(`${view} .ops-loop[data-loop=stopped]`);
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_member);
 
   // Another connection: the report stays greyed with every skip action off.
   await h.refresh();

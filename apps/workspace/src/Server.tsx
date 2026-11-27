@@ -52,6 +52,7 @@ import { api } from "./api";
 import { validateDiagram, rebuildDiagramLayout, type DiagramDocument, type SchemaDiagram } from "./schemaDiagramModel";
 import type { AccountsReport } from "./accountsApi";
 import {
+  ActionButton,
   ColumnStoreContext,
   RefreshAllContext,
   useColumnStore,
@@ -88,6 +89,7 @@ import { serverKind, type ServerKind, type SlowState } from "./session";
 import {
   connectionKey,
   connectionLabel,
+  endpointKey,
   keyProfileId,
   lastViewRead,
   latestGeneration,
@@ -115,10 +117,12 @@ import { InstrumentsLinkContext, InstrumentsView } from "./Instruments";
 import { MaintenanceView, emptyMaintenance, type MaintenanceMemory, type MaintenanceSection } from "./Maintenance";
 import { ReplicationLoopBanner } from "./Replication";
 import {
+  cancelLifecycleJob,
   jobActive,
   loopActive,
   readSkipLoops,
   stopSkipLoop,
+  type LifecycleJob,
   type LifecycleTools,
   type ReplicationReport,
   type SkipLoop,
@@ -308,6 +312,8 @@ export function Server({
   groupServer = null,
   replicationLoops: propReplicationLoops,
   onReplicationLoops: propOnReplicationLoops,
+  restoredLoopKey = "",
+  resolveMemberConnection,
   replication: propReplication,
   onReplication: propOnReplication,
   cluster: propCluster,
@@ -373,8 +379,16 @@ export function Server({
   /** A link from the Replication place's "instrument is off" note: open
    * Instruments at that row (n changes per click). */
   instrumentsLink?: { row: string; n: number } | null;
-  replicationLoops?: Bound<SkipLoop[]> | null;
+  /** Skip loops per connectionKey, owned by the shell. */
+  replicationLoops?: Record<string, Bound<SkipLoop[]>>;
   onReplicationLoops?: (loops: Bound<SkipLoop[]>) => void;
+  /** Key of a restored same-group loop that stays visible after reload before
+   * the Group connection is opened again. */
+  restoredLoopKey?: string;
+  /** Rebuilds a group member's request connection by profile id (main.tsx
+   * memberRequest, or the same-group profile after reload). Stop and Cancel
+   * send only when the rebuilt connectionKey equals the bound key. */
+  resolveMemberConnection?: (profileId: string) => Connection | null;
   /** The Replication place's report, owned by the shell: Refresh all reads
    * replication once and the place shows that answer. */
   replication?: Bound<ReplicationReport> | null;
@@ -432,24 +446,60 @@ export function Server({
   const replicationPlaceConnection = placeConnections?.replication || connection;
   const clusterPlaceConnection = placeConnections?.cluster || connection;
   const replicationPlaceKey = connectionKey(replicationPlaceConnection);
-  const [localReplicationLoops, setLocalReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
+  const [localReplicationLoops, setLocalReplicationLoops] = useState<Record<string, Bound<SkipLoop[]>>>({});
   const effectiveLoops = propReplicationLoops !== undefined ? propReplicationLoops : localReplicationLoops;
-  // A skip loop runs on the connection the Replication place holds; on a
-  // Group connection that is the member the place reads (the primary or
-  // source, or another member a card opened), while the Server: control may
-  // show another member. The loop stays visible, named by the server it runs
-  // on, whichever member the place shows.
-  const loopsBound = effectiveLoops && (effectiveLoops.key === activeKey || effectiveLoops.key === replicationPlaceKey)
-    ? effectiveLoops : null;
-  const loopsHere = loopsBound?.report || [];
-  const loopActiveNow = loopsHere.some(loopActive);
-  /** The server a shown loop runs on, when it is not the member on screen. */
-  const loopServer = loopsBound && loopsBound.key !== activeKey
-    ? (() => {
-        const member = groupServer?.group.members.find((m) => m.profile_id === keyProfileId(loopsBound.key));
-        return member ? groupMemberLabel(member) : loopsBound.label;
-      })()
-    : "";
+  const groupMemberIds = useMemo(
+    () => (groupServer ? new Set(groupServer.group.members.map((m) => m.profile_id)) : null),
+    [groupServer],
+  );
+  const groupKeyInScope = useCallback(
+    (key: string) => {
+      if (key === activeKey) return true;
+      if (!groupMemberIds) return false;
+      const pid = keyProfileId(key);
+      return !!pid && groupMemberIds.has(pid);
+    },
+    [activeKey, groupMemberIds],
+  );
+  // Active skip loops belong here when their key is the member on screen, the
+  // Replication place's current member, any member of the active group, or a
+  // restored same-group member after View > Reload. Every running loop keeps
+  // its banner and Stop whichever member Replication or Server shows.
+  const activeLoopBounds = useMemo(() => {
+    const list = Object.values(effectiveLoops).filter((bound) => {
+      if (!bound.report.some(loopActive)) return false;
+      return (
+        bound.key === activeKey ||
+        bound.key === replicationPlaceKey ||
+        (!!restoredLoopKey && bound.key === restoredLoopKey) ||
+        groupKeyInScope(bound.key)
+      );
+    });
+    const order = groupServer
+      ? new Map(groupServer.group.members.map((m, i) => [m.profile_id, i]))
+      : null;
+    list.sort((a, b) => {
+      if (a.key === activeKey) return -1;
+      if (b.key === activeKey) return 1;
+      if (order) {
+        const ai = order.get(keyProfileId(a.key)) ?? 9999;
+        const bi = order.get(keyProfileId(b.key)) ?? 9999;
+        if (ai !== bi) return ai - bi;
+      }
+      return a.key.localeCompare(b.key);
+    });
+    return list;
+  }, [effectiveLoops, activeKey, replicationPlaceKey, restoredLoopKey, groupKeyInScope, groupServer]);
+  /** Names the server a loop or job runs on when it is not the member on screen. */
+  const memberServerLabel = (bound: Bound<unknown>) => {
+    if (bound.key === activeKey) return "";
+    const pid = keyProfileId(bound.key);
+    const member = pid ? groupServer?.group.members.find((m) => m.profile_id === pid) : undefined;
+    if (member) return groupMemberLabel(member);
+    const profile = pid ? profiles.find((p) => p.id === pid) : undefined;
+    if (profile) return `${profile.name} · ${profile.host}:${profile.port}`;
+    return bound.label;
+  };
   const [inspectorOpen, setInspectorOpen] = useState(initial?.inspector === true);
   /** A Full analysis ran (restored; the report itself never is). */
   const [reportRun, setReportRun] = useState(initial?.report_run === true);
@@ -500,11 +550,10 @@ export function Server({
       inspector: inspectorOpen,
       sessions_scope: sessionsScope,
       maintenance_section: maintenanceSection,
-      ...(loopActiveNow ? { replication_loop_active: true } : {}),
       ...(reportRun ? { report_run: true } : {}),
       ...(Object.keys(columns).length ? { columns_v1: columns } : {}),
     });
-  }, [savedKind, order, minSeconds, healthInterval, schema, memoryInterval, waitsInterval, ioInterval, indexesSchemas, tablesSchemas, inspectorOpen, sessionsScope, maintenanceSection, loopActiveNow, reportRun, columns]);
+  }, [savedKind, order, minSeconds, healthInterval, schema, memoryInterval, waitsInterval, ioInterval, indexesSchemas, tablesSchemas, inspectorOpen, sessionsScope, maintenanceSection, reportRun, columns]);
 
   // Reports, kept while the place is mounted (never saved). Each one carries
   // the key of the connection it was read from (binding.ts): a report from
@@ -559,10 +608,21 @@ export function Server({
   );
   const setReplicationLoops = useCallback(
     (loops: Bound<SkipLoop[]>) => {
-      setLocalReplicationLoops(loops);
+      if (propReplicationLoops === undefined) {
+        setLocalReplicationLoops((current) => {
+          const endpoint = endpointKey(loops.key);
+          const updated: Record<string, Bound<SkipLoop[]>> = {};
+          for (const [k, v] of Object.entries(current)) {
+            if (k !== loops.key && endpointKey(k) === endpoint) continue;
+            updated[k] = v;
+          }
+          updated[loops.key] = loops;
+          return updated;
+        });
+      }
       propOnReplicationLoops?.(loops);
     },
-    [propOnReplicationLoops],
+    [propReplicationLoops, propOnReplicationLoops],
   );
   /** Maintenance memory is ephemeral: reports, plans, jobs and donor secrets
    * never reach the session (session.ts keeps the section and the loop flag). */
@@ -1320,12 +1380,16 @@ export function Server({
         ? dot("watch", `${missing} views missing instruments`)
         : dot("ok", "ready");
   }
-  // Maintenance: jobs of the connection in use only, from what is already
-  // loaded; nothing is polled or read for a badge.
-  const maintenanceJobsNow = maintenance.jobs.filter((b) => b.key === activeKey);
+  // Maintenance: jobs of the connection in use (plus running jobs of any
+  // member of the active group, so switching Server: never hides a running
+  // dump, restore or clone); nothing is polled or read for a badge.
+  const maintenanceJobsNow = maintenance.jobs.filter(
+    (b) => b.key === activeKey || (jobActive(b.report) && groupKeyInScope(b.key)),
+  );
   const maintenanceActive = maintenanceJobsNow.filter((b) => jobActive(b.report));
   const maintenanceFailed = maintenanceJobsNow.filter(
     (b) =>
+      b.key === activeKey &&
       !jobActive(b.report) &&
       (b.report.state === "failed" || b.report.state === "refused" || b.report.result?.status === "verification_failed"),
   );
@@ -1465,34 +1529,60 @@ export function Server({
   // whichever member the Server: control shows); stopping one is
   // cancellation of an authorized action, so it stays enabled during
   // capture, policy loading and on a read-only connection.
-  const [loopStopping, setLoopStopping] = useState("");
+  const latestResolveMember = useRef(resolveMemberConnection);
+  latestResolveMember.current = resolveMemberConnection;
+  function connectionForBoundKey(boundKey: string): Connection | null {
+    if (boundKey === connectionKey(latestConnection.current)) return latestConnection.current;
+    if (boundKey === connectionKey(latestPlaceConnections.current.replication)) return latestPlaceConnections.current.replication;
+    const pid = keyProfileId(boundKey);
+    if (!pid || !latestResolveMember.current) return null;
+    const rebuilt = latestResolveMember.current(pid);
+    return rebuilt && connectionKey(rebuilt) === boundKey ? rebuilt : null;
+  }
+  const [loopStopping, setLoopStopping] = useState<{ key: string; id: string } | null>(null);
   const loopStoppingRef = useRef(new Set<string>());
-  async function stopLoopNow(loop: SkipLoop) {
+  async function stopLoopNow(bound: Bound<SkipLoop[]>, loop: SkipLoop) {
     const id = loop.job_id;
-    const bound = effectiveLoops;
-    if (!id || !bound || loopStoppingRef.current.has(id)) return;
-    // Stop goes to the connection the loop runs on (its bound key): the
-    // member on screen, or the member the Replication place reads while the
-    // Server: control shows another member.
-    const c = bound.key === connectionKey(latestConnection.current)
-      ? latestConnection.current
-      : bound.key === connectionKey(latestPlaceConnections.current.replication)
-        ? latestPlaceConnections.current.replication
-        : null;
-    if (!c) return;
-    loopStoppingRef.current.add(id);
-    setLoopStopping(id);
+    const stopKey = id ? `${bound.key}:${id}` : "";
+    if (!id || loopStoppingRef.current.has(stopKey)) return;
+    // Stop goes only to a connection rebuilt for the loop's bound key, and
+    // only when its connectionKey matches the bound key.
+    const c = connectionForBoundKey(bound.key);
+    if (!c || connectionKey(c) !== bound.key) return;
+    loopStoppingRef.current.add(stopKey);
+    setLoopStopping({ key: bound.key, id });
     try {
       await stopSkipLoop(c, id);
-      // The read rebinds loops to the connection they run on; after a switch
-      // the view's own poll reconciles when you switch back.
       const answer = await readSkipLoops(c);
       setReplicationLoops({ key: bound.key, label: connectionLabel(c), report: answer.loops });
     } catch {
       // The view shows loop status errors; the persistent banner stays quiet.
     } finally {
-      loopStoppingRef.current.delete(id);
-      setLoopStopping((pending) => (pending === id ? "" : pending));
+      loopStoppingRef.current.delete(stopKey);
+      setLoopStopping((pending) => (pending?.key === bound.key && pending.id === id ? null : pending));
+    }
+  }
+  const [jobCancelling, setJobCancelling] = useState("");
+  const jobCancellingRef = useRef(new Set<string>());
+  async function cancelJobNow(bound: Bound<LifecycleJob>) {
+    const id = bound.report.id;
+    const cancelKey = id ? `${bound.key}:${id}` : "";
+    if (!id || jobCancellingRef.current.has(cancelKey)) return;
+    const c = connectionForBoundKey(bound.key);
+    if (!c || connectionKey(c) !== bound.key) return;
+    jobCancellingRef.current.add(cancelKey);
+    setJobCancelling(cancelKey);
+    try {
+      const job = await cancelLifecycleJob(c, id);
+      setMaintenance((m) => ({
+        ...m,
+        jobs: m.jobs.map((b) => (b.key === bound.key && b.report.id === id ? { ...b, report: job } : b)),
+      }));
+    } catch {
+      // Maintenance shows job errors; the persistent banner stays quiet.
+    } finally {
+      jobCancellingRef.current.delete(cancelKey);
+      setJobCancelling((pending) => (pending === cancelKey ? "" : pending));
     }
   }
   const MAINTENANCE_JOB_LABEL: Record<string, string> = { dump: "Dump", restore: "Restore", clone: "Clone" };
@@ -1886,18 +1976,40 @@ export function Server({
                       : `Refresh all stopped before ${viewFailure.label}. ${viewFailure.report ? "This is the previous report." : "No report has been loaded yet."}`}
                 </p>
               )}
-              {loopsHere.some((l) => loopActive(l)) && (
-                <ReplicationLoopBanner loops={loopsHere.filter((l) => loopActive(l))} server={loopServer} stopping={loopStopping} onStop={(l) => void stopLoopNow(l)} />
-              )}
-              {kind !== "maintenance" && jobsHere.length > 0 && (
-                <div className="ops-loop" role="status">
-                  <span>
-                    {jobsHere.map((b) => `${MAINTENANCE_JOB_LABEL[b.report.operation] || b.report.operation} on ${b.label}`).join("; ")}
-                    {" "}is running.
-                  </span>
-                  <ToolbarButton onClick={() => choose("maintenance")}>Open Maintenance</ToolbarButton>
-                </div>
-              )}
+              {activeLoopBounds.map((bound) => (
+                <ReplicationLoopBanner
+                  key={bound.key}
+                  loops={bound.report.filter(loopActive)}
+                  server={memberServerLabel(bound)}
+                  stopping={loopStopping?.key === bound.key ? loopStopping.id : ""}
+                  onStop={(l) => void stopLoopNow(bound, l)}
+                />
+              ))}
+              {jobsHere
+                .filter((b) => kind !== "maintenance" || b.key !== activeKey)
+                .map((b) => {
+                  const cancelKey = b.report.id ? `${b.key}:${b.report.id}` : "";
+                  const cancelling = !!cancelKey && jobCancelling === cancelKey;
+                  const target = memberServerLabel(b) || b.label;
+                  return (
+                    <div key={b.report.id || b.key} className="ops-loop" role="status" data-maintenance-job={b.report.id || undefined}>
+                      <div className="ops-loop-copy">
+                        <strong>{MAINTENANCE_JOB_LABEL[b.report.operation] || b.report.operation} on {target} is running.</strong>
+                      </div>
+                      {b.report.id && (
+                        <ActionButton
+                          busy={cancelling}
+                          busyLabel="Cancelling…"
+                          disabled={cancelling}
+                          onClick={() => void cancelJobNow(b)}
+                        >
+                          Cancel
+                        </ActionButton>
+                      )}
+                      {kind !== "maintenance" && <ToolbarButton onClick={() => choose("maintenance")}>Open Maintenance</ToolbarButton>}
+                    </div>
+                  );
+                })}
               <ViewSwitcherContext.Provider value={switcherFor(kind)}>
                 <ViewOnScreenContext.Provider value={onScreen && !(compact && showList && !singlePlace)}>{view}</ViewOnScreenContext.Provider>
               </ViewSwitcherContext.Provider>

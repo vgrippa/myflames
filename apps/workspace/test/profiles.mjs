@@ -118,17 +118,19 @@ if (process.argv.includes("--unit")) {
   }
   // The loop callback merges against the updater's current state, not the
   // render that produced the callback, preserving settings changed meanwhile.
-  const loop = source.match(/onLoopActivity=\{\(active\) => \{([\s\S]*?)\n\s+\}\}/);
+  const loop = source.match(/const syncLoopSession = useCallback\(\(active: boolean, member = ""\) => \{([\s\S]*?)\n  \}, \[\]\);/);
   assert.ok(loop);
   const loopCode = (await transform(loop[1], { loader: "ts", target: "es2020" })).code;
   let saved = { tabs: ["new query"], slow: { kind: "waits", waits_interval: 30, columns_v1: { waits: { width: 200 } } } };
-  const notify = new Function("active", "setLabState", "normalizeLab", "sameLab", loopCode);
+  const notify = new Function("active", "member", "setLabState", "normalizeLab", "sameLab", loopCode);
   const apply = updater => { saved = updater(saved); };
-  notify(true, apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
-  assert.deepEqual(saved.slow, { kind: "waits", waits_interval: 30, columns_v1: { waits: { width: 200 } }, replication_loop_active: true });
+  notify(true, "p-nav-2", apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
+  assert.deepEqual(saved.slow, { kind: "waits", waits_interval: 30, columns_v1: { waits: { width: 200 } }, replication_loop_active: true, replication_loop_member: "p-nav-2" });
   const unchanged = saved;
-  notify(true, apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
+  notify(true, "p-nav-2", apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
   assert.equal(saved, unchanged);
+  notify(false, "", apply, value => value, (a, b) => JSON.stringify(a) === JSON.stringify(b));
+  assert.deepEqual(saved.slow, { kind: "waits", waits_interval: 30, columns_v1: { waits: { width: 200 } } });
   console.log("Profiles unit checks passed: the shared list (latest success/failure, newest policy awaited, unchanged identity, deleted names) and loop state merges.");
   process.exit(0);
 }
