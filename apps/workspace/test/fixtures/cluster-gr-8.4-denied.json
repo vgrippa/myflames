@@ -10,6 +10,7 @@
  "performance_schema": true,
  "available": false,
  "message": "This account cannot read performance_schema.replication_group_members (it needs SELECT on performance_schema): ERROR 1142 (42000) at line 1: SELECT command denied to user 'app'@'%' for table 'replication_group_members'",
+ "grant_sql": "GRANT SELECT ON `performance\\_schema`.* TO `app`@`%`;",
  "kind": "group_replication",
  "server": {
   "hostname": "mf-ic-1",

@@ -2196,7 +2196,10 @@ GUIDES.push(
     await rec.hold(1000);
     await rec.caption("Changes · the whole cluster");
     await rec.hold(3000);
-    await rec.caption("a disabled action: the reason and the fix");
+    await rec.caption("a disabled action: click for the reason and the fix");
+    await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+      .find((b) => b.getAttribute("aria-disabled") === "true")?.click(), view);
+    await page.waitForSelector(`${view} .cluster-actions .cluster-action-why:popover-open`, { visible: true });
     await rec.hold(2800);
     await rec.caption("a member page");
     await h.select(`${view} .cluster-card[data-row-key="${clusterHealthy.members[1].key}"]`);
@@ -2217,15 +2220,19 @@ GUIDES.push(
     await chooseConnection(page, "p-ic-1");
     await openPlace(h, "cluster");
     const view = '.server-view[data-view="cluster"]';
-    await page.waitForSelector(`${view} .cluster-actions .cluster-action-why .ops-pre`, { visible: true });
+    // The GRANT lives in the disabled action's message: click the action first.
+    await page.waitForSelector(`${view} .cluster-actions .review-actions > button`, { visible: true });
+    await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+      .find((b) => b.textContent.trim() === "Switch to single-primary…")?.click(), view);
+    await page.waitForSelector(`${view} .cluster-actions .cluster-action-why:popover-open .ops-pre`, { visible: true });
     await page.evaluate((sel) => document.querySelector(sel)?.scrollIntoView({ block: "center" }), `${view} .cluster-actions`);
     await rec.restart();
     await rec.hold(1200);
     await rec.caption("the GRANT for the missing privilege");
     await rec.hold(3600);
     await rec.caption("Copy");
-    await page.click(`${view} .cluster-action-why button[aria-label="Copy: Grant for Switch to single-primary"]`);
-    await page.waitForSelector(`${view} .cluster-action-why .ops-commands [role="status"]`, { visible: true });
+    await page.click(`${view} .cluster-action-why:popover-open button[aria-label="Copy: Grant for Switch to single-primary"]`);
+    await page.waitForSelector(`${view} .cluster-action-why:popover-open .ops-commands [role="status"]`, { visible: true });
     await rec.caption("");
     await rec.hold(4600);
   }],

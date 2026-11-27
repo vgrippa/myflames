@@ -1,10 +1,11 @@
 // A .ts module deliberately uses createElement so consumers need no JSX
 // wrapper. Server answers own privilege semantics; no grants are parsed here.
-import { Fragment, createContext, createElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
+import { Component, Fragment, Suspense, createContext, createElement, lazy, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ComponentType, type PropsWithChildren } from "react";
 import { api, type Connection } from "./api";
 import { connectionKey, sharedRead } from "./binding";
 import { useWritePolicy } from "./Connections";
 import type { ActionPrivilege, PrivilegesReport, PrivilegeState } from "./accountsApi";
+import { clearPendingWhyDisabled, closeWhyDisabled, onWhyDemand, openWhyDisabled } from "./whyDisabledBus";
 
 // The same read as accountsApi.readPrivileges, spelled out here: gating
 // write actions is shell code, so this one endpoint stays in the entry chunk
@@ -12,7 +13,15 @@ import type { ActionPrivilege, PrivilegesReport, PrivilegeState } from "./accoun
 const readPrivileges = (connection: Connection, signal?: AbortSignal) =>
   api<PrivilegesReport>("live/privileges", { connection }, signal);
 
-export type PrivilegeGateResult = { state: PrivilegeState; missing: string[]; reason: string; disabledReason: string; available: boolean };
+export type PrivilegeGateResult = {
+  state: PrivilegeState;
+  missing: string[];
+  reason: string;
+  disabledReason: string;
+  available: boolean;
+  /** Backend-supplied advisory GRANT statement, or null when unavailable/inapplicable. */
+  grantSql?: string | null;
+};
 type PrivilegesContextValue = {
   key: string; readOnly: boolean; report: PrivilegesReport | null; loading: boolean; error: string;
   refresh: (fresh?: boolean) => Promise<void>; accountChanged: () => Promise<void>;
@@ -194,13 +203,16 @@ export function privilegeResult(answer?: ActionPrivilege, account = ""): Privile
   const missing = [...new Set((answer?.missing || []).flat())];
   const state = answer?.state || "unknown";
   const available = answer?.available !== false;
+  const grantSql = state === "denied" && typeof answer?.grant_sql === "string" && answer.grant_sql.length > 0
+    ? answer.grant_sql
+    : null;
   const reason = state === "unknown" ? `Unverified. ${answer?.reason || "SHOW GRANTS cannot tell; the server decides."}` :
     // The server's reason usually says both already ("Needs X; app@% has
     // none of them."): add what it does not say, never repeat it.
     state === "denied" ? [answer?.reason,
       missing.length && !/\bNeeds\b/.test(answer?.reason || "") ? `Needs ${answer?.need || missing.join(" or ")}.` : "",
       account && !(answer?.reason || "").includes(account) ? `Connected as ${account}.` : ""].filter(Boolean).join(" ") : answer?.reason || "Required privileges are present.";
-  return { state, missing, reason, available,
+  return { state, missing, reason, available, grantSql,
     disabledReason: !available ? answer?.note || "Unavailable on this server." : state === "denied" && answer?.grey_out !== false ? reason : "" };
 }
 export function usePrivilege(actionKey?: string): PrivilegeGateResult {
@@ -210,8 +222,8 @@ export function usePrivilege(actionKey?: string): PrivilegeGateResult {
 
 export type EditorPrivilegePreview = {
   status: "ready" | "invalid";
-  statements: { index: number; kind: string; action_keys: string[]; state: PrivilegeState; missing: string[]; reason: string }[];
-  aggregate: { state: PrivilegeState; missing: string[]; reason: string; warning: string };
+  statements: { index: number; kind: string; action_keys: string[]; state: PrivilegeState; missing: string[]; reason: string; grant_sql?: string | null }[];
+  aggregate: { state: PrivilegeState; missing: string[]; reason: string; warning: string; grant_sql?: string | null };
   policy?: { action: string; text: string };
 };
 
@@ -220,40 +232,242 @@ export type EditorPrivilegePreview = {
 export function editorPrivilegeGate(preview?: EditorPrivilegePreview): PrivilegeGateResult {
   const gate = privilegeResult(preview?.aggregate);
   if (preview?.policy?.action === "refuse")
-    return { ...gate, disabledReason: preview.policy.text, reason: preview.policy.text };
+    return { ...gate, disabledReason: preview.policy.text, reason: preview.policy.text, grantSql: null };
   return gate;
 }
 
 /** Older preflights return a tri-state hint rather than an action envelope.
  * A target answer, including unknown, always replaces the generic answer. */
-export function targetPrivilege(generic: PrivilegeGateResult, hint?: { allowed: boolean | null; need?: string; note?: string; checked?: boolean } | null): PrivilegeGateResult {
+export function targetPrivilege(generic: PrivilegeGateResult, hint?: {
+  allowed: boolean | null;
+  need?: string;
+  note?: string;
+  checked?: boolean;
+  grant_sql?: string | null;
+} | null): PrivilegeGateResult {
   if (!hint) return generic;
   const allowed = hint.checked === false && hint.allowed !== true ? null : hint.allowed;
-  const need = hint.need || generic.missing.join(" or ");
+  const hintNeed = (hint.need || "").trim();
+  const genericNeed = generic.missing.join(" or ");
+  const genericPrimary = generic.missing[0] || "";
+  const need = hintNeed || genericNeed;
+  // Prefer an explicit backend grant_sql on the hint; otherwise reuse the
+  // backend grant_sql from the generic denial only when it grants exactly
+  // the hint's need (generic.grantSql always grants generic.missing[0]).
+  const grant_sql = allowed === false
+    ? hint.grant_sql !== undefined
+      ? hint.grant_sql
+      : generic.state === "denied" && generic.grantSql && hintNeed &&
+          (hintNeed === genericNeed || hintNeed === genericPrimary)
+        ? generic.grantSql
+        : null
+    : null;
   return privilegeResult({ state: allowed === true ? "allowed" : allowed === false ? "denied" : "unknown",
     missing: allowed === false && need ? [need] : [], need,
-    reason: hint.note || (allowed === false && !need ? "The server report denies this action." : ""), grey_out: true });
+    reason: hint.note || (allowed === false && !need ? "The server report denies this action." : ""), grey_out: true, grant_sql });
+}
+
+type WhyDisabledHostComponent = ComponentType<{ resetKey?: string }>;
+let loadedWhyDisabledHost: WhyDisabledHostComponent | null = null;
+let inFlightWhyDisabledHost: Promise<WhyDisabledHostComponent> | null = null;
+let whyDisabledHostFailures = 0;
+let nextWhyHostMount = 0;
+
+function importWhyDisabledHost(attempt: number): Promise<WhyDisabledHostComponent> {
+  if (attempt > 0) {
+    try {
+      // A failed module fetch is cached for the window, so each retry reads its
+      // own cache-busted copy of the chunk (same pattern as updateStatus.ts).
+      const retries = [
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry", import: "WhyDisabledHost" }),
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry=2", import: "WhyDisabledHost" }),
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry=3", import: "WhyDisabledHost" }),
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry=4", import: "WhyDisabledHost" }),
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry=5", import: "WhyDisabledHost" }),
+      ];
+      const loader = Object.values(retries[Math.min(attempt, retries.length) - 1])[0] as
+        (() => Promise<WhyDisabledHostComponent>) | undefined;
+      if (loader) return loader();
+    } catch {
+      // Non-Vite bundlers (esbuild in unit tests) fall back to direct import.
+    }
+  }
+  return import("./WhyDisabled").then((m) => m.WhyDisabledHost);
+}
+
+/** Preload WhyDisabledHost during idle time using the same failure tracking as
+ * on-demand opens so a failed idle preload cannot poison the first click. */
+export function preloadWhyDisabled(): Promise<WhyDisabledHostComponent> {
+  if (loadedWhyDisabledHost) return Promise.resolve(loadedWhyDisabledHost);
+  if (!inFlightWhyDisabledHost) {
+    const attempt = whyDisabledHostFailures;
+    inFlightWhyDisabledHost = importWhyDisabledHost(attempt).then(
+      (component) => {
+        loadedWhyDisabledHost = component;
+        inFlightWhyDisabledHost = null;
+        return component;
+      },
+      (error) => {
+        whyDisabledHostFailures += 1;
+        inFlightWhyDisabledHost = null;
+        throw error;
+      },
+    );
+  }
+  return inFlightWhyDisabledHost;
+}
+
+class WhyDisabledErrorBoundary extends Component<PropsWithChildren<{ onError: () => void }>, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onError();
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+/** App-level WhyDisabled host so privilege-disabled buttons show their reason
+ * and backend-supplied advisory GRANT on click. Loads WhyDisabled on first use
+ * so the entry chunk stays small; a failed chunk renders nothing inside its
+ * own error boundary (never unmounting the workspace) and retries on the next
+ * open. */
+export function PrivilegeWhyHost({ resetKey, children }: PropsWithChildren<{ resetKey?: string }>) {
+  const [host, setHost] = useState<{ id: number; Component: WhyDisabledHostComponent } | null>(null);
+  const prevReset = useRef(resetKey);
+  useEffect(() => onWhyDemand(() => {
+    setHost((current) => {
+      if (current) return current;
+      const Component = loadedWhyDisabledHost ??
+        lazy(() => preloadWhyDisabled().then((c) => ({ default: c })));
+      return { id: ++nextWhyHostMount, Component };
+    });
+  }), []);
+  useEffect(() => {
+    if (prevReset.current !== resetKey) {
+      prevReset.current = resetKey;
+      closeWhyDisabled();
+    }
+  }, [resetKey]);
+  const onHostError = useCallback((failedId: number) => {
+    clearPendingWhyDisabled();
+    setHost((current) => (current?.id === failedId ? null : current));
+  }, []);
+  return createElement(Fragment, null, children,
+    host
+      ? createElement(
+          WhyDisabledErrorBoundary,
+          { key: host.id, onError: () => onHostError(host.id) },
+          createElement(Suspense, { fallback: null }, createElement(host.Component, { resetKey })),
+        )
+      : null);
+}
+
+const CONFIRM_MANAGED_ATTRS = [
+  "aria-disabled",
+  "aria-describedby",
+  "title",
+  "data-privilege-state",
+  "data-why-reason",
+  "data-why-grant",
+] as const;
+type ConfirmManagedAttr = (typeof CONFIRM_MANAGED_ATTRS)[number];
+type SavedConfirmButton = {
+  button: HTMLButtonElement;
+  hadClass: boolean;
+  prev: Partial<Record<ConfirmManagedAttr, string | null>>;
+  applied: Partial<Record<ConfirmManagedAttr, string | null>>;
+};
+
+function restoreConfirmAttr(saved: SavedConfirmButton, attr: ConfirmManagedAttr) {
+  const expected = saved.applied[attr] ?? null;
+  if (expected !== null && saved.button.getAttribute(attr) === expected) {
+    const prior = saved.prev[attr] ?? null;
+    if (prior === null) saved.button.removeAttribute(attr);
+    else saved.button.setAttribute(attr, prior);
+  }
+  saved.applied[attr] = null;
+}
+
+function restoreConfirmButton(saved: SavedConfirmButton) {
+  for (const attr of CONFIRM_MANAGED_ATTRS) restoreConfirmAttr(saved, attr);
+  if (!saved.hadClass) saved.button.classList.remove("privilege-action");
 }
 
 /** ConfirmSheet currently accepts a label but no button attributes. Attach
- * accessibility metadata through that label, without changing its native
- * busy/form guards. The caller must also guard its onConfirm handler. */
+ * accessibility metadata and the disabled-click message through that label,
+ * without changing its native busy/form guards. The caller must also guard
+ * its onConfirm handler. */
 export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: PropsWithChildren<{
   gate: PrivilegeGateResult;
   /** Omit the badge when the dialog already displays permission details. */
   showStatus?: boolean;
 }>) {
   const label = useRef<HTMLSpanElement>(null);
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
+  const savedRef = useRef<SavedConfirmButton | null>(null);
   const id = useId();
   useLayoutEffect(() => {
+    const button = label.current?.closest("button") as HTMLButtonElement | null;
+    if (savedRef.current && savedRef.current.button !== button) {
+      restoreConfirmButton(savedRef.current);
+      savedRef.current = null;
+    }
+    if (!button) return;
+    if (!savedRef.current) {
+      const prev: SavedConfirmButton["prev"] = {};
+      for (const attr of CONFIRM_MANAGED_ATTRS) prev[attr] = button.getAttribute(attr);
+      savedRef.current = { button, hadClass: button.classList.contains("privilege-action"), prev, applied: {} };
+    }
+    const saved = savedRef.current;
+    const reason = gate.disabledReason;
+    const privilegeDenial = gate.state === "denied" && !!reason && reason === gate.reason;
+    const desired: Record<ConfirmManagedAttr, string | null> = {
+      "aria-disabled": String(!!reason || button.disabled || button.getAttribute("aria-busy") === "true"),
+      "aria-describedby": id,
+      title: reason || gate.reason || null,
+      "data-privilege-state": gate.state,
+      "data-why-reason": reason || null,
+      "data-why-grant": privilegeDenial && gate.grantSql ? gate.grantSql : null,
+    };
+    button.classList.add("privilege-action");
+    for (const attr of CONFIRM_MANAGED_ATTRS) {
+      const next = desired[attr];
+      if (next === null) restoreConfirmAttr(saved, attr);
+      else {
+        if (button.getAttribute(attr) !== next) button.setAttribute(attr, next);
+        saved.applied[attr] = next;
+      }
+    }
+  });
+  useLayoutEffect(() => () => {
+    if (savedRef.current) {
+      restoreConfirmButton(savedRef.current);
+      savedRef.current = null;
+    }
+  }, []);
+  useEffect(() => {
     const button = label.current?.closest("button");
     if (!button) return;
-    button.classList.add("privilege-action");
-    button.setAttribute("aria-disabled", String(!!gate.disabledReason || button.disabled));
-    button.setAttribute("aria-describedby", id);
-    button.title = gate.disabledReason || gate.reason;
-    button.dataset.privilegeState = gate.state;
-  });
+    const onClick = (event: MouseEvent) => {
+      const current = gateRef.current;
+      if (!current.disabledReason || button.disabled || button.getAttribute("aria-busy") === "true") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const privilegeDenial = current.state === "denied" && current.disabledReason === current.reason;
+      openWhyDisabled({
+        anchor: button,
+        reason: current.disabledReason,
+        grantSql: privilegeDenial ? current.grantSql : null,
+      });
+    };
+    button.addEventListener("click", onClick);
+    return () => button.removeEventListener("click", onClick);
+  }, []);
   return createElement("span", { ref: label }, children,
     showStatus && gate.state === "unknown" ? createElement("span", { className: "privilege-unverified" }, "Unverified") : null,
     // The reason describes the button (aria-describedby) without becoming
@@ -261,16 +475,36 @@ export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: Pro
     createElement("span", { id, className: "account-sr", "aria-hidden": "true" }, gate.disabledReason || gate.reason));
 }
 
-/** Focusable disabled button: keyboard and pointer activation are both
- * suppressed, while the reason remains reachable. Spread these props LAST.
- * The server's write preflight remains the enforcement boundary. */
-export function privilegeButtonProps(gate: PrivilegeGateResult, onClick: ButtonHTMLAttributes<HTMLButtonElement>["onClick"], blocked = "", describedBy?: string): ButtonHTMLAttributes<HTMLButtonElement> {
+/** Focusable disabled button: keyboard and pointer activation send nothing and
+ * stop propagation, while opening the app-level WhyDisabled message anchored
+ * to the button. Spread these props LAST. The server's write preflight remains
+ * the enforcement boundary. */
+export function privilegeButtonProps(gate: PrivilegeGateResult, onClick: ButtonHTMLAttributes<HTMLButtonElement>["onClick"], blocked = "", describedBy?: string): ButtonHTMLAttributes<HTMLButtonElement> & { "data-why-reason"?: string; "data-why-grant"?: string } {
   const reason = blocked || gate.disabledReason;
+  const privilegeDenial = !blocked && gate.state === "denied" && !!gate.disabledReason && gate.disabledReason === gate.reason;
+  const grantSql = privilegeDenial && gate.grantSql ? gate.grantSql : undefined;
+  const handler: NonNullable<ButtonHTMLAttributes<HTMLButtonElement>["onClick"]> & { whyDisabled?: boolean } = e => {
+    if (reason) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof HTMLElement !== "undefined" && e.currentTarget instanceof HTMLElement &&
+          e.currentTarget.getAttribute("aria-busy") !== "true") {
+        openWhyDisabled({
+          anchor: e.currentTarget,
+          reason,
+          grantSql: privilegeDenial ? gate.grantSql : null,
+        });
+      }
+    } else onClick?.(e);
+  };
+  if (reason) handler.whyDisabled = true;
   // Only a blocking reason replaces the caller's title (its shortcut hint or
   // why a row cannot run); otherwise the reason stays in aria-describedby.
   return { type: "button", "aria-disabled": !!reason, ...(reason ? { title: reason } : {}),
     "aria-describedby": describedBy,
-    onClick: e => { if (reason) { e.preventDefault(); e.stopPropagation(); } else onClick?.(e); } };
+    "data-why-reason": reason || undefined,
+    "data-why-grant": grantSql,
+    onClick: handler };
 }
 
 /** A tiny button helper; use usePrivilege for existing controls. Unknown is

@@ -5,6 +5,7 @@
 // for it and for a metadata lock, long statements, and a load. Show plan and
 // the guarded Kill are in the inspector and in each row's ⋯ menu.
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { assertPrivilege, privilegeAnswer, load, open, pause, SERVER_GROUPS, WORKLOAD_GROUPS } from "./perf-harness.mjs";
 
@@ -56,9 +57,27 @@ killFreed.sessions = killFreed.sessions.filter(s => s.id !== 93);
 Object.assign(killFreed.sessions.find((s) => s.id === 94), { blocked_by: [], lock_wait: null, is_locked: false, lock_status: null });
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
+let killPrepareDelay = 0;
 const h = await open("/api/live/sessions", "sessions", {
   "/api/live/sessions/history": body => ({ status: 200, body: { id: body.id, available: true, reason: "No completed statements are retained for this session.", statements: [], limit: 10 } }),
   "/api/live/explain-connection": { status: 200, body: plan },
+  "/api/live/kill/prepare": (body, request) => {
+    if (!killPrepareDelay) {
+      void request.continue();
+      return null;
+    }
+    return {
+      status: 200,
+      delay: killPrepareDelay,
+      body: {
+        review_token: "delayed-probe-token",
+        statements: [`KILL ${body.mode === "query" ? "QUERY" : "CONNECTION"} ${body.connection_id}`],
+        expect: body.expect,
+        connection_id: body.connection_id,
+        mode: body.mode,
+      },
+    };
+  },
   "/api/live/kill": kill,
   "/api/live/instruments": { status: 200, body: instruments },
   // A cancelled Kill is recorded in the audit trail as declined.
@@ -762,26 +781,315 @@ try {
   const foreign = structuredClone(active);
   foreign.sessions.forEach(s => { s.user = "another_user"; });
   state.fallback = { status: 200, body: foreign };
-  await h.setPrivileges({ kill: privilegeAnswer("denied"), kill_own: privilegeAnswer("allowed"),
+  const killGrant = "GRANT CONNECTION_ADMIN ON *.* TO 'root'@'localhost';";
+  const systemUserGrant = "GRANT SYSTEM_USER ON *.* TO 'root'@'localhost';";
+  await h.setPrivileges({ kill: privilegeAnswer("denied", "CONNECTION_ADMIN or SUPER", { grant_sql: killGrant }), kill_own: privilegeAnswer("allowed"),
     sessions_all: privilegeAnswer("denied", "PROCESS", { grey_out: false }),
     explain_connection: privilegeAnswer("unknown") });
   assert.equal(await page.$eval(`${view} [data-action=refresh]`, e => e.disabled), false);
   await h.refresh(); await h.idle(view); await h.select(row(100));
   const gatedKill = '.view-inspector [aria-label="Kill: connection 100"]';
   await assertPrivilege(page, gatedKill, "denied", "CONNECTION_ADMIN");
-  await page.click(gatedKill); await page.keyboard.press("Enter"); await page.keyboard.press("Space");
+  const killSentBefore = state.other.filter(o => o.path === "/api/live/kill").length;
+  await page.click(gatedKill);
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  const killWhy = await page.$eval(".why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(killWhy.text, /CONNECTION_ADMIN/);
+  assert.match(killWhy.text, /Run it as an administrator, then Refresh\./);
+  assert.equal(killWhy.grant, killGrant);
   assert.equal(await page.$("dialog.kill-dialog"), null, "a denied Kill cannot open its sheet");
+  assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, killSentBefore, "a denied Kill sends nothing");
+  // Escape closes only the message and returns focus to Kill, keeping the inspector open.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.ok(await page.$(".view-inspector"), "Escape from the message keeps the Sessions inspector open");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Kill: connection 100",
+    "Escape returns focus to the disabled Kill button");
+  // Enter opens it and Space toggles it closed; neither opens the sheet.
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.keyboard.press("Space");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.$("dialog.kill-dialog"), null, "keyboard activation on denied Kill never opens its sheet");
+  // Light and dark screenshots of the privilege-disabled message at 1440 and
+  // 720x520 via the harness output dir (W8) and the app's preference flow (W9),
+  // with computed colors and non-overlap asserted right before each shot (W6).
+  await fs.mkdir(h.shots, { recursive: true });
+  const MOD = process.platform === "darwin" ? "Meta" : "Control";
+  const THEME_LABELS = { light: "Theme: Light", dark: "Theme: Dark", system: "Theme: System" };
+  const rgbChannels = (cssColor) => {
+    const m = String(cssColor || "").match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const luminance = (rgb) => (rgb ? 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] : NaN);
+  const setSessionsTheme = async (theme) => {
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("myflames-popover", { detail: "" })));
+    await page.keyboard.down(MOD);
+    await page.keyboard.press("k");
+    await page.keyboard.up(MOD);
+    await page.waitForSelector('[aria-label="Search commands"]', { visible: true });
+    await page.type('[aria-label="Search commands"]', THEME_LABELS[theme]);
+    const option = await page.waitForFunction(
+      (label) => [...document.querySelectorAll(".command-option")].find((node) => node.querySelector("bdi")?.textContent === label),
+      {},
+      THEME_LABELS[theme],
+    );
+    await option.asElement().click();
+    await option.dispose();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="Search commands"]'));
+    await page.evaluate(async () => { await window.__myflamesFlushUiPreferences?.(); });
+    await page.waitForFunction(async (expected) => {
+      const current = document.documentElement.dataset.theme || "system";
+      if (current !== expected) return false;
+      const reply = await fetch("/api/settings/ui", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" },
+        body: "{}",
+      }).then((r) => r.json());
+      return reply.preferences?.theme === expected;
+    }, {}, theme);
+  };
+  const sessionWhyBg = {};
+  for (const [width, height] of [[1440, 1000], [720, 520]]) {
+    await page.setViewport({ width, height });
+    await pause(200);
+    for (const theme of ["light", "dark"]) {
+      await setSessionsTheme(theme);
+      if (!(await page.$(gatedKill))) {
+        await h.views();
+        if (!(await page.$(row(100)))) await h.view("sessions");
+        await page.waitForSelector(row(100), { visible: true });
+        await h.idle(view);
+        await h.select(row(100));
+      }
+      await assertPrivilege(page, gatedKill, "denied", "CONNECTION_ADMIN");
+      await page.click(gatedKill);
+      await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+      await pause(150);
+      const metrics = await page.evaluate(() => {
+        const msg = document.querySelector(".why-disabled:popover-open");
+        const rect = msg?.getBoundingClientRect();
+        const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+        const sb = document.querySelector(".window-statusbar");
+        const sbRect = sb && sb.getClientRects().length ? sb.getBoundingClientRect() : null;
+        const stickyOverlaps = [...document.querySelectorAll(".topbar-stack, .view-toolbar")]
+          .filter((el) => el.getClientRects().length && ["sticky", "fixed"].includes(getComputedStyle(el).position))
+          .some((el) => !!rect && overlaps(rect, el.getBoundingClientRect()));
+        return {
+          attr: document.documentElement.dataset.theme || "system",
+          bodyBg: getComputedStyle(document.body).backgroundColor,
+          bg: msg ? getComputedStyle(msg).backgroundColor : "",
+          ink: msg ? getComputedStyle(msg).color : "",
+          scheme: getComputedStyle(document.documentElement).colorScheme,
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          inside: !!rect && rect.left >= 0 && rect.top >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          sbOverlap: !!(rect && sbRect && overlaps(rect, sbRect)),
+          stickyOverlaps,
+        };
+      });
+      assert.equal(metrics.attr, theme, `Sessions ${width} ${theme}: data-theme matches`);
+      assert.equal(metrics.scheme, theme, `Sessions ${width} ${theme}: color-scheme matches`);
+      const bodyL = luminance(rgbChannels(metrics.bodyBg));
+      const bgL = luminance(rgbChannels(metrics.bg));
+      const inkL = luminance(rgbChannels(metrics.ink));
+      if (theme === "dark") assert.ok(bodyL < 80 && bgL < 80 && inkL > 150, `Sessions ${width} dark colors: ${JSON.stringify(metrics)}`);
+      else assert.ok(bodyL > 200 && bgL > 200 && inkL < 120, `Sessions ${width} light colors: ${JSON.stringify(metrics)}`);
+      assert.ok(metrics.overflow <= 0, `Sessions ${width} ${theme}: no horizontal scroll (${metrics.overflow})`);
+      assert.equal(metrics.inside, true, `Sessions ${width} ${theme}: message inside viewport`);
+      assert.equal(metrics.sbOverlap, false, `Sessions ${width} ${theme}: message never covers fixed status bar`);
+      assert.equal(metrics.stickyOverlaps, false, `Sessions ${width} ${theme}: message never covers sticky toolbar`);
+      if (width === 1440) sessionWhyBg[theme] = metrics.bg;
+      await page.screenshot({ path: path.join(h.shots, `sessions-why-kill-${width}-${theme}.png`), fullPage: false });
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+    }
+  }
+  assert.notEqual(sessionWhyBg.light, sessionWhyBg.dark, `Sessions message background differs between light and dark: ${JSON.stringify(sessionWhyBg)}`);
+  await page.setViewport({ width: 1440, height: 1000 });
+  await setSessionsTheme("system");
+  await pause(150);
+  // V1: while the button stays disabled, changing its denial reason/GRANT
+  // updates the open WhyDisabledHost message live (without closing/reopening).
+  await page.click(gatedKill);
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await h.setPrivileges({ kill: privilegeAnswer("denied", "SYSTEM_USER", { grant_sql: systemUserGrant }) });
+  await page.waitForFunction(
+    (expectedGrant) => document.querySelector(".why-disabled:popover-open .ops-pre code")?.textContent === expectedGrant,
+    {},
+    systemUserGrant,
+  );
+  assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /SYSTEM_USER/,
+    "V1: open host message updates reason live while button stays disabled");
+  // V9 + V2: with the host open inside the inspector, moving focus to an
+  // inspector control outside the message lets one Escape close the inspector
+  // and dismiss the host message via the parent removal observer.
+  await page.focus(".view-inspector .detail-back");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await h.select(row(100));
+  await page.waitForSelector(gatedKill, { visible: true });
+  // Becoming enabled closes the open message automatically; focus inside the
+  // host (Copy) never drops to body and never moves onto the newly enabled button (V9, S-F1).
   await assertPrivilege(page, '.view-inspector [aria-label="Show plan for connection 100"]', "unknown");
+  await page.click(gatedKill);
+  await page.waitForSelector(".why-disabled:popover-open .ops-commands button", { visible: true });
+  await page.focus(".why-disabled:popover-open .ops-commands button");
   await h.setPrivileges({ kill: privilegeAnswer("allowed") });
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  const hostEnableFocus = await page.evaluate((sel) => ({
+    isBody: !document.activeElement || document.activeElement === document.body,
+    visible: !!document.activeElement && document.activeElement.getClientRects().length > 0,
+    isAnchor: !!document.activeElement?.matches(sel),
+  }), gatedKill);
+  assert.equal(hostEnableFocus.isBody, false, "V9: focus inside host never drops to body when anchor enables");
+  assert.equal(hostEnableFocus.visible, true, "V9: focus lands on a visible fallback when anchor enables");
+  assert.equal(hostEnableFocus.isAnchor, false, "S-F1: focus never moves onto the newly enabled anchor");
   await assertPrivilege(page, gatedKill, "allowed");
   await page.click(gatedKill); await page.waitForSelector("dialog.kill-dialog[open]");
   const gatedConfirm = "dialog.kill-dialog .sheet-actions button:last-of-type";
-  await h.setPrivileges({ kill: privilegeAnswer("denied", "SYSTEM_USER") });
+  await h.setPrivileges({ kill: privilegeAnswer("denied", "SYSTEM_USER", { grant_sql: systemUserGrant }) });
   await assertPrivilege(page, gatedConfirm, "denied", "SYSTEM_USER");
   const sentBefore = state.other.filter(o => o.path === "/api/live/kill").length;
-  await page.click(gatedConfirm); await page.keyboard.press("Enter");
+  await page.click(gatedConfirm);
+  await page.waitForSelector("dialog.kill-dialog .why-disabled:popover-open", { visible: true });
+  const confirmWhy = await page.$eval("dialog.kill-dialog .why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(confirmWhy.text, /SYSTEM_USER/);
+  assert.equal(confirmWhy.grant, systemUserGrant);
   assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, sentBefore);
+  // V9: Copy inside the modal dialog works (portal escapes modal inertness).
+  await page.evaluate(() => {
+    window.__sessionsCopied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: (t) => { window.__sessionsCopied.push(t); return Promise.resolve(); } },
+    });
+  });
+  await page.click("dialog.kill-dialog .why-disabled:popover-open .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector("dialog.kill-dialog .why-disabled:popover-open .ops-commands [role=status]")?.textContent || ""));
+  assert.equal(await page.evaluate(() => window.__sessionsCopied.at(-1)), systemUserGrant,
+    "V9: Copy inside modal Kill dialog copies grant_sql verbatim");
+  // First Escape closes only the message and returns focus to the confirm button.
   await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.ok(await page.$("dialog.kill-dialog[open]"), "Escape from confirm message keeps the Kill sheet open");
+  assert.equal(await page.$eval(gatedConfirm, b => document.activeElement === b), true,
+    "Escape returns focus to the disabled confirm button");
+  // V9: ConfirmSheet burst (double click + Enter/Space) while denied sends 0 kills.
+  await page.click(gatedConfirm, { clickCount: 2 });
+  await page.focus(gatedConfirm);
+  for (const k of ["Enter", "Space", "Enter", "Space", "Enter"]) await page.keyboard.press(k);
+  await pause(150);
+  assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, sentBefore,
+    "V9: ConfirmSheet burst on denied Kill confirm sends 0 kills");
+  if (await page.$("dialog.kill-dialog .why-disabled:popover-open")) {
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  }
+  // S-F1 abuse test S1: focus on the GRANT text inside the Kill confirm message,
+  // privileges change to allowed -> message auto-closes, focus lands on Cancel
+  // (never the enabled confirm), and one Enter sends 0 /api/live/kill requests.
+  await page.focus(gatedConfirm);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.kill-dialog .why-disabled:popover-open", { visible: true });
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.tagName), "PRE",
+    "S-F1 S1: Tab from confirm moves focus onto GRANT text");
+  const killsBeforeS1 = state.other.filter(o => o.path === "/api/live/kill").length;
+  await h.setPrivileges({ kill: privilegeAnswer("allowed") });
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog .why-disabled:popover-open"));
+  const s1Focus = await page.evaluate((sel) => {
+    const a = document.activeElement;
+    return {
+      isConfirm: !!a?.matches(sel),
+      isBody: !a || a === document.body,
+      text: (a?.textContent || "").trim(),
+      tag: a?.tagName || "",
+    };
+  }, gatedConfirm);
+  assert.equal(s1Focus.isConfirm, false, `S-F1 S1: focus never moves to enabled confirm (${JSON.stringify(s1Focus)})`);
+  assert.equal(s1Focus.isBody, false, "S-F1 S1: focus never drops to body");
+  assert.equal(s1Focus.text, "Cancel", `S-F1 S1: focus moves to Cancel (${JSON.stringify(s1Focus)})`);
+  await page.keyboard.press("Enter");
+  await pause(300);
+  assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, killsBeforeS1,
+    "S-F1 S1: one Enter after privileges change to allowed sends 0 /api/live/kill requests");
+  if (await page.$("dialog.kill-dialog[open]")) {
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog[open]"));
+  }
+  // S-F1 abuse test S2: mock kill/prepare with a delay; focus on Close while
+  // the review is pending, the review arrives -> message auto-closes, focus
+  // lands on Cancel (never the enabled confirm), and one Space sends 0 kills.
+  killPrepareDelay = 1200;
+  await page.click(gatedKill);
+  await page.waitForSelector("dialog.kill-dialog[open]");
+  await page.waitForFunction((s) => document.querySelector(s)?.getAttribute("aria-disabled") === "true", {}, gatedConfirm);
+  await page.focus(gatedConfirm);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.kill-dialog .why-disabled:popover-open", { visible: true });
+  assert.match(await page.$eval("dialog.kill-dialog .why-disabled:popover-open", (e) => e.textContent || ""),
+    /Preparing the action for review\./);
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Close",
+    "S-F1 S2: Tab moves focus onto Close inside pending-review message");
+  const killsBeforeS2 = state.other.filter(o => o.path === "/api/live/kill").length;
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog .why-disabled:popover-open"), { timeout: 6000 });
+  const s2Focus = await page.evaluate((sel) => {
+    const a = document.activeElement;
+    return {
+      isConfirm: !!a?.matches(sel),
+      isBody: !a || a === document.body,
+      text: (a?.textContent || "").trim(),
+      ariaDisabled: document.querySelector(sel)?.getAttribute("aria-disabled"),
+    };
+  }, gatedConfirm);
+  assert.equal(s2Focus.ariaDisabled, "false", "S-F1 S2: review arrived and confirm became enabled");
+  assert.equal(s2Focus.isConfirm, false, `S-F1 S2: focus never moves to enabled confirm (${JSON.stringify(s2Focus)})`);
+  assert.equal(s2Focus.isBody, false, "S-F1 S2: focus never drops to body");
+  assert.equal(s2Focus.text, "Cancel", `S-F1 S2: focus moves to Cancel (${JSON.stringify(s2Focus)})`);
+  await page.keyboard.press("Space");
+  await pause(300);
+  assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, killsBeforeS2,
+    "S-F1 S2: one Space after review arrives sends 0 /api/live/kill requests");
+  if (await page.$("dialog.kill-dialog[open]")) {
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog[open]"));
+  }
+  killPrepareDelay = 0;
+  // V1 + V9: switching Query editor tabs via keyboard (no outside pointerdown)
+  // changes PrivilegeWhyHost's resetKey (labState.tab_id) and closes an open message.
+  await page.click('.main-nav button[data-place="query"]');
+  await page.waitForSelector(".query-tab-add", { visible: true });
+  await page.click(".query-tab-add");
+  await page.waitForSelector("#query-tab-1", { visible: true });
+  await h.setPrivileges({ explain: privilegeAnswer("denied", "SELECT", { grant_sql: "GRANT SELECT ON *.* TO 'root'@'localhost';" }),
+    run_analysis: privilegeAnswer("denied", "SELECT", { grant_sql: "GRANT SELECT ON *.* TO 'root'@'localhost';" }) });
+  const runAnalysisBtn = '.editor-toolbar button[aria-label="Run analysis"], .editor-toolbar button[title*="EXPLAIN ANALYZE"], .editor-toolbar [aria-disabled="true"]';
+  const disabledRunBtn = await page.waitForFunction(() => {
+    const btn = [...document.querySelectorAll('.editor-toolbar button[aria-disabled="true"]')].find((b) => /Run analysis|Analyze/i.test(b.textContent || "") || b.hasAttribute("data-why-reason"));
+    return btn || null;
+  }, { timeout: 5000 }).catch(() => null);
+  if (disabledRunBtn) {
+    await disabledRunBtn.asElement().click();
+    await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+    await page.focus("#query-tab-1");
+    await page.keyboard.press("ArrowLeft");
+    await page.waitForFunction(() => document.querySelector("#query-tab-0")?.getAttribute("aria-selected") === "true");
+    await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+    await disabledRunBtn.dispose();
+  }
+  await h.workload();
+  await h.view("sessions");
+  await page.waitForSelector(`${view} tbody tr`);
+  await h.select(row(100));
+  await page.waitForSelector(gatedKill, { visible: true });
   await h.setPrivileges({ kill: privilegeAnswer("unknown") });
   await assertPrivilege(page, gatedKill, "unknown");
   const owned = structuredClone(active);

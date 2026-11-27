@@ -115,23 +115,26 @@ def recorded(name, edit=None):
     # The catalog now reads optional bootstrap/GC variables in the same
     # preflight. Adapt only the SELECT list in older captures, preserving
     # their answers (absence is unknown, never a fabricated OFF value).
-    from myflames.cluster import EXTRA_VARIABLES
+    from myflames.cluster import CLUSTER_TAG, EXTRA_VARIABLES, _CURRENT_USER_MARKER, _preflight_variables_sql
     from myflames.perf_common import PREFLIGHT_VARIABLES
     preflight_sql = "/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)" % ", ".join(
         "'%s'" % n for n in sorted(set(PREFLIGHT_VARIABLES + EXTRA_VARIABLES)))
-    calls = [[preflight_sql if c[0].startswith("/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE") else c[0]] + c[1:]
-             for c in data["calls"]]
-    if "mariadb" in _version(data).lower():
-        # Older captures omit server_id. Supply a marked synthetic read value
-        # without altering their public report or the archived recording.
-        calls = [[c[0], set_pairs(c[1], {"server_id": "1"})] + c[2:]
-                 if c[0] == preflight_sql else c for c in calls]
+    cluster_preflight_sql = CLUSTER_TAG + _preflight_variables_sql()
+    maria = "mariadb" in _version(data).lower()
+    calls = []
+    for call in data["calls"]:
+        if call[0].startswith("/*myflames:cluster*/ SHOW GLOBAL VARIABLES WHERE"):
+            var_text = set_pairs(call[1], {"server_id": "1"}) if maria else call[1]
+            calls.append([preflight_sql, var_text] + call[2:])
+            calls.append([cluster_preflight_sql,
+                          var_text + batch([[_CURRENT_USER_MARKER, "mf_admin@localhost"]])] + call[2:])
+        else:
+            calls.append(call)
     from _grants_fixtures import grants_batch
     from myflames import dbops
     calls = _with_clusterset_answer(calls) + [
         [tl.TOPOLOGY_TAG + tl._LIVE_ATTRS_SQL, None, 'ERROR 1142: SELECT command denied'],
         [tl.TOPOLOGY_TAG + tl._HEARTBEAT_TABLE_SQL, ''],
-        ["/*myflames:cluster*/ SELECT USER(), CURRENT_USER() LIMIT 1", batch([["mf_admin@client", "mf_admin@localhost"]])],
         ["/*myflames:cluster*/ SHOW GRANTS", batch([[line] for line in ADMIN_GRANTS])],
         [dbops._grants_read_sql("/*myflames:cluster*/ "), grants_batch(ADMIN_GRANTS, version=_version(data))]]
     def replay_edit(sql, text, n):
@@ -479,7 +482,8 @@ SCENARIOS = {
         },
     },
     "gr-8.4-denied": {
-        "variables": _mysql_vars(),
+        "variables": _mysql_vars(partial_revokes="OFF"),
+        "account": "app@%",
         "tables": {"performance_schema.replication_group_members":
                    ConnectorError("mysql client exited 1: ERROR 1142 (42000) at line 1: SELECT command denied to "
                                   "user 'app'@'%' for table 'replication_group_members'")},
@@ -662,13 +666,18 @@ class ScenarioConn(object):
         if body.startswith("SELECT 'myflames_grants_begin'"):
             from _grants_fixtures import grants_batch
             return grants_batch(ADMIN_GRANTS, version=self.version)
-        if body == "SELECT USER(), CURRENT_USER() LIMIT 1":
-            return batch([["mf_admin@client", "mf_admin@localhost"]])
         if body == "SHOW GRANTS":
             return batch([[line] for line in ADMIN_GRANTS])
         if body.startswith("SHOW GLOBAL VARIABLES WHERE Variable_name IN"):
-            names = [n.strip().strip("'") for n in body.split("(", 1)[1].rstrip(")").split(",")]
-            return batch([[n, sc["variables"][n]] for n in names if n in sc["variables"]])
+            var_part, _, rest = body.partition(";")
+            names = [n.strip().strip("'") for n in var_part.split("(", 1)[1].rstrip(")").split(",")]
+            rows = [[n, sc["variables"][n]] for n in names if n in sc["variables"]]
+            if "SELECT 'myflames_current_user', CURRENT_USER()" in rest:
+                if isinstance(sc.get("account"), Exception):
+                    raise sc["account"]
+                if not sc.get("omit_current_user"):
+                    rows.append(["myflames_current_user", sc.get("account", "mf_admin@localhost")])
+            return batch(rows)
         if body.startswith("SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime'"):
             return batch([["Uptime", "3600"]])
         if body.startswith("SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep"):

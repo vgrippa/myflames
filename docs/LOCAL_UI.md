@@ -1079,8 +1079,8 @@ disabled with a fixed reason when a name contains control or format characters,
 cannot be quoted, or is a cache name with a dot (`DROP CACHE` and `FLUSH CACHE`
 take a name only), review text shows control characters as visible escapes, and
 typed confirmations warn when a name starts or ends with a space. Every Readyset
-action stays visible and focusable (disabled actions show the reason and fix
-beneath the button from listener role, state, or an unread status, listener, or
+action stays visible and focusable (disabled actions open the reason and fix
+in a message on click, from listener role, state, or an unread status, listener, or
 cache read, with no `GRANT` text; when the listener role is unread, **Create
 cache…**, `EXPLAIN CREATE CACHE`, **Shut down Readyset…**, and **Shut down &
 reset snapshot…** disable or refuse with `"Readyset did not show which listener

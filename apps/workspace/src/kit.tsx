@@ -37,7 +37,12 @@ import "./kit.css";
 
 // Only the innermost open surface owns keyboard navigation. A drawer may
 // contain Settings, and a popover may be opened from a confirmation sheet.
-const focusScopes: HTMLElement[] = [];
+type FocusScopeEntry = {
+  root: HTMLElement;
+  trapsTab: boolean;
+  ownsEscape?: () => boolean;
+};
+const focusScopes: FocusScopeEntry[] = [];
 /** Each open scope's opener, so a scope whose opener was removed from the DOM
  * (a menu that closed on blur while the palette held focus) can return focus
  * to the opener of the scope that contained it. */
@@ -46,6 +51,43 @@ const FOCUSABLE = 'button, [href], input, select, textarea, summary, [tabindex]'
 /** The items a menu's arrow keys move between: actions and the choices
  * that apply to them (an Export menu's "Hide literal values"). */
 const MENU_ITEMS = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
+
+/** The newest open surface that currently owns Escape. Modal/trapped scopes
+ * always own Escape; non-modal anchored messages own it only when focus is on
+ * their anchor or inside them. */
+function topEscapeScope(): HTMLElement | null {
+  for (let i = focusScopes.length - 1; i >= 0; i--) {
+    const entry = focusScopes[i];
+    if (!entry.ownsEscape || entry.ownsEscape()) return entry.root;
+  }
+  return null;
+}
+
+/** The newest open scope that traps Tab and menu arrow keys. */
+function topTabScope(): HTMLElement | null {
+  for (let i = focusScopes.length - 1; i >= 0; i--) {
+    if (focusScopes[i].trapsTab) return focusScopes[i].root;
+  }
+  return null;
+}
+
+/** Join the shared surface stack without trapping Tab or moving focus on open
+ * (used by WhyDisabled so the newest popover or dialog owns Escape). */
+export function registerFocusScope(root: HTMLElement, options?: {
+  opener?: HTMLElement | null;
+  ownsEscape?: () => boolean;
+}) {
+  const entry: FocusScopeEntry = { root, trapsTab: false, ownsEscape: options?.ownsEscape };
+  focusScopes.push(entry);
+  if (options && "opener" in options) scopeOpeners.set(root, options.opener ?? null);
+  return {
+    isTopForEscape: () => topEscapeScope() === root,
+    release: () => {
+      const at = focusScopes.lastIndexOf(entry);
+      if (at >= 0) focusScopes.splice(at, 1);
+    },
+  };
+}
 
 /** A sheet opened from an action menu returns to the menu's trigger, even
  * when that menu lives in a portal and closes before the sheet mounts. */
@@ -76,7 +118,8 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     const opener = latest.current.returnFocus?.() || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const dialog = root instanceof HTMLDialogElement ? root : null;
     if (dialog && !dialog.open) dialog.showModal();
-    focusScopes.push(root);
+    const entry: FocusScopeEntry = { root, trapsTab: true };
+    focusScopes.push(entry);
     scopeOpeners.set(root, opener);
     // aria-disabled actions remain focusable so their restriction can be read.
     const visible = (el: HTMLElement) => !el.matches(':disabled') &&
@@ -91,21 +134,22 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     // Popovers are positioned in a layout effect; retry once if initially hidden.
     focusFirst();
     const frame = requestAnimationFrame(() => {
-      if (focusScopes[focusScopes.length - 1] === root && (!root.contains(document.activeElement) || document.activeElement === root)) focusFirst();
+      if (topTabScope() === root && (!root.contains(document.activeElement) || document.activeElement === root)) focusFirst();
     });
     const key = (event: globalThis.KeyboardEvent) => {
-      if (focusScopes[focusScopes.length - 1] !== root) return;
       // A native modal dialog holding focus (About) takes precedence, even when
       // it is rendered inside this scope (About inside the phone drawer); a
       // scope inside that dialog (a popover in a sheet) still handles its keys.
       const native = document.activeElement?.closest('dialog[open]');
       if (native && native !== root && !native.contains(root)) return;
       if (event.key === 'Escape') {
+        if (topEscapeScope() !== root) return;
         event.preventDefault();
         event.stopImmediatePropagation();
         latest.current.onClose();
         return;
       }
+      if (topTabScope() !== root) return;
       const nodes = items();
       const at = nodes.indexOf(document.activeElement as HTMLElement);
       if (latest.current.menu && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
@@ -126,8 +170,8 @@ export function useFocusScope<T extends HTMLElement>(ref: RefObject<T>, options:
     return () => {
       cancelAnimationFrame(frame);
       document.removeEventListener('keydown', key, true);
-      const wasTop = focusScopes[focusScopes.length - 1] === root;
-      const at = focusScopes.lastIndexOf(root);
+      const wasTop = focusScopes[focusScopes.length - 1]?.root === root || topTabScope() === root;
+      const at = focusScopes.lastIndexOf(entry);
       if (at >= 0) focusScopes.splice(at, 1);
       const focused = document.activeElement;
       const restore = wasTop && (root.contains(focused) || focused === document.body || !focused?.isConnected);
@@ -271,7 +315,7 @@ export function Pill({ children, tone = "neutral", title }: { children: ReactNod
 // ---- Popovers: ⓘ help and notes --------------------------------------------
 
 /** Only one popover is open at a time across the page. */
-const POPOVER_EVENT = "myflames-popover";
+export const POPOVER_EVENT = "myflames-popover";
 
 /** A button that opens a small, non-modal popover (≤ 320 px, closes with
  * Escape, a click outside, or another popover). */
@@ -986,7 +1030,15 @@ export function ActionButton({
       aria-busy={busy || undefined}
       aria-disabled={busy || rest["aria-disabled"] || undefined}
       onClick={(e) => {
-        if (busy || rest["aria-disabled"] === true || rest["aria-disabled"] === "true") {
+        if (busy) {
+          e.preventDefault();
+          return;
+        }
+        if (rest["aria-disabled"] === true || rest["aria-disabled"] === "true") {
+          if (onClick && (onClick as { whyDisabled?: boolean }).whyDisabled) {
+            onClick(e);
+            return;
+          }
           e.preventDefault();
           return;
         }
