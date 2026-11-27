@@ -2751,6 +2751,9 @@ function App() {
     try {
       await ImportDialog.preload();
       if (attempt !== importRequest.current) return;
+      // A dialog that opened while the chunk loaded keeps the screen: the
+      // pending open is cancelled rather than closing the newer modal.
+      if (document.querySelector("dialog[open]")) return;
       importLauncher.current?.focus();
       setImportLoadError(false);
       setImportOpen(true);

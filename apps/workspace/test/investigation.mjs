@@ -259,6 +259,30 @@ async function lazyPlanRegressions(browser, launchUrl) {
     await page.waitForFunction(() => !document.querySelector('dialog.import-dialog'));
     assert.equal(await page.$eval('.topbar .plans-import', (el) => document.activeElement === el), true);
   });
+  // A dialog that opens while the Import chunk loads wins the screen: the
+  // pending open is cancelled instead of closing the newer notebook.
+  await scenario({ hold: ["ImportPlanDialog"] }, async ({ page, chunkRequested, release, expanded }) => {
+    await chunkRequested("ImportPlanDialog");
+    await page.click('.topbar .plans-import');
+    await page.waitForFunction(() => [...document.querySelectorAll('#main [role="status"]')]
+      .some((el) => el.textContent.includes("Opening Import plan")));
+    await page.click(saveButton);
+    await page.waitForSelector(sheet);
+    assert.equal(await expanded(), "true");
+    await release("ImportPlanDialog");
+    await page.waitForNetworkIdle();
+    assert.equal(await page.$$eval('dialog[open]', (els) => els.length), 1, "the notebook stays the only dialog");
+    assert.equal(await page.$('dialog.import-dialog'), null, "the pending Import open does not interrupt the notebook");
+    assert.equal(await page.$eval('.investigation-notes textarea', (el) => el.value), "Keep these notes");
+    await page.waitForFunction(() => ![...document.querySelectorAll('#main [role="status"]')]
+      .some((el) => el.textContent.includes("Opening Import plan")));
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector('dialog.notebook-sheet'));
+    assert.equal(await page.$('dialog.import-dialog'), null, "closing the notebook does not replay the pending open");
+    // A later press opens Import normally: the cancellation left no state.
+    await page.click('.topbar .plans-import');
+    await page.waitForSelector('dialog.import-dialog[open]');
+  });
   await scenario({ fail: ["ImportPlanDialog"] }, async ({ page, expanded, failed }) => {
     await page.click('.topbar .plans-import');
     await page.waitForSelector('.import-open-error[role="alert"]');
