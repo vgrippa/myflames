@@ -31,6 +31,23 @@ let stage = 'preflight', active = null, interrupted = null, check = 0;
 const pass = message => console.log(`PASS ${++check}: ${message}`);
 const assertNotInterrupted = () => { if (interrupted) throw new Error(interrupted); };
 
+function sameRanges(a, b) {
+  return !!a && !!b && a.length === b.length
+    && a.every((range, index) => range.anchor === b[index].anchor && range.head === b[index].head);
+}
+
+// The automation facade exposes only the main range, so read every selection
+// range through CodeMirror's own DOM handle (EditorView.findFromDOM reads
+// .cmTile off the content element the same way). Null when handle or view is
+// missing, which fails the assertions instead of silently retrying.
+async function selectionRanges(page) {
+  return page.evaluate(selector => {
+    const content = document.querySelector(selector);
+    const view = content?.cmTile?.root?.view;
+    return view ? view.state.selection.ranges.map(range => ({ anchor: range.anchor, head: range.head })) : null;
+  }, EDITOR);
+}
+
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -279,6 +296,12 @@ async function editorChecks(page, expected, helpers) {
   const point = await measured.jsonValue();
   await measured.dispose();
   const want = expected.multi_cursor ? 2 : 1;
+  // Line 2's document span for the line assertions below.
+  const line2 = await page.$eval(EDITOR, node => {
+    const text = node.value, first = text.indexOf('\n');
+    return { start: first + 1, end: text.indexOf('\n', first + 1) };
+  });
+  const onLine2 = range => range.anchor >= line2.start && range.head <= line2.end;
   // The outcome the assertions need: the expected cursor count and the main
   // cursor on line 2. Wait for it instead of assuming the click took effect.
   const outcome = () => page.waitForFunction((selector, cursors, n) => {
@@ -291,6 +314,10 @@ async function editorChecks(page, expected, helpers) {
     const tick = () => (--left ? requestAnimationFrame(tick) : resolve());
     requestAnimationFrame(tick);
   }));
+  // The selection before the Option-click: one collapsed cursor on line 1.
+  const before = await selectionRanges(page);
+  assert.ok(before && before.length === 1 && before[0].anchor < line2.start,
+    'the editor starts with one cursor on line 1 before the Option-click');
   await page.keyboard.down('Alt');
   try { await page.mouse.click(point.x, point.y); }
   finally { await page.keyboard.up('Alt'); }
@@ -301,16 +328,16 @@ async function editorChecks(page, expected, helpers) {
   let settled = await outcome();
   await frames();
   let count = await page.$$eval(CURSORS, nodes => nodes.length);
+  let ranges = await selectionRanges(page);
   let onSecondLine = await page.$eval(EDITOR, node => node.selectionStart >= node.value.indexOf('\n') + 1);
-  if (!settled && count === 1 && (want === 2 || !onSecondLine)) {
-    // The click had no visible effect, or (Multiple cursors on) added no
-    // second cursor: a busy macOS CI runner has dropped the first Option-click
-    // with the setting applied (seen on CI after the second relaunch, with the
-    // editor not even focused). Record the state, then Option-click once more
-    // a little further along line 2. A click that landed with Multiple cursors
-    // off moves the cursor to line 2, so the negative case retries only a
-    // click that did nothing; an editor that wrongly added a cursor shows
-    // count 2 and never enters this branch, and two misses still fail.
+  if (!settled && sameRanges(ranges, before)) {
+    // Retry only a click that had no effect: the selection is byte-identical
+    // to what it was before the click. A busy macOS CI runner has dropped the
+    // first Option-click with the setting applied (seen on CI after the
+    // second relaunch, with the editor not even focused). A click that did
+    // something wrong (replaced the line-1 cursor instead of adding one, or
+    // moved nothing but drew) is not retried: it fails the assertions below
+    // instead of masking the incorrect effect. Two misses still fail.
     const state = await page.evaluate((selector, x, y) => {
       const hit = document.elementFromPoint(x, y);
       const classes = node => String(node?.className?.baseVal ?? node?.className ?? '');
@@ -321,17 +348,28 @@ async function editorChecks(page, expected, helpers) {
         topmost: hit ? `${hit.tagName} "${classes(hit)}"` : 'nothing',
       };
     }, EDITOR, point.x, point.y);
-    console.log(`RETRY (${stage}): Option-click left ${count} cursor on line ${onSecondLine ? 2 : 1}, want ${want} on line 2; ${JSON.stringify(state)}`);
+    console.log(`RETRY (${stage}): Option-click left the selection unchanged at ${JSON.stringify(before)}, want ${want} cursors with one on line 2; ${JSON.stringify(state)}`);
     await page.keyboard.down('Alt');
     try { await page.mouse.click(point.x + 8, point.y); }
     finally { await page.keyboard.up('Alt'); }
     await outcome();
     await frames();
     count = await page.$$eval(CURSORS, nodes => nodes.length);
+    ranges = await selectionRanges(page);
     onSecondLine = await page.$eval(EDITOR, node => node.selectionStart >= node.value.indexOf('\n') + 1);
   }
   assert.equal(count, want, 'Option-click obeys Multiple cursors');
   assert.ok(onSecondLine, 'Option-click reached the second line');
+  assert.ok(ranges && ranges.length === want, 'Option-click left the expected number of selection ranges');
+  if (expected.multi_cursor) {
+    assert.ok(ranges.some(range => range.anchor === before[0].anchor && range.head === before[0].head),
+      'Option-click with Multiple cursors keeps the original cursor on line 1');
+    assert.ok(ranges.some(range => (range.anchor !== before[0].anchor || range.head !== before[0].head) && onLine2(range)),
+      'Option-click with Multiple cursors adds a cursor on line 2');
+  } else {
+    assert.ok(ranges.length === 1 && onLine2(ranges[0]),
+      'Option-click with Multiple cursors off moves the single cursor to line 2');
+  }
   pass(`${stage}: Option-click on line 2 leaves ${count} cursor${count === 1 ? '' : 's'}`);
   await selectEditor(page, 0);
 }

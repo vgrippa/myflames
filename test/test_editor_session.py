@@ -315,6 +315,375 @@ class ReaperShutdownTests(unittest.TestCase):
         self.assertFalse(reader.is_alive(), "registry.close returned before removed session's reader exited")
         worker.join(2)
 
+    def test_close_waits_for_inflight_start_run_and_never_publishes_after_end(self):
+        class ObservedLock(object):
+            def __init__(self, inner, on_wait, on_release):
+                self._inner = inner
+                self._on_wait = on_wait
+                self._on_release = on_release
+
+            def acquire(self, blocking=True, timeout=-1):
+                if timeout != -1:
+                    self._on_wait()
+                    return self._inner.acquire(blocking, timeout)
+                return self._inner.acquire(blocking)
+
+            def release(self):
+                self._on_release()
+                self._inner.release()
+
+            def locked(self):
+                return self._inner.locked()
+
+        def make_session(tab_id):
+            session = ed.EditorSession(tab_id, "id", {"host": "127.0.0.1", "port": 3306, "user": "u"})
+            session.state = "ready"
+            session.engine = "mysql"
+            session.server_version = "8.4.0"
+            session.sql_mode = ""
+            session.delimiter = "__mf0123456789_"
+            session.connection_id = 42
+            session.server_identity = {
+                "version": "8.4.0",
+                "hostname": "h",
+                "port": "3306",
+                "server_id": "1",
+                "server_uuid": "11111111-2222-3333-4444-555555555555",
+                "connection_id": "42",
+            }
+            session._kill_identity = dict(session.server_identity)
+            return session
+
+        # Case 1: write run paused inside audit.attempt() (after ended check,
+        # before publishing self.run).
+        with self.subTest(case="write_audit"):
+            registry = ed.EditorSessions(reap_every=0)
+            self.addCleanup(registry.close)
+            temp = tempfile.TemporaryDirectory()
+            self.addCleanup(temp.cleanup)
+            store = WorkspaceStore(Path(temp.name) / "workspace.sqlite3")
+            session = make_session("tab-write")
+            entered_attempt = threading.Event()
+            release_attempt = threading.Event()
+            drain_waiting = threading.Event()
+            close_returned = threading.Event()
+            history_called = threading.Event()
+            order = []
+            order_lock = threading.Lock()
+            starter_errors = []
+
+            def record(event):
+                with order_lock:
+                    order.append(event)
+
+            raw_lock = session.run_lock
+            session.run_lock = ObservedLock(raw_lock, drain_waiting.set, lambda: None)
+            registry.open("tab-write", lambda: session, "id")
+
+            plan = ed._plan_run({"sql": "SET @x = 1"}, session)
+            audit = dbops.AuditTrail(store, "editor_run", "ui", password="s3cret-pw")
+            real_attempt = audit.attempt
+            real_complete = audit.complete
+
+            def paused_attempt(*args, **kwargs):
+                result = real_attempt(*args, **kwargs)
+                entered_attempt.set()
+                self.assertTrue(release_attempt.wait(5), "test timed out waiting to release audit.attempt")
+                return result
+
+            def observed_complete(*args, **kwargs):
+                result = real_complete(*args, **kwargs)
+                record("audit_finalized")
+                return result
+
+            audit.attempt = paused_attempt
+            audit.complete = observed_complete
+            run = ed.Run(plan["units"], ed.DEFAULT_LIMIT, {"host": "127.0.0.1", "port": 3306, "user": "u"},
+                         plan["text"], plan["offsets"], plan["scope"], audit=audit,
+                         history={"record": lambda r, s: history_called.set()})
+
+            def run_start():
+                try:
+                    with mock.patch.object(session, "_verify_identity", return_value=None):
+                        session.start_run(run)
+                except BaseException as exc:
+                    starter_errors.append(exc)
+
+            def run_close():
+                registry.close()
+                record("close_returned")
+                close_returned.set()
+
+            starter = threading.Thread(target=run_start, daemon=True)
+            starter.start()
+            self.assertTrue(entered_attempt.wait(2), starter_errors)
+            self.assertIsNone(session.run)
+            self.assertTrue(session.run_lock.locked())
+            self.assertTrue(audit.pending)
+
+            session.end("closed")
+            registry.remove("tab-write", session)
+            self.assertIn(session, registry._draining,
+                          "held run_lock must retain removed session while start_run is in flight")
+
+            closer = threading.Thread(target=run_close, daemon=True)
+            closer.start()
+            self.assertTrue(drain_waiting.wait(2), "close() did not wait on held run_lock")
+            self.assertFalse(close_returned.is_set(), "close() returned while start_run was still in flight")
+
+            release_attempt.set()
+            self.assertTrue(close_returned.wait(2), "close() did not finish after start_run unwound")
+            starter.join(2)
+            closer.join(2)
+            self.assertFalse(starter.is_alive())
+            self.assertFalse(closer.is_alive())
+            self.assertEqual(len(starter_errors), 1)
+            self.assertIsInstance(starter_errors[0], ed.EditorError)
+            self.assertEqual(starter_errors[0].code, "session_ended")
+            self.assertIsNone(session.run, "ended session must never publish a new run")
+            self.assertFalse(history_called.is_set(), "no daemon run or history callback may start after end")
+            self.assertFalse(session.run_lock.locked())
+            self.assertFalse(audit.pending)
+            self.assertEqual(order, ["audit_finalized", "close_returned"])
+            record_row = store.audit_records()[0]
+            self.assertEqual(record_row["status"], "refused")
+            self.assertEqual(record_row["outcome"], "session_ended")
+            self.assertTrue(record_row["finished_at"])
+
+        # Case 2: read run paused during SQL re-validation (no audit), plus
+        # verifying _draining prunes once run_lock is released.
+        with self.subTest(case="read_validation"):
+            registry = ed.EditorSessions(reap_every=0)
+            self.addCleanup(registry.close)
+            session = make_session("tab-read")
+            entered_validate = threading.Event()
+            release_validate = threading.Event()
+            drain_waiting = threading.Event()
+            close_returned = threading.Event()
+            history_called = threading.Event()
+            order = []
+            order_lock = threading.Lock()
+            starter_errors = []
+
+            def record(event):
+                with order_lock:
+                    order.append(event)
+
+            starter = None
+
+            def on_release():
+                if threading.current_thread() is starter:
+                    record("starter_released")
+
+            session.run_lock = ObservedLock(session.run_lock, drain_waiting.set, on_release)
+            registry.open("tab-read", lambda: session, "id")
+            plan = ed._plan_run({"sql": "SELECT 1"}, session)
+            run = ed.Run(plan["units"], ed.DEFAULT_LIMIT, {"host": "127.0.0.1", "port": 3306, "user": "u"},
+                         plan["text"], plan["offsets"], plan["scope"],
+                         history={"record": lambda r, s: history_called.set()})
+
+            real_plan_statements = ed.plan_statements
+
+            def paused_plan_statements(*args, **kwargs):
+                entered_validate.set()
+                self.assertTrue(release_validate.wait(5), "test timed out waiting to release plan_statements")
+                return real_plan_statements(*args, **kwargs)
+
+            def run_start():
+                try:
+                    session.start_run(run)
+                except BaseException as exc:
+                    starter_errors.append(exc)
+
+            def run_close():
+                registry.close()
+                record("close_returned")
+                close_returned.set()
+
+            with mock.patch.object(ed, "plan_statements", side_effect=paused_plan_statements):
+                starter = threading.Thread(target=run_start, daemon=True)
+                starter.start()
+                self.assertTrue(entered_validate.wait(2), starter_errors)
+                self.assertIsNone(session.run)
+                self.assertTrue(session.run_lock.locked())
+
+                session.end("closed")
+                registry.remove("tab-read", session)
+                self.assertIn(session, registry._draining)
+
+                closer = threading.Thread(target=run_close, daemon=True)
+                closer.start()
+                self.assertTrue(drain_waiting.wait(2))
+                self.assertFalse(close_returned.is_set())
+
+                release_validate.set()
+                self.assertTrue(close_returned.wait(2))
+                starter.join(2)
+                closer.join(2)
+
+            self.assertFalse(starter.is_alive())
+            self.assertFalse(closer.is_alive())
+            self.assertEqual(len(starter_errors), 1)
+            self.assertIsInstance(starter_errors[0], ed.EditorError)
+            self.assertEqual(starter_errors[0].code, "session_ended")
+            self.assertIsNone(session.run)
+            self.assertFalse(history_called.is_set())
+            self.assertFalse(session.run_lock.locked())
+            self.assertEqual(order, ["starter_released", "close_returned"])
+
+        # Once a held run_lock is released, _remember_draining prunes the session.
+        registry = ed.EditorSessions(reap_every=0)
+        self.addCleanup(registry.close)
+        lock = threading.Lock()
+        lock.acquire()
+        self.addCleanup(lambda: lock.locked() and lock.release())
+        pending = types.SimpleNamespace(identity="id", ended=True, run=None, run_lock=lock,
+                                        _readers=[], end=lambda *a, **kw: None)
+        registry.open("tab-prune", lambda: pending, "id")
+        registry.remove("tab-prune", pending)
+        self.assertEqual(registry._draining, [pending])
+        lock.release()
+        registry.remove("tab-prune")
+        self.assertEqual(registry._draining, [])
+
+    def test_close_drains_multiple_blocked_sessions_within_shared_budget(self):
+        # Desktop supervisor grace is 5000 ms (apps/desktop/backend.cjs:258);
+        # EditorSessions.SHUTDOWN_DRAIN_TIMEOUT must leave margin inside it.
+        budget = ed.EditorSessions.SHUTDOWN_DRAIN_TIMEOUT
+        self.assertGreater(budget, 0)
+        self.assertLessEqual(budget, 3.0)
+
+        registry = ed.EditorSessions(max_sessions=1, reap_every=0)
+        release = threading.Event()
+        blocked_lock = threading.Lock()
+        blocked_lock.acquire()
+        readers = []
+
+        def cleanup():
+            release.set()
+            if blocked_lock.locked():
+                blocked_lock.release()
+            for thread in readers:
+                thread.join(2)
+
+        self.addCleanup(cleanup)
+
+        def make_reader():
+            thread = threading.Thread(target=release.wait, args=(10,), daemon=True)
+            thread.start()
+            readers.append(thread)
+            return thread
+
+        done_early = threading.Event()
+        done_early.set()
+        # Three removed sessions (outside max_sessions=1) plus one registered
+        # session, all blocked: previously 4 runs + 7 readers would accumulate
+        # to > 30 s.
+        s1 = types.SimpleNamespace(identity="id", ended=True, run=types.SimpleNamespace(done=threading.Event()),
+                                   run_lock=blocked_lock, _readers=[make_reader(), make_reader()],
+                                   end=lambda *a, **kw: None)
+        s2 = types.SimpleNamespace(identity="id", ended=True, run=types.SimpleNamespace(done=threading.Event()),
+                                   _readers=[make_reader(), make_reader()], end=lambda *a, **kw: None)
+        s3 = types.SimpleNamespace(identity="id", ended=True, run=types.SimpleNamespace(done=done_early),
+                                   _readers=[make_reader(), make_reader()], end=lambda *a, **kw: None)
+        s4 = types.SimpleNamespace(identity="id", ended=False, run=types.SimpleNamespace(done=threading.Event()),
+                                   _readers=[make_reader()], end=lambda *a, **kw: None)
+
+        for idx, session in enumerate((s1, s2, s3)):
+            tab = "tab-removed-%d" % idx
+            registry.open(tab, lambda s=session: s, "id")
+            registry.remove(tab, session)
+        registry.open("tab-live", lambda: s4, "id")
+        self.assertEqual(len(registry._draining), 3)
+
+        began = time.monotonic()
+        registry.close()
+        elapsed = time.monotonic() - began
+        self.assertGreaterEqual(elapsed, budget - 0.05)
+        self.assertLess(elapsed, budget + 1.0,
+                        "close() took %.3fs across 4 blocked sessions; expected one shared %.1fs budget"
+                        % (elapsed, budget))
+        self.assertLess(elapsed, 4.0, "close() must finish with margin inside the desktop supervisor's 5 s grace")
+
+    def test_close_passes_only_remaining_budget_to_waits_and_joins(self):
+        clock = [100.0]
+        calls = []
+
+        def fake_monotonic():
+            return clock[0]
+
+        class FakeLock(object):
+            def __init__(self, cost):
+                self._cost = cost
+                self._locked = True
+
+            def locked(self):
+                return self._locked
+
+            def acquire(self, blocking=True, timeout=-1):
+                calls.append(("run_lock", round(timeout, 3)))
+                clock[0] += self._cost
+                self._locked = False
+                return True
+
+            def release(self):
+                self._locked = False
+
+        class FakeEvent(object):
+            def __init__(self, cost):
+                self._cost = cost
+                self._set = False
+
+            def is_set(self):
+                return self._set
+
+            def wait(self, timeout=None):
+                calls.append(("run_done", round(timeout, 3)))
+                clock[0] += self._cost
+                self._set = True
+                return True
+
+        class FakeReader(object):
+            def __init__(self, cost):
+                self._cost = cost
+                self._alive = True
+
+            def is_alive(self):
+                return self._alive
+
+            def join(self, timeout=None):
+                calls.append(("reader", round(timeout, 3)))
+                clock[0] += self._cost
+                self._alive = False
+
+        registry = ed.EditorSessions(max_sessions=1, reap_every=0)
+        s1 = types.SimpleNamespace(identity="id", ended=True, run_lock=FakeLock(0.6),
+                                   run=types.SimpleNamespace(done=FakeEvent(0.5)),
+                                   _readers=[FakeReader(0.4)], end=lambda *a, **kw: None)
+        s2 = types.SimpleNamespace(identity="id", ended=True, run=types.SimpleNamespace(done=FakeEvent(0.5)),
+                                   _readers=[FakeReader(0.5)], end=lambda *a, **kw: None)
+        s3 = types.SimpleNamespace(identity="id", ended=False, run=types.SimpleNamespace(done=FakeEvent(0.5)),
+                                   _readers=[FakeReader(0.5)], end=lambda *a, **kw: None)
+
+        registry.open("tab-1", lambda: s1, "id")
+        registry.remove("tab-1", s1)
+        registry.open("tab-2", lambda: s2, "id")
+        registry.remove("tab-2", s2)
+        registry.open("tab-3", lambda: s3, "id")
+
+        with mock.patch.object(ed.time, "monotonic", side_effect=fake_monotonic):
+            registry.close(timeout=2.0)
+
+        # s3 is visited first (registered sessions + draining): 0.5 (run) + 0.5 (reader) = 1.0 spent,
+        # then s1: 0.6 (run_lock) + 0.4 remaining (run_done consumes 0.5 -> deadline passed),
+        # so s1's reader and s2 are never waited on.
+        self.assertEqual(calls, [
+            ("run_done", 2.0),
+            ("reader", 1.5),
+            ("run_lock", 1.0),
+            ("run_done", 0.4),
+        ])
+
 
 class InsightTests(unittest.TestCase):
     """History attribution and transaction reads, with hand-authored engine

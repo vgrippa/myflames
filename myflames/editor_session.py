@@ -2634,7 +2634,7 @@ class EditorSession(EditorInsights):
         try:
             with self.lock:
                 previous_run = self.run
-                if self.ended:
+                if self.ended or self._closing:
                     raise EditorError(self.end_message or SESSION_ENDED_TEXT, "session_ended")
                 if self.run is not None and not self.run.done.is_set():
                     raise EditorError("A statement is already running in this tab. Wait for it or press Stop.",
@@ -2695,6 +2695,9 @@ class EditorSession(EditorInsights):
                             message = "The ALTER database context changed or could not be verified; nothing was sent. Review it again."
                             run.audit.outcome(statements, "refused", outcome="target_changed", message=message)
                             raise EditorError(message, "target_changed")
+                with self.lock:
+                    if self.ended or self._closing:
+                        raise EditorError(self.end_message or SESSION_ENDED_TEXT, "session_ended")
                 # The record is written before anything is sent; without it nothing is sent.
                 run.audit.server(self.engine, self.server_version)
                 try:
@@ -2711,6 +2714,8 @@ class EditorSession(EditorInsights):
                     raise EditorError("The audit record could not be written, so nothing was sent: %s" % exc,
                                       "audit_failed")
             with self.lock:
+                if self.ended or self._closing:
+                    raise EditorError(self.end_message or SESSION_ENDED_TEXT, "session_ended")
                 self.run = run
                 self.last_used = time.monotonic()
             thread = threading.Thread(target=self._execute, args=(run,), daemon=True)
@@ -2718,7 +2723,10 @@ class EditorSession(EditorInsights):
         except BaseException as exc:
             try:
                 if run.audit is not None and run.audit.pending:
-                    run.audit.fail(exc, statements)
+                    if isinstance(exc, EditorError) and exc.code == "session_ended" and self.run is not run:
+                        run.audit.complete("refused", outcome="session_ended", message=str(exc))
+                    else:
+                        run.audit.fail(exc, statements)
             finally:
                 run.options = None
                 run.history = {}
@@ -2728,6 +2736,8 @@ class EditorSession(EditorInsights):
                     if self.run is run:
                         self.run = previous_run
                 self.run_lock.release()
+                with self.lock:
+                    self.cond.notify_all()
             raise
         return run
 
@@ -3260,6 +3270,11 @@ atexit.register(_kill_children)
 class EditorSessions(object):
     """Every open editor session of one workspace server, by tab id."""
 
+    #: Shared drain budget for close(), inside the desktop supervisor's 5 s
+    #: shutdown grace (apps/desktop/backend.cjs: grace = 5000) with margin for
+    #: session.end(), other server_close() steps and process exit.
+    SHUTDOWN_DRAIN_TIMEOUT = 2.0
+
     def __init__(self, max_sessions=MAX_SESSIONS, reap_every=15.0):
         self.sessions = {}
         self._draining = []
@@ -3276,11 +3291,14 @@ class EditorSessions(object):
         run = getattr(session, "run", None)
         if run is not None and not run.done.is_set():
             return True
+        run_lock = getattr(session, "run_lock", None)
+        if run_lock is not None and run_lock.locked():
+            return True
         readers = getattr(session, "_readers", None)
         return isinstance(readers, (list, tuple)) and any(reader.is_alive() for reader in readers)
 
     def _remember_draining(self, session=None):
-        """Retain removed or replaced sessions until their run and reader threads exit."""
+        """Retain removed or replaced sessions until their starting/running work and reader threads exit."""
         self._draining = [s for s in self._draining if self._draining_active(s)]
         if session is not None and self._draining_active(session) and session not in self._draining:
             self._draining.append(session)
@@ -3367,8 +3385,9 @@ class EditorSessions(object):
             else:
                 self._remember_draining()
 
-    def close(self):
+    def close(self, timeout=None):
         """End every session (workspace exit)."""
+        budget = self.SHUTDOWN_DRAIN_TIMEOUT if timeout is None else max(0.0, float(timeout))
         with self.lock:
             self._closed = True
             self._reaper_stop.set()
@@ -3384,21 +3403,46 @@ class EditorSessions(object):
                 session.end("server_exit")
             except Exception:
                 pass
-        # Let runs finish their audit and history records before the store goes away,
-        # including sessions already removed by Close, open() replacement or reap().
+        ended_ids = {id(session) for session in sessions}
+        for session in draining:
+            if id(session) not in ended_ids and not getattr(session, "ended", True):
+                try:
+                    session.end("server_exit")
+                except Exception:
+                    pass
+        # Let starting or running work finish its audit and history records before
+        # the store goes away, including sessions already removed by Close,
+        # open() replacement or reap(), within one shared shutdown deadline.
+        deadline = time.monotonic() + budget
         seen = set()
         for session in sessions + draining:
             if id(session) in seen:
                 continue
             seen.add(id(session))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            run_lock = getattr(session, "run_lock", None)
+            if run_lock is not None and run_lock.locked():
+                if run_lock.acquire(timeout=remaining):
+                    run_lock.release()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
             run = getattr(session, "run", None)
-            if run is not None:
-                run.done.wait(5)
+            if run is not None and not run.done.is_set():
+                run.done.wait(remaining)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
             readers = getattr(session, "_readers", None)
             if isinstance(readers, (list, tuple)):
                 for reader in list(readers):
-                    if reader is not threading.current_thread():
-                        reader.join(2)
+                    if reader is not threading.current_thread() and reader.is_alive():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        reader.join(remaining)
 
 
 # ---- export -----------------------------------------------------------------------------
