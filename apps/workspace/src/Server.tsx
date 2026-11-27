@@ -575,20 +575,36 @@ export function Server({
   }>(() => ({ pending: loopMemberIds(initial?.lifecycle_job_members), outside: [], failed: [] }));
   // Saved member ids of running jobs: the jobs' own members plus the restored
   // ids still unresolved (pending, outside, failed), deduped and capped like
-  // the skip-loop member ids.
-  const activeJobMemberIds = useMemo(() => {
+  // the skip-loop member ids. Stabilized by serialized content so job polls
+  // and outside-member label refreshes never re-fire effects with equal ids.
+  const activeJobMemberKey = useMemo(() => {
     const out: string[] = [];
     for (const b of maintenance.jobs) {
       if (!jobActive(b.report)) continue;
       const pid = keyProfileId(b.key);
       if (pid && !out.includes(pid)) out.push(pid);
     }
-    return out;
+    return JSON.stringify(out);
   }, [maintenance.jobs]);
-  const jobMembersSave = useMemo(
-    () => loopMemberIds([...activeJobMemberIds, ...restoredJobs.pending, ...restoredJobs.outside.map((o) => o.id), ...restoredJobs.failed.map((f) => f.id)]),
+  const activeJobMemberIds = useMemo(
+    () => JSON.parse(activeJobMemberKey) as string[],
+    [activeJobMemberKey],
+  );
+  const jobMembersSaveKey = useMemo(
+    () => JSON.stringify(loopMemberIds([
+      ...activeJobMemberIds,
+      ...restoredJobs.pending,
+      ...restoredJobs.outside.map((o) => o.id),
+      ...restoredJobs.failed.map((f) => f.id),
+    ])),
     [activeJobMemberIds, restoredJobs],
   );
+  const jobMembersSave = useMemo(
+    () => JSON.parse(jobMembersSaveKey) as string[],
+    [jobMembersSaveKey],
+  );
+  const restoredJobsRef = useRef(restoredJobs);
+  restoredJobsRef.current = restoredJobs;
   const reportRef = useRef(onStateChange);
   reportRef.current = onStateChange;
   const latestConnection = useRef(connection);
@@ -1699,10 +1715,10 @@ export function Server({
     const failIds = restoredJobs.failed.map((f) => f.id);
     if (!failIds.length || !profilesLoaded || profilesFailed) return;
     const timer = window.setTimeout(() => {
-      setRestoredJobs((prev) => ({
-        ...prev,
-        pending: [...prev.pending, ...failIds.filter((id) => !prev.pending.includes(id))],
-      }));
+      setRestoredJobs((prev) => {
+        const add = failIds.filter((id) => !prev.pending.includes(id));
+        return add.length ? { ...prev, pending: [...prev.pending, ...add] } : prev;
+      });
     }, JOB_POLL_MS);
     return () => window.clearTimeout(timer);
   }, [restoredJobs, profilesLoaded, profilesFailed]);
@@ -1714,7 +1730,7 @@ export function Server({
   // Entries that stay outside follow the saved connection's current name and
   // group, and say "group unknown" while the list cannot be read.
   useEffect(() => {
-    if (!profilesLoaded && !profilesFailed) return;
+    if ((!profilesLoaded && !profilesFailed) || (!restoredJobsRef.current.outside.length && !restoredJobsRef.current.failed.length)) return;
     const resolve = latestResolveMember.current;
     setRestoredJobs((prev) => {
       const adopted = new Set(activeJobMemberIds);

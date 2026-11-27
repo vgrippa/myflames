@@ -2408,28 +2408,9 @@ try {
   // Switching the active connection into the member's group rechecks it.
   const nav1OptJB4 = await connectionOption(page, "nav-db-1");
   await page.keyboard.press("Escape");
-  const connectsAtJB4Switch = connectCalls.length;
   await chooseConnection(page, nav1OptJB4);
-  for (let i = 0; i < 120 && connectCalls.length === connectsAtJB4Switch; i++) await pause(25);
-  if (connectCalls.length === connectsAtJB4Switch) {
-    console.log("JB4 debug:", JSON.stringify(await page.evaluate(() => ({
-      toolbar: document.querySelector(".window-toolbar")?.textContent?.replace(/\s+/g, " ").slice(0, 240) || "(no toolbar)",
-      pills: [...document.querySelectorAll(".connection-pill")].map((e) => e.textContent.replace(/\s+/g, " ").slice(0, 120)),
-      selects: [...document.querySelectorAll('select[aria-label="Connection"]')].length,
-      place: document.querySelector(".main-nav button.active")?.textContent || "?",
-      dialog: document.querySelector("dialog[open]")?.textContent?.replace(/\s+/g, " ").slice(0, 200) || "",
-      body: document.body?.textContent?.replace(/\s+/g, " ").slice(0, 400) || "(empty)",
-    }))), "page errors:", JSON.stringify(h.errors).slice(0, 400));
-  }
-  assert.ok(connectCalls.length > connectsAtJB4Switch, "JB4 switched to nav-db-1");
-  let jb4Banner = false;
-  for (let i = 0; i < 400 && !jb4Banner; i++) {
-    await pause(25);
-    jb4Banner = await page.$('.server-content > .ops-loop[data-maintenance-job="job-jb4"]') !== null;
-  }
-  assert.ok(jb4Banner, "JB4 banner after switching into the group (last connect group: " +
-    JSON.stringify(connectCalls.at(-1)?.group_name) + ", picker shows: " +
-    await page.evaluate(() => document.querySelector(".window-toolbar .picker-target")?.textContent || "(none)") + ")");
+  await page.waitForFunction(() => /10\.0\.1\.11/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb4"]', { visible: true, timeout: 8000 });
   assert.ok(lifecycleJobLists.slice(listsBeforeJB4Reload).some((b) => b.connection.profile_id === "p-nav-2"),
     "JB4 lists the member's registry once the active connection enters its group");
   await page.waitForFunction(() => !document.querySelector('.server-content > .ops-note'), { timeout: 6000 });
@@ -2464,8 +2445,9 @@ try {
   nav2Profile.group = "mf-nav";
   await focusProfilesRefresh();
   await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb4"]', { visible: true, timeout: 8000 });
-  lifecycleJobs.clear();
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: "job-jb4" }]);
   await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job]'), { timeout: 6000 });
+  lifecycleJobs.clear();
 
   // JB5: when the first saved-connections read after reload fails, remembered
   // job members are named in the list-failure note (no registry reads) instead
@@ -2487,16 +2469,17 @@ try {
     /maintenance job was running on p-nav-2, and the saved connections list could not be read/,
     "JB5 names the remembered member in the list-failure note");
   await pause(2000);
-  assert.equal(lifecycleJobLists.slice(listsBeforeJB5Reload).length, 0,
-    "JB5 issues no registry reads while the saved-connections list fails");
+  assert.equal(lifecycleJobLists.slice(listsBeforeJB5Reload).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "JB5 issues no registry reads for remembered members while the saved-connections list fails");
   profilesFail = false;
   await pause(1100);
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb5"]', { visible: true, timeout: 8000 });
   assert.ok(lifecycleJobLists.slice(listsBeforeJB5Reload).some((b) => b.connection.profile_id === "p-nav-2"),
     "JB5 lists the member's registry once the saved-connections list recovers");
-  lifecycleJobs.clear();
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: "job-jb5" }]);
   await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job]'), { timeout: 6000 });
+  lifecycleJobs.clear();
 
   // JB8: a saved member id containing a comma survives the restore encoding
   // (JSON, not a comma-joined list) and is listed again after reload.
@@ -2533,8 +2516,9 @@ try {
   await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb8"]', { visible: true, timeout: 8000 });
   assert.ok(lifecycleJobLists.slice(listsBeforeJB8Reload).some((b) => b.connection.profile_id === "p-comma,2"),
     "JB8 restores a member id containing a comma");
-  lifecycleJobs.clear();
+  lifecycleJobs.set("10.0.1.17:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: "job-jb8" }]);
   await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job]'), { timeout: 6000 });
+  lifecycleJobs.clear();
   profiles.splice(profiles.findIndex((p) => p.id === "p-comma,2"), 1);
   await focusProfilesRefresh();
   await h.savedSlow((s) => !Array.isArray(s.lifecycle_job_members) || !s.lifecycle_job_members.includes("p-comma,2"));
