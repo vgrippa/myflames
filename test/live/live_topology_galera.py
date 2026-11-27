@@ -77,9 +77,10 @@ class TopologyGaleraTest(unittest.TestCase):
     def tearDownClass(cls):
         if not cls._needs_restore or cls._original_value is None:
             return
+        node_ids = [p["id"] for p in cls.gl]
+        names = dict((p["id"], p.get("name") or p["id"]) for p in cls.gl)
+        conn = _change_conn(cls.gl[0], GROUP)
         try:
-            node_ids = [p["id"] for p in cls.gl]
-            conn = _change_conn(cls.gl[0], GROUP)
             plan = cls.lab.api("/api/live/topology/variable/plan", {
                 "connection": conn, "name": PARAM, "value": cls._original_value,
                 "mode": "global", "member_ids": node_ids,
@@ -91,10 +92,35 @@ class TopologyGaleraTest(unittest.TestCase):
             }
             if (plan.get("confirmation") or {}).get("typed_name"):
                 payload["typed_name"] = GROUP
-            cls.lab.api("/api/live/topology/variable/apply", payload)
-            cls._needs_restore = False
-        except Exception:
-            pass
+            result = cls.lab.api("/api/live/topology/variable/apply", payload)
+        except Exception as exc:
+            raise RuntimeError("cleanup failed: could not restore %s=%s on %s: %s"
+                               % (PARAM, cls._original_value, GROUP, redact(exc)))
+        problems = []
+        if result.get("status") != "applied":
+            problems.append("restore apply status %r (%s)"
+                            % (result.get("status"), redact(result.get("message"))))
+        for member in result.get("members") or ():
+            if member.get("status") != "applied":
+                problems.append("%s: apply status %r (%s)"
+                                % (member.get("profile_name"), member.get("status"),
+                                   redact(member.get("message"))))
+        try:
+            report = cls.lab.api("/api/live/topology", {
+                "connection": conn_for(cls.gl[0], GROUP), "section": "parameters",
+            })
+            values = _param_values(report, PARAM, node_ids)
+        except Exception as exc:
+            raise RuntimeError("cleanup failed: could not re-read %s on %s after restore: %s"
+                               % (PARAM, GROUP, redact(exc)))
+        for pid, value in sorted(values.items()):
+            if value != cls._original_value:
+                problems.append("%s: %s=%s, want %s"
+                                % (names.get(pid, pid), PARAM, value, cls._original_value))
+        if problems:
+            raise RuntimeError("cleanup failed: %s not restored on %s: %s"
+                               % (PARAM, GROUP, "; ".join(problems)))
+        cls._needs_restore = False
 
     def group_conn(self):
         return conn_for(self.gl[0], GROUP)

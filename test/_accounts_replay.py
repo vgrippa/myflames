@@ -41,6 +41,8 @@ class ReplayConn(object):
                                 'hostname': 'fixture-db', 'port': '3306'}
         if 'mariadb' not in version.lower():
             self.evidence_values['server_uuid'] = UUID
+        else:
+            self.evidence_values.update(wsrep_connected='OFF', wsrep_cluster_size='0')
         for call in self.answers.values():
             for line in call.get('output', '').splitlines():
                 if '\t' in line:

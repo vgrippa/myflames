@@ -113,10 +113,205 @@ class EditorIdentityTests(unittest.TestCase):
             '"11.8.9", "version_comment": "Private database build"'))
         if wsrep:
             self.rewrite_client(lambda text: text.replace('[["wsrep_on", "OFF"]]', '[["wsrep_on", "ON"]]'))
-            self.inject_answers('''        if upper == "SHOW GLOBAL STATUS WHERE VARIABLE_NAME = 'WSREP_GCOMM_UUID'":
+            self.inject_answers('''        if upper.startswith("SHOW GLOBAL STATUS WHERE "):
             self.result(statement, ["Variable_name", "Value"], [["wsrep_gcomm_uuid", %r]])
             return
 ''' % node_uuid)
+
+    def provider_client(self, engine='mariadb', status=None):
+        """A loaded provider with independently observable connection status.
+
+        Only the fake server evaluates the generated guard. Real editor
+        planning, reviews, identity binding and transport remain in use.
+        """
+        self.rewrite_client(lambda text: text.replace(
+            'ENGINE = os.environ.get("FAKE_ENGINE", "mysql")',
+            'ENGINE = %r' % ('mariadb' if engine == 'mariadb' else 'mysql')).replace(
+            '"11.4.13-MariaDB-fake" if ENGINE == "mariadb" else "8.4.11-fake"',
+            '"13.0.2-MariaDB"' if engine == 'mariadb' else '"8.4.7-7"'))
+        variables = [['wsrep_on', 'OFF'], ['wsrep_provider', '/usr/lib/galera/libgalera_smm.so']]
+        if engine != 'mariadb':
+            variables.append(['server_uuid', '11111111-2222-3333-4444-555555555555'])
+        if engine == 'pxc':
+            self.rewrite_client(lambda text: text.replace(
+                '"version": "8.4.7-7",',
+                '"version": "8.4.7-7", "version_comment": "Percona XtraDB Cluster",'))
+        values = {'wsrep_on': 'OFF', 'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}
+        if status is not None:
+            values.update(status)
+        self.provider_state(values)
+        self.inject_answers('''        if upper.startswith("SHOW GLOBAL VARIABLES WHERE "):
+            self.result(statement, ["Variable_name", "Value"], %r)
+            return
+        if upper.startswith("SHOW GLOBAL STATUS WHERE "):
+            values = json.load(open(os.path.join(STATE, "provider-state.json")))
+            rows = [[key, values[key]] for key in ("wsrep_gcomm_uuid", "wsrep_connected", "wsrep_cluster_size")
+                    if key in values and values[key] is not None and "'" + key.upper() + "'" in upper]
+            self.result(statement, ["Variable_name", "Value"], rows)
+            return
+''' % variables)
+        self.rewrite_client(lambda text: text.replace('            if mismatch:\n',
+            '            if mismatch or provider_guard_refuses(guard):\n').replace(
+                'def one_shot(sql):\n', '''def provider_guard_refuses(sql):
+    values = json.load(open(os.path.join(STATE, "provider-state.json")))
+    checks = (("@@global.wsrep_on <=> 0", "wsrep_on", "OFF"),
+              ("WHERE VARIABLE_NAME = 'wsrep_connected') <=> 'OFF'", "wsrep_connected", "OFF"),
+              ("WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0'", "wsrep_cluster_size", "0"))
+    return any(clause in sql and values.get(key) != expected for clause, key, expected in checks)
+
+
+def one_shot(sql):
+    if provider_guard_refuses(sql):
+        with open(os.path.join(STATE, "provider-refusals.log"), "a") as handle:
+            handle.write(repr(sql) + "\\n")
+        sys.stderr.write("ERROR 1242 (21000) at line 2: Subquery returns more than 1 row\\n")
+        return 1
+'''))
+
+    def provider_state(self, values):
+        (self.state / 'provider-state.json').write_text(json.dumps(values), encoding='utf-8')
+
+    def assert_disconnected_guard(self, packet):
+        self.assertIn('OR NOT (@@global.wsrep_on <=> 0)', packet)
+        self.assertIn("OR NOT ((SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS "
+                      "WHERE VARIABLE_NAME = 'wsrep_connected') <=> 'OFF')", packet)
+        self.assertIn("OR NOT ((SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS "
+                      "WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0')", packet)
+
+    def test_disconnected_provider_guarded_write_binds_same_packet_waiver(self):
+        self.provider_client()
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertIs(session._kill_identity.get('wsrep_disconnected_provider'), True)
+        self.assertNotIn('wsrep_gcomm_uuid', session._kill_identity)
+        self.assertNotIn('wsrep_provider', session._kill_identity)
+        self.assertEqual(session.server_version, '13.0.2-MariaDB')
+        self.assertIs(ed._lexer_session_context(session)['wsrep_on'], False)
+        identity_packet = next(p[2] for p in self.packets() if 'SHOW GLOBAL VARIABLES' in p[2])
+        for field in ('CONNECTION_ID() AS connection_id', 'wsrep_provider', 'wsrep_gcomm_uuid',
+                      'wsrep_connected', 'wsrep_cluster_size'):
+            self.assertIn(field, identity_packet)
+        sql = 'SET @disconnected_provider_write = 17'
+        result = self.run_sql(sql)
+        self.assertEqual(result['status'], 'complete', result)
+        self.assertIn(sql, self.session_log())
+        packet = next(p[2] for p in self.packets() if sql in p[2])
+        self.assert_disconnected_guard(packet)
+        self.assertIn('CONNECTION_ID() <> %d' % session.connection_id, packet)
+
+    def test_disconnected_provider_stop_binds_waiver(self):
+        self.provider_client()
+        self.run_sql('SELECT 7 /*gate*/', wait=0)
+        self.until(lambda: self.logged('tab1', 'SELECT 7 /*gate*/'), 'owned statement to start')
+        session = self.registry.get('tab1')
+        try:
+            stopped = self.call('/api/editor/stop')
+            self.assertTrue(stopped['stopped'], stopped)
+            self.assertTrue(session.run.done.wait(5))
+            self.assertIs(session._kill_identity.get('wsrep_disconnected_provider'), True)
+            packet = (self.state / 'kills.log').read_text(encoding='utf-8')
+            self.assert_disconnected_guard(packet)
+            self.assertIn('KILL QUERY %d' % session.connection_id, packet)
+            self.assertIn('information_schema.PROCESSLIST', packet)
+        finally:
+            self.release()
+            self.assertTrue(session.run.done.wait(5))
+
+    def test_disconnected_provider_preserves_special_comment_lexer_input(self):
+        self.provider_client()
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertIs(session._kill_identity.get('wsrep_disconnected_provider'), True)
+        self.assertIs(ed._lexer_session_context(session)['wsrep_on'], False)
+        sql = "SELECT 7 /*!99997 INTO OUTFILE '/tmp/must-not-run' */"
+        self.assertEqual(ed._plan_run({'sql': sql}, session)['units'][0]['code'], 'SELECT 7')
+        self.assertEqual(self.call('/api/editor/run', sql=sql)['status'], 'complete')
+        packet = next(p[2] for p in self.packets() if sql in p[2])
+        self.assert_disconnected_guard(packet)
+        self.assertIn('@@SESSION.wsrep_on <=> 0', packet)
+        self.assertIn(sql, packet)
+
+    def test_connected_provider_with_hidden_uuid_refuses_write_and_stop(self):
+        self.provider_client(status={'wsrep_connected': 'ON', 'wsrep_cluster_size': '3'})
+        self.assert_writes_refused_without_identity()
+        session = self.registry.get('tab1')
+        self.assertNotIn('wsrep_disconnected_provider', session._kill_identity)
+        self.run_sql('SELECT 7 /*gate*/', wait=0)
+        self.until(lambda: self.logged('tab1', 'SELECT 7 /*gate*/'), 'owned statement to start')
+        try:
+            stopped = self.call('/api/editor/stop')
+            self.assertFalse(stopped['stopped'], stopped)
+            self.assertIn('server could not be confirmed', stopped['message'])
+            self.assertFalse((self.state / 'kills.log').exists())
+        finally:
+            self.release()
+            self.assertTrue(session.run.done.wait(5))
+
+    def test_provider_incomplete_connection_status_never_grants_waiver(self):
+        self.provider_client()
+        for missing in ('wsrep_connected', 'wsrep_cluster_size'):
+            with self.subTest(missing=missing):
+                status = {'wsrep_on': 'OFF', 'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}
+                status.pop(missing)
+                self.provider_state(status)
+                self.assertEqual(self.run_sql('SELECT 7', tab=missing)['status'], 'complete')
+                session = self.registry.get(missing)
+                self.assertNotIn('wsrep_disconnected_provider', session._kill_identity)
+                with self.assertRaisesRegex(ValueError, 'The server could not be confirmed'):
+                    session._write_session_guard()
+                with self.assertRaisesRegex(ConnectorError, 'server could not be confirmed'):
+                    session._send_kill(self.connection, session.connection_id)
+                self.assertFalse((self.state / 'kills.log').exists())
+
+    def test_provider_connects_after_identity_editor_write_sends_nothing(self):
+        self.provider_client()
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertIs(session._kill_identity.get('wsrep_disconnected_provider'), True)
+        sql = 'SET @must_not_run_after_connect = 17'
+        review = self.call('/api/editor/run', sql=sql)
+        self.provider_state({'wsrep_on': 'OFF', 'wsrep_connected': 'ON', 'wsrep_cluster_size': '1'})
+        result = self.call('/api/editor/run', sql=sql, confirmed=True,
+                           confirm_token=review['confirmation']['token'])
+        self.assertEqual(result['status'], 'error', result)
+        self.assertEqual(result['run']['counts']['run'], 0)
+        self.assertEqual(result['run']['statements'][0]['status'], 'not_run')
+        self.assertNotIn(sql, self.session_log())
+        packet = next(p[2] for p in self.packets() if sql in p[2])
+        self.assert_disconnected_guard(packet)
+        record = self.store.audit_records()[0]
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_mismatch'))
+
+    def test_provider_connects_after_identity_stop_sends_nothing(self):
+        self.provider_client()
+        self.run_sql('SELECT 7 /*gate*/', wait=0)
+        self.until(lambda: self.logged('tab1', 'SELECT 7 /*gate*/'), 'owned statement to start')
+        session = self.registry.get('tab1')
+        try:
+            self.assertIs(session._kill_identity.get('wsrep_disconnected_provider'), True)
+            self.provider_state({'wsrep_on': 'OFF', 'wsrep_connected': 'ON', 'wsrep_cluster_size': '1'})
+            stopped = self.call('/api/editor/stop')
+            self.assertFalse(stopped['stopped'], stopped)
+            self.assertIn('No KILL QUERY was sent', stopped['message'])
+            self.assertFalse((self.state / 'kills.log').exists())
+            self.assertIsNone(session.run.current.kill_sent_at)
+            self.assert_disconnected_guard((self.state / 'provider-refusals.log').read_text(encoding='utf-8'))
+        finally:
+            self.release()
+            self.assertTrue(session.run.done.wait(5))
+
+    def test_mysql_provider_is_never_waived(self):
+        self.provider_client(engine='mysql')
+        session = self.assert_usable_without_kill()
+        self.assertNotIn('wsrep_disconnected_provider', session._kill_identity)
+        self.assert_writes_refused_without_identity()
+
+    def test_pxc_provider_is_never_waived(self):
+        self.provider_client(engine='pxc')
+        session = self.assert_usable_without_kill()
+        self.assertEqual(session.server_product, 'Percona XtraDB Cluster')
+        self.assertNotIn('wsrep_disconnected_provider', session._kill_identity)
+        self.assert_writes_refused_without_identity()
 
     def test_custom_mariadb_version_and_comment_use_absence_of_server_uuid(self):
         self.maria_client()
@@ -172,6 +367,23 @@ class EditorIdentityTests(unittest.TestCase):
         self.assertIsNone(ed._lexer_session_context(session)['wsrep_on'])
         before = len(self.packets())
         result = self.call('/api/editor/run', sql='SELECT 7 /*!99997 INTO OUTFILE \'/tmp/must-not-run\' */')
+        self.assertEqual(result['status'], 'invalid', result)
+        self.assertEqual(len(self.packets()), before)
+
+    def test_provider_with_uuid_and_missing_wsrep_on_keeps_lexer_state_unknown(self):
+        node = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        self.maria_client(wsrep=True, node_uuid=node)
+        self.rewrite_client(lambda text: text.replace('[["wsrep_on", "ON"]]',
+            '[["wsrep_provider", "/usr/lib/galera/libgalera_smm.so"]]'))
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        self.assertEqual(session._kill_identity['wsrep_gcomm_uuid'], node)
+        self.assertIn(node, session._write_session_guard()[0])
+        self.assertNotIn('wsrep_on', session._kill_identity)
+        self.assertNotIn('wsrep_disconnected_provider', session._kill_identity)
+        self.assertIsNone(ed._lexer_session_context(session)['wsrep_on'])
+        before = len(self.packets())
+        result = self.call('/api/editor/run', sql="SELECT 7 /*!99997 INTO OUTFILE '/tmp/must-not-run' */")
         self.assertEqual(result['status'], 'invalid', result)
         self.assertEqual(len(self.packets()), before)
 

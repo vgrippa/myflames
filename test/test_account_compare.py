@@ -587,6 +587,10 @@ class _BatchServerState(object):
             return self._emit_rows(rows)
         if sql == "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'":
             return ''
+        if sql == ("SHOW GLOBAL STATUS WHERE Variable_name IN "
+                   "('wsrep_gcomm_uuid', 'wsrep_connected', 'wsrep_cluster_size')"):
+            rows = [['wsrep_connected', 'OFF'], ['wsrep_cluster_size', '0']] if self.engine == 'mariadb' else []
+            return self._emit_rows(rows)
         if sql == "SHOW GLOBAL VARIABLES WHERE Variable_name = 'version_comment'":
             return self._emit_rows([['version_comment', self.version_comment]])
         if sql == "SHOW GLOBAL VARIABLES WHERE Variable_name = 'partial_revokes'":
@@ -1253,7 +1257,8 @@ class BatchedCaptureParityTest(unittest.TestCase):
                 for chunk_idx, stmts in enumerate(batch_packets):
                     # Identity prefix is always the first 3 statements of the same COM_QUERY packet.
                     self.assertIn('SHOW GLOBAL VARIABLES WHERE Variable_name IN (', stmts[0])
-                    self.assertIn("Variable_name = 'wsrep_gcomm_uuid'", stmts[1])
+                    self.assertEqual(stmts[1], "/*myflames:accounts*/ SHOW GLOBAL STATUS WHERE Variable_name IN "
+                                     "('wsrep_gcomm_uuid', 'wsrep_connected', 'wsrep_cluster_size')")
                     self.assertRegex(stmts[2], r"SELECT 'myflames_evidence_[0-9a-f]{32}'")
                     if expect_hex:
                         self.assertIn('SET SESSION print_identified_with_as_hex = ON', stmts[3])

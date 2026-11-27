@@ -17,6 +17,20 @@ PREFIX = "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS
 _RETAIN_PARTIAL_STDOUT = contextvars.ContextVar('reviewed_replay_partial_stdout', default=False)
 
 
+def mariadb_wsrep_defaults(version):
+    """Explicit synthetic configuration for the standalone MariaDB captures.
+
+    Official images/packages use wsrep_on OFF and provider none, except the
+    13.0.2 official image, which loads Galera while remaining disconnected.
+    These defaults supplement old recordings, not the production evidence
+    parser or intentional missing-evidence transport tests.
+    """
+    provider = ('/usr/lib/galera/libgalera_smm.so'
+                if version.lower().startswith('13.0.2-mariadb') else 'none')
+    return dict(wsrep_on='OFF', wsrep_provider=provider,
+                wsrep_connected='OFF', wsrep_cluster_size='0')
+
+
 def evidence_options(run):
     """Forward the connector opt-in through old fake transport signatures.
 
@@ -59,7 +73,8 @@ def evidence_body(sql):
     assert len(statements) >= 4
     prefix = [re.sub(r'^/\*myflames:[^\r\n]*?\*/ ', '', statement) for statement in statements[:3]]
     assert prefix[0].startswith('SHOW GLOBAL VARIABLES WHERE Variable_name IN (')
-    assert prefix[1] == "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid'"
+    assert prefix[1] == ("SHOW GLOBAL STATUS WHERE Variable_name IN "
+                         "('wsrep_gcomm_uuid', 'wsrep_connected', 'wsrep_cluster_size')")
     assert prefix[2] == "SELECT '%s'" % match.group(1)
     # Recordings used '; ' between read statements. Only separators change;
     # the production builder's validated bodies remain byte-for-byte intact.
@@ -69,7 +84,7 @@ def evidence_body(sql):
 def evidence_output(output, marker, values, xml=False):
     """Explicit synthetic identity alongside recorded state, never live proof."""
     values = {key: value for key, value in values.items()
-              if key in dbops._EVIDENCE_VARIABLES or key == 'wsrep_gcomm_uuid'}
+              if key in dbops._EVIDENCE_VARIABLES + dbops._EVIDENCE_STATUS}
     if not xml:
         return ''.join('%s\t%s\n' % (key, value) for key, value in values.items()) + marker + '\n' + output
     from xml.sax.saxutils import escape
@@ -77,8 +92,10 @@ def evidence_output(output, marker, values, xml=False):
         return '<resultset>' + ''.join('<row>' + ''.join('<field name="%s">%s</field>' %
                     (escape(key), escape(str(value))) for key, value in row) + '</row>' for row in rows) + '</resultset>\n'
     return result([
-        [('Variable_name', key), ('Value', value)] for key, value in values.items() if key != 'wsrep_gcomm_uuid']) + result([
-        [('Variable_name', 'wsrep_gcomm_uuid'), ('Value', values['wsrep_gcomm_uuid'])]] if 'wsrep_gcomm_uuid' in values else []) + result([[('marker', marker)]]) + output
+        [('Variable_name', key), ('Value', value)] for key, value in values.items()
+        if key in dbops._EVIDENCE_VARIABLES]) + result([
+        [('Variable_name', key), ('Value', value)] for key, value in values.items()
+        if key in dbops._EVIDENCE_STATUS]) + result([[('marker', marker)]]) + output
 
 
 def evidence_call(answer, marker, values, xml=False):
@@ -203,6 +220,10 @@ def supplement(calls):
                 additions = {'server_id': '1', 'hostname': 'fixture-db', 'port': '3306'}
                 if 'mariadb' not in text.lower():
                     additions['server_uuid'] = UUID
+                else:
+                    # The recorded statement now requests wsrep_on as well.
+                    # Keep its response consistent with the packet evidence.
+                    additions['wsrep_on'] = mariadb_wsrep_defaults(values.get('version', ''))['wsrep_on']
                 call[1] = ''.join('%s\t%s\n' % (key, value) for key, value in additions.items()
                                   if key not in values) + text
         out.append(call)
@@ -219,10 +240,12 @@ class ReplayConn(RecordedReplayConn):
                 for line in (answers[0] or '').splitlines():
                     if '\t' in line:
                         key, value = line.split('\t', 1)
-                        if key in dbops._EVIDENCE_VARIABLES:
+                        if key in dbops._EVIDENCE_VARIABLES + dbops._EVIDENCE_STATUS:
                             self.evidence_values[key] = value
-                if 'MariaDB' in self.evidence_values['version']:
+                if 'mariadb' in self.evidence_values['version'].lower():
                     self.evidence_values.pop('server_uuid', None)
+                    for key, value in mariadb_wsrep_defaults(self.evidence_values['version']).items():
+                        self.evidence_values.setdefault(key, value)
                 break
 
     @evidence_options

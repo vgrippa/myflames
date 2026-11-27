@@ -26,6 +26,7 @@ from unittest import mock
 
 from myflames import dbops, ui, workspace_cli
 from myflames.workspace_store import WorkspaceStore
+from _reviewed_replay import evidence_options
 
 
 def _budget(seconds):
@@ -35,6 +36,238 @@ def _budget(seconds):
     still exceed the scaled budget by a wide margin.
     """
     return seconds * (3 if sys.version_info < (3, 11) else 1)
+
+
+class TargetGaleraIdentityTests(unittest.TestCase):
+    """A configured but disconnected MariaDB provider has no provider UUID."""
+
+    class Connection(object):
+        def __init__(self, status=None, status_error=None, read_error=None):
+            self.variables = dict(server_id='1', hostname='maria-standalone', port='3306',
+                                  version='13.0.2-MariaDB', version_comment='MariaDB Server',
+                                  wsrep_on='OFF', wsrep_provider='/usr/lib/galera/libgalera_smm.so')
+            self.status = dict(status or {})
+            self.status_error = status_error
+            self.read_error = read_error
+            self.calls = []
+
+        @evidence_options
+        def run(self, sql, extra_flags=None, **kwargs):
+            from test_topology_links import answer_evidence
+            self.calls.append(sql)
+            values = dict(self.variables)
+            values.update(self.status)
+            if self.status_error:
+                from myflames.connector import ConnectorError
+                raise ConnectorError(self.status_error)
+            return answer_evidence(sql, extra_flags, kwargs.get('timeout'), self._plain, values)
+
+        def _plain(self, sql, extra_flags, timeout):
+            from myflames.connector import ConnectorError
+            if 'SHOW GLOBAL STATUS' in sql:
+                if self.status_error:
+                    raise ConnectorError(self.status_error)
+                names = re.findall(r"'([^']+)'", sql)
+                return ''.join('%s\t%s\n' % (name, self.status[name]) for name in names if name in self.status)
+            if self.read_error:
+                raise ConnectorError(self.read_error)
+            return '1\n'
+
+    def test_disabled_disconnected_provider_binds_status_in_one_packet(self):
+        for flags in ([], ['--xml']):
+            with self.subTest(flags=flags):
+                raw = self.Connection({'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'})
+                conn = dbops.TargetEvidenceConnection(raw)
+                self.assertEqual(conn.run('SELECT 1', extra_flags=flags), '1\n')
+                identity = dbops.target_galera_identity(conn, 'mariadb',
+                    {key: raw.variables[key] for key in ('server_id', 'hostname', 'port', 'version')}, {})
+                guard = dbops.target_session_guard('mariadb', identity)
+                self.assertIs(identity.get('wsrep_disconnected_provider'), True)
+                self.assertIn('@@global.hostname', guard[0])
+                self.assertIn('@@global.wsrep_on <=> 0', guard[0])
+                self.assertIn("VARIABLE_NAME = 'wsrep_connected') <=> 'OFF'", guard[0])
+                self.assertIn(" OR NOT ((SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS"
+                              " WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0')", guard[0])
+                self.assertNotIn('wsrep_gcomm_uuid', guard[0])
+                self.assertFalse(dbops.target_has_galera(conn.variables, 'mariadb'))
+                self.assertEqual(len(raw.calls), 1, 'status and identity must use one login')
+                self.assertEqual(sum(sql.count('SELECT 1\n') for sql in raw.calls), 1)
+                self.assertEqual(conn.run('SELECT 1'), '1\n')
+                self.assertEqual(len(raw.calls), 2)
+
+    def test_editor_style_wsrep_off_identity_does_not_request_a_waiver(self):
+        identity = dict(server_id='1', hostname='maria-editor', port='3306', wsrep_on='OFF')
+        ordinary = dbops.target_session_guard('mariadb', identity)
+        self.assertNotIn('wsrep', ordinary[0])
+        for marker in (False, 'true', 'OFF', 1, 1.0, None, [], {}):
+            with self.subTest(marker=marker):
+                with self.assertRaisesRegex(ValueError, 'disconnected.provider.*invalid.*Nothing was sent'):
+                    dbops.target_session_guard('mariadb',
+                        dict(identity, wsrep_disconnected_provider=marker))
+
+    def test_disconnected_provider_marker_is_derived_from_current_evidence(self):
+        raw = self.Connection()
+        identity = {key: raw.variables[key] for key in ('server_id', 'hostname', 'port', 'version')}
+        identity['wsrep_disconnected_provider'] = True
+        evidence = dict(raw.variables, wsrep_provider='none',
+                        wsrep_connected='OFF', wsrep_cluster_size='0')
+        ordinary = dbops.target_galera_identity(None, 'mariadb', identity, evidence)
+        self.assertNotIn('wsrep_disconnected_provider', ordinary)
+
+    def test_mysql_percona_and_pxc_never_waive_a_loaded_provider(self):
+        values = dict(self.Connection().variables, wsrep_connected='OFF', wsrep_cluster_size='0')
+        identity = {'server_uuid': '11111111-2222-3333-4444-555555555555'}
+        for engine in ('mysql', 'percona', 'percona_server', 'pxc'):
+            with self.subTest(engine=engine):
+                self.assertTrue(dbops.target_has_galera(values, engine))
+                bound = dbops.target_galera_identity(None, engine, identity, values)
+                self.assertNotIn('wsrep_disconnected_provider', bound)
+                with self.assertRaisesRegex(ValueError, 'Galera node UUID is missing'):
+                    dbops.target_session_guard(engine, bound)
+
+    def test_same_node_uuid_allows_volatile_connection_status_between_packets(self):
+        node_uuid = '11111111-2222-3333-4444-555555555555'
+        for flags in ([], ['--xml']):
+            with self.subTest(flags=flags):
+                raw = self.Connection({'wsrep_gcomm_uuid': node_uuid,
+                                       'wsrep_connected': 'ON', 'wsrep_cluster_size': '3'})
+                conn = dbops.TargetEvidenceConnection(raw)
+                self.assertEqual(conn.run('SELECT 1', extra_flags=flags), '1\n')
+                raw.status['wsrep_cluster_size'] = '2'
+                self.assertEqual(conn.run('SELECT 1', extra_flags=flags), '1\n')
+                raw.status.update(wsrep_connected='OFF', wsrep_cluster_size='0')
+                self.assertEqual(conn.run('SELECT 1', extra_flags=flags), '1\n')
+                bound = dbops.target_galera_identity(conn, 'mariadb', raw.variables, {})
+                self.assertNotIn('wsrep_disconnected_provider', bound)
+                self.assertIn(node_uuid, dbops.target_session_guard('mariadb', bound)[0])
+                self.assertEqual(conn.variables['wsrep_cluster_size'], '0')
+                self.assertEqual(len(raw.calls), 3)
+
+    def test_waived_packet_then_connected_packet_refuses_the_scope(self):
+        from myflames.connector import ConnectorError
+        for node_uuid in (None, '11111111-2222-3333-4444-555555555555'):
+            with self.subTest(node_uuid=node_uuid):
+                raw = self.Connection({'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'})
+                conn = dbops.TargetEvidenceConnection(raw)
+                self.assertEqual(conn.run('SELECT 1'), '1\n')
+                raw.status.update(wsrep_connected='ON', wsrep_cluster_size='3')
+                if node_uuid:
+                    raw.status['wsrep_gcomm_uuid'] = node_uuid
+                with self.assertRaisesRegex(ConnectorError, 'identity check'):
+                    conn.run('SELECT 1')
+                with self.assertRaisesRegex(ConnectorError, 'identity check'):
+                    conn.run_write('SET GLOBAL max_connections = 200')
+                self.assertEqual(len(raw.calls), 2)
+
+    def test_missing_status_snapshot_cannot_bypass_galera_identity(self):
+        values = self.Connection().variables
+        self.assertTrue(dbops.target_has_galera(values, 'mariadb'))
+        self.assertTrue(dbops.target_has_galera(dict(values, wsrep_connected='OFF'), 'mariadb'))
+        self.assertTrue(dbops.target_has_galera(dict(values, wsrep_cluster_size='0'), 'mariadb'))
+
+    def test_optional_read_error_keeps_proven_disconnected_identity(self):
+        from myflames.connector import ConnectorError
+        raw = self.Connection({'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}, read_error="ERROR 1146 (42S02): Table 'optional' does not exist")
+        conn = dbops.TargetEvidenceConnection(raw)
+        with self.assertRaisesRegex(ConnectorError, 'ERROR 1146'):
+            conn.run('SELECT 1')
+        conn.check()
+        self.assertIsNone(conn.problem)
+        raw.read_error = None
+        self.assertEqual(conn.run('SELECT 1'), '1\n')
+
+    def test_connected_or_unknown_provider_status_requires_uuid(self):
+        from myflames.connector import ConnectorError
+        statuses = ({}, {'wsrep_connected': 'OFF'}, {'wsrep_cluster_size': '0'},
+                    {'wsrep_connected': None, 'wsrep_cluster_size': None},
+                    {'wsrep_connected': '0', 'wsrep_cluster_size': '0'},
+                    {'wsrep_connected': 'ON'}, {'wsrep_cluster_size': '1'},
+                    {'wsrep_connected': 'OFF', 'wsrep_cluster_size': '3'},
+                    {'wsrep_connected': 'unknown'}, {'wsrep_cluster_size': 'invalid'},
+                    {'wsrep_cluster_size': '-1'})
+        for status in statuses:
+            with self.subTest(status=status):
+                conn = dbops.TargetEvidenceConnection(self.Connection(status))
+                with self.assertRaisesRegex(ConnectorError, 'identity check'):
+                    conn.run('SELECT 1')
+
+    def test_alternating_equal_identity_backends_cannot_supply_disconnected_waiver(self):
+        from myflames.connector import ConnectorError
+
+        class Router(self.Connection):
+            def run(self, sql, **kwargs):
+                # Ordinary identity fields match. The first login is connected,
+                # the next is disconnected, exactly the old nested-read bypass.
+                self.status = ({'wsrep_connected': 'ON', 'wsrep_cluster_size': '3'}
+                               if len(self.calls) % 2 == 0 else
+                               {'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'})
+                return super(Router, self).run(sql, **kwargs)
+
+        raw = Router()
+        conn = dbops.TargetEvidenceConnection(raw)
+        with self.assertRaisesRegex(ConnectorError, 'identity check'):
+            conn.run('SELECT 1')
+        self.assertEqual(len(raw.calls), 1)
+        with self.assertRaisesRegex(ConnectorError, 'identity check'):
+            conn.run('SELECT 1')
+        self.assertEqual(len(raw.calls), 1, 'identity refusals remain sticky')
+
+    def test_disconnected_waiver_refuses_reconnected_write_packet(self):
+        from _reviewed_replay import guarded_packets
+        from myflames.connector import ConnectorError
+        raw = self.Connection({'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'})
+        conn = dbops.TargetEvidenceConnection(raw)
+        conn.run('SELECT 1')
+        identity = dbops.target_galera_identity(conn, 'mariadb',
+            {key: raw.variables[key] for key in ('server_id', 'hostname', 'port', 'version')}, {})
+        guard = dbops.target_session_guard('mariadb', identity)
+        script, lines = dbops.target_guarded_script(guard, ['SET GLOBAL max_connections = 200'])
+        for on, connected, size in (('ON', 'OFF', '0'), ('OFF', 'ON', '0'), ('OFF', None, '0'),
+                                    ('OFF', 'OFF', None), ('OFF', 'OFF', '1'), ('OFF', 'OFF', '3'),
+                                    ('OFF', 'OFF', '0')):
+            with self.subTest(wsrep_on=on, wsrep_connected=connected, wsrep_cluster_size=size):
+                sent = []
+                failure = None
+                # A transport replay evaluates the guard before acknowledging
+                # or executing its protected statement. No dbops policy is mocked.
+                try:
+                    for packet_guard, statement, line in guarded_packets(script):
+                        changed = ('@@global.wsrep_on <=> 0' in packet_guard and on != 'OFF')
+                        changed |= ("VARIABLE_NAME = 'wsrep_connected') <=> 'OFF'" in packet_guard
+                                    and connected != 'OFF')
+                        changed |= (" OR NOT ((SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS"
+                                    " WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0')" in packet_guard
+                                    and size != '0')
+                        if changed:
+                            raise ConnectorError('ERROR 1242 (21000) at line %d: Subquery returns more than 1 row' % line)
+                        sent.append(statement)
+                except ConnectorError as exc:
+                    failure = dbops.target_guard_failed(exc, lines)
+                if (on, connected, size) == ('OFF', 'OFF', '0'):
+                    self.assertIsNone(failure)
+                    self.assertEqual(sent, ['SET GLOBAL max_connections = 200'])
+                else:
+                    self.assertIsNotNone(failure)
+                    self.assertEqual(failure['outcome'], 'identity_mismatch')
+                    self.assertIn('Nothing was sent.', failure['message'])
+                    self.assertEqual(sent, [])
+
+    def test_unreadable_provider_status_is_not_disconnected(self):
+        from myflames.connector import ConnectorError
+        for problem in ('ERROR 1227 (42000): Access denied', 'Connection timed out'):
+            with self.subTest(problem=problem):
+                conn = dbops.TargetEvidenceConnection(self.Connection(status_error=problem))
+                with self.assertRaisesRegex(ConnectorError, 'identity check'):
+                    conn.run('SELECT 1')
+
+    def test_readable_galera_uuid_stays_bound_with_wsrep_off(self):
+        node_uuid = '11111111-2222-3333-4444-555555555555'
+        raw = self.Connection({'wsrep_gcomm_uuid': node_uuid})
+        conn = dbops.TargetEvidenceConnection(raw)
+        self.assertEqual(conn.run('SELECT 1'), '1\n')
+        identity = dbops.target_galera_identity(conn, 'mariadb', raw.variables, {})
+        self.assertIn(node_uuid, dbops.target_session_guard('mariadb', identity)[0])
+        self.assertEqual(len(raw.calls), 1)
 
 
 class TempHome(unittest.TestCase):

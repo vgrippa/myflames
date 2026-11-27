@@ -165,7 +165,7 @@ mariadb-server 13.0 "Ma/" with the 10.11, 11.4 and 11.8 tags):
 import re
 import time
 
-from .server_info import product_name
+from .server_info import galera_enabled, product_name
 from .connector import ConnectorError
 from .health import SEVERITY
 from .perf_common import (Reader, _bytes_text, _count_text, _duration_text, _number, _round, base_report, check_limit,
@@ -190,7 +190,7 @@ METADATA_DEADLINE_S = 30.0
 VARIABLES = ("information_schema_stats_expiry", "show_gipk_in_create_table_and_information_schema",
              "sql_generate_invisible_primary_key", "sql_require_primary_key", "innodb_force_primary_key",
              "innodb_file_per_table", "innodb_defragment", "innodb_optimize_fulltext_only",
-             "lower_case_table_names", "wsrep_on", "group_replication_group_name")
+             "lower_case_table_names", "wsrep_on", "wsrep_provider", "group_replication_group_name")
 STATUS_ORDER = {"problem": 0, "watch": 1, "ok": 2, "info": 2, "shared": 3, "unknown": 4}
 RULES = {
     "no_usable_key": "problem: no PRIMARY KEY and no UNIQUE key on NOT NULL columns",
@@ -1081,8 +1081,8 @@ def _notes(server, raw, report, schemas, fresh, notes):
     if _on(server.var("innodb_defragment")) and flagged:
         notes.append("innodb_defragment is ON: OPTIMIZE TABLE then defragments indexes instead of rebuilding the "
                      "table. To rebuild, use the ALTER TABLE ... FORCE statement instead.")
-    if _on(server.var("wsrep_on")):
-        notes.append("This server is a Galera node (wsrep_on=ON): tables without a primary key are the ones to fix "
+    if galera_enabled(server.variables):
+        notes.append("This server is a Galera node: tables without a primary key are the ones to fix "
                      "first.")
     if server.var("group_replication_group_name"):
         notes.append("Group Replication is configured on this server (group_replication_group_name is set): it "

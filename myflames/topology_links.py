@@ -27,11 +27,12 @@ from . import dbops
 from .connection_groups import ProfileReadError, current_profile, members, probe_note, record_read
 from .connector import ConnectorError
 from .perf_common import Reader, named_rows, reason
-from .server_info import is_readyset_comment, product_identity
+from .server_info import galera_enabled, is_readyset_comment, product_identity
 
 TOPOLOGY_TAG = "/*myflames:topology*/ "
 CACHE_SIZE = 64
 ATTEMPT_LIMIT = 128
+REPROBE_LIMIT = 2
 PROFILE_READ_LIMIT = 6
 PROFILE_BUDGET_S = 5.0
 QUERY_TIMEOUT_S = 2
@@ -47,7 +48,7 @@ _DB_VARS_SQL = (
     "SHOW GLOBAL VARIABLES WHERE Variable_name IN ("
     "'version','version_comment','hostname','port','report_host','report_port',"
     "'server_id','server_uuid','read_only','super_read_only',"
-    "'wsrep_on','wsrep_cluster_name','wsrep_cluster_address','wsrep_node_name','wsrep_node_incoming_address',"
+    "'wsrep_on','wsrep_provider','wsrep_cluster_name','wsrep_cluster_address','wsrep_node_name','wsrep_node_incoming_address',"
     "'group_replication_group_name','gtid_mode')"
 )
 _WSREP_STATUS_SQL = "SHOW GLOBAL STATUS LIKE 'wsrep_gcomm_uuid'"
@@ -77,6 +78,60 @@ _cache_lock = threading.Lock()
 _probe_cache = collections.OrderedDict()
 _probe_pending = {}
 _probe_attempts = set()
+# Contradictions may reopen a fingerprint only twice, even if its cache entry
+# is discarded after a shared-budget cutoff or evicted from the result cache.
+_probe_reprobes = {}
+
+
+class _ProbeBudgetConnection(object):
+    """Give every statement the remaining request time, including optional reads."""
+    def __init__(self, connection, remaining):
+        self.connection = connection
+        self.remaining = remaining
+        self.expired = False
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+    def __copy__(self):
+        # Readyset listener detection clears the database on a private copy.
+        import copy
+        connection = copy.copy(self.connection)
+        if connection is self.connection:
+            return self
+        # The cleanup resources belong to the original transport. Clearing
+        # attributes on this wrapper would leave its inner copy owning them.
+        for name in ('_held_lease', '_legacy_lease', '_defaults_file_path'):
+            setattr(connection, name, None)
+        return _ProbeBudgetConnection(connection, self.remaining)
+
+    @property
+    def database(self):
+        return getattr(self.connection, 'database', None)
+
+    @database.setter
+    def database(self, value):
+        self.connection.database = value
+
+    def check(self):
+        if self.expired or self.remaining() <= 0:
+            self.expired = True
+            raise ConnectorError("Topology read budget was reached.")
+
+    def run(self, sql, **kwargs):
+        seconds = self.remaining()
+        if self.expired or seconds <= 0:
+            self.expired = True
+            self.check()
+        kwargs['timeout'] = min(kwargs.get('timeout') or QUERY_TIMEOUT_S,
+                                QUERY_TIMEOUT_S, seconds)
+        try:
+            output = self.connection.run(sql, **kwargs)
+        finally:
+            if self.remaining() <= 0:
+                self.expired = True
+        self.check()
+        return output
 
 
 def _reset_cache_for_tests():
@@ -84,6 +139,7 @@ def _reset_cache_for_tests():
         _probe_cache.clear()
         _probe_pending.clear()
         _probe_attempts.clear()
+        _probe_reprobes.clear()
 
 
 def _int(value):
@@ -324,13 +380,17 @@ def _claim_probe(profile, open_profile, reads, remaining):
             return pending, False, True
         key = (profile_id, fingerprint)
         entry = _probe_cache.get(key)
-        if entry is not None:
+        retry = entry is not None and entry.get('reprobe')
+        if entry is not None and not retry:
             _probe_cache.move_to_end(key)
             return entry, False, False
-        if key in _probe_attempts:
+        if key in _probe_attempts and not retry:
             raise ValueError("Saved connection %s was already checked earlier." % name)
-        if len(_probe_attempts) >= ATTEMPT_LIMIT:
+        if key not in _probe_attempts and len(_probe_attempts) >= ATTEMPT_LIMIT:
             raise ValueError("Topology discovery reached its per-process connection check limit.")
+        reprobe = retry or key in _probe_reprobes
+        if reprobe and _probe_reprobes.get(key, 0) >= REPROBE_LIMIT:
+            raise ValueError("Saved connection %s reached its per-process re-probe limit." % name)
         if reads[0] >= PROFILE_READ_LIMIT:
             raise ValueError("More than %d saved connections were candidates; the rest were not opened."
                              % PROFILE_READ_LIMIT)
@@ -340,7 +400,10 @@ def _claim_probe(profile, open_profile, reads, remaining):
         for old in [k for k in _probe_cache if k[0] == key[0]]:
             del _probe_cache[old]
         entry = {"done": threading.Event(), "data": None, "problem": None, "kept": True,
-                 "key": key, "connect": connect, "observation": _topology_probe_observation(profile)}
+                 "key": key, "connect": connect, "observation": _topology_probe_observation(profile),
+                 "disputed_uuid": entry.get('disputed_uuid') if retry else None}
+        if reprobe:
+            _probe_reprobes[key] = _probe_reprobes.get(key, 0) + 1
         _probe_attempts.add(key)
         _probe_pending[profile_id] = entry
         _probe_cache[key] = entry
@@ -356,9 +419,64 @@ def _named_rows(conn, sql):
         raise ConnectorError("a value the client could not print as XML")
 
 
+def _probe_readyset(conn, base):
+    version = None
+    try:
+        vrows = _named_rows(conn, "SHOW READYSET VERSION")
+        version = parse_readyset_version(vrows)
+    except ConnectorError:
+        version = None
+    # Share the Readyset report's evidence-only listener probe, including
+    # its connection copy when the virtual schema is selected. Import here
+    # because readyset also uses this module to assemble its topology.
+    from .readyset import _detect_port_mode
+    port_role, _ = _detect_port_mode(conn, "readyset", timeout=QUERY_TIMEOUT_S)
+    status_map = {}
+    try:
+        srows = _named_rows(conn, "SHOW READYSET STATUS")
+        for r in srows:
+            vals = list(r.values())
+            if len(vals) >= 2 and vals[0]:
+                status_map[vals[0]] = vals[1]
+    except ConnectorError:
+        pass
+    upstreams = []
+    for prefix in ("readyset.", ""):
+        try:
+            urows = _named_rows(
+                conn,
+                "SELECT host, port, database, user, weight, purpose, active_cdc, health, connections "
+                "FROM %supstream_servers" % prefix,
+            )
+            upstreams = urows
+            break
+        except ConnectorError:
+            continue
+    cache_count = None
+    try:
+        crows = _named_rows(conn, "SHOW CACHES")
+        cache_count = len(crows)
+    except ConnectorError:
+        cache_count = None
+    base.update({
+        "kind": "readyset",
+        "product": "Readyset",
+        "port_role": port_role,
+        "version": version,
+        "status_text": _text(status_map.get("Status")),
+        "replication_status": _text(status_map.get("Replication Status")),
+        "cdc_server": _text(status_map.get("CDC Server")),
+        "database_connection": _text(status_map.get("Database Connection")),
+        "replication_error": bool(_text(status_map.get("Last replicator error"))),
+        "controller_status": _text(status_map.get("Readyset Controller Status")),
+        "upstreams": upstreams,
+        "cache_count": cache_count,
+    })
+    return base
+
+
 def _probe_connection(conn, profile, remaining=None):
     """Read a lightweight, bounded identity + topology summary from *conn*."""
-    reader = Reader(conn, TOPOLOGY_TAG)
     base = {
         "profile_id": profile.get("id"),
         "profile_name": _profile_name(profile),
@@ -370,66 +488,15 @@ def _probe_connection(conn, profile, remaining=None):
     # 1. Check Readyset first: single-column SELECT @@version_comment works on
     # MySQL, MariaDB, Percona, Readyset Adapter (3307) and Readyset Admin (6036).
     comment = ""
+    comment_failed = False
     try:
         crows = _named_rows(conn, "SELECT @@version_comment")
         comment = (next(iter(crows[0].values())) if crows and crows[0] else "") or ""
     except ConnectorError:
-        comment = ""
+        comment_failed = True
 
     if is_readyset_comment(comment):
-        version = None
-        try:
-            vrows = _named_rows(conn, "SHOW READYSET VERSION")
-            version = parse_readyset_version(vrows)
-        except ConnectorError:
-            version = None
-        # Share the Readyset report's evidence-only listener probe, including
-        # its connection copy when the virtual schema is selected. Import here
-        # because readyset also uses this module to assemble its topology.
-        from .readyset import _detect_port_mode
-        port_role, _ = _detect_port_mode(conn, "readyset", timeout=QUERY_TIMEOUT_S)
-        status_map = {}
-        try:
-            srows = _named_rows(conn, "SHOW READYSET STATUS")
-            for r in srows:
-                vals = list(r.values())
-                if len(vals) >= 2 and vals[0]:
-                    status_map[vals[0]] = vals[1]
-        except ConnectorError:
-            pass
-        upstreams = []
-        for prefix in ("readyset.", ""):
-            try:
-                urows = _named_rows(
-                    conn,
-                    "SELECT host, port, database, user, weight, purpose, active_cdc, health, connections "
-                    "FROM %supstream_servers" % prefix,
-                )
-                upstreams = urows
-                break
-            except ConnectorError:
-                continue
-        cache_count = None
-        try:
-            crows = _named_rows(conn, "SHOW CACHES")
-            cache_count = len(crows)
-        except ConnectorError:
-            cache_count = None
-        base.update({
-            "kind": "readyset",
-            "product": "Readyset",
-            "port_role": port_role,
-            "version": version,
-            "status_text": _text(status_map.get("Status")),
-            "replication_status": _text(status_map.get("Replication Status")),
-            "cdc_server": _text(status_map.get("CDC Server")),
-            "database_connection": _text(status_map.get("Database Connection")),
-            "replication_error": bool(_text(status_map.get("Last replicator error"))),
-            "controller_status": _text(status_map.get("Readyset Controller Status")),
-            "upstreams": upstreams,
-            "cache_count": cache_count,
-        })
-        return base
+        return _probe_readyset(conn, base)
 
     # 2. Check ProxySQL Admin: global_variables admin-version echoed by @@version.
     # Never use Reader here: ProxySQL Admin intercepts bare `SELECT @@version`
@@ -487,9 +554,22 @@ def _probe_connection(conn, profile, remaining=None):
             })
             return base
 
+    if comment_failed:
+        # ProxySQL Admin does not support this read. Every other endpoint
+        # must answer it before we can treat its backend as a database.
+        crows = _named_rows(conn, "SELECT @@version_comment")
+        comment = (next(iter(crows[0].values())) if crows and crows[0] else "") or ""
+        if is_readyset_comment(comment):
+            return _probe_readyset(conn, base)
+
     # 3. Standard MySQL / Percona / MariaDB server.
+    conn = conn if isinstance(conn, dbops.TargetEvidenceConnection) else dbops.TargetEvidenceConnection(conn)
+    reader = Reader(conn, TOPOLOGY_TAG)
     vrows = reader.rows(_DB_VARS_SQL, timeout=QUERY_TIMEOUT_S)
     variables = dict((r[0], r[1] if len(r) > 1 else "") for r in vrows if r)
+    if any(_text(variables.get(key)) != _text(conn.variables.get(key))
+           for key in ('hostname', 'port', 'server_uuid')):
+        raise ConnectorError("The server identity changed during the topology read.")
     version = _text(variables.get("version"))
     if not version:
         v_fallback = reader.rows("SELECT @@version", timeout=QUERY_TIMEOUT_S)
@@ -500,18 +580,20 @@ def _probe_connection(conn, profile, remaining=None):
     cluster_kind = "none"
     cluster_name = None
     cluster_members = []
-    wsrep_on = (_text(variables.get("wsrep_on")) or "").upper() == "ON"
     gr_group = _text(variables.get("group_replication_group_name"))
-    if wsrep_on:
+    if galera_enabled(variables):
         cluster_kind = "pxc" if "percona xtradb cluster" in (vcomment or "").lower() else "galera"
         cluster_name = _text(variables.get("wsrep_cluster_name"))
-        # The members table describes other nodes too. Only this session's
-        # gcomm UUID proves which node this saved connection reaches.
-        if remaining is not None and remaining() < QUERY_TIMEOUT_S:
+        # Each read carries its own node identity in the same query packet;
+        # the evidence scope rejects a different server between packets.
+        timeout = min(QUERY_TIMEOUT_S, remaining()) if remaining is not None else QUERY_TIMEOUT_S
+        if timeout <= 0:
             raise ConnectorError("Topology read budget was reached.")
-        status = reader.rows(_WSREP_STATUS_SQL, timeout=QUERY_TIMEOUT_S)
+        status = reader.rows(_WSREP_STATUS_SQL, timeout=timeout)
         base["wsrep_node_uuid"] = next((_text(r[1]) for r in status
                                          if len(r) > 1 and r[0] == "wsrep_gcomm_uuid"), None)
+        if base['wsrep_node_uuid'] != _text(conn.variables.get('wsrep_gcomm_uuid')):
+            raise ConnectorError("The Galera node identity changed during the topology read.")
         try:
             mrows = reader.rows(_WSREP_MEMBERS_SQL, timeout=QUERY_TIMEOUT_S)
             for r in mrows:
@@ -616,12 +698,16 @@ def _probe_connection(conn, profile, remaining=None):
         "channels": channels,
         "replicas": replicas,
     })
+    # Optional topology reads may catch an identity error. They cannot make
+    # a partially observed or mixed identity eligible for publication.
+    conn.check()
     return base
 
 
 def _fill_probe(entry, key, connect, profile, remaining):
     name = _profile_name(profile)
-    keep, password, sent = True, None, False
+    started = time.monotonic()
+    keep, password, sent, bounded = True, None, False, None
     try:
         try:
             conn = connect()
@@ -639,14 +725,24 @@ def _fill_probe(entry, key, connect, profile, remaining):
                 keep, entry["problem"] = False, "Topology budget expired before reading %s." % name
                 return
             sent = True
-            entry["data"] = _probe_connection(conn, profile, remaining)
+            bounded = _ProbeBudgetConnection(conn, remaining)
+            data = _probe_connection(bounded, profile, remaining)
+            bounded.check()
+            entry["data"] = data
     except ProfileReadError as exc:
         # Revocation aborts the whole multi-statement probe, including any
         # partial identity. A login already sent still consumes its attempt.
         keep, entry["problem"] = bool(getattr(conn, '_group_login_started', False)), probe_note(profile, exc)
         entry['refused'] = True
     except (ConnectorError, ValueError) as exc:
-        entry["problem"] = probe_note(profile, exc)
+        if bounded is not None and (bounded.expired or remaining() <= 0):
+            # Pin peers that spent most of a fresh request themselves, so
+            # later refreshes can reach queued peers. A healthy peer cut short
+            # by earlier work must be allowed to retry with a fresh budget.
+            keep = sent and time.monotonic() - started >= PROFILE_BUDGET_S - QUERY_TIMEOUT_S
+            entry["problem"] = probe_note(profile, "Topology read budget was reached.")
+        else:
+            entry["problem"] = probe_note(profile, exc)
     except BaseException:
         keep, entry["problem"] = sent, "Saved connection %s was not read." % name
         raise
@@ -664,7 +760,57 @@ def _fill_probe(entry, key, connect, profile, remaining):
             _evict_locked()
 
 
-def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, current=None):
+def _contradicts_galera_membership(data, membership, started, disputed_uuid=None):
+    """Fresh peer addresses can disprove a cached UUID, never prove its replacement."""
+    if not data or data.get('cluster_kind') not in ('galera', 'pxc'):
+        return False
+    own_uuid = _uuid_key(data.get('wsrep_node_uuid'))
+    reported = set()
+    for peer in membership:
+        if peer.get('_probe_started', started + 1) <= started:
+            continue
+        uuid = _uuid_key(peer.get('uuid'))
+        if not uuid:
+            continue
+        # Async replication supplies server_uuid in this shared peer shape;
+        # Cluster supplies the member UUID. A known MySQL server UUID is not
+        # evidence that the provider UUID changed.
+        if (uuid == _uuid_key(peer.get('server_uuid')) == _uuid_key(data.get('server_uuid'))
+                and not peer.get('wsrep_node_uuid')):
+            continue
+        match, _ = match_database_endpoint(peer.get('host'), peer.get('port'), [data],
+                                           observer_host=peer.get('observer_host'))
+        if match is not None:
+            reported.add(uuid)
+    # Ambiguous addresses cannot identify which cached endpoint went stale.
+    if own_uuid and len(reported) == 1 and own_uuid not in reported:
+        contrary = next(iter(reported))
+        if contrary != disputed_uuid:
+            return contrary
+    return None
+
+
+def _invalidate_probe(entry, disputed_uuid):
+    with _cache_lock:
+        key = entry['key']
+        if _probe_cache.get(key) is entry and entry['done'].is_set():
+            # Retire the stale data, but carry this dispute into the next
+            # probe, even when a direct peer is ineligible for a login here.
+            # Keep the attempt slot if this placeholder is later evicted.
+            # Readers may still hold entry. Keep its completed outcome intact
+            # and let them resolve this replacement before publishing it.
+            _probe_cache[key] = dict(entry, data=None, problem=None, reprobe=True,
+                                     disputed_uuid=disputed_uuid)
+
+
+def _peer_membership(peer_endpoints, observer_host):
+    return [dict(peer, uuid=peer.get('wsrep_node_uuid') or peer.get('uuid') or peer.get('server_uuid'),
+                 observer_host=peer.get('observer_host', observer_host))
+            for peer in peer_endpoints or () if isinstance(peer, dict)]
+
+
+def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, current=None,
+                         peer_endpoints=(), observer_host=None):
     """Probe usable saved connections within ``PROFILE_BUDGET_S`` and ``PROFILE_READ_LIMIT``.
 
     Returns ``(probed_list, notes_list)``; never raises when a saved connection
@@ -688,7 +834,7 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
     def remaining():
         return deadline[0] - time.monotonic()
 
-    for profile in usable:
+    def read_profile(profile):
         name = _profile_name(profile)
         fresh = False
         while True:
@@ -729,14 +875,45 @@ def probe_saved_profiles(profiles=(), open_profile=None, skip_profile_id=None, c
             # Plain cache hits keep answering topology questions without
             # publishing identity evidence again.
             fresh = True
+        return entry, fresh
+
+    observed = [(profile,) + read_profile(profile) for profile in usable]
+    membership = _peer_membership(peer_endpoints, observer_host)
+    for _, entry, fresh in observed:
+        data = (entry or {}).get('data') or {}
+        if fresh and data.get('cluster_kind') in ('galera', 'pxc'):
+            membership.extend(dict(peer, observer_host=_observer_host(data),
+                                   _probe_started=entry['observation'].started)
+                              for peer in data.get('cluster_members') or ())
+
+    # A fresh membership read can reveal a restarted node whose settings and
+    # secret fingerprint have not changed. Give each contradicted cached
+    # entry one re-probe using this request's original deadline and open count,
+    # subject to the fingerprint's process-wide re-probe cap.
+    # Never use cached membership to contradict a newer observation.
+    for index, (profile, entry, fresh) in enumerate(observed):
+        disputed = (_contradicts_galera_membership(entry.get('data'), membership,
+                    entry['observation'].started, entry.get('disputed_uuid')) if entry and not fresh else None)
+        if disputed:
+            _invalidate_probe(entry, disputed)
+            observed[index] = (profile,) + read_profile(profile)
+
+    for profile, entry, fresh in observed:
+        if entry is not None:
+            with _cache_lock:
+                replacement = _probe_cache.get(entry['key'])
+            if replacement is not None and replacement is not entry:
+                # Another request may have invalidated this result while we
+                # read siblings. Share its pending or failed replacement too.
+                entry, fresh = read_profile(profile)
         if entry and entry.get("data"):
             data = entry["data"]
             identity = None
             if fresh and data.get("kind") == "database":
-                field = "wsrep_node_uuid" if data.get("cluster_kind") in ("galera", "pxc") else "server_uuid"
                 # This private evidence follows the original probe through
                 # pending waits and cache hits. Publication is not a new read.
-                identity = {field: data.get(field), '_topology_observation': entry['observation']}
+                identity = {field: data.get(field) for field in ('server_uuid', 'wsrep_node_uuid')}
+                identity['_topology_observation'] = entry['observation']
             record_read(open_profile, profile, "read", identity=identity)
             probed.append(entry["data"])
         elif entry and entry.get("problem"):
@@ -1189,7 +1366,20 @@ def discover_database_tiers(conn, local_identity, peer_endpoints=(), profiles=()
         profiles, local_identity, peer_endpoints=peer_endpoints, skip_profile_id=current_profile_id,
         current=current, observer_host=observer_host,
     )
-    probed, probe_notes = probe_saved_profiles(candidates, open_profile, skip_profile_id=current_profile_id, current=current)
+    # Known direct peers keep the no-convenience-login rule. Still retire
+    # contrary cache evidence so the next eligible read can verify the node.
+    excluded = {profile['id'] for profile in members(profiles, current)} - {p['id'] for p in candidates}
+    membership = _peer_membership(peer_endpoints, observer_host)
+    with _cache_lock:
+        cached = [entry for (pid, _), entry in _probe_cache.items()
+                  if pid in excluded and entry['done'].is_set()]
+    for entry in cached:
+        disputed = _contradicts_galera_membership(entry.get('data'), membership,
+                                                entry['observation'].started, entry.get('disputed_uuid'))
+        if disputed:
+            _invalidate_probe(entry, disputed)
+    probed, probe_notes = probe_saved_profiles(candidates, open_profile, skip_profile_id=current_profile_id, current=current,
+                                             peer_endpoints=peer_endpoints, observer_host=observer_host)
     probe_notes = list(footprint.get("notes") or ()) + probe_notes
     if not probed and not footprint["readyset_connected"] and not footprint["readyset_heartbeat_table"] \
             and not footprint["proxysql_connected"]:

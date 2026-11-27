@@ -754,7 +754,8 @@ class PacketTests(unittest.TestCase):
                 if engine == 'mariadb':
                     scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
                     scenario.conn.responses[2] = (scenario.conn.responses[2][0],
-                        batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'ON', UUID, 'same-name']]))
+                        batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'ON', UUID, 'same-name',
+                                '/usr/lib/galera/libgalera_smm.so', 'ON', '3']]))
                 else:
                     scenario.conn.responses[1] = ('SELECT @@server_uuid', batch([[UUID, 'ON', UUID]]))
                 _server, identity = locks._kill_context(scenario.conn)
