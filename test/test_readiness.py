@@ -77,6 +77,25 @@ class TestReadiness(unittest.TestCase):
         self.assertEqual(report['engine'], 'mysql')
         self.assertEqual(report['flavor'], 'percona')
 
+    def test_pxc_session_only_wsrep_on_uses_provider_and_preserves_unknown_status(self):
+        for state, expected in (('Primary', True), ('non-Primary', True), (None, None)):
+            with self.subTest(state=state):
+                conn = Connection()
+                conn.data['variables'].pop('wsrep_on', None)
+                conn.data['variables'].update(version='8.4.11-11.1',
+                    version_comment='Percona XtraDB Cluster (GPL)',
+                    wsrep_provider='/usr/lib64/galera4/libgalera_smm.so')
+                conn.data['wsrep'] = {} if state is None else {'wsrep_cluster_status': state}
+                report = readiness.read_readiness(conn)
+                self.assertIs(report['galera_member'], expected)
+                self.assertIn("'wsrep_provider'", conn.calls[0][0])
+
+    def test_mariadb_wsrep_off_with_loaded_provider_is_not_a_galera_member(self):
+        conn = Connection('mariadb')
+        conn.data['variables'].update(wsrep_on='OFF', wsrep_provider='/usr/lib/galera/libgalera_smm.so')
+        conn.data['wsrep'] = {'wsrep_cluster_status': 'Primary'}
+        self.assertIs(readiness.read_readiness(conn)['galera_member'], False)
+
     def test_group_member_is_local_not_a_remote_members_row(self):
         conn = Connection(group=True)
         conn.data['variables']['group_replication_group_name'] = 'group-uuid'

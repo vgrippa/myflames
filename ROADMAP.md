@@ -161,7 +161,10 @@ with fresh reads deferred until Query digests is visible.
 Security boundaries now include launch bootstrap with cookie and origin proof,
 isolated database clients, recipient TLS checks for saved clone credentials,
 owner checks for ended editor sessions, one-use action reviews, bounded requests
-and plans, and protected local storage. The CLI shares exact confirmation and
+and plans, and protected local storage. Unexpected-error logging redacts only
+passwords supplied or used by the request, including owned sessions and jobs
+and saved SSH sessions, and never retrieves additional saved credentials.
+The CLI shares exact confirmation and
 an unsent exit-2 contract. See [the developer contracts](docs/DEVELOPER_REFERENCE.md)
 for limits and [the verification checklist](docs/UI_TESTING.md) for release gates.
 

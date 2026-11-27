@@ -78,7 +78,8 @@ class EvidenceTests(unittest.TestCase):
                 ('variables', variable, lambda c: variables.plan_change(c, 'max_connections', '300', 'global', grants=False),
                  variable.evidence_values),
                 ('replication', replica, replication.read_status, replica.evidence_values)):
-            first = dict(base, wsrep_on=on, wsrep_provider=PROVIDER, wsrep_gcomm_uuid=UUID)
+            first = dict(base, wsrep_on=on, wsrep_provider=PROVIDER, wsrep_gcomm_uuid=UUID,
+                         wsrep_connected='ON', wsrep_cluster_size='3')
             second = dict(first, wsrep_gcomm_uuid=OTHER_UUID if other else UUID)
             yield name, EvidenceRouter(reader, [first, second]), read
 
@@ -263,12 +264,14 @@ class EvidenceTests(unittest.TestCase):
                 if galera:
                     scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
                     scenario.conn.responses[2] = (scenario.conn.responses[2][0],
-                        batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'ON', UUID, None]]))
+                        batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'ON', UUID, None,
+                                PROVIDER, 'ON', '3']]))
                 expected = bound_kill_expect(scenario.conn)
                 key = 'wsrep_gcomm_uuid' if galera else 'server_uuid'
                 expected['server_identity'][key] = OTHER_UUID
                 if galera:
                     expected['server_identity']['wsrep_on'] = 'ON'  # identity-required slot
+                    expected['server_identity']['wsrep_provider'] = PROVIDER
                 original = scenario.conn.run
                 # Every packet alternates A/B, including version, transaction
                 # and XA reads. Identity is read on B, the target row on A.
@@ -281,7 +284,9 @@ class EvidenceTests(unittest.TestCase):
                     packets.append((node, sql))
                     if galera and '@@global.server_id' in sql:
                         self.assertIn("VARIABLE_NAME = 'wsrep_provider'", sql)
-                        self.assertIn("NOT IN ('', 'none')", sql)
+                        for name in ('wsrep_on', 'wsrep_gcomm_uuid', 'wsrep_node_name',
+                                     'wsrep_connected', 'wsrep_cluster_size'):
+                            self.assertIn("VARIABLE_NAME = '%s'" % name, sql)
                     return original(sql, **kwargs).replace(UUID, node[key])
                 scenario.conn.run = route
                 scenario.conn.run_write = lambda sql, **kwargs: writes.append(sql)

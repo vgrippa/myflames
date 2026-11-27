@@ -56,6 +56,8 @@ Follow the how-to guides for [Query editor](docs/handbook/howto.md), [Plans and 
 
 The packaged app keeps its data under `~/Library/Application Support/myflames-desktop`, unless overridden by `MYFLAMES_DESKTOP_DATA`. Its workspace database and audit records are in `backend-home/.myflames/workspace.sqlite3`; saved passwords use `credentials.vault` and `vault.key` in that same `.myflames` folder, and SSH host keys you trust in **File transfer** are kept in `ssh_known_hosts` there. The app keeps itself up to date: with **Settings > Updates and news > Check for updates automatically** on (the default) it checks at start and once a day, a badge beside the logo shows a newer release, its download progress and when it is ready, and **Update** followed by **Restart to update** installs it in place (on macOS, keep `myflames.app` in your Applications folder; on Windows the update installs silently when the app quits). You can also check on demand with **Check for updates** in **Settings > Updates and news** (the version beside the myflames name opens it) or in **Settings > About myflames**.
 
+Unexpected-error logs hide passwords supplied or used by the request, including those of an owned session or job and saved SSH credentials used for that request, without retrieving additional saved credentials. See [Safety and local data](docs/handbook/safety.md) for credential storage and connection-group consent.
+
 ### Windows app (preview)
 
 1. Download `myflames-3.5.2-windows-x64-setup.exe` from [GitHub Releases](https://github.com/vgrippa/myflames/releases) and run it. It installs for your user only, with no administrator prompt, and adds Start menu and desktop shortcuts.

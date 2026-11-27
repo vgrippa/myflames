@@ -11,7 +11,8 @@ from myflames import dbops, locks, sessions, ui
 from myflames.connector import ConnectorError
 from myflames.review_tokens import ReviewTokens
 from myflames.workspace_store import WorkspaceStore
-from test_locks import batch, KillScenario, bound_kill_expect, K_TARGET
+from test_locks import (batch, KillScenario, bound_kill_expect, K_TARGET,
+                        mariadb_provider_scenario, disconnected_provider_identity)
 from _reviewed_replay import evidence_options, recorded_body
 
 GR_COMMAND = 'Group Replicatio'  # COMMAND is VARCHAR(16) in MySQL's process-list tables.
@@ -217,6 +218,45 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertIn('server identity', result['results'][1]['message'])
         self.assertEqual(sum('SELECT @@server_uuid' in sql for sql in conn.calls), 1)
         self.assertTrue(all('@@server_uuid' in sql for sql in conn.calls if 'PROCESSLIST_ID = ' in sql))
+
+    def test_bulk_mariadb_disconnected_provider_keeps_reviewed_waiver_and_guard(self):
+        from _reviewed_replay import guarded_packets
+        scenario = mariadb_provider_scenario()
+        target, _own = locks.read_target(scenario.conn, 'mariadb', True, 41, server_identity=True)
+        self.assertEqual(target['server_identity'], disconnected_provider_identity())
+        expected = dict(bound_kill_expect(scenario.conn, connection=self.connection),
+                        server_identity=target['server_identity'])
+        body = {'connection': self.connection, 'confirmed': True,
+                'targets': [{'connection_id': 41, 'expect': expected}]}
+        body['review_token'] = ui._bulk_kill_prepare(body, self.workspace)['review_token']
+        with mock.patch('myflames.connector.MySQLConnection', return_value=scenario.conn):
+            result = ui._bulk_kill_response(body, self.workspace)
+        self.assertEqual((result['killed'], result['refused']), (1, 0), result)
+        self.assertEqual(self.records()[0]['target']['server_identity'], disconnected_provider_identity())
+        [script] = [sql for sql, _flags in scenario.conn.calls if locks.KILL_TAG in sql]
+        [packet] = guarded_packets(script)
+        self.assertIn('OR NOT (@@global.wsrep_on <=> 0)', packet[0])
+        self.assertIn("WHERE VARIABLE_NAME = 'wsrep_connected') <=> 'OFF')", packet[0])
+        self.assertIn("WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0')", packet[0])
+        self.assertEqual(packet[1], locks.KILL_TAG + 'KILL CONNECTION 41')
+
+    def test_bulk_plain_mariadb_review_cannot_authorize_disconnected_provider_waiver(self):
+        scenario = mariadb_provider_scenario()
+        # An old report, including Sessions' plain identity, did not review
+        # the disconnected-provider proof. A new waiver must not weaken that
+        # exact review binding or be injected after token issuance.
+        identity = {key: value for key, value in disconnected_provider_identity().items()
+                    if not key.startswith('wsrep_')}
+        expected = dict(bound_kill_expect(scenario.conn, connection=self.connection), server_identity=identity)
+        body = {'connection': self.connection, 'confirmed': True,
+                'targets': [{'connection_id': 41, 'expect': expected}]}
+        body['review_token'] = ui._bulk_kill_prepare(body, self.workspace)['review_token']
+        with mock.patch('myflames.connector.MySQLConnection', return_value=scenario.conn):
+            result = ui._bulk_kill_response(body, self.workspace)
+        self.assertEqual((result['killed'], result['refused']), (0, 1), result)
+        self.assertIn('server identity', result['results'][0]['message'])
+        self.assertEqual(scenario.kills(), [])
+        self.assertEqual(self.records()[0]['status'], 'refused')
 
     def test_bulk_rereads_saved_policy_at_each_send(self):
         saved = self.store.save('profile', dict(self.connection, name='review', type='development'))

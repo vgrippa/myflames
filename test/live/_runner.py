@@ -18,6 +18,9 @@ import time
 import unittest
 
 LIVE_DIR = os.path.dirname(os.path.abspath(__file__))
+if LIVE_DIR not in sys.path:
+    sys.path.insert(0, LIVE_DIR)
+import _lab  # noqa: E402 - share the same helper module as the live suites
 
 
 def load_suite_module(name):
@@ -68,9 +71,10 @@ class _Result(unittest.TextTestResult):
         self._record(test, "error")
 
     def addSkip(self, test, reason):
+        reason = _lab.redact(reason)
         super().addSkip(test, reason)
         self._record(test, "skip")
-        self.records[-1]["reason"] = str(reason)
+        self.records[-1]["reason"] = reason
         print("  reason: %s" % reason, flush=True)
 
 
@@ -101,7 +105,7 @@ def main(argv=None):
         modules[name] = {"ok": ok, "seconds": round(time.monotonic() - started, 3),
                          "tests": result.records}
         for test, err in result.failures + result.errors:
-            text = str(err)
+            text = _lab.redact(err)
             print("---- %s ----\n%s" % (test.id(), text[-3000:]), file=sys.stderr)
     summary = {"ok": overall, "modules": modules}
     line = "SUMMARY " + json.dumps(summary, sort_keys=True)

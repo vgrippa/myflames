@@ -48,6 +48,16 @@ def mysql_client(index):
     return MemberClient(F.ScenarioConn(scenario))
 
 
+# Member and overview action families, including concrete ClusterSet targets.
+CLUSTER_ACTION_IDS = (
+    'switchover', 'stop_member', 'start_member', 'rejoin_instance',
+    'switch_to_single_primary', 'switch_to_multi_primary',
+    'set_primary_cluster', 'set_primary_cluster:east', 'force_primary_cluster',
+    'rejoin_cluster', 'rejoin_cluster:east',
+    'desync_node', 'resync_node', 'bootstrap_pc',
+)
+
+
 class GroupActionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -107,6 +117,93 @@ class GroupActionTests(unittest.TestCase):
 
     def assert_no_writes(self):
         self.assertFalse(any(c.writes for c in self.clients.values()))
+
+    def pxc_group(self):
+        """Three saved members with distinct local identities over PXC recordings."""
+        members = F.report('pxc-8.4-healthy')['members']
+        self.clients = {}
+        profiles = []
+        for index, profile in enumerate(self.profiles):
+            node = next(m for m in members if m['name'] == 'pxc-%d' % (index + 1))
+
+            def node_read(sql, text, count, node=node, index=index):
+                if sql.startswith(cluster.CLUSTER_TAG + 'SHOW GLOBAL VARIABLES WHERE'):
+                    return F.set_pairs(text, {'hostname': node['host'], 'report_host': node['host'],
+                        'server_uuid': F.SERVER_UUIDS[index], 'wsrep_node_name': node['name'],
+                        'wsrep_node_incoming_address': node['address']})
+                if sql.startswith(cluster.CLUSTER_TAG + 'SHOW GLOBAL STATUS WHERE Variable_name LIKE'):
+                    return F.set_pairs(text, {'wsrep_gcomm_uuid': node['uuid']})
+                return text
+
+            client = MemberClient(F.recorded('pxc-8.4-healthy', edit=node_read)[0])
+            self.clients[node['host']] = client
+            self.store.save('profile', dict(profile, host=node['host']), profile['id'],
+                            password='secret-db-%d' % (index + 1), remember=True)
+            self.store.record_topology_identity(profile['id'], {'wsrep_node_uuid': node['uuid']})
+            profiles.append(self.store.get('profile', profile['id']))
+            report = cluster.read_status(client)
+            self.assertEqual(report['kind'], 'pxc')
+            self.assertEqual(next(m['uuid'] for m in report['members'] if m['local']), node['uuid'])
+        self.profiles = profiles
+        self.active, self.target = profiles[:2]
+        self.connection = dict({k: self.active.get(k) for k in ENDPOINT_FIELDS},
+                               profile_id=self.active['id'], group_name='G', password='active-request-secret')
+        report = cluster.read_status(self.clients[self.active['host']])
+        self.assertEqual(len(report['members']), 3)
+        return report
+
+    def test_pxc_group_refuses_every_action_member_and_target_without_recording_identity(self):
+        report = self.pxc_group()
+        refusal = 'That change is not offered for this member now. Refresh and try again.'
+        for action in CLUSTER_ACTION_IDS:
+            for member in report['members']:
+                for target in (None, self.active, self.target):
+                    with self.subTest(action=action, member=member['name'],
+                                      target=target['id'] if target else 'omitted'):
+                        payload = dict(connection=self.connection, action=action, member_key=member['key'])
+                        if target is not None:
+                            payload['target_profile_id'] = target['id']
+                        self.opened.clear()
+                        with mock.patch.object(self.store, 'record_topology_identity',
+                                               wraps=self.store.record_topology_identity) as record:
+                            with self.assertRaises(ValueError) as caught:
+                                self.api('/api/live/cluster/plan', payload)
+                        self.assertEqual(str(caught.exception), refusal)
+                        record.assert_not_called()
+                        self.assertEqual([o['host'] for o in self.opened],
+                                         [(target or self.active)['host']])
+                        self.assertEqual(len(ui._review_tokens(self.workspace).entries), 0)
+                        self.assert_no_writes()
+
+    def test_pxc_group_forged_actions_refuse_before_login_or_identity_recording(self):
+        report = self.pxc_group()
+        for action in CLUSTER_ACTION_IDS:
+            for member in report['members']:
+                for target in (None, self.active, self.target):
+                    with self.subTest(action=action, member=member['name'],
+                                      target=target['id'] if target else 'omitted'):
+                        route = target or self.active
+                        own_report = cluster.read_status(self.clients[route['host']])
+                        expect = cluster._server_identity(own_report)
+                        expect['target'] = ui._action_target_binding(route, self.connection, 'pxc')
+                        forged = dict(schema_version=cluster.ACTION_SCHEMA_VERSION, action=action,
+                                      member_key=member['key'], expect=expect,
+                                      statements=[cluster.CLUSTER_ACTION_TAG + 'SET GLOBAL wsrep_desync = ON'])
+                        payload = dict(connection=self.connection, plan=forged,
+                                       review_token='forged-no-review-token', confirmed=True)
+                        if target is not None:
+                            payload['target_profile_id'] = target['id']
+                        self.opened.clear()
+                        with mock.patch.object(self.store, 'record_topology_identity',
+                                               wraps=self.store.record_topology_identity) as record, \
+                                mock.patch.object(secret_store, 'get_secret') as lookup:
+                            result = self.api('/api/live/cluster/action', payload)
+                        self.assertEqual((result['status'], result['outcome'], result['sent']),
+                                         ('refused', 'review', []))
+                        record.assert_not_called()
+                        lookup.assert_not_called()
+                        self.assertEqual(self.opened, [])
+                        self.assert_no_writes()
 
     def test_group_on_db1_stops_db2_with_db2_password_uuid_and_audit(self):
         plan = self.plan()

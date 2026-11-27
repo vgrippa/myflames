@@ -540,6 +540,24 @@ class TestModesAndPlans(unittest.TestCase):
 
 
 class TestReadStates(unittest.TestCase):
+    def test_mariadb_replays_have_explicit_consistent_wsrep_configuration(self):
+        provider = '/usr/lib/galera/libgalera_smm.so'
+        for version, expected_provider in (('10.11.14-MariaDB', 'none'),
+                                            ('11.4.13-MariaDB-ubu2404', 'none'),
+                                            ('11.8.9-MariaDB-ubu2404-log', 'none'),
+                                            ('13.0.2-MariaDB-ubu2404', provider)):
+            with self.subTest(version=version):
+                conn = ReplayConn([[TAG + 'SHOW GLOBAL VARIABLES', 'version\t%s\n' % version]])
+                self.assertEqual({key: conn.evidence_values.get(key) for key in
+                                  ('wsrep_on', 'wsrep_provider', 'wsrep_connected', 'wsrep_cluster_size')},
+                                 {'wsrep_on': 'OFF', 'wsrep_provider': expected_provider,
+                                  'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'})
+        # Captured configuration wins over defaults, including a different
+        # provider configuration on the same version as the official image.
+        captured = ('version\t13.0.2-MariaDB\nwsrep_on\tOFF\nwsrep_provider\tnone\n')
+        conn = ReplayConn([[TAG + 'SHOW GLOBAL VARIABLES', captured]])
+        self.assertEqual(conn.evidence_values['wsrep_provider'], 'none')
+
     def test_nullable_reads_and_session_readback_preserve_null_empty_and_literal_null(self):
         # Synthetic encodings exercise the client protocol independently of
         # whether the server would accept these strings as a charset name.
@@ -647,6 +665,59 @@ class TestApply(unittest.TestCase):
         record = self.records()[0]
         self.assertEqual((record['status'], record['outcome'], record['operation']), ('ok', 'changed', 'set_global'))
         self.assertEqual(record['statements'], plan['session_guard'] + [TAG + 'SET GLOBAL max_connections = 300'])
+
+    def test_loaded_disconnected_provider_review_and_apply_uses_waiver_guard(self):
+        conn, data = replay('mariadb-11.4', 'global')
+        # Explicit synthetic variation of the recorded standalone server.
+        conn.evidence_values['wsrep_provider'] = '/usr/lib/galera/libgalera_smm.so'
+        args = data['args']
+        plan = V.plan_change(conn, args['name'], args['value'], args['mode'])
+        self.assertEqual(plan['status'], 'ready')
+        self.assertIs(plan['expect']['server_identity'].get('wsrep_disconnected_provider'), True)
+        guard = plan['session_guard'][0]
+        self.assertIn('@@global.wsrep_on <=> 0', guard)
+        self.assertIn("VARIABLE_NAME = 'wsrep_connected') <=> 'OFF'", guard)
+        self.assertIn("VARIABLE_NAME = 'wsrep_cluster_size') <=> '0'", guard)
+        self.assertNotIn('wsrep_gcomm_uuid', guard)
+        result = V.apply_change(conn, plan, plan['expect'], confirmed=True, audit=self.audit('global'))
+        self.assertEqual((result['status'], result['after']['global']), ('changed', '300'))
+        (wire, flags), = [(sql, flags) for sql, flags in conn.calls if sql.startswith('DELIMITER ')]
+        self.assertIn(guard, wire)
+        self.assertEqual(flags, list(dbops.WRITE_CLIENT_FLAGS))
+        self.assertEqual(self.sent(conn), [(TAG + plan['statement'], list(dbops.WRITE_CLIENT_FLAGS))])
+        self.assertEqual(self.records()[0]['statements'], plan['session_guard'] + [TAG + plan['statement']])
+
+    def test_numeric_disconnected_provider_marker_refuses_before_write(self):
+        conn, data = replay('mariadb-11.4', 'global')
+        conn.evidence_values['wsrep_provider'] = '/usr/lib/galera/libgalera_smm.so'
+        args = data['args']
+        plan = V.plan_change(conn, args['name'], args['value'], args['mode'])
+        self.assertEqual(plan['status'], 'ready')
+        self.assertIs(plan['expect']['server_identity']['wsrep_disconnected_provider'], True)
+        # JSON numbers compare equal to booleans during the fresh-plan check,
+        # but must never drop the disconnected-provider checks in the packet.
+        expect = json.loads(json.dumps(plan['expect']))
+        expect['server_identity']['wsrep_disconnected_provider'] = 1
+        result = V.apply_change(conn, plan, expect, confirmed=True, audit=self.audit('global'))
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual((result['status'], result['outcome'], result['sent']),
+                         ('refused', 'identity_unavailable', []))
+        self.assertIn('Nothing was sent', result['message'])
+        self.assertEqual(self.sent(conn), [])
+        self.assertEqual(self.records()[0]['outcome'], 'identity_unavailable')
+
+    def test_loaded_provider_connecting_after_review_refuses_before_write(self):
+        conn, data = replay('mariadb-11.4', 'global')
+        conn.evidence_values['wsrep_provider'] = '/usr/lib/galera/libgalera_smm.so'
+        args = data['args']
+        plan = V.plan_change(conn, args['name'], args['value'], args['mode'])
+        self.assertEqual(plan['status'], 'ready')
+        conn.evidence_values.update(wsrep_connected='ON', wsrep_cluster_size='3')
+        result = V.apply_change(conn, plan, plan['expect'], confirmed=True, audit=self.audit('global'))
+        self.assertEqual((result['status'], result['outcome'], result['sent']),
+                         ('refused', 'identity_unavailable', []))
+        self.assertEqual(self.sent(conn), [])
+        self.assertEqual(self.records()[0]['outcome'], 'identity_unavailable')
 
     def test_persist_then_restart_keeps_the_value(self):
         conn, _plan, result = self.apply('mysql-8.4', 'persist')

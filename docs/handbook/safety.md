@@ -52,6 +52,8 @@ When other saved connections match the open server's topology (matched without l
 
 ## Local data, credentials and sharing
 
+Unexpected-error logs hide passwords supplied or used by that request, including those of an existing session or job you own and saved SSH credentials used for that request. Logging never retrieves additional saved passwords, including passwords of other group members or connections that have left the group.
+
 Workspace state, saved investigations and the **Audit log** stay on your computer (`~/Library/Application Support/myflames-desktop` on macOS, `%APPDATA%\myflames-desktop` on Windows). Saved database passwords are stored in the local encrypted vault (`credentials.vault` and `vault.key` under `backend-home/.myflames`), never in `workspace.sqlite3`, captures or exports. Database SSH tunnels run your system `ssh` with your `~/.ssh/config`, keys and agent; in **File transfer**, host keys you trust are stored in myflames' own `ssh_known_hosts` file without modifying `~/.ssh/known_hosts`.
 
 myflames makes outbound network requests only to your database and SSH servers, to GitHub release pages during update checks (controlled by **Settings** > **Updates and news** > **Check for updates automatically**), to Planet MySQL and MariaDB Foundation feeds while **Home** is open (controlled by **Settings** > **Updates and news** > **Show MySQL and MariaDB news on Home**), to vendor release listings when you check upgrade targets or tool updates in **Maintenance**, and to Oracle's download CDN when you choose **Get MySQL Shell** in **Settings** > **Client tools** > **Client tools…**.

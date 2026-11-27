@@ -85,6 +85,8 @@ class ReplayConn(object):
             self.evidence_values.setdefault(key, value)
         if 'mariadb' not in self.evidence_values.get('version', '').lower():
             self.evidence_values.setdefault('server_uuid', UUID)
+        else:
+            self.evidence_values.update(wsrep_connected='OFF', wsrep_cluster_size='0')
 
     def _answer(self, method, sql, flags, record=True):
         if record:

@@ -26,7 +26,7 @@ from unittest import mock
 
 import _cluster_fixtures as F
 from _perf_replay import FakeFactory, assert_read_only as _assert_read_only, no_nan, run_cli, run_main
-from myflames import cluster as m, ui
+from myflames import cluster as m, server_info, ui
 from myflames.connector import ConnectorError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -3234,6 +3234,23 @@ class TestGalera(unittest.TestCase):
 
 
 class TestPerconaXtraDBCluster(unittest.TestCase):
+    def test_shared_galera_rule_preserves_explicit_values_and_provider_fallback(self):
+        provider = {'wsrep_provider': '/usr/lib64/galera4/libgalera_smm.so'}
+        cases = [({}, False), ({'wsrep_provider': ''}, False),
+                 ({'wsrep_provider': ' NoNe '}, False),
+                 ({'wsrep_provider': ' /usr/lib/galera/libgalera_smm.so '}, True),
+                 (dict(provider, wsrep_on=None), True)]
+        cases.extend((dict(provider, wsrep_on=value), expected)
+                     for values, expected in ((('ON', '1', 'YES', 'TRUE', ' yes ', True, 1), True),
+                                              (('OFF', '0', 'NO', 'FALSE', '', 'unknown', False, 0), False))
+                     for value in values)
+        cases.append(({'wsrep_on': 'ON'}, True))
+        for variables, expected in cases:
+            with self.subTest(variables=variables):
+                self.assertIs(server_info.galera_enabled(variables), expected)
+                self.assertIs(m.is_galera_node(variables), expected)
+                self.assertEqual(m.provider_loaded(variables), server_info.galera_provider_loaded(variables))
+
     def test_detected_although_wsrep_on_is_session_only(self):
         conn, data = F.recorded('pxc-8.4-healthy')
         variables = F.parse([c for c in data['calls'] if 'SHOW GLOBAL VARIABLES' in c[0]][0][1])

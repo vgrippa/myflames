@@ -201,6 +201,11 @@ class Client(object):
         if upper == "SHOW GLOBAL STATUS WHERE VARIABLE_NAME = 'WSREP_GCOMM_UUID'":
             self.result(statement, ["Variable_name", "Value"], [])
             return
+        if upper == ("SHOW GLOBAL STATUS WHERE VARIABLE_NAME IN "
+                     "('WSREP_GCOMM_UUID', 'WSREP_CONNECTED', 'WSREP_CLUSTER_SIZE')"):
+            rows = [["wsrep_connected", "OFF"], ["wsrep_cluster_size", "0"]] if ENGINE == "mariadb" else []
+            self.result(statement, ["Variable_name", "Value"], rows)
+            return
         if "CONNECTION_ID() AS CONNECTION_ID" in upper:
             names = re.findall(r"\bAS (\w+)", text)
             if "in_transaction" in names and ENGINE == "mysql":
