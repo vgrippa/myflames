@@ -21,23 +21,18 @@ if (process.argv.includes("--unit")) {
     plugins: [{ name: "account-unit", resolveId(value) { if (value === id) return id; }, load(value) {
       if (value === id) return `export { compactChanges, AccountsView } from ${source("Accounts.tsx")};
         export { privilegeResult, privilegeButtonProps } from ${source("privileges.ts")};
-        export { privilegeGrantSql } from ${source("WhyDisabled.tsx")};
         export { observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel } from ${source("accountsApi.ts")};`;
     } }], build: { ssr: true, write: false, rollupOptions: { input: id, output: { inlineDynamicImports: true } } } });
   const temporary = await fs.mkdtemp(path.join(workspace, ".accounts-unit-"));
   try {
     const module = path.join(temporary, "unit.mjs");
     await fs.writeFile(module, result.output.find(f => f.type === "chunk").code);
-    const { compactChanges, privilegeResult, privilegeButtonProps, privilegeGrantSql, observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel, AccountsView } = await import(pathToFileURL(module));
-    assert.equal(privilegeGrantSql(["CONNECTION_ADMIN", "SUPER"], "app@%"), "GRANT CONNECTION_ADMIN ON *.* TO `app`@`%`;");
-    assert.equal(privilegeGrantSql(["CONNECTION_ADMIN or SUPER"], "app@localhost"), "GRANT CONNECTION_ADMIN ON *.* TO `app`@`localhost`;");
-    assert.equal(privilegeGrantSql(["CREATE USER and UPDATE on mysql.*"], "app@%"), "GRANT CREATE USER ON *.* TO `app`@`%`;\nGRANT UPDATE ON `mysql`.* TO `app`@`%`;");
-    assert.equal(privilegeGrantSql(["SELECT on performance_schema.*"], "app@%", false), "GRANT SELECT ON `performance\\_schema`.* TO `app`@`%`;");
-    assert.equal(privilegeGrantSql(["SELECT on performance_schema.*"], "app@%", true), "GRANT SELECT ON `performance_schema`.* TO `app`@`%`;");
-    assert.equal(privilegeGrantSql(["SELECT on performance_schema.*"], "app@%"), null);
-    assert.equal(privilegeGrantSql(["donor account"], "app@%"), null);
-    assert.equal(privilegeGrantSql(["server is read-only (super_read_only=ON)"], "app@%"), null);
-    assert.equal(privilegeGrantSql(["CONNECTION_ADMIN"], ""), null);
+    const { compactChanges, privilegeResult, privilegeButtonProps, observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel, AccountsView } = await import(pathToFileURL(module));
+    assert.equal(privilegeResult({ state: "denied", missing: [["CONNECTION_ADMIN"]], reason: "Denied", grant_sql: "GRANT CONNECTION_ADMIN ON *.* TO 'app'@'%';" }).grantSql,
+      "GRANT CONNECTION_ADMIN ON *.* TO 'app'@'%';");
+    assert.equal(privilegeResult({ state: "denied", missing: [["CONNECTION_ADMIN"]], reason: "Denied", grant_sql: null }).grantSql, null);
+    assert.equal(privilegeResult({ state: "denied", missing: [["CONNECTION_ADMIN"]], reason: "Denied" }).grantSql, null);
+    assert.equal(privilegeResult({ state: "allowed", missing: [], reason: "OK", grant_sql: "GRANT SELECT ON *.* TO 'app'@'%';" }).grantSql, null);
     assert.equal(privilegeResult().state, "unknown");
     assert.equal(privilegeResult().disabledReason, "");
     const gate = privilegeResult({ state: "denied", missing: [["SUPER"], ["CONNECTION_ADMIN"]], reason: "Denied" }, "app@%");
@@ -259,7 +254,14 @@ const html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewp
 const content = (contentType, body) => (_body, request) => { void request.respond({ status: 200, contentType, body }); return null; };
 const allowed = { state: "allowed", missing: [], reason: "Required privileges are present." };
 const unknown = { state: "unknown", missing: ["SELECT"], reason: "Object privileges cannot be proven absent." };
-const denied = { state: "denied", missing: [["CONNECTION_ADMIN"], ["SUPER"]], need: "CONNECTION_ADMIN or SUPER", reason: "Global privileges are absent.", grey_out: true };
+const denied = {
+  state: "denied",
+  missing: [["CONNECTION_ADMIN"], ["SUPER"]],
+  need: "CONNECTION_ADMIN or SUPER",
+  reason: "Global privileges are absent.",
+  grey_out: true,
+  grant_sql: "GRANT CONNECTION_ADMIN ON *.* TO 'operator'@'localhost';",
+};
 let actions = Object.fromEntries(["create_user", "create_role", "lock_account", "unlock_account", "expire_password", "set_own_password", "rename_user", "drop_user", "drop_role", "set_password", "grant", "revoke", "grant_role", "revoke_role", "default_roles"].map(k => [k, allowed]));
 let privilegeReads = 0, privilegeDelay = 0, planDelay = 0, planFailure = false, applyFailure = false;
 let planFailureAt = -1, applyRefusalAt = -1, applyCount = 0;
@@ -539,7 +541,7 @@ try {
   }));
   assert.match(killWhy.text, /CONNECTION_ADMIN.*SUPER/);
   assert.match(killWhy.text, /Run it as an administrator, then Refresh\./);
-  assert.equal(killWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO `operator`@`localhost`;");
+  assert.equal(killWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO 'operator'@'localhost';");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-privilege-action")), "kill",
@@ -686,13 +688,13 @@ try {
   await h.refresh(); await inspect();
 
   // Directly denied administration greys the action, without hiding it.
-  actions = { ...actions, lock_account: { state: "denied", missing: ["CREATE USER"], reason: "Needs CREATE USER.", grey_out: true } };
+  actions = { ...actions, lock_account: { state: "denied", missing: ["CREATE USER"], reason: "Needs CREATE USER.", grey_out: true, grant_sql: "GRANT CREATE USER ON *.* TO 'operator'@'localhost';" } };
   await click("Refresh privileges");
   await page.waitForFunction(() => document.querySelector('.account-actions [data-privilege-action="lock_account"]')?.getAttribute("aria-disabled") === "true");
   await page.click('.account-actions [data-privilege-action="lock_account"]');
   await page.waitForSelector(".why-disabled:popover-open", { visible: true });
   assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /CREATE USER/);
-  assert.equal(await page.$eval(".why-disabled:popover-open .ops-pre code", e => e.textContent || ""), "GRANT CREATE USER ON *.* TO `operator`@`localhost`;");
+  assert.equal(await page.$eval(".why-disabled:popover-open .ops-pre code", e => e.textContent || ""), "GRANT CREATE USER ON *.* TO 'operator'@'localhost';");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-privilege-action")), "lock_account",
@@ -701,8 +703,9 @@ try {
 
   // Account administration and grant controls remain keyboard reachable
   // on denial, and their descriptions name the missing privilege.
-  actions.create_user = { ...denied, missing: ["CREATE USER"], need: "CREATE USER" };
-  actions.grant = actions.revoke = { ...denied, missing: ["GRANT OPTION"], need: "GRANT OPTION" };
+  actions.create_user = { ...denied, missing: ["CREATE USER"], need: "CREATE USER", grant_sql: "GRANT CREATE USER ON *.* TO 'operator'@'localhost';" };
+  actions.create_role = { ...denied, missing: ["CREATE ROLE"], need: "CREATE ROLE", grant_sql: null };
+  actions.grant = actions.revoke = { ...denied, missing: ["GRANT OPTION"], need: "GRANT OPTION", grant_sql: null };
   await click("Refresh privileges");
   await backToAccounts();
   await page.waitForFunction(() => document.querySelector('[data-privilege-action="create_user"]')?.getAttribute("aria-disabled") === "true");
@@ -710,8 +713,18 @@ try {
   await page.focus('[data-privilege-action="create_user"]'); await page.keyboard.press("Enter");
   await page.waitForSelector(".why-disabled:popover-open", { visible: true });
   assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /CREATE USER/);
-  assert.equal(await page.$eval(".why-disabled:popover-open .ops-pre code", e => e.textContent || ""), "GRANT CREATE USER ON *.* TO `operator`@`localhost`;");
+  assert.equal(await page.$eval(".why-disabled:popover-open .ops-pre code", e => e.textContent || ""), "GRANT CREATE USER ON *.* TO 'operator'@'localhost';");
   assert.equal(await page.$("dialog[open]"), null);
+  // A denied action with null grant_sql opens the reason without a GRANT block.
+  await page.click('[data-privilege-action="create_role"]');
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /CREATE ROLE/);
+  assert.equal(await page.$(".why-disabled:popover-open .ops-pre"), null, "null grant_sql renders no GRANT block");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  actions.create_role = allowed;
+  await page.focus('[data-privilege-action="create_user"]'); await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
   // Hiding the view closes an open privilege-disabled message.
   await click("Toggle Accounts visibility");
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));

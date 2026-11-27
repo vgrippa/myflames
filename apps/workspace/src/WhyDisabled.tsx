@@ -2,15 +2,14 @@
 // action is off and what fixes it, anchored to the button. It uses the HTML
 // Popover API (popover="auto"): the top layer keeps it out of every scroll
 // container, a click outside closes it (light dismiss), and opening another
-// closes this one. Escape and Close return focus to the button; Escape is
-// consumed before an enclosing inspector or dialog can handle the same key.
-// The anchor button is wired as the popover's invoker (popovertarget), so a
-// click on it does not light-dismiss the message before its toggle handler
-// runs. Position is CSS anchor positioning (anchor-name on the button,
-// position-anchor here), so the message tracks its button and flips instead
-// of leaving the viewport. Contents stay React nodes: server text can never
-// become markup (S8, S10). While closed the box renders empty: nothing a
-// query for the group's buttons or text can trip over.
+// closes this one. It joins the workspace's shared popover and focus-scope
+// coordination (kit.tsx) so the newest surface owns Escape and focus, consumes
+// Escape only while focus is on its own button or inside it, closes when its
+// anchor or place leaves the screen, and places itself inside the safe
+// viewport so it never covers the fixed status bar or a sticky toolbar.
+// Contents stay React nodes: server text can never become markup (S8, S10).
+// Never build SQL text in the browser: any advisory GRANT comes verbatim from
+// the backend's grant_sql field.
 //
 // WhyDisabledHost renders one shared message near the app root for
 // privilege-disabled buttons (privileges.ts: privilegeButtonProps,
@@ -18,31 +17,192 @@
 // function. When the clicked button lives inside a modal <dialog>, the host
 // portals the popover into that dialog so modal inertness cannot block Close
 // or Copy inside it.
-import { useCallback, useEffect, useId, useRef, useState, type PropsWithChildren, type ReactNode, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PropsWithChildren,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { Commands } from "./Commands";
 import { Icon } from "./components";
+import { POPOVER_EVENT, registerFocusScope } from "./kit";
+import { useViewOnScreen } from "./viewOnScreen";
 import "./catalog-actions.css";
 
 /** @types/react 18.3.12 has no popover typings: the attribute goes through a
  * typed record, never an `any` prop. */
 const POPOVER_ATTR: Record<string, string> = { popover: "auto" };
+const FALLBACK_FOCUSABLE = 'button, [href], input, select, textarea, summary, [tabindex]';
+const STICKY_TOPBAR_SELECTOR =
+  ".topbar-stack, .view-toolbar, .place-toolbar, .editor-toolbar, .teach-toolbar, .connection-group-bar";
+
+function isElementVisible(el: HTMLElement | null): el is HTMLElement {
+  if (!el || !el.isConnected) return false;
+  if (el.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+  if (el.getClientRects().length === 0) return false;
+  if (getComputedStyle(el).visibility === "hidden") return false;
+  return true;
+}
+
+function isFocusableVisible(el: HTMLElement | null): el is HTMLElement {
+  return isElementVisible(el) && !el.matches(":disabled");
+}
+
+function findVisibleFallback(containers: HTMLElement[], exclude: HTMLElement | null): HTMLElement | null {
+  const candidates: (HTMLElement | null)[] = [
+    ...containers,
+    document.querySelector<HTMLElement>(".server-view:not([hidden])"),
+    document.querySelector<HTMLElement>("main"),
+    document.querySelector<HTMLElement>(".main-nav button.active"),
+  ];
+  const seen = new Set<HTMLElement>();
+  for (const container of candidates) {
+    if (!container || seen.has(container) || !isElementVisible(container)) continue;
+    seen.add(container);
+    if (container.matches(FALLBACK_FOCUSABLE) && container.tabIndex >= 0 && isFocusableVisible(container) && !exclude?.contains(container)) {
+      return container;
+    }
+    const preferred = container.querySelector<HTMLElement>(".detail-back, .inspector-close, .view-switcher");
+    if (preferred && isFocusableVisible(preferred) && !exclude?.contains(preferred)) return preferred;
+    for (const node of container.querySelectorAll<HTMLElement>(FALLBACK_FOCUSABLE)) {
+      if (node.tabIndex < 0 || exclude?.contains(node)) continue;
+      if (isFocusableVisible(node)) return node;
+    }
+    const heading = container.querySelector<HTMLElement>('h2[tabindex="-1"]');
+    if (heading && isFocusableVisible(heading) && !exclude?.contains(heading)) return heading;
+  }
+  return null;
+}
+
+function measureSafeViewport(anchor: HTMLElement, popover: HTMLElement) {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const inModal = !!popover.closest("dialog[open]");
+  let safeLeft = 8;
+  let safeRight = Math.max(safeLeft + 120, vw - 8);
+  let safeTop = 8;
+  let safeBottom = Math.max(safeTop + 48, vh - 8);
+  if (!inModal) {
+    const statusBar = document.querySelector<HTMLElement>(".window-statusbar");
+    if (statusBar && isElementVisible(statusBar)) {
+      const r = statusBar.getBoundingClientRect();
+      if (r.height > 0 && r.top > 0 && r.top < vh) {
+        safeBottom = Math.min(safeBottom, Math.floor(r.top) - 4);
+      }
+    }
+    const anchorRect = anchor.getBoundingClientRect();
+    const anchorView = anchor.closest(".server-view, .workspace");
+    for (const bar of document.querySelectorAll<HTMLElement>(STICKY_TOPBAR_SELECTOR)) {
+      if (!isElementVisible(bar)) continue;
+      const pos = getComputedStyle(bar).position;
+      if (pos !== "sticky" && pos !== "fixed") continue;
+      // Ignore sticky toolbars inside other views that are not sharing this view.
+      const barView = bar.closest(".server-view");
+      if (barView && anchorView && barView !== anchorView && !barView.contains(anchor)) continue;
+      const r = bar.getBoundingClientRect();
+      if (r.height <= 0 || r.bottom <= 0 || r.bottom > vh * 0.65) continue;
+      if (r.right <= anchorRect.left - 8 && r.right < vw * 0.5) continue;
+      if (r.left >= anchorRect.right + 8 && r.left > vw * 0.5) continue;
+      safeTop = Math.max(safeTop, Math.ceil(r.bottom) + 4);
+    }
+    // Keep a usable band even on an unusually short viewport.
+    if (safeBottom - safeTop < 48) {
+      safeTop = Math.max(8, Math.min(safeTop, safeBottom - 48));
+    }
+  }
+  return { vw, vh, safeLeft, safeRight, safeTop, safeBottom };
+}
+
+function placePopover(anchor: HTMLElement, el: HTMLElement) {
+  const { vh, safeLeft, safeRight, safeTop, safeBottom } = measureSafeViewport(anchor, el);
+  const availH = Math.max(48, safeBottom - safeTop);
+  const maxCap = Math.max(48, Math.min(Math.floor(vh * 0.6), availH));
+  const a = anchor.getBoundingClientRect();
+
+  // Place with fixed viewport coordinates inside the safe band so the top-layer
+  // popover never overlaps the fixed status bar or a sticky toolbar.
+  el.style.setProperty("position-area", "none");
+  el.style.position = "fixed";
+  el.style.right = "auto";
+  el.style.bottom = "auto";
+  el.style.left = `${safeLeft}px`;
+  el.style.top = `${safeTop}px`;
+  el.style.maxHeight = `${maxCap}px`;
+
+  const width = el.offsetWidth;
+  const borderY = Math.max(0, el.offsetHeight - el.clientHeight);
+  const naturalHeight = Math.min(el.scrollHeight + borderY, maxCap);
+  const spaceBelow = safeBottom - a.bottom;
+  const spaceAbove = a.top - safeTop;
+  const placeBelow = naturalHeight <= spaceBelow || (spaceBelow >= spaceAbove && spaceBelow >= 48);
+
+  if (placeBelow) {
+    const top = Math.max(safeTop, Math.min(a.bottom, safeBottom - 48));
+    const maxH = Math.max(48, Math.min(maxCap, safeBottom - top));
+    el.style.top = `${Math.round(top)}px`;
+    el.style.maxHeight = `${Math.floor(maxH)}px`;
+  } else {
+    const maxH = Math.max(48, Math.min(maxCap, spaceAbove));
+    const height = Math.min(naturalHeight, maxH);
+    const top = Math.max(safeTop, Math.min(a.top - height, safeBottom - height));
+    el.style.top = `${Math.round(top)}px`;
+    el.style.maxHeight = `${Math.floor(maxH)}px`;
+  }
+
+  const left = Math.max(safeLeft, Math.min(a.left, safeRight - width));
+  el.style.left = `${Math.round(left)}px`;
+
+  // Final post-clamp check in case wrapping or scrollbars changed height.
+  const rect = el.getBoundingClientRect();
+  if (rect.bottom > safeBottom) {
+    const nudgedTop = Math.max(safeTop, Math.floor(safeBottom - rect.height));
+    el.style.top = `${nudgedTop}px`;
+    el.style.maxHeight = `${Math.max(48, Math.floor(safeBottom - nudgedTop))}px`;
+  }
+  if (rect.top < safeTop) {
+    el.style.top = `${safeTop}px`;
+    el.style.maxHeight = `${Math.max(48, Math.floor(safeBottom - safeTop))}px`;
+  }
+  const adjusted = el.getBoundingClientRect();
+  if (adjusted.right > safeRight) {
+    el.style.left = `${Math.max(safeLeft, Math.floor(safeRight - adjusted.width))}px`;
+  }
+}
+
+function visibleButtonLabel(button: HTMLElement): string {
+  const clone = button.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll(".account-sr, .visually-hidden, .privilege-unverified").forEach((n) => n.remove());
+  const text = (clone.textContent || button.getAttribute("aria-label") || "this action")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[….]+$/, "");
+  return text || "this action";
+}
 
 /** The message under a disabled button (CatalogActions.tsx wires it to the
- * action buttons of a catalog; WhyDisabledHost wires it to privilege-gated
- * disabled buttons across the workspace). */
-export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, onOpen, onClose, children }: {
+ * action buttons of a catalog; ReadysetPlace wires it to disabled allowlist
+ * Remove chips; WhyDisabledHost wires it to privilege-gated disabled buttons
+ * across the workspace). */
+export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, label, onOpen, onClose, children }: {
   /** The button the message is anchored to (its element or a ref to it). */
   anchor: HTMLElement | RefObject<HTMLElement | null> | null;
   /** The owner's open state, kept in sync with the popover's toggle events. */
   open: boolean;
   /** When false the anchor does not toggle the message (a busy group). */
   mayOpen?: boolean;
-  /** When true (CatalogActions), this component attaches the click toggle
-   * handler to the anchor. When false (WhyDisabledHost), the anchor's own
-   * click handler opens and toggles the host while this effect only prevents
-   * the native popovertarget default toggle. */
+  /** When true (CatalogActions, Readyset chips), this component attaches the
+   * click toggle handler to the anchor. When false (WhyDisabledHost), the
+   * anchor's own click handler opens and toggles the host while this effect
+   * only prevents the native popovertarget default toggle. */
   attachClick?: boolean;
+  /** Accessible name of the non-modal dialog (defaults to "Why <button> is unavailable"). */
+  label?: string;
   onOpen: () => void;
   onClose: () => void;
   children: ReactNode;
@@ -51,22 +211,43 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
   const plain = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const anchorName = `--why-${plain}`;
   const popId = `why-${plain}`;
-  // The latest callbacks: the toggle listener stays attached across renders.
+  const onScreen = useViewOnScreen();
+
+  // Latest callbacks and state for listeners that stay attached across renders.
   const onOpenRef = useRef(onOpen);
   onOpenRef.current = onOpen;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const openRef = useRef(open);
+  openRef.current = open;
+  const onScreenRef = useRef(onScreen);
+  onScreenRef.current = onScreen;
+
+  // Focus restoration tracking for unmount/close while focus is inside (W3).
+  const focusInsideRef = useRef(false);
+  const outsidePointerRef = useRef(false);
+  const explicitCloseRef = useRef(false);
+  const fallbackContainersRef = useRef<HTMLElement[]>([]);
+
   // Resolved at effect/event time: a ref's .current is empty during the first
   // render and set by the time effects and handlers run.
   const resolve = () => (anchor && "current" in anchor ? anchor.current : anchor);
+
   const closeToAnchor = () => {
-    try { pop.current?.hidePopover(); } catch { /* Already closed or detached. */ }
-    resolve()?.focus({ preventScroll: true });
+    explicitCloseRef.current = true;
+    const el = pop.current;
+    const button = resolve();
+    try { if (el?.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed or detached. */ }
+    if (onScreenRef.current && isFocusableVisible(button)) {
+      button.focus({ preventScroll: true });
+    } else {
+      findVisibleFallback(fallbackContainersRef.current, el)?.focus({ preventScroll: true });
+    }
     onCloseRef.current();
   };
 
-  // Anchor positioning and the invoker relationship: the button carries the
-  // anchor name and points at the message while clicks may open it.
+  // Anchor naming and invoker relationship: the button carries the anchor name
+  // and popovertarget while clicks may open the message.
   useEffect(() => {
     const button = resolve();
     const el = pop.current;
@@ -78,67 +259,240 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       // its default toggle because the owner manages opening and closing.
       event.preventDefault();
       if (!attachClick) return;
-      if (el.matches(":popover-open")) el.hidePopover();
-      else el.showPopover();
+      if (openRef.current || el.matches(":popover-open")) {
+        try { if (el.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed. */ }
+        onCloseRef.current();
+      } else {
+        onOpenRef.current();
+      }
     };
     if (mayOpen) {
       button.setAttribute("popovertarget", popId);
+      button.setAttribute("aria-haspopup", "dialog");
       button.addEventListener("click", toggle);
     }
     return () => {
       button.style.removeProperty("anchor-name");
       button.removeAttribute("popovertarget");
+      button.removeAttribute("aria-haspopup");
+      button.removeAttribute("aria-expanded");
       button.removeEventListener("click", toggle);
     };
   }, [anchor, anchorName, popId, mayOpen, attachClick]);
 
-  // The owner state follows the popover's own openings and closings (the
-  // invoker click, Escape, light dismiss, another popover opening).
+  // Keep aria-expanded in sync with open state without re-binding click handlers.
+  useEffect(() => {
+    const button = resolve();
+    if (!button) return;
+    if (mayOpen) button.setAttribute("aria-expanded", String(open));
+    else button.removeAttribute("aria-expanded");
+  }, [anchor, mayOpen, open]);
+
+  // Close immediately when the enclosing view/place leaves the screen (W1).
+  useEffect(() => {
+    if (!onScreen && open) {
+      const el = pop.current;
+      try { if (el?.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed. */ }
+      onCloseRef.current();
+    }
+  }, [onScreen, open]);
+
+  // The owner state follows the popover's native light-dismiss closings.
   useEffect(() => {
     const el = pop.current;
     if (!el) return;
     const sync = (event: Event) => {
       const state = (event as ToggleEvent).newState;
-      if (state === "open" && el.matches(":popover-open")) onOpenRef.current();
-      else if (state === "closed" && !el.matches(":popover-open")) onCloseRef.current();
+      if (state === "open" && el.matches(":popover-open") && !openRef.current) onOpenRef.current();
+      else if (state === "closed" && !el.matches(":popover-open") && openRef.current) onCloseRef.current();
     };
     el.addEventListener("toggle", sync);
     return () => el.removeEventListener("toggle", sync);
   }, []);
 
-  // Native Escape handling runs after keydown. Consume the key first so a
-  // surrounding inspector, dialog or focus scope cannot close as well. Window
-  // capture precedes those document listeners, including a narrow inspector's scope.
+  // Show/hide the top-layer popover and keep it inside the safe viewport
+  // (never covering the fixed status bar or a sticky toolbar, W6), closing
+  // automatically if the anchor becomes hidden (W1).
+  useLayoutEffect(() => {
+    const el = pop.current;
+    const button = resolve();
+    if (!el) return;
+    if (!open) {
+      if (el.matches(":popover-open")) {
+        try { el.hidePopover(); } catch { /* Already closed. */ }
+      }
+      return;
+    }
+    if (!button || !onScreenRef.current || !isElementVisible(button)) {
+      if (el.matches(":popover-open")) {
+        try { el.hidePopover(); } catch { /* Already closed. */ }
+      }
+      onCloseRef.current();
+      return;
+    }
+    if (!el.matches(":popover-open")) {
+      try { el.showPopover(); } catch { return; }
+    }
+    const update = () => {
+      if (!onScreenRef.current || !isElementVisible(button)) {
+        try { if (el.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed. */ }
+        onCloseRef.current();
+        return;
+      }
+      if (el.matches(":popover-open")) placePopover(button, el);
+    };
+    update();
+    const ancestorObserver = new MutationObserver(update);
+    for (let parent = button.parentElement; parent; parent = parent.parentElement) {
+      ancestorObserver.observe(parent, {
+        attributes: true,
+        attributeFilter: ["hidden", "inert", "aria-hidden", "style", "class"],
+      });
+    }
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(update);
+      resizeObserver.observe(el);
+      resizeObserver.observe(button);
+    }
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      ancestorObserver.disconnect();
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open, anchor]);
+
+  // Shared popover coordination (myflames-popover), focus-scope ordering
+  // (registerFocusScope), scoped Escape handling (W1, W2), and focus
+  // restoration when unmounting or closing with focus inside (W3).
   useEffect(() => {
-    const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || !pop.current?.matches(":popover-open")) return;
+    if (!open) return;
+    const el = pop.current;
+    const button = resolve();
+    if (!el || !button) return;
+
+    fallbackContainersRef.current = [
+      button.closest<HTMLElement>(".review-actions"),
+      button.closest<HTMLElement>(".readyset-allowlist-chips"),
+      button.closest<HTMLElement>(".view-inspector"),
+      button.closest<HTMLElement>("dialog[open]"),
+      button.closest<HTMLElement>(".server-view"),
+      button.closest<HTMLElement>("main"),
+    ].filter((n): n is HTMLElement => !!n);
+
+    explicitCloseRef.current = false;
+    outsidePointerRef.current = false;
+    focusInsideRef.current = el.contains(document.activeElement);
+
+    // Close any older workspace popover (About, Columns, Export, ViewSwitcher)
+    // and close this message if a newer workspace popover opens.
+    window.dispatchEvent(new CustomEvent(POPOVER_EVENT, { detail: popId }));
+    const onOtherPopover = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (detail === popId) return;
+      const opened = typeof detail === "string" && detail ? document.getElementById(detail) : null;
+      if (opened && el.contains(opened)) return;
+      outsidePointerRef.current = true;
+      try { if (el.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed. */ }
+      onCloseRef.current();
+    };
+    window.addEventListener(POPOVER_EVENT, onOtherPopover);
+
+    const ownsEscape = () => {
+      if (!onScreenRef.current) return false;
+      if (!el.matches(":popover-open")) return false;
+      if (!isElementVisible(button)) return false;
+      const active = document.activeElement;
+      if (!(active instanceof Node)) return false;
+      const native = active instanceof Element ? active.closest("dialog[open]") : null;
+      if (native && native !== el && !native.contains(el)) return false;
+      return button.contains(active) || el.contains(active);
+    };
+    const scope = registerFocusScope(el, { opener: button, ownsEscape });
+
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (!ownsEscape() || !scope.isTopForEscape()) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       closeToAnchor();
     };
-    window.addEventListener("keydown", escape, true);
-    return () => window.removeEventListener("keydown", escape, true);
-  }, [anchor]);
+    window.addEventListener("keydown", onEscape, true);
 
-  // A state change that did not come from the popover (a refresh that made
-  // the message stale, or the host opening for a clicked button) drives the element.
-  useEffect(() => {
-    const el = pop.current;
-    if (!el) return;
-    if (open && !el.matches(":popover-open")) {
-      try { el.showPopover(); } catch { /* Detached before paint. */ }
-    } else if (!open && el.matches(":popover-open")) {
-      try { el.hidePopover(); } catch { /* Already closed. */ }
-    }
-  }, [open, anchor]);
+    const onFocusIn = () => {
+      focusInsideRef.current = true;
+      outsidePointerRef.current = false;
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      const next = event.relatedTarget as Node | null;
+      if (next && el.contains(next)) return;
+      if (next) focusInsideRef.current = false;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && !el.contains(target) && !button.contains(target)) {
+        outsidePointerRef.current = true;
+      }
+    };
+    el.addEventListener("focusin", onFocusIn);
+    el.addEventListener("focusout", onFocusOut);
+    document.addEventListener("pointerdown", onPointerDown, true);
+
+    return () => {
+      scope.release();
+      window.removeEventListener(POPOVER_EVENT, onOtherPopover);
+      window.removeEventListener("keydown", onEscape, true);
+      el.removeEventListener("focusin", onFocusIn);
+      el.removeEventListener("focusout", onFocusOut);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+
+      const wasExplicit = explicitCloseRef.current;
+      explicitCloseRef.current = false;
+      const hadFocus = focusInsideRef.current || el.contains(document.activeElement);
+      focusInsideRef.current = false;
+      const dismissedByOutside = outsidePointerRef.current;
+      outsidePointerRef.current = false;
+
+      try { if (el.matches(":popover-open")) el.hidePopover(); } catch { /* Detached. */ }
+
+      if (wasExplicit || !hadFocus || dismissedByOutside) return;
+      const active = document.activeElement;
+      const focusLost = !active || active === document.body || active === document.documentElement ||
+        !active.isConnected || el.contains(active);
+      if (!focusLost) return;
+      if (onScreenRef.current && isFocusableVisible(button)) {
+        button.focus({ preventScroll: true });
+        return;
+      }
+      findVisibleFallback(fallbackContainersRef.current, el)?.focus({ preventScroll: true });
+    };
+  }, [open, anchor, popId]);
+
+  const anchorEl = resolve();
+  const dialogLabel = label || (anchorEl ? `Why ${visibleButtonLabel(anchorEl)} is unavailable` : "Why this action is unavailable");
 
   return (
-    <div ref={pop} id={popId} {...POPOVER_ATTR} className="cluster-action-why why-disabled">
+    <div
+      ref={pop}
+      id={popId}
+      {...POPOVER_ATTR}
+      role="dialog"
+      aria-label={dialogLabel}
+      tabIndex={-1}
+      className="cluster-action-why why-disabled"
+    >
       {open ? (
         <>
           {children}
-          <button type="button" className="icon-button why-disabled-close" aria-label="Close"
-            onClick={closeToAnchor}>
+          <button
+            type="button"
+            className="icon-button why-disabled-close"
+            aria-label="Close"
+            onClick={closeToAnchor}
+          >
             <Icon name="close" size={12} />
           </button>
         </>
@@ -147,90 +501,14 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
   );
 }
 
-// ---- Advisory GRANT builder for missing privileges ------------------------------------
-
-const NON_GRANTABLE = new Set(["GRANT OPTION", "USAGE", "PROXY"]);
-const PRIVILEGE_ATOM = /^([A-Z][A-Z0-9_]*(?: [A-Z][A-Z0-9_]*)*)(?:\s+on\s+([^.\s]+)\.(?:(\*)|([^.\s]+)))?$/;
-
-function quoteIdentifier(value: string): string | null {
-  if (!value || /[\0\r\n]/.test(value)) return null;
-  return "`" + value.replace(/`/g, "``") + "`";
-}
-
-function quoteAccount(account: string): string | null {
-  const at = account.lastIndexOf("@");
-  if (at <= 0 || at === account.length - 1) return null;
-  const user = quoteIdentifier(account.slice(0, at));
-  const host = quoteIdentifier(account.slice(at + 1));
-  return user && host ? `${user}@${host}` : null;
-}
-
-/** Advisory GRANT statement for the first missing-privilege alternative that
- * maps cleanly to MySQL/MariaDB GRANT syntax, or null when the missing text is
- * not a plain privilege or the account is unknown. Never executed by myflames. */
-export function privilegeGrantSql(missing: string[], account?: string, partialRevokes?: boolean): string | null {
-  if (!missing?.length || !account) return null;
-  const grantee = quoteAccount(account);
-  if (!grantee) return null;
-  const alternatives = missing.flatMap((entry) =>
-    typeof entry === "string" ? entry.split(/\s+or\s+/).map((part) => part.trim()).filter(Boolean) : [],
-  );
-  for (const alternative of alternatives) {
-    const atoms = alternative.split(/\s+and\s+/).map((part) => part.trim()).filter(Boolean);
-    if (!atoms.length) continue;
-    const grouped = new Map<string, string[]>();
-    let ok = true;
-    for (const atom of atoms) {
-      const match = atom.match(PRIVILEGE_ATOM);
-      if (!match) { ok = false; break; }
-      const [, privilege, database, star, table] = match;
-      if (NON_GRANTABLE.has(privilege)) { ok = false; break; }
-      let scope = "*.*";
-      if (database) {
-        let db = database;
-        if (star) {
-          if (/[\\_%]/.test(db)) {
-            if (typeof partialRevokes !== "boolean") { ok = false; break; }
-            if (!partialRevokes) db = db.replace(/\\/g, "\\\\").replace(/_/g, "\\_").replace(/%/g, "\\%");
-          }
-          const quotedDb = quoteIdentifier(db);
-          if (!quotedDb) { ok = false; break; }
-          scope = `${quotedDb}.*`;
-        } else if (table) {
-          const quotedDb = quoteIdentifier(db);
-          const quotedTable = quoteIdentifier(table);
-          if (!quotedDb || !quotedTable) { ok = false; break; }
-          scope = `${quotedDb}.${quotedTable}`;
-        } else {
-          ok = false;
-          break;
-        }
-      }
-      const list = grouped.get(scope) || [];
-      if (!list.includes(privilege)) list.push(privilege);
-      grouped.set(scope, list);
-    }
-    if (ok && grouped.size > 0) {
-      return [...grouped.entries()]
-        .map(([scope, privs]) => `GRANT ${privs.join(", ")} ON ${scope} TO ${grantee};`)
-        .join("\n");
-    }
-  }
-  return null;
-}
-
 // ---- App-level host for privilege-disabled buttons ------------------------------------
 
 export type WhyDisabledRequest = {
   anchor: HTMLElement;
   reason: string;
-  /** Missing privilege alternatives when the denial is a privilege gap. */
-  missing?: string[];
-  /** Explicit advisory GRANT text when already computed. */
-  grantSql?: string;
-  /** Optional account override when outside PrivilegesProvider. */
-  account?: string;
-  /** Optional label for the GRANT Commands block. */
+  /** Backend-supplied advisory GRANT statement, or null when inapplicable. */
+  grantSql?: string | null;
+  /** Optional label for the dialog and GRANT Commands block. */
   label?: string;
 };
 
@@ -251,19 +529,8 @@ export function closeWhyDisabled(): void {
   registeredHost?.close();
 }
 
-function visibleButtonLabel(button: HTMLElement): string {
-  const clone = button.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll(".account-sr, .visually-hidden, .privilege-unverified").forEach((n) => n.remove());
-  const text = (clone.textContent || button.getAttribute("aria-label") || "this action")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/[….]+$/, "");
-  return text || "this action";
-}
-
 function anchorStillDisabled(anchor: HTMLElement): boolean {
-  if (!anchor.isConnected) return false;
-  if (anchor.getClientRects().length === 0) return false;
+  if (!isElementVisible(anchor)) return false;
   if (anchor.getAttribute("aria-disabled") !== "true") return false;
   if ((anchor as HTMLButtonElement).disabled) return false;
   if (anchor.getAttribute("aria-busy") === "true") return false;
@@ -272,9 +539,7 @@ function anchorStillDisabled(anchor: HTMLElement): boolean {
 
 /** Rendered once near the app root. Registers the module-level openWhyDisabled
  * function and renders a single WhyDisabled anchored to the clicked button. */
-export function WhyDisabledHost({ account, partialRevokes, resetKey, children }: PropsWithChildren<{
-  account?: string;
-  partialRevokes?: boolean;
+export function WhyDisabledHost({ resetKey, children }: PropsWithChildren<{
   /** Changes when the active place, view or connection changes, closing any open message. */
   resetKey?: string;
 }>) {
@@ -324,8 +589,6 @@ export function WhyDisabledHost({ account, partialRevokes, resetKey, children }:
       attributes: true,
       attributeFilter: ["aria-disabled", "disabled", "aria-busy", "data-privilege-state"],
     });
-    // Watch ancestor visibility/hidden attributes (retained views hide with [hidden])
-    // and removal of the button or its containing panel.
     const ancestorObserver = new MutationObserver(dismissIfStale);
     for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
       ancestorObserver.observe(parent, {
@@ -350,9 +613,7 @@ export function WhyDisabledHost({ account, partialRevokes, resetKey, children }:
   }, [active]);
 
   const modal = active?.anchor.isConnected ? (active.anchor.closest("dialog[open]") as HTMLDialogElement | null) : null;
-  const grantSql = active
-    ? active.grantSql || privilegeGrantSql(active.missing || [], active.account || account, partialRevokes)
-    : null;
+  const grantSql = active && typeof active.grantSql === "string" && active.grantSql.length > 0 ? active.grantSql : null;
   const grantLabel = active ? active.label || visibleButtonLabel(active.anchor) : "";
   const message = active ? (
     <WhyDisabled
@@ -361,6 +622,7 @@ export function WhyDisabledHost({ account, partialRevokes, resetKey, children }:
       open={true}
       mayOpen={true}
       attachClick={false}
+      label={`Why ${grantLabel} is unavailable`}
       onOpen={() => {}}
       onClose={() => setActive((cur) => (cur?.id === active.id ? null : cur))}
     >

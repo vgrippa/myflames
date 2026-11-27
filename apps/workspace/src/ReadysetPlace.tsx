@@ -10,6 +10,7 @@ import { ConnectionTypeBand, useWritePolicy } from "./Connections";
 import { ConnectionGroupBar } from "./ConnectionGroupBar";
 import { ActionResult, useReviewedActions } from "./ActionReview";
 import { ActionGroup } from "./CatalogActions";
+import { WhyDisabled } from "./WhyDisabled";
 import { ClusterMark } from "./ClusterTopology";
 import {
   ConfirmSheet,
@@ -634,6 +635,14 @@ function ReadysetView({
   // the kind that shows the hint, and each kind's first chip to focus.
   const [removeHint, setRemoveHint] = useState("");
   const firstChipRef = useRef<Record<string, HTMLButtonElement | null>>({});
+  // Open on-demand reason message for a disabled per-entry allowlist Remove chip.
+  const [openChipWhy, setOpenChipWhy] = useState<{ key: string; text: string; enabled: boolean } | null>(null);
+  const chipRefs = useRef(new Map<string, { current: HTMLButtonElement | null }>());
+  const chipRef = (key: string) => {
+    let ref = chipRefs.current.get(key);
+    if (!ref) { ref = { current: null }; chipRefs.current.set(key, ref); }
+    return ref;
+  };
   const [exportedSql, setExportedSql] = useState<ReadysetExportResponse | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState("");
@@ -651,6 +660,7 @@ function ReadysetView({
     setCreateDraft(null);
     setPrompt(null);
     setRemoveHint("");
+    setOpenChipWhy(null);
     setOpenFindings({});
   }, [reads.key]);
 
@@ -661,6 +671,7 @@ function ReadysetView({
     setCreateDraft(null);
     setPrompt(null);
     setRemoveHint("");
+    setOpenChipWhy(null);
   }, [otherDatabase]);
 
   async function load(force = false) {
@@ -720,6 +731,41 @@ function ReadysetView({
     [serverActions],
   );
   const reason = (a: ReadysetAction) => [...new Set([a.why_not, a.fix].filter(Boolean))].join(" ");
+
+  // Invalidate an open Remove chip message when a refresh enables the chip,
+  // removes its entry, or changes its reason text (same contract as ActionGroup).
+  useEffect(() => {
+    if (!openChipWhy) return;
+    if (!isRs || !report) { setOpenChipWhy(null); return; }
+    const groups = [
+      ["function", report.shallow_allowlists.functions, report.allowlist_actions?.functions, report.allowlist_item_actions?.functions],
+      ["variable", report.shallow_allowlists.variables, report.allowlist_actions?.variables, report.allowlist_item_actions?.variables],
+      ["schema", report.shallow_allowlists.schemas, report.allowlist_actions?.schemas, report.allowlist_item_actions?.schemas],
+    ] as const;
+    const split = openChipWhy.key.indexOf(":");
+    const kindKey = split > 0 ? openChipWhy.key.slice(0, split) : "";
+    const item = split > 0 ? openChipWhy.key.slice(split + 1) : "";
+    const group = groups.find(([k]) => k === kindKey);
+    if (!group) { setOpenChipWhy(null); return; }
+    const [, items, kindActions, kindItemActions] = group;
+    const itemIndex = items.indexOf(item);
+    if (itemIndex < 0) { setOpenChipWhy(null); return; }
+    const dropEntry = (kindActions || []).find((a) => a.id === "drop_shallow_allowed") || null;
+    const itemEntry = (kindItemActions || [])[itemIndex] || null;
+    const kindOff = !dropEntry || !dropEntry.enabled;
+    const itemOff = !!(itemEntry && !itemEntry.enabled);
+    const chipEnabled = !kindOff && !itemOff;
+    const chipReason = itemOff
+      ? reason(itemEntry)
+      : !dropEntry
+        ? "Readyset did not offer this change in this report. Refresh first."
+        : !dropEntry.enabled
+          ? reason(dropEntry)
+          : "";
+    const msgText = [changeBlock, chipEnabled ? "" : chipReason].filter(Boolean).join(" ");
+    if ((!openChipWhy.enabled && chipEnabled) || !msgText || msgText !== openChipWhy.text) setOpenChipWhy(null);
+    else if (openChipWhy.enabled !== chipEnabled) setOpenChipWhy({ ...openChipWhy, enabled: chipEnabled });
+  });
   const createEntry = serverActions.find((a) => a.id === "create_cache") || null;
   const createBlock =
     changeBlock ||
@@ -1792,15 +1838,29 @@ function ReadysetView({
                           ) : (
                             <div className="readyset-allowlist-chips">
                               {items.map((item, itemIndex) => {
+                                const chipKey = `${kindKey}:${item}`;
                                 const itemEntry = itemDrops[itemIndex] || null;
-                                const off = !!changeBlock || actions.busy || kindOff || !!(itemEntry && !itemEntry.enabled);
+                                const itemOff = !!(itemEntry && !itemEntry.enabled);
+                                const chipEnabled = !kindOff && !itemOff;
+                                const off = !!changeBlock || actions.busy || !chipEnabled;
                                 const itemWhyId = `${kindBase}-item-${itemIndex}-why`;
+                                const chipReason = itemOff
+                                  ? reason(itemEntry)
+                                  : !dropEntry
+                                    ? "Readyset did not offer this change in this report. Refresh first."
+                                    : !dropEntry.enabled
+                                      ? reason(dropEntry)
+                                      : "";
+                                const chipMessageText = [changeBlock, chipEnabled ? "" : chipReason].filter(Boolean).join(" ");
                                 // A disabled chip's accessible description: the
-                                // visible block that holds the reason (the client
-                                // block wins over catalog state), never only a title.
+                                // element holding the reason (visually hidden for
+                                // catalog reasons, visible for a client block or
+                                // missing entry; the client block wins over catalog
+                                // state), never only a title. Activating a disabled
+                                // chip opens the same reason in WhyDisabled.
                                 const dropWhy = changeBlock
                                   ? `${kindBase}-blocked`
-                                  : itemEntry && !itemEntry.enabled
+                                  : itemOff
                                     ? itemWhyId
                                     : !dropEntry
                                       ? `${kindBase}-not-offered`
@@ -1813,23 +1873,20 @@ function ReadysetView({
                                     <button
                                       type="button"
                                       className="text-button"
-                                      ref={
-                                        itemIndex === 0
-                                          ? (el) => {
-                                              firstChipRef.current[kindKey] = el;
-                                            }
-                                          : undefined
-                                      }
+                                      ref={(el) => {
+                                        chipRef(chipKey).current = el;
+                                        if (itemIndex === 0) firstChipRef.current[kindKey] = el;
+                                      }}
                                       aria-disabled={off || undefined}
                                       aria-describedby={off && dropWhy ? dropWhy : undefined}
                                       title={
                                         changeBlock ||
-                                        (itemEntry && !itemEntry.enabled
-                                          ? reason(itemEntry)
+                                        (itemOff
+                                          ? chipReason
                                           : !dropEntry
                                             ? "Readyset did not offer this change in this report. Refresh first."
                                             : !dropEntry.enabled
-                                              ? reason(dropEntry)
+                                              ? chipReason
                                               : `Remove ${item}`)
                                       }
                                       onClick={() => {
@@ -1847,9 +1904,22 @@ function ReadysetView({
                                     >
                                       Remove
                                     </button>
-                                    {itemEntry && !itemEntry.enabled && !changeBlock && (
-                                      <span className="hint readyset-allowlist-why" id={itemWhyId}>
-                                        {reason(itemEntry)}
+                                    {chipMessageText && (
+                                      <WhyDisabled
+                                        anchor={chipRef(chipKey)}
+                                        open={openChipWhy?.key === chipKey}
+                                        mayOpen={off && !actions.busy}
+                                        label={`Why removing ${item} is unavailable`}
+                                        onOpen={() => setOpenChipWhy({ key: chipKey, text: chipMessageText, enabled: chipEnabled })}
+                                        onClose={() => setOpenChipWhy((cur) => (cur?.key === chipKey ? null : cur))}
+                                      >
+                                        {changeBlock && <p>{changeBlock}</p>}
+                                        {!chipEnabled && chipReason && <p>{chipReason}</p>}
+                                      </WhyDisabled>
+                                    )}
+                                    {itemOff && !changeBlock && (
+                                      <span className="visually-hidden" id={itemWhyId}>
+                                        {chipReason}
                                       </span>
                                     )}
                                   </span>

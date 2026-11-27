@@ -1140,8 +1140,10 @@ try {
     await refresh(mysql);
 
     // A denied mode cannot lock the Change entry: another mode may work.
-    await h.setPrivileges({ set_global: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN"),
-      set_persist: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN"),
+    const sysVarGrant = "GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO 'root'@'localhost';";
+    await h.setPrivileges({ set_global: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN", { grant_sql: sysVarGrant }),
+      set_persist: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN", { grant_sql: sysVarGrant }),
+      reset_persist: privilegeAnswer("denied", "SYSTEM_VARIABLES_ADMIN", { grant_sql: sysVarGrant }),
       set_session_restricted: privilegeAnswer("denied", "SESSION_VARIABLES_ADMIN"),
       config: privilegeAnswer("denied", "PROCESS", { grey_out: false }) });
     assert.equal(await page.$eval(`${view} [data-action=refresh]`, e => e.disabled), false);
@@ -1185,7 +1187,7 @@ try {
         }));
         assert.match(why.text, /SYSTEM_VARIABLES_ADMIN/);
         assert.match(why.text, /Run it as an administrator, then Refresh\./);
-        assert.equal(why.grant, "GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO `root`@`localhost`;");
+        assert.equal(why.grant, sysVarGrant);
         assert.equal(applied.length, before, "a denied mode sends no write");
         // Escape closes only the message and returns focus to the confirm button.
         await page.keyboard.press("Escape");

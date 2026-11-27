@@ -30,8 +30,10 @@
 }
 
 /* The message itself: the popover chrome. inset/margin reset the popover UA
-   centering so position-area rules; the Close button sits over the padding. */
+   centering; WhyDisabled places it inside the safe viewport so it never covers
+   the fixed status bar or a sticky toolbar, while CSS reserves them too. */
 .why-disabled {
+  position: fixed;
   inset: auto;
   margin: 0;
   padding: var(--space-2) 28px var(--space-2) var(--space-3);
@@ -39,8 +41,8 @@
   border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-popover);
-  max-width: min(28rem, calc(100vw - 32px));
-  max-height: min(60vh, calc(100vh - 32px));
+  max-width: min(28rem, calc(100vw - 16px));
+  max-height: min(60vh, calc(100vh - var(--topbar-height, 38px) - var(--statusbar-h, 26px) - 16px));
   overflow: auto;
   position-area: block-end span-inline-end;
   position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;

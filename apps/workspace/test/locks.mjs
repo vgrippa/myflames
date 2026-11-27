@@ -928,6 +928,23 @@ try {
   assert.equal(await page.$(".kill-result"), null, "the late answer cannot restore the dismissed note");
 
   // Without the privilege: focusable disabled Kill, its reason, and copyable SQL.
+  const refreshPrivileges = async () => {
+    const before = seen.filter((s) => s.path === "/api/live/privileges").length;
+    await page.evaluate(() => {
+      const now = Date.now;
+      Date.now = () => now() + 61_000;
+      try { window.dispatchEvent(new Event("focus")); } finally { Date.now = now; }
+    });
+    for (let i = 0; i < 100 && seen.filter((s) => s.path === "/api/live/privileges").length === before; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+  mocks["/api/live/privileges"].body.actions = {
+    kill: privilegeAnswer("denied", "CONNECTION_ADMIN or SUPER", {
+      grant_sql: "GRANT CONNECTION_ADMIN ON *.* TO 'viewer'@'%';",
+    }),
+  };
+  await refreshPrivileges();
   const unprivileged = clone(ddl);
   unprivileged.kill_privilege = { ...unprivileged.kill_privilege, user: "viewer", account: "viewer@%", can_kill_others: false, via: null };
   unprivileged.notes.push("Needs CONNECTION_ADMIN or SUPER to end another user session.");
@@ -944,7 +961,7 @@ try {
     grant: e.querySelector(".ops-pre code")?.textContent || "",
   }));
   assert.match(locksKillWhy.text, /CONNECTION_ADMIN/);
-  assert.equal(locksKillWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO `viewer`@`%`;");
+  assert.equal(locksKillWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO 'viewer'@'%';");
   assert.equal(await page.$("dialog.kill-dialog"), null, "denied Kill stays visible but cannot open");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
@@ -957,6 +974,16 @@ try {
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   assert.equal(await page.$("dialog.kill-dialog"), null, "keyboard activation on denied Kill never opens");
   assert.ok(await page.$('.view-inspector [aria-label="Copy KILL 53"]'));
+  // Without backend grant_sql (null), the message shows the reason and no GRANT.
+  mocks["/api/live/privileges"].body.actions = {
+    kill: privilegeAnswer("denied", "CONNECTION_ADMIN or SUPER", { grant_sql: null }),
+  };
+  await refreshPrivileges();
+  await page.click(killButton);
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  assert.equal(await page.$(".why-disabled:popover-open .ops-pre"), null, "null grant_sql renders no GRANT in Locks");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   // Opening the message and switching away from the view closes the message.
   await page.click(killButton);
   await page.waitForSelector(".why-disabled:popover-open", { visible: true });
@@ -970,6 +997,8 @@ try {
   assert.equal((await page.$$('.view-inspector [aria-label="Copy KILL 53"]')).length, 1, 'one copyable KILL statement');
   assert.equal(await page.$('.view-inspector .kill-manual'), null, 'denied targets do not repeat manual commands');
   await assertPrivilege(page, killButton, 'denied', 'CONNECTION_ADMIN');
+  mocks["/api/live/privileges"].body.actions = {};
+  await refreshPrivileges();
 
   // MySQL: a session that ran XA PREPARE gets XA COMMIT / XA ROLLBACK, never a Kill or KILL text.
   const xa = clone(ddl);

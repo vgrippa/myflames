@@ -7,8 +7,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { assertPrivilege, privilegeAnswer, load, open, pause, setUiPreferences, SERVER_GROUPS, WORKLOAD_GROUPS } from "./perf-harness.mjs";
+import { assertPrivilege, privilegeAnswer, load, open, pause, SERVER_GROUPS, WORKLOAD_GROUPS } from "./perf-harness.mjs";
 
 const active = await load("sessions-mysql-8.4-active.json");
 const all = await load("sessions-mysql-8.4.json");
@@ -764,7 +763,9 @@ try {
   const foreign = structuredClone(active);
   foreign.sessions.forEach(s => { s.user = "another_user"; });
   state.fallback = { status: 200, body: foreign };
-  await h.setPrivileges({ kill: privilegeAnswer("denied"), kill_own: privilegeAnswer("allowed"),
+  const killGrant = "GRANT CONNECTION_ADMIN ON *.* TO 'root'@'localhost';";
+  const systemUserGrant = "GRANT SYSTEM_USER ON *.* TO 'root'@'localhost';";
+  await h.setPrivileges({ kill: privilegeAnswer("denied", "CONNECTION_ADMIN or SUPER", { grant_sql: killGrant }), kill_own: privilegeAnswer("allowed"),
     sessions_all: privilegeAnswer("denied", "PROCESS", { grey_out: false }),
     explain_connection: privilegeAnswer("unknown") });
   assert.equal(await page.$eval(`${view} [data-action=refresh]`, e => e.disabled), false);
@@ -780,7 +781,7 @@ try {
   }));
   assert.match(killWhy.text, /CONNECTION_ADMIN/);
   assert.match(killWhy.text, /Run it as an administrator, then Refresh\./);
-  assert.equal(killWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO `root`@`localhost`;");
+  assert.equal(killWhy.grant, killGrant);
   assert.equal(await page.$("dialog.kill-dialog"), null, "a denied Kill cannot open its sheet");
   assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, killSentBefore, "a denied Kill sends nothing");
   // Escape closes only the message and returns focus to Kill, keeping the inspector open.
@@ -795,33 +796,57 @@ try {
   await page.keyboard.press("Space");
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   assert.equal(await page.$("dialog.kill-dialog"), null, "keyboard activation on denied Kill never opens its sheet");
-  // Light and dark screenshots of the privilege-disabled message at 1440 and 720 px,
-  // with real theme persistence + prefers-color-scheme + reload.
-  const whyShots = fileURLToPath(new URL("../../../local/why-shots/", import.meta.url));
-  await fs.mkdir(whyShots, { recursive: true });
+  // Light and dark screenshots of the privilege-disabled message at 1440 and
+  // 720x520 via the harness output dir (W8) and the app's preference flow (W9),
+  // with computed colors and non-overlap asserted right before each shot (W6).
+  await fs.mkdir(h.shots, { recursive: true });
+  const MOD = process.platform === "darwin" ? "Meta" : "Control";
+  const THEME_LABELS = { light: "Theme: Light", dark: "Theme: Dark", system: "Theme: System" };
+  const rgbChannels = (cssColor) => {
+    const m = String(cssColor || "").match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const luminance = (rgb) => (rgb ? 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] : NaN);
   const setSessionsTheme = async (theme) => {
-    await setUiPreferences(page, { theme });
-    await page.evaluate((t) => {
-      if (t === "system") localStorage.removeItem("myflames.theme");
-      else localStorage.setItem("myflames.theme", t);
-    }, theme);
-    await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: theme === "dark" ? "dark" : "light" }]);
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("myflames-popover", { detail: "" })));
+    await page.keyboard.down(MOD);
+    await page.keyboard.press("k");
+    await page.keyboard.up(MOD);
+    await page.waitForSelector('[aria-label="Search commands"]', { visible: true });
+    await page.type('[aria-label="Search commands"]', THEME_LABELS[theme]);
+    const option = await page.waitForFunction(
+      (label) => [...document.querySelectorAll(".command-option")].find((node) => node.querySelector("bdi")?.textContent === label),
+      {},
+      THEME_LABELS[theme],
+    );
+    await option.asElement().click();
+    await option.dispose();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="Search commands"]'));
+    await page.evaluate(async () => { await window.__myflamesFlushUiPreferences?.(); });
+    await page.waitForFunction(async (expected) => {
+      const current = document.documentElement.dataset.theme || "system";
+      if (current !== expected) return false;
+      const reply = await fetch("/api/settings/ui", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" },
+        body: "{}",
+      }).then((r) => r.json());
+      return reply.preferences?.theme === expected;
+    }, {}, theme);
   };
   const sessionWhyBg = {};
-  for (const width of [1440, 720]) {
-    await page.setViewport({ width, height: width === 1440 ? 1000 : 600 });
+  for (const [width, height] of [[1440, 1000], [720, 520]]) {
+    await page.setViewport({ width, height });
+    await pause(200);
     for (const theme of ["light", "dark"]) {
       await setSessionsTheme(theme);
-      await page.reload({ waitUntil: "networkidle0" });
-      await page.waitForSelector(".workspace");
-      if (!(await page.$eval('.main-nav button[data-place="workload"]', b => b.classList.contains("active")).catch(() => false))) {
-        await page.$eval('.main-nav button[data-place="workload"]', b => b.click());
+      if (!(await page.$(gatedKill))) {
+        await h.views();
+        if (!(await page.$(row(100)))) await h.view("sessions");
+        await page.waitForSelector(row(100), { visible: true });
+        await h.idle(view);
+        await h.select(row(100));
       }
-      await h.views();
-      if (!(await page.$(row(100)))) await h.view("sessions");
-      await page.waitForSelector(row(100), { visible: true });
-      await h.idle(view);
-      await h.select(row(100));
       await assertPrivilege(page, gatedKill, "denied", "CONNECTION_ADMIN");
       await page.click(gatedKill);
       await page.waitForSelector(".why-disabled:popover-open", { visible: true });
@@ -829,18 +854,37 @@ try {
       const metrics = await page.evaluate(() => {
         const msg = document.querySelector(".why-disabled:popover-open");
         const rect = msg?.getBoundingClientRect();
+        const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+        const sb = document.querySelector(".window-statusbar");
+        const sbRect = sb && sb.getClientRects().length ? sb.getBoundingClientRect() : null;
+        const stickyOverlaps = [...document.querySelectorAll(".topbar-stack, .view-toolbar")]
+          .filter((el) => el.getClientRects().length && ["sticky", "fixed"].includes(getComputedStyle(el).position))
+          .some((el) => !!rect && overlaps(rect, el.getBoundingClientRect()));
         return {
+          attr: document.documentElement.dataset.theme || "system",
+          bodyBg: getComputedStyle(document.body).backgroundColor,
           bg: msg ? getComputedStyle(msg).backgroundColor : "",
+          ink: msg ? getComputedStyle(msg).color : "",
           scheme: getComputedStyle(document.documentElement).colorScheme,
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
           inside: !!rect && rect.left >= 0 && rect.top >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+          sbOverlap: !!(rect && sbRect && overlaps(rect, sbRect)),
+          stickyOverlaps,
         };
       });
+      assert.equal(metrics.attr, theme, `Sessions ${width} ${theme}: data-theme matches`);
       assert.equal(metrics.scheme, theme, `Sessions ${width} ${theme}: color-scheme matches`);
+      const bodyL = luminance(rgbChannels(metrics.bodyBg));
+      const bgL = luminance(rgbChannels(metrics.bg));
+      const inkL = luminance(rgbChannels(metrics.ink));
+      if (theme === "dark") assert.ok(bodyL < 80 && bgL < 80 && inkL > 150, `Sessions ${width} dark colors: ${JSON.stringify(metrics)}`);
+      else assert.ok(bodyL > 200 && bgL > 200 && inkL < 120, `Sessions ${width} light colors: ${JSON.stringify(metrics)}`);
       assert.ok(metrics.overflow <= 0, `Sessions ${width} ${theme}: no horizontal scroll (${metrics.overflow})`);
       assert.equal(metrics.inside, true, `Sessions ${width} ${theme}: message inside viewport`);
+      assert.equal(metrics.sbOverlap, false, `Sessions ${width} ${theme}: message never covers fixed status bar`);
+      assert.equal(metrics.stickyOverlaps, false, `Sessions ${width} ${theme}: message never covers sticky toolbar`);
       if (width === 1440) sessionWhyBg[theme] = metrics.bg;
-      await page.screenshot({ path: path.join(whyShots, `sessions-why-kill-${width}-${theme}.png`), fullPage: false });
+      await page.screenshot({ path: path.join(h.shots, `sessions-why-kill-${width}-${theme}.png`), fullPage: false });
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
     }
@@ -858,7 +902,7 @@ try {
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   await page.click(gatedKill); await page.waitForSelector("dialog.kill-dialog[open]");
   const gatedConfirm = "dialog.kill-dialog .sheet-actions button:last-of-type";
-  await h.setPrivileges({ kill: privilegeAnswer("denied", "SYSTEM_USER") });
+  await h.setPrivileges({ kill: privilegeAnswer("denied", "SYSTEM_USER", { grant_sql: systemUserGrant }) });
   await assertPrivilege(page, gatedConfirm, "denied", "SYSTEM_USER");
   const sentBefore = state.other.filter(o => o.path === "/api/live/kill").length;
   await page.click(gatedConfirm);
@@ -868,7 +912,7 @@ try {
     grant: e.querySelector(".ops-pre code")?.textContent || "",
   }));
   assert.match(confirmWhy.text, /SYSTEM_USER/);
-  assert.equal(confirmWhy.grant, "GRANT SYSTEM_USER ON *.* TO `root`@`localhost`;");
+  assert.equal(confirmWhy.grant, systemUserGrant);
   assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, sentBefore);
   // First Escape closes only the message and returns focus to the confirm button.
   await page.keyboard.press("Escape");

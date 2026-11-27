@@ -123,6 +123,7 @@ export function ActionGroup<A extends CatalogAction>({
             {(!!blocked || hasReason) && (
               <WhyDisabled anchor={buttonRef(a.id)} open={openWhy?.id === a.id}
                 mayOpen={off && !busy}
+                label={`Why ${a.label.replace(/[….]+$/, "")} is unavailable`}
                 onOpen={() => setOpenWhy({ id: a.id, text: messageText(a), enabled: a.enabled })}
                 onClose={() => setOpenWhy((cur) => (cur?.id === a.id ? null : cur))}>
                 {blocked && <p>{blocked}</p>}

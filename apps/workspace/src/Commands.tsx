@@ -3,12 +3,33 @@
 // and WhyDisabledHost (privilege-gated disabled buttons). Kept in a leaf
 // module so entry-chunk consumers do not pull in OpsShared, PerfShared,
 // opsApi or filesApi.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** The exact statements or commands a confirmation will send or an
  * administrator can run. Copy says only that the text was copied. */
 export function Commands({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState("");
+  const [copied, setCopied] = useState<{ text: string; message: string }>({ text: "", message: "" });
+  const currentText = useRef(text);
+  currentText.current = text;
+  const copySeq = useRef(0);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // Reset feedback when text changes and invalidate any in-flight clipboard
+  // completion for older text so stale "Copied." never appears over new SQL.
+  useEffect(() => {
+    copySeq.current += 1;
+    setCopied({ text: "", message: "" });
+  }, [text]);
+
+  const status = copied.text === text ? copied.message : "";
+
   return (
     <div className="perf-sql ops-commands">
       <pre className="ops-pre" tabIndex={0} aria-label={label}>
@@ -19,17 +40,27 @@ export function Commands({ text, label }: { text: string; label: string }) {
         className="text-button"
         aria-label={`Copy: ${label}`}
         onClick={() => {
-          void navigator.clipboard.writeText(text).then(
-            () => setCopied("Copied."),
-            () => setCopied("Select the text to copy it."),
+          const seq = ++copySeq.current;
+          const target = text;
+          void navigator.clipboard.writeText(target).then(
+            () => {
+              if (mounted.current && copySeq.current === seq && currentText.current === target) {
+                setCopied({ text: target, message: "Copied." });
+              }
+            },
+            () => {
+              if (mounted.current && copySeq.current === seq && currentText.current === target) {
+                setCopied({ text: target, message: "Select the text to copy it." });
+              }
+            },
           );
         }}
       >
         Copy
       </button>
-      {copied && (
+      {status && (
         <span className="hint" role="status">
-          {copied}
+          {status}
         </span>
       )}
     </div>

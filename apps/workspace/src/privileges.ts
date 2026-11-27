@@ -13,7 +13,15 @@ import { WhyDisabledHost, openWhyDisabled } from "./WhyDisabled";
 const readPrivileges = (connection: Connection, signal?: AbortSignal) =>
   api<PrivilegesReport>("live/privileges", { connection }, signal);
 
-export type PrivilegeGateResult = { state: PrivilegeState; missing: string[]; reason: string; disabledReason: string; available: boolean };
+export type PrivilegeGateResult = {
+  state: PrivilegeState;
+  missing: string[];
+  reason: string;
+  disabledReason: string;
+  available: boolean;
+  /** Backend-supplied advisory GRANT statement, or null when unavailable/inapplicable. */
+  grantSql?: string | null;
+};
 type PrivilegesContextValue = {
   key: string; readOnly: boolean; report: PrivilegesReport | null; loading: boolean; error: string;
   refresh: (fresh?: boolean) => Promise<void>; accountChanged: () => Promise<void>;
@@ -195,13 +203,16 @@ export function privilegeResult(answer?: ActionPrivilege, account = ""): Privile
   const missing = [...new Set((answer?.missing || []).flat())];
   const state = answer?.state || "unknown";
   const available = answer?.available !== false;
+  const grantSql = state === "denied" && typeof answer?.grant_sql === "string" && answer.grant_sql.length > 0
+    ? answer.grant_sql
+    : null;
   const reason = state === "unknown" ? `Unverified. ${answer?.reason || "SHOW GRANTS cannot tell; the server decides."}` :
     // The server's reason usually says both already ("Needs X; app@% has
     // none of them."): add what it does not say, never repeat it.
     state === "denied" ? [answer?.reason,
       missing.length && !/\bNeeds\b/.test(answer?.reason || "") ? `Needs ${answer?.need || missing.join(" or ")}.` : "",
       account && !(answer?.reason || "").includes(account) ? `Connected as ${account}.` : ""].filter(Boolean).join(" ") : answer?.reason || "Required privileges are present.";
-  return { state, missing, reason, available,
+  return { state, missing, reason, available, grantSql,
     disabledReason: !available ? answer?.note || "Unavailable on this server." : state === "denied" && answer?.grey_out !== false ? reason : "" };
 }
 export function usePrivilege(actionKey?: string): PrivilegeGateResult {
@@ -211,8 +222,8 @@ export function usePrivilege(actionKey?: string): PrivilegeGateResult {
 
 export type EditorPrivilegePreview = {
   status: "ready" | "invalid";
-  statements: { index: number; kind: string; action_keys: string[]; state: PrivilegeState; missing: string[]; reason: string }[];
-  aggregate: { state: PrivilegeState; missing: string[]; reason: string; warning: string };
+  statements: { index: number; kind: string; action_keys: string[]; state: PrivilegeState; missing: string[]; reason: string; grant_sql?: string | null }[];
+  aggregate: { state: PrivilegeState; missing: string[]; reason: string; warning: string; grant_sql?: string | null };
   policy?: { action: string; text: string };
 };
 
@@ -221,30 +232,41 @@ export type EditorPrivilegePreview = {
 export function editorPrivilegeGate(preview?: EditorPrivilegePreview): PrivilegeGateResult {
   const gate = privilegeResult(preview?.aggregate);
   if (preview?.policy?.action === "refuse")
-    return { ...gate, disabledReason: preview.policy.text, reason: preview.policy.text };
+    return { ...gate, disabledReason: preview.policy.text, reason: preview.policy.text, grantSql: null };
   return gate;
 }
 
 /** Older preflights return a tri-state hint rather than an action envelope.
  * A target answer, including unknown, always replaces the generic answer. */
-export function targetPrivilege(generic: PrivilegeGateResult, hint?: { allowed: boolean | null; need?: string; note?: string; checked?: boolean } | null): PrivilegeGateResult {
+export function targetPrivilege(generic: PrivilegeGateResult, hint?: {
+  allowed: boolean | null;
+  need?: string;
+  note?: string;
+  checked?: boolean;
+  grant_sql?: string | null;
+} | null): PrivilegeGateResult {
   if (!hint) return generic;
   const allowed = hint.checked === false && hint.allowed !== true ? null : hint.allowed;
   const need = hint.need || generic.missing.join(" or ");
+  // Prefer an explicit backend grant_sql on the hint; otherwise reuse the
+  // backend grant_sql from the generic denial only when it covers the same need.
+  const grant_sql = allowed === false
+    ? hint.grant_sql !== undefined
+      ? hint.grant_sql
+      : generic.state === "denied" && generic.grantSql &&
+          (!hint.need || hint.need === generic.missing.join(" or ") || generic.missing.includes(hint.need))
+        ? generic.grantSql
+        : null
+    : null;
   return privilegeResult({ state: allowed === true ? "allowed" : allowed === false ? "denied" : "unknown",
     missing: allowed === false && need ? [need] : [], need,
-    reason: hint.note || (allowed === false && !need ? "The server report denies this action." : ""), grey_out: true });
+    reason: hint.note || (allowed === false && !need ? "The server report denies this action." : ""), grey_out: true, grant_sql });
 }
 
-/** App-level WhyDisabled host wired to the active PrivilegesProvider's account
- * so privilege-disabled buttons show their reason and advisory GRANT on click. */
+/** App-level WhyDisabled host so privilege-disabled buttons show their reason
+ * and backend-supplied advisory GRANT on click. */
 export function PrivilegeWhyHost({ resetKey, children }: PropsWithChildren<{ resetKey?: string }>) {
-  const privileges = usePrivileges();
-  return createElement(WhyDisabledHost, {
-    account: privileges?.report?.account,
-    partialRevokes: privileges?.report?.partial_revokes,
-    resetKey,
-  }, children);
+  return createElement(WhyDisabledHost, { resetKey }, children);
 }
 
 /** ConfirmSheet currently accepts a label but no button attributes. Attach
@@ -281,7 +303,7 @@ export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: Pro
       openWhyDisabled({
         anchor: button,
         reason: current.disabledReason,
-        missing: privilegeDenial ? current.missing : undefined,
+        grantSql: privilegeDenial ? current.grantSql : null,
       });
     };
     button.addEventListener("click", onClick);
@@ -310,7 +332,7 @@ export function privilegeButtonProps(gate: PrivilegeGateResult, onClick: ButtonH
         openWhyDisabled({
           anchor: e.currentTarget,
           reason,
-          missing: privilegeDenial ? gate.missing : undefined,
+          grantSql: privilegeDenial ? gate.grantSql : null,
         });
       }
     } else onClick?.(e);

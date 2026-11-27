@@ -1481,19 +1481,47 @@ try {
     assert.match(c.text, /Cache DDL is blocked on this port\./, "the chip's description is the drop entry's why_not");
     assert.match(c.text, /Open the SQL port \(3307\)/, "the chip's description carries the fix");
   }
+  // W4: activating a disabled Remove chip opens the on-demand WhyDisabled
+  // message with the reason, and sends no plan request; Escape returns focus
+  // and Enter/Space toggle it.
+  const chipWhyPop = `${view} .readyset-allow-chip .cluster-action-why:popover-open`;
   const plansBeforeChipOff = plans.length;
   await page.evaluate((sel) => {
     const row = [...document.querySelectorAll(`${sel} .readyset-allowlist-row`)].find((r) =>
       /Allowed SQL functions/.test(r.textContent || ""),
     );
-    row?.querySelector(".readyset-allow-chip button")?.click();
+    const btn = row?.querySelector(".readyset-allow-chip button");
+    btn?.scrollIntoView({ block: "center" });
+    btn?.click();
   }, view);
-  await pause(200);
+  await page.waitForSelector(chipWhyPop, { visible: true });
+  const chipPopText = await page.$eval(chipWhyPop, (e) => ({
+    role: e.getAttribute("role"),
+    label: e.getAttribute("aria-label"),
+    text: e.textContent || "",
+  }));
+  assert.equal(chipPopText.role, "dialog", "disabled Remove chip opens a non-modal dialog");
+  assert.match(chipPopText.label || "", /^Why removing .* is unavailable$/);
+  assert.match(chipPopText.text, /Cache DDL is blocked on this port\./, "disabled Remove chip message shows why_not");
+  assert.match(chipPopText.text, /Open the SQL port \(3307\)/, "disabled Remove chip message shows fix");
   assert.equal(plans.length, plansBeforeChipOff, "a disabled Remove chip plans nothing");
+  await page.evaluate((sel) => {
+    const row = [...document.querySelectorAll(`${sel} .readyset-allowlist-row`)].find((r) =>
+      /Allowed SQL functions/.test(r.textContent || ""),
+    );
+    row?.querySelector(".readyset-allow-chip button")?.focus();
+  }, view);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, chipWhyPop);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(chipWhyPop, { visible: true });
+  await page.keyboard.press("Space");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, chipWhyPop);
+  assert.equal(plans.length, plansBeforeChipOff, "keyboard activation on disabled Remove chip plans nothing");
 
   // R3: a per-item drop entry disables only that item's Remove chip, with its
-  // own reason tied by aria-describedby before any click; the
-  // other items' chips stay enabled.
+  // own reason tied by aria-describedby before any click; activating it opens
+  // its own WhyDisabled message while the other items' chips stay enabled.
   const badItem = "bad\u202ename";
   const mixed = structuredClone(R.lab);
   const origFns = R.lab.shallow_allowlists.functions;
@@ -1546,10 +1574,17 @@ try {
     const chip = [...(row?.querySelectorAll(".readyset-allow-chip") || [])].find((c) =>
       (c.textContent || "").includes("bad"),
     );
-    chip?.querySelector("button")?.click();
+    const btn = chip?.querySelector("button");
+    btn?.scrollIntoView({ block: "center" });
+    btn?.click();
   }, view);
-  await pause(200);
+  await page.waitForSelector(chipWhyPop, { visible: true });
+  const badPopText = await page.$eval(chipWhyPop, (e) => e.textContent || "");
+  assert.match(badPopText, /control or format characters/, "W4: per-item disabled Remove chip opens its own why_not");
+  assert.match(badPopText, /by hand/, "W4: per-item disabled Remove chip opens its own fix");
   assert.equal(plans.length, plansBeforeItem, "a disabled per-item Remove chip sends no plan request");
+  await page.click(`${chipWhyPop} .why-disabled-close`);
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, chipWhyPop);
   await refreshTo(R.lab);
   await tab("Parameters");
 
@@ -1920,6 +1955,45 @@ try {
   }
   await page.evaluate(() => { delete document.documentElement.dataset.theme; });
   await tab("Parameters");
+  // W6 + W4: at 720x520 an open disabled Remove chip message on Parameters
+  // never covers the fixed status bar or a sticky toolbar.
+  await refreshTo(dropDisabled);
+  await page.evaluate((sel) => {
+    const row = [...document.querySelectorAll(`${sel} .readyset-allowlist-row`)].find((r) =>
+      /Allowed SQL functions/.test(r.textContent || ""),
+    );
+    const btn = row?.querySelector(".readyset-allow-chip button");
+    btn?.scrollIntoView({ block: "end" });
+    btn?.click();
+  }, view);
+  const rsWhySel = `${view} .readyset-allow-chip .cluster-action-why:popover-open`;
+  await page.waitForSelector(rsWhySel, { visible: true });
+  await pause(150);
+  const rsOverlap = await page.evaluate((sel) => {
+    const msg = document.querySelector(sel);
+    const r = msg.getBoundingClientRect();
+    const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    const sb = document.querySelector(".window-statusbar");
+    const sbRect = sb && sb.getClientRects().length ? sb.getBoundingClientRect() : null;
+    const sticky = [...document.querySelectorAll(".topbar-stack, .view-toolbar")]
+      .filter((el) => el.getClientRects().length && ["sticky", "fixed"].includes(getComputedStyle(el).position))
+      .map((el) => ({ cls: el.className, overlap: overlaps(r, el.getBoundingClientRect()), rect: el.getBoundingClientRect() }));
+    return {
+      rect: { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: window.innerWidth, vh: window.innerHeight },
+      sbOverlap: sbRect ? overlaps(r, sbRect) : false,
+      sbTop: sbRect ? sbRect.top : null,
+      sticky,
+    };
+  }, rsWhySel);
+  assert.ok(rsOverlap.rect.left >= 0 && rsOverlap.rect.top >= 0 && rsOverlap.rect.right <= rsOverlap.rect.vw && rsOverlap.rect.bottom <= rsOverlap.rect.vh,
+    `Readyset 720x520 message inside viewport: ${JSON.stringify(rsOverlap)}`);
+  assert.equal(rsOverlap.sbOverlap, false, `Readyset 720x520 message never covers status bar: ${JSON.stringify(rsOverlap)}`);
+  for (const bar of rsOverlap.sticky) {
+    assert.equal(bar.overlap, false, `Readyset 720x520 message never covers sticky bar ${bar.cls}: ${JSON.stringify(rsOverlap)}`);
+  }
+  await page.click(`${rsWhySel} .why-disabled-close`);
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, rsWhySel);
+  await refreshTo(R.lab);
   for (const theme of ["light", "dark"]) {
     await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
     await pause(200);
