@@ -481,7 +481,7 @@ try {
     await page.click('.main-nav button[data-place="topology"]');
     await page.waitForSelector(".topology-place .segmented button", { visible: true });
     await page.waitForSelector(".topology-map-diagram .topology-map-cluster", { visible: true });
-    await until(() => document.querySelectorAll(".topology-map-diagram .topology-map-cluster button").length === 3);
+    await until(() => document.querySelectorAll(".topology-map-diagram .topology-map-cluster button[data-node]").length === 3);
     await until(() => !!document.querySelector('.topology-map-diagram button[data-node="p-ic-5"]')
       && document.querySelector('.topology-map-diagram button[data-node="p-ic-5"]').textContent.includes("Alias of db-1"));
     await until(() => !!document.querySelector('.topology-map-diagram button[data-node="peer:10.0.0.77:3306"]'));
