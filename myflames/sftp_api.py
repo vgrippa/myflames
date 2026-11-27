@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 
-from . import dbops, sftp, sftp_jobs, ssh_connections, ssh_tunnel
+from . import dbops, request_secrets, sftp, sftp_jobs, ssh_connections, ssh_tunnel
 
 IDLE_SECONDS = 120.0
 MAX_SESSIONS = 8
@@ -76,6 +76,7 @@ def _session(store, key):
             entry['timer'].cancel()
         _SESSIONS.move_to_end(cache_key)
         try:
+            request_secrets.capture(entry['session']._password)
             yield entry['session']
         except BaseException:
             _SESSIONS.pop(cache_key, None)

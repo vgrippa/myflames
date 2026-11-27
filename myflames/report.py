@@ -202,12 +202,13 @@ def _run_all(conn, jobs, workers, cancel, password):
     if not jobs:
         return results
     guarded = _Guarded(conn, cancel)
-    from . import read_cancel
+    from . import read_cancel, request_secrets
     request_cancel = read_cancel.current()
     request_guard = read_cancel.current_guard()
+    registry = request_secrets.current()
 
     def run(key, fn):
-        with read_cancel.scope(request_cancel, request_guard):
+        with request_secrets.scope(registry), read_cancel.scope(request_cancel, request_guard):
             return _timed(key, fn, guarded, password)
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
@@ -1119,6 +1120,7 @@ def at_or_worse(report, level):
 
 class _Flight(object):
     def __init__(self, options):
+        from . import request_secrets
         self.options = options
         self.done = threading.Event()
         self.result = None
@@ -1126,6 +1128,10 @@ class _Flight(object):
         self.cancel = threading.Event()
         self.callers = 0
         self.worker = None
+        # A joined caller can outlive the initiating HTTP request. Keep the
+        # shared read's redaction context until its final caller has left.
+        self.secrets = request_secrets.Registry()
+        self.secrets.capture_many(request_secrets.values())
 
 
 _FLIGHTS = {}
@@ -1170,14 +1176,15 @@ def run_single_flight(key, options, work, cancel=None):
     disconnecting the first caller cannot abandon a joined caller's read.
     Keys are removed on completion or cancellation; this never caches results.
     """
-    from . import read_cancel
+    from . import read_cancel, request_secrets
     cancel = cancel if cancel is not None else read_cancel.current()
     if cancel is not None:
         read_cancel.check(cancel)
 
     def execute(flight):
         try:
-            with read_cancel.scope(flight.cancel if cancel is not None else None):
+            with request_secrets.scope(flight.secrets), \
+                    read_cancel.scope(flight.cancel if cancel is not None else None):
                 flight.result = work()
         except BaseException as exc:
             flight.error = exc
@@ -1191,8 +1198,13 @@ def run_single_flight(key, options, work, cancel=None):
         flight = _FLIGHTS.get(key)
         owner = flight is None
         if owner:
-            flight = _FLIGHTS[key] = _Flight(options)
-            flight.worker = threading.Thread(target=execute, args=(flight,), name="myflames-live-read", daemon=True)
+            flight = _Flight(options)
+            try:
+                flight.worker = threading.Thread(target=execute, args=(flight,), name="myflames-live-read", daemon=True)
+            except BaseException:
+                flight.secrets.close()
+                raise
+            _FLIGHTS[key] = flight
         elif flight.options != options:
             raise ValueError("A full analysis with other settings is already running for this connection; wait "
                              "for it to finish.")
@@ -1218,6 +1230,9 @@ def run_single_flight(key, options, work, cancel=None):
         return copy.deepcopy(flight.result)
     finally:
         with _FLIGHTS_LOCK:
+            # Copy before any caller can clear the flight, including when the
+            # exception is re-raised in another request's HTTP error handler.
+            request_secrets.capture_many(flight.secrets.values())
             flight.callers -= 1
             last = flight.callers == 0
             if last and not flight.done.is_set():
@@ -1227,8 +1242,12 @@ def run_single_flight(key, options, work, cancel=None):
         # No orphan client or sampling thread after the final HTTP worker is
         # released. Other callers keep the shared worker, not the first HTTP
         # request, alive until the report is ready.
-        if last and flight.worker.ident is not None:
-            flight.worker.join()
+        if last:
+            try:
+                if flight.worker.ident is not None:
+                    flight.worker.join()
+            finally:
+                flight.secrets.close()
 
 # ---- text, digest, Markdown and HTML ------------------------------------------------------------
 

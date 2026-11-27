@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 
-from . import secret_store, sftp, ssh_tunnel
+from . import request_secrets, secret_store, sftp, ssh_tunnel
 from .connector import terminal_text
 
 KIND = 'ssh_connection'
@@ -224,6 +224,7 @@ def open_session(record_or_draft, secret=None):
             raise ValueError('The saved SSH secret could not be read from the credential store.') from None
         if secret is None:
             raise ValueError('The saved SSH secret is missing. Save it again or forget the saved secret.')
+    request_secrets.capture(secret)
     return sftp.SftpSession(secret=secret, **session_spec(record))
 
 
