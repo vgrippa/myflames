@@ -581,7 +581,8 @@ def _probe_connection(conn, profile, remaining=None):
             continue
         for row in hrows:
             rhost = _text(row.get("Host"))
-            rport = _int(row.get("Port")) or 3306
+            raw_port = _int(row.get("Port"))
+            rport = raw_port if raw_port is not None and 1 <= raw_port <= 65535 else None
             ruuid = _text(row.get("Replica_UUID") or row.get("Slave_UUID"))
             # MySQL 8.0.22+ sql/rpl_source.cc:236 spells this Server_Id;
             # MySQL 5.7 SHOW SLAVE HOSTS spells it Server_id with Slave_UUID.

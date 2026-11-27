@@ -511,7 +511,9 @@ rs_upstream_edges = [
 tc.assertEqual(len(rs_upstream_edges), 1, f"Expected verified Readyset -> primary upstream edge: {group_map['map']['edges']}")
 tc.assertTrue(rs_upstream_edges[0]["verified"], rs_upstream_edges[0])
 tc.assertEqual(rs_upstream_edges[0]["evidence"], "proxied_identity", rs_upstream_edges[0])
-tc.assertIn("Also registered on map-primary as a replica (server ID 103)", rs_upstream_edges[0].get("reason") or "")
+rs_reason = rs_upstream_edges[0].get("reason") or ""
+tc.assertIn("Also registered on map-primary as a replica (server ID 103)", rs_reason)
+tc.assertNotIn("(estimate)", rs_reason, f"Lab registration must be positively attributed, not estimated: {rs_reason}")
 
 print("[3/7] Verifying live EXPLAIN CREATE CACHE (supported, unsupported, and collisions)...")
 exp_ok = ui.api_response("/api/live/readyset/explain-cache", {
