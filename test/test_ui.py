@@ -1701,6 +1701,42 @@ class TestProfilePasswordAPI(unittest.TestCase):
         self.assertIsNone(loops[1]._stop_requested)
         registry.stop_all()
 
+    def test_replication_loop_decision_reader_keeps_running_after_leaving_group(self):
+        from myflames import dbops, replication, ui
+        store = self.workspace.store
+        p1 = store.save('profile', dict(self.settings, name='db-1', host='10.0.2.11', ssl_mode='PREFERRED',
+                                        type='production'))
+        p2 = store.save('profile', dict(self.settings, name='db-2', host='10.0.2.12', ssl_mode='PREFERRED',
+                                        type='production'))
+        store.save_connection_group('mf-loop', [p1['id'], p2['id']])
+        conn = {'profile_id': p2['id'], 'host': '10.0.2.12', 'port': 3306, 'user': 'app',
+                'ssl_mode': 'PREFERRED', 'ssl_ca': '', 'group_name': 'mf-loop'}
+        profile = store.get('profile', p2['id'])
+        safety = dbops.connection_safety(profile, conn, store=store)
+        decision = dbops.decide(dbops.classify('START REPLICA SQL_THREAD'),
+                                safety['type'], safety['read_only'], safety['profile_name'])
+        self.assertEqual(replication._policy_key(decision), ('production', False))
+        _factory, state = ui._replication_audit(self.workspace, replication.OPERATION_LOOP, conn, safety, decision)
+
+        # Leaving the group keeps the saved connection's own policy, so the loop keeps running.
+        store.assign_profile_group([p2['id']], '')
+        after_leave = state['decision_reader']()
+        self.assertEqual(replication._policy_key(after_leave), ('production', False))
+        self.assertIsNone(dbops.gate(after_leave, True))
+
+        # Deleting the group also keeps the saved connections and their loop running.
+        store.save_connection_group('mf-loop', [p1['id'], p2['id']])
+        store.delete_connection_group('mf-loop')
+        after_delete_group = state['decision_reader']()
+        self.assertEqual(replication._policy_key(after_delete_group), ('production', False))
+        self.assertIsNone(dbops.gate(after_delete_group, True))
+
+        # Control: deleting the saved connection flips read_only to True so the loop stops.
+        store.delete('profile', p2['id'])
+        after_delete_profile = state['decision_reader']()
+        self.assertEqual(replication._policy_key(after_delete_profile), ('production', True))
+        self.assertIsNotNone(dbops.gate(after_delete_profile, True))
+
     def test_server_close_stops_and_joins_replication_loops(self):
         from myflames import replication
         server = object.__new__(WorkspaceServer)

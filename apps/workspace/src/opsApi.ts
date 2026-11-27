@@ -120,6 +120,10 @@ export type SkipLoop = Partial<ReceiverGuard> & {
   drift_warning?: string; error?: string | null; policy?: OpsPolicy;
 };
 export type LoopOptions = { codes: number[]; max_skips: number; max_minutes: number; poll_s: number; receiver_guard?: ReceiverGuard["receiver_guard"] };
+/** Loop status is read this often while a loop runs (registry only, no database login). */
+export const LOOP_POLL_MS = 2000;
+/** Maintenance job status is read this often while a job runs (registry only, no database login). */
+export const JOB_POLL_MS = 1500;
 export function loopActive(loop: SkipLoop) {
   return loop.state === "starting" || loop.state === "running" || loop.state === "stopping";
 }

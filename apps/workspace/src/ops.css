@@ -67,10 +67,16 @@
 .ops-view .view-main > .ops-note { color: var(--ink-muted); }
 .ops-job .error { margin: var(--space-2) 0; }
 .ops-view > .ops-warning,
-.ops-view > .ops-note {
+.ops-view > .ops-note,
+.server-content > .ops-note {
   padding: var(--space-3) var(--space-4);
   margin: 0;
   border-bottom: 1px solid var(--line);
+}
+.server-content > .ops-note {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+  color: var(--ink-muted);
 }
 .ops-actions,
 .ops-job-head,
@@ -85,6 +91,7 @@
 .ops-loop.is-stopped { background: var(--surface-pane); }
 .ops-loop.is-stopped.needs-attention { background: var(--warn-soft); }
 .ops-last { display: block; color: var(--ink-muted); font-size: var(--text-sm); }
+.ops-loop-error { color: var(--danger-text); }
 .ops-loop .count-badge { margin-inline-start: var(--space-2); }
 .ops-progress { display: flex; align-items: center; gap: var(--space-2); margin-block: var(--space-2); font-variant-numeric: tabular-nums; }
 .ops-progress progress { flex: 1; min-width: 0; accent-color: var(--accent); }

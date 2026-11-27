@@ -153,7 +153,7 @@ export type MapEdge = {
   from: string;
   to: string;
   kind: "replication" | "proxy_route" | "cache_upstream" | "alias";
-  evidence: "server_uuid" | "server_id" | "endpoint" | "hostname_port" | null;
+  evidence: "server_uuid" | "server_id" | "endpoint" | "hostname_port" | "proxied_identity" | null;
   verified: boolean;
   state: string | null;
   label: string;

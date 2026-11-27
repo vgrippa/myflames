@@ -4,6 +4,7 @@ Task guides for the Topology, Replication, Cluster, ProxySQL and Readyset places
 
 - [Create a connection group from Home](howto-topology.md#create-a-connection-group-from-home)
 - [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology)
+- [Open one server from the Topology map](howto-topology.md#open-one-server-from-the-topology-map)
 - [Change a parameter on every server](howto-topology.md#change-a-parameter-on-every-server)
 - [Skip a failing replication transaction](howto-topology.md#skip-a-failing-replication-transaction)
 - [Switch the primary or mode of a cluster](howto-topology.md#switch-the-primary-or-mode-of-a-cluster)
@@ -54,6 +55,24 @@ Good to know:
 - **ProxySQL backend routes on Map**: a ProxySQL backend in a monitor's offline hostgroup, `OFFLINE_SOFT`, or `OFFLINE_HARD` is drawn as offline with its short `hostgroup N` label on the diagram; the reason (offline hostgroup, `OFFLINE_SOFT`, `OFFLINE_HARD`, shunned for replication lag, or no `ONLINE` member in the hostgroup) appears in the **Links** list, the link tooltip, and the card inspector.
 
 Related: [Create a connection group from Home](howto-topology.md#create-a-connection-group-from-home), [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server) and [Connection groups and topology consent](safety.md#connection-groups-and-topology-consent).
+
+## Open one server from the Topology map
+
+Use this when you want to look at one server of the group on its own page instead of the whole-group map.
+
+1. On **Topology** > **Map**, click the server's card. myflames opens that server's place on its own saved connection: a database server opens **Server** (or **Replication** or **Cluster**, depending on its role), a ProxySQL card opens **ProxySQL**, and a Readyset card opens **Readyset**.
+2. When the place reads a member other than the group's active member, look for `Using <server> from group <group>.` (in the view header beside **Server:** in **Server**, or in the top bar in **Replication**, **Cluster**, **ProxySQL** and **Readyset**); no note is shown when the place already reads the group's active member.
+3. Click **Back to Topology** (the back chip in the top bar) to return to the map as you left it, with your tab and selection kept.
+
+What you see: the place reads that server directly, so its views, numbers and actions belong to that server alone. If a **Server** view already showed another member from an earlier visit, it keeps that previous report greyed until you click **Refresh**. A card marked **Not in this group** is a reported peer: clicking it opens its details, not a place, because you have no saved connection for it.
+
+Good to know:
+
+- **Details**: every card that opens a place also has a **Details** button. Click it to inspect the card on the map (member facts, channels and links) without leaving the page.
+- **The Readyset line**: a solid line from a Readyset card to a database server names the upstream Readyset sends its work to. `Upstream` means the same server also feeds Readyset's base-table replication; `Upstream (queries)` means only the query upstream was confirmed. A note such as `Also registered on <source> as a replica` says the source itself lists this Readyset as a follower; when myflames could only guess the match it says `(estimate)`.
+- **Replica without a reported address**: shown when a source reports a replica without a host and myflames cannot tie it to a saved member in the group or to a Readyset member. Save a connection for it and add it to the group to read it; before that it stays outside the group and is never logged in to.
+
+Related: [Read a whole group in Topology](howto-topology.md#read-a-whole-group-in-topology) and [Open a Group connection and work on any server](howto-connections.md#open-a-group-connection-and-work-on-any-server).
 
 ## Change a parameter on every server
 

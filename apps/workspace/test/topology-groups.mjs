@@ -12,13 +12,25 @@
 //    - unsaved connections never acquire a saved identity by name or endpoint
 //    - busy, result and error states on /api/profiles/group, then re-read
 // 3. layoutMatrix on the bar and on the open sheet (1440/720 x light/dark).
+// 4. The Topology map on a Group connection: a member card opens that
+//    member's place (Readyset, ProxySQL, Cluster, Replication or Server),
+//    with a Details button that keeps the inspector, a per-place member note,
+//    focus that follows the navigation, and a Back to Topology chip that
+//    keeps the map's selection and returns focus to the card.
 import assert from "node:assert/strict";
+import path from "node:path";
 import { chooseConnection, connectionOption, layoutMatrix, openConnectionPicker } from "./chrome-helpers.mjs";
-import { load, open, pause } from "./perf-harness.mjs";
+import { load, open, pause, setUiPreferences } from "./perf-harness.mjs";
 
 const clusterBase = await load("cluster-ic-8.4-healthy.json");
 const replicationBase = await load("replication-mysql-8.4-healthy.json");
+const replicationError = await load("replication-mysql-8.4-gtid-error.json");
 const proxysqlBase = await load("proxysql-lab.json");
+const readysetBase = await load("readyset-lab.json");
+const healthBase = await load("health-mysql-8.4.json");
+const lifecycleTools = await load("lifecycle-tools-mysql.json");
+const lifecycleJobRunning = await load("lifecycle-job-dump-running.json");
+const lifecycleJobCancelled = await load("lifecycle-job-dump-cancelled.json");
 
 const profiles = [
   {
@@ -96,22 +108,101 @@ const groupCalls = [];
 const replicationReads = [];
 const proxysqlReads = [];
 let groupError = "";
+let profilesFail = false;
+let profilesListCalls = 0;
 let onGroupSuccess = null;
 let replicationReport = structuredClone(replicationBase);
+let replicationReportFor = null;
 let proxysqlReport = structuredClone(proxysqlBase);
 
+// Section 8 (Topology map navigation): the Group connection mf-nav, its Map
+// report and the reads of the member places it opens.
+const connectCalls = [];
+const topologyCalls = [];
+const readysetReads = [];
+const healthReads = [];
+const loopRegistry = new Map();
+const loopStarts = [];
+const loopStatusReads = [];
+const loopStops = [];
+const lifecycleJobs = new Map();
+const lifecycleStatusReads = [];
+const lifecycleCancels = [];
+const loopEndpoint = (c) => `${c?.host}:${c?.port}:${c?.user}`;
+const loopRunning = await load("replication-loop-running.json");
+const loopStopped = await load("replication-loop-stopped.json");
+function navMember(over) {
+  return {
+    profile_id: "", profile_name: "", host: "", port: 3306,
+    safety: { type: "production", read_only: false },
+    outcome: "read", message: "Read from this member.", elapsed_s: 0.1,
+    engine: "mysql", product: "MySQL", version: "8.4.6", version_comment: "MySQL Community Server - GPL",
+    server_uuid: null, server_id: null, hostname: null,
+    read_only: false, read_only_value: "OFF", super_read_only: false,
+    role: "standalone", state: "reachable", lag: null, behind: null, behind_reason: null, channels: [],
+    duplicate_of: null, ...over,
+  };
+}
+const navMembers = [
+  navMember({ profile_id: "p-nav-1", profile_name: "nav-db-1", host: "10.0.1.11", role: "primary", state: "ONLINE", server_uuid: "11111111-1111-1111-1111-1111111111aa" }),
+  navMember({ profile_id: "p-nav-2", profile_name: "nav-db-2", host: "10.0.1.12", role: "source", state: "running", server_uuid: "22222222-2222-2222-2222-2222222222aa" }),
+  navMember({ profile_id: "p-nav-3", profile_name: "nav-db-3", host: "10.0.1.13", server_uuid: "33333333-3333-3333-3333-3333333333aa" }),
+  navMember({ profile_id: "p-nav-proxy", profile_name: "nav-proxy", host: "10.0.1.14", port: 6032, engine: null, product: "ProxySQL Admin", version: "2.5.1", version_comment: null, role: "proxy" }),
+  navMember({ profile_id: "p-nav-rs", profile_name: "nav-rs", host: "10.0.1.15", port: 3307, engine: null, product: "Readyset", version: "2410.30", version_comment: null, role: "cache" }),
+];
+function navMapNode(over) {
+  return {
+    id: "", kind: "member", profile_id: "", label: "", host: "", port: 3306,
+    engine: "mysql", product: "MySQL", version: "8.4.6", role: "standalone",
+    state: "reachable", outcome: "read", server_uuid: null, cluster_id: null, duplicate_of: null,
+    ...over,
+  };
+}
+const navMapReport = {
+  schema_version: "topology-group-1.0", section: "map", group_name: "mf-nav",
+  taken_at: "2026-11-26T12:00:00Z", elapsed_s: 0.3,
+  effective_safety: { type: "production", read_only: false },
+  active_member_profile_id: "p-nav-1", primary_profile_id: "p-nav-1",
+  members: navMembers,
+  summary: { read: 5, failed: 0, not_reached: 0, versions: ["8.4.6"], text: "5 read." },
+  map: {
+    nodes: [
+      navMapNode({ id: "p-nav-proxy", profile_id: "p-nav-proxy", label: "nav-proxy", host: "10.0.1.14", port: 6032, engine: null, product: "ProxySQL Admin", version: "2.5.1", role: "proxy" }),
+      navMapNode({ id: "p-nav-rs", profile_id: "p-nav-rs", label: "nav-rs", host: "10.0.1.15", port: 3307, engine: null, product: "Readyset", version: "2410.30", role: "cache" }),
+      navMapNode({ id: "p-nav-1", profile_id: "p-nav-1", label: "nav-db-1", host: "10.0.1.11", role: "primary", state: "ONLINE", server_uuid: "11111111-1111-1111-1111-1111111111aa" }),
+      navMapNode({ id: "p-nav-2", profile_id: "p-nav-2", label: "nav-db-2", host: "10.0.1.12", role: "source", state: "running", server_uuid: "22222222-2222-2222-2222-2222222222aa" }),
+      navMapNode({ id: "p-nav-3", profile_id: "p-nav-3", label: "nav-db-3", host: "10.0.1.13", server_uuid: "33333333-3333-3333-3333-3333333333aa" }),
+      { id: "peer:10.0.0.88:3306", kind: "peer", profile_id: null, label: "10.0.0.88:3306", host: "10.0.0.88", port: 3306, server_uuid: null, seen_by: ["p-nav-2"], reason: "Not in this group" },
+    ],
+    edges: [
+      { from: "p-nav-proxy", to: "p-nav-rs", kind: "proxy_route", evidence: "endpoint", verified: true, state: "ONLINE", label: "ProxySQL route" },
+      { from: "p-nav-rs", to: "p-nav-1", kind: "cache_upstream", evidence: "server_uuid", verified: true, state: "running", label: "Cache upstream" },
+      { from: "p-nav-2", to: "p-nav-3", kind: "replication", evidence: "server_uuid", verified: true, state: "running", label: "Replication" },
+      { from: "p-nav-2", to: "peer:10.0.0.88:3306", kind: "replication", evidence: "endpoint", verified: false, state: null, label: "Replication" },
+    ],
+    clusters: [],
+    notes: [],
+  },
+};
+
 const h = await open("/api/live/cluster", "topology-groups", {
-  "/api/profiles/list": () => ({
-    status: 200,
-    body: {
-      items: profiles,
-      secret_store: {
-        backend: "vault",
-        label: "myflames encrypted vault",
-        available: true,
+  "/api/profiles/list": () => {
+    profilesListCalls += 1;
+    if (profilesFail) {
+      return { status: 500, body: { error: "The workspace store is busy." } };
+    }
+    return {
+      status: 200,
+      body: {
+        items: profiles,
+        secret_store: {
+          backend: "vault",
+          label: "myflames encrypted vault",
+          available: true,
+        },
       },
-    },
-  }),
+    };
+  },
   "/api/profiles/save": (body) => {
     saveCalls.push(body);
     const val = body.value || {};
@@ -156,17 +247,104 @@ const h = await open("/api/live/cluster", "topology-groups", {
     if (onGroupSuccess) onGroupSuccess(body);
     return { status: 200, body: { updated: ids, group: targetGroup } };
   },
+  // The group editor sheet (Edit group…): an unticked member leaves the group.
+  "/api/profiles/groups/save": (body) => {
+    const name = (body.name || "").trim();
+    const previous = (body.previous_name || "").trim() || name;
+    const ids = new Set(Array.isArray(body.profile_ids) ? body.profile_ids : []);
+    for (const p of profiles) {
+      if (ids.has(p.id)) p.group = name;
+      else if ((p.group || "") === previous) p.group = "";
+    }
+    return { status: 200, body: { group: name, name, profile_ids: [...ids], updated: [...ids] } };
+  },
   "/api/live/replication": (body) => {
     replicationReads.push(body);
-    return { status: 200, body: replicationReport };
+    return { status: 200, body: replicationReportFor ? replicationReportFor(body) : replicationReport };
   },
-  "/api/live/replication/skip-loop/status": () => ({
+  "/api/live/replication/skip-loop/start": (body) => {
+    loopStarts.push(body);
+    const running = structuredClone(loopRunning);
+    loopRegistry.set(loopEndpoint(body.connection), [running]);
+    return { status: 200, body: running };
+  },
+  "/api/live/replication/skip-loop/status": (body) => {
+    loopStatusReads.push(body);
+    return { status: 200, body: { schema_version: "replication-skip-loop-1.0", loops: loopRegistry.get(loopEndpoint(body.connection)) || [] } };
+  },
+  "/api/live/replication/skip-loop/stop": (body) => {
+    assert.equal(body.connection.password, "", "Skip loop stop never carries another member's typed password");
+    loopStops.push(body);
+    loopRegistry.set(loopEndpoint(body.connection), [structuredClone(loopStopped)]);
+    return { status: 200, body: structuredClone(loopStopped) };
+  },
+  "/api/lifecycle/tools": () => ({ status: 200, body: lifecycleTools }),
+  "/api/lifecycle/jobs": (body) => ({
     status: 200,
-    body: { schema_version: "replication-skip-loop-1.0", loops: [] },
+    body: { schema_version: "lifecycle-jobs-1.0", jobs: lifecycleJobs.get(loopEndpoint(body.connection)) || [] },
   }),
+  "/api/lifecycle/status": (body) => {
+    lifecycleStatusReads.push(body);
+    const list = lifecycleJobs.get(loopEndpoint(body.connection)) || [];
+    return { status: 200, body: list.find((j) => j.id === body.id) || structuredClone(lifecycleJobCancelled) };
+  },
+  "/api/lifecycle/cancel": (body) => {
+    assert.equal(body.connection.password, "", "Maintenance cancel never carries another member's typed password");
+    lifecycleCancels.push(body);
+    const cancelled = { ...structuredClone(lifecycleJobCancelled), id: body.id };
+    const ep = loopEndpoint(body.connection);
+    lifecycleJobs.set(ep, (lifecycleJobs.get(ep) || []).map((j) => (j.id === body.id ? cancelled : j)));
+    return { status: 200, body: cancelled };
+  },
   "/api/live/proxysql": (body) => {
     proxysqlReads.push(body);
     return { status: 200, body: proxysqlReport };
+  },
+  "/api/connect": (body) => {
+    connectCalls.push(body);
+    const name = typeof body.group_name === "string" ? body.group_name.trim() : "";
+    const grouped = profiles.filter((p) => (p.group || "") === name);
+    if (!grouped.length) return { status: 400, body: { error: "No saved connection belongs to this connection group." } };
+    const active = grouped.find((m) => m.id === body.active_member_profile_id) || grouped[0];
+    return { status: 200, body: {
+      version: "8.4.6",
+      engine: "mysql",
+      flavor: "mysql",
+      product: "MySQL",
+      databases: ["shop"],
+      schemas: ["shop"],
+      group_connection: {
+        group_name: name,
+        effective_safety: { type: "production", read_only: false },
+        active_member_profile_id: active.id,
+        primary_profile_id: active.id,
+        members: grouped.map((m) => ({
+          profile_id: m.id,
+          profile_name: m.name,
+          host: m.host,
+          port: m.port,
+          safety: { type: m.type, read_only: !!m.read_only },
+          server_uuid: null,
+          role: m.id === active.id ? "PRIMARY" : "SECONDARY",
+          state: null,
+          reachable: body.probe_members === true ? true : null,
+        })),
+      },
+    } };
+  },
+  "/api/live/topology": (body) => {
+    topologyCalls.push(body);
+    assert.equal(body.connection.group_name, "mf-nav", "the map read names its group");
+    assert.equal(body.section, "map", "only the Map tab is read here");
+    return { status: 200, body: navMapReport };
+  },
+  "/api/live/readyset": (body) => {
+    readysetReads.push(body);
+    return { status: 200, body: readysetBase };
+  },
+  "/api/live/health": (body) => {
+    healthReads.push(body);
+    return { status: 200, body: healthBase };
   },
 });
 
@@ -852,6 +1030,902 @@ try {
   await page.waitForFunction((sel) => !document.querySelector(sel), {}, sheetSel);
   assert.deepEqual(groupCalls.at(-1), { profile_ids: ["p-ic-2"], group: "mfcluster" },
     "Review adds only the selected saved suggestion when the current connection is unsaved");
+
+  // ---------------------------------------------------------------------------
+  // 8. Topology map on a Group connection: a member card opens that member's
+  //    place; Details keeps the inspector; the note is the place's own; focus
+  //    follows the navigation and Back returns it to the card.
+  // ---------------------------------------------------------------------------
+  profiles.push(
+    { id: "p-nav-1", name: "nav-db-1", host: "10.0.1.11", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    { id: "p-nav-2", name: "nav-db-2", host: "10.0.1.12", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    { id: "p-nav-3", name: "nav-db-3", host: "10.0.1.13", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    { id: "p-nav-proxy", name: "nav-proxy", host: "10.0.1.14", port: 6032, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    // nav-rs carries its own database and read-only flag: the sidebar badge and
+    // the top-edge strip on its place are the member's, not the connection in
+    // use's.
+    { id: "p-nav-rs", name: "nav-rs", host: "10.0.1.15", port: 3307, user: "dba", database: "shop", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: true, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+  );
+  // The saved-connections list re-reads on window focus.
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await pause(1100);
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-rs"]', { visible: true });
+  assert.equal(topologyCalls.length, 1, "the Map tab read once when shown");
+  assert.equal(connectCalls.length, 1, "opening the group connection is the one /api/connect");
+  const connectsBefore = connectCalls.length;
+  const rsCard = '.topology-map-node[data-node="p-nav-rs"]';
+  // Screenshots go through the harness's shots folder; layoutMatrix adds the
+  // overflow checks (1440/720 px, light/dark).
+  async function takeShots(name, hover) {
+    for (const width of [1440, 720]) {
+      await page.setViewport({ width, height: 900 });
+      for (const theme of ["light", "dark"]) {
+        await setUiPreferences(page, { theme });
+        if (hover) await page.hover(hover);
+        await pause(150);
+        await page.screenshot({ path: path.join(h.shots, `${name}-${width}-${theme}.png`) });
+        writtenShots.push(`${name}-${width}-${theme}`);
+      }
+    }
+    await page.setViewport({ width: 1440, height: 900 });
+    await setUiPreferences(page, { theme: "light" });
+    await pause(150);
+  }
+  // The map with the Details button visible on hover.
+  await takeShots("topo-map-details", rsCard);
+  writtenShots.push(...await layoutMatrix(page, h.shots, "topo-map", { frame: ".topology-place" }));
+  await page.setViewport({ width: 1440, height: 900 });
+  await setUiPreferences(page, { theme: "light" });
+
+  const rsDetails = '.topology-map-node-details[aria-label="Details for nav-rs"]';
+  // Details is always shown without a hover-capable pointer (touch, and some
+  // headless runners report hover: none) and while focus is inside its card
+  // (focus returns to the card after Back), so clear focus first and expect
+  // the rest state the media query gives.
+  const canHover = await page.evaluate(() => matchMedia("(hover: hover)").matches);
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+  await page.hover(rsCard);
+  await pause(180);
+  const hoverOpacity = await page.$eval(rsDetails, (e) => getComputedStyle(e).opacity);
+  assert.equal(hoverOpacity, "1", "Details shows while its card is hovered");
+  await page.hover(".topology-map-legend");
+  await pause(180);
+  const restOpacity = await page.$eval(rsDetails, (e) => getComputedStyle(e).opacity);
+  assert.equal(restOpacity, canHover ? "0" : "1",
+    canHover ? "Details hides again when the pointer leaves" : "Details stays visible without a hover-capable pointer");
+  // On touch (no hover) the Details button is always visible: the stylesheet
+  // keeps a (hover: none) rule for it. (Headless Chrome does not emulate the
+  // hover media feature, so the rule itself is what the test can prove.)
+  const touchRule = await page.evaluate(() => {
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch { continue; }
+      for (const rule of rules) {
+        if (!(rule instanceof CSSMediaRule) || rule.conditionText !== "(hover: none)") continue;
+        for (const inner of rule.cssRules) {
+          if (inner.selectorText === ".topology-map-node-details" && inner.style.opacity === "1") return true;
+        }
+      }
+    }
+    return false;
+  });
+  assert.equal(touchRule, true, "Details is always visible without hover (touch)");
+
+  // A member card's name and title state the navigation; a peer card has no
+  // Details button (its click already opens the inspector).
+  const cardA11y = await page.$eval(rsCard, (e) => ({ label: e.getAttribute("aria-label") || "", title: e.getAttribute("title") || "" }));
+  assert.ok(cardA11y.label.startsWith("Open nav-rs in Readyset: "), `the card's name states the navigation: ${cardA11y.label}`);
+  assert.match(cardA11y.title, /Opens the Readyset place on this member/, "the card's title states the navigation");
+  const clusterCardA11y = await page.$eval('.topology-map-node[data-node="p-nav-1"]', (e) => e.getAttribute("aria-label") || "");
+  assert.ok(clusterCardA11y.startsWith("Open nav-db-1 in Cluster: "), `the cluster card's name states the navigation: ${clusterCardA11y}`);
+  assert.equal(await page.$('.topology-map-node-details[data-details="peer:10.0.0.88:3306"]'), null, "a peer card has no Details button");
+
+  // The Details button opens the inspector without navigating.
+  await page.click('.topology-map-node-details[aria-label="Details for nav-rs"]');
+  await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector .inspector-title")]
+    .some((e) => e.getClientRects().length > 0));
+  assert.match(await h.inspector(), /nav-rs/, "Details opens the member inspector");
+  assert.match(await h.inspector(), /Readyset/, "the inspector names the engine");
+  await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector button")]
+    .some((b) => b.textContent.trim() === "Open in Readyset"));
+  assert.ok(await page.$('.main-nav button[data-place="topology"].active'), "Details never leaves the map");
+  assert.equal(readysetReads.length, 0, "Details never reads the member's place");
+  await page.click('.topology-place .inspector-close');
+
+  // A peer card opens the inspector and never navigates.
+  await page.click('.topology-map-node[data-node="peer:10.0.0.88:3306"]');
+  assert.match(await h.inspector(), /Not in this group/, "a peer keeps its inspector");
+  assert.ok(await page.$('.main-nav button[data-place="topology"].active'), "a peer never navigates");
+  await page.click('.topology-place .inspector-close');
+
+  // A Readyset member opens the Readyset place on that member.
+  await page.click(rsCard);
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  for (let i = 0; i < 100 && !readysetReads.length; i++) await pause(25);
+  assert.equal(readysetReads.length, 1, "the Readyset place reads when opened");
+  assert.equal(readysetReads[0].connection.profile_id, "p-nav-rs", "the read carries the clicked member");
+  assert.equal(readysetReads[0].connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(readysetReads[0].connection.database, "shop", "the read carries the member's database");
+  assert.equal(connectCalls.length, connectsBefore, "navigation never opens a new connection");
+  const rsNote = "Using nav-rs from group mf-nav.";
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), rsNote);
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.getAttribute("title")), rsNote, "the truncated note keeps its full text in the title");
+  // The sidebar badge and the top-edge strip are the member's own: nav-rs is
+  // read-only with database shop; the connection in use (nav-db-1) is neither.
+  let readysetBadgeHtml = "";
+  for (let i = 0; i < 100 && !readysetBadgeHtml.includes("nav-marker"); i++) {
+    readysetBadgeHtml = await page.$eval('.main-nav button[data-place="readyset"]', (e) => e.outerHTML);
+    await pause(150);
+  }
+  assert.ok(readysetBadgeHtml.includes("nav-marker"), `the Readyset badge is the member's own: ${readysetBadgeHtml}`);
+  assert.equal(await page.$eval('.connection-type-strip', (e) => e.dataset.connectionStrip), "read-only", "the strip shows the member's read-only flag");
+  // The Readyset report of its own member mutes nothing else: the ProxySQL
+  // and Cluster places read other members and stay plain sidebar items.
+  assert.equal(await page.$eval('.main-nav button[data-place="proxysql"]', (e) => e.dataset.muted || ""), "", "a Readyset member's report never mutes ProxySQL");
+  assert.equal(await page.$eval('.main-nav button[data-place="cluster"]', (e) => e.dataset.muted || ""), "", "a Readyset member's report never mutes Cluster");
+  // The arrival note in the Readyset place, with the picker intact at 720 px.
+  writtenShots.push(...await layoutMatrix(page, h.shots, "topo-arrive-readyset", { frame: ".window-toolbar" }));
+  await page.setViewport({ width: 1440, height: 900 });
+  await setUiPreferences(page, { theme: "light" });
+  // Back to Topology returns with the same selection kept and focus on the card.
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  assert.ok(await page.$(`${rsCard}.is-selected`), "the clicked card stays selected on return");
+  // Focus returns to the card: the Topology place drives it from its own
+  // layout, so no settle pause is needed.
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-node") === "p-nav-rs");
+
+  // The note is the place's own: from the sidebar, Server and ProxySQL read
+  // the active member (no member was chosen for them) and show no note.
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  const healthSidebar = healthReads.length;
+  for (let i = 0; i < 100 && healthReads.length === healthSidebar; i++) await pause(25);
+  assert.equal(healthReads.at(-1).connection.profile_id, "p-nav-1", "Server from the sidebar reads the active member");
+  assert.equal(await page.$('.nav-member-note'), null, "no nav-rs note follows into the Server place");
+  assert.equal(await page.$('.server-place .group-server-note'), null, "the Server header has no member note for the active member");
+  const proxySidebar = proxysqlReads.length;
+  await page.click('.main-nav button[data-place="proxysql"]');
+  await page.waitForSelector('.main-nav button[data-place="proxysql"].active');
+  for (let i = 0; i < 100 && proxysqlReads.length === proxySidebar; i++) await pause(25);
+  assert.equal(proxysqlReads.at(-1).connection.profile_id, "p-nav-1", "ProxySQL from the sidebar reads the active member");
+  assert.equal(await page.$('.nav-member-note'), null, "no nav-rs note follows into the ProxySQL place");
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // A ProxySQL member (product "ProxySQL Admin", as the backend reports it)
+  // opens the ProxySQL place on that member.
+  const proxyBeforeCard = proxysqlReads.length;
+  await page.click('.topology-map-node[data-node="p-nav-proxy"]');
+  await page.waitForSelector('.main-nav button[data-place="proxysql"].active');
+  for (let i = 0; i < 100 && proxysqlReads.length === proxyBeforeCard; i++) await pause(25);
+  assert.equal(proxysqlReads.at(-1).connection.profile_id, "p-nav-proxy", "the read carries the clicked member");
+  assert.equal(proxysqlReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "Using nav-proxy from group mf-nav.");
+  // The badge is keyed to the member the place reads: the read above answered
+  // for nav-proxy, so the sidebar names nav-proxy's state.
+  let proxyBadgeHtml = "";
+  for (let i = 0; i < 100 && !proxyBadgeHtml.includes("nav-marker"); i++) {
+    proxyBadgeHtml = await page.$eval('.main-nav button[data-place="proxysql"]', (e) => e.outerHTML);
+    await pause(150);
+  }
+  assert.ok(proxyBadgeHtml.includes("nav-marker"), `the ProxySQL badge is the member's own: ${proxyBadgeHtml}`);
+  // The ProxySQL report of its own member mutes nothing else either: Readyset
+  // still reads nav-rs, and Cluster still reads nav-db-1.
+  assert.equal(await page.$eval('.main-nav button[data-place="readyset"]', (e) => e.dataset.muted || ""), "", "a ProxySQL member's report never mutes Readyset");
+  assert.equal(await page.$eval('.main-nav button[data-place="cluster"]', (e) => e.dataset.muted || ""), "", "a ProxySQL member's report never mutes Cluster");
+
+  // Switching places through the sidebar keeps each place's own note: Readyset
+  // still reads nav-rs, never nav-proxy.
+  await page.click('.main-nav button[data-place="readyset"]');
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), rsNote, "the Readyset place keeps its own member note");
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // A cluster member opens the Cluster place on that member.
+  state.fallback = { status: 200, body: clusterBase };
+  const clusterReadsNav = state.seen.length;
+  await page.click('.topology-map-node[data-node="p-nav-1"]');
+  await page.waitForSelector('.main-nav button[data-place="cluster"].active');
+  for (let i = 0; i < 100 && state.seen.length === clusterReadsNav; i++) await pause(25);
+  assert.equal(state.seen.at(-1).connection.profile_id, "p-nav-1", "the Cluster place reads the clicked member");
+  assert.equal(state.seen.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  // The clicked member is the active member: the place reads the connection
+  // in use and no note is needed.
+  assert.equal(await page.$('.nav-member-note'), null, "no member note when the place reads the active member");
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // Keyboard Enter on a focused card navigates the same way, on a member not
+  // read yet: the wait is for that member's own read. nav-db-2 answers as a
+  // plain server (no channels), so the shared cluster report read on nav-db-1
+  // is the only source a leaked cluster kind could come from.
+  replicationReport = {
+    ...structuredClone(replicationBase),
+    replica: false,
+    channels: [],
+    message: "This server is not a replica: it has no replication channel.",
+  };
+  const replReadsNav = replicationReads.length;
+  await page.focus('.topology-map-node[data-node="p-nav-2"]');
+  await page.keyboard.press("Enter");
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  for (let i = 0; i < 100 && replicationReads.length === replReadsNav; i++) await pause(25);
+  assert.equal(replicationReads.at(-1).connection.profile_id, "p-nav-2", "Enter opens the clicked member's Replication place");
+  assert.equal(replicationReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "Using nav-db-2 from group mf-nav.");
+  // Keyboard activation lands focus on the place's heading.
+  await page.waitForFunction(() => document.activeElement?.id === "replication-title");
+  // The cluster report read on nav-db-1 never lends its kind to this member:
+  // nav-db-2's Not a replica state offers no Open Cluster action.
+  await page.waitForFunction(() => document.querySelector('.replication-place')?.textContent.includes("Not a replica"));
+  assert.equal(await page.evaluate(() =>
+    [...document.querySelectorAll('.replication-place button')].some((b) => b.textContent.trim() === "Open Cluster")),
+    false, "another member's cluster report never lends Open Cluster to this member");
+  // A skip loop running on this non-active member. The replica answer turns
+  // the loop status poll on; Server's banner must show it and stop it there.
+  loopRegistry.set("10.0.1.12:3306:dba", [structuredClone(loopRunning)]);
+  replicationReport = structuredClone(replicationBase);
+  const loopStatusBefore = loopStatusReads.length;
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  for (let i = 0; i < 100 && loopStatusReads.length === loopStatusBefore; i++) await pause(25);
+  assert.equal(loopStatusReads.at(-1).connection.profile_id, "p-nav-2", "loop status reads on the replication member");
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  // Focus returns to the card that opened the place, driven by the Topology
+  // place itself once its map shows the card (no settle pause).
+  await page.waitForFunction(() => document.activeElement?.getAttribute("data-node") === "p-nav-2");
+
+  // Server's persistent banner shows the loop started on the non-active
+  // replication member, names the server it runs on, and stops it there.
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  assert.ok(await page.$$eval('.server-content > .ops-loop .ops-last',
+    (els) => els.some((e) => e.textContent.trim() === "on nav-db-2 · 10.0.1.12:3306 · SECONDARY")),
+    "the banner names the member the loop runs on");
+  await page.click('.server-content > .ops-loop button');
+  for (let i = 0; i < 100 && !loopStops.length; i++) await pause(25);
+  assert.equal(loopStops.length, 1, "Stop from the banner was sent");
+  assert.equal(loopStops.at(-1).connection.profile_id, "p-nav-2", "Stop goes to the member the loop runs on, not the member on screen");
+  assert.equal(loopStops.at(-1).connection.group_name, "mf-nav");
+  assert.equal(loopStops.at(-1).connection.host, "10.0.1.12");
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // Any other database member opens the Server place on that member, with the
+  // member note in the view header. The place was visited above (it read the
+  // active member): the previous member's report stays, greyed, until an
+  // explicit Refresh, whose read is the login to the clicked member.
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  // Five members: the Server: control is a select naming the chosen member.
+  await page.waitForFunction(() => document.querySelector('.server-view[data-view="health"] .group-server-select')?.value === "p-nav-3");
+  assert.equal(await page.$eval('.server-place .group-server-note', (e) => e.textContent.trim()), "Using nav-db-3 from group mf-nav.");
+  const healthBefore = healthReads.length;
+  await h.refresh();
+  for (let i = 0; i < 100 && healthReads.length === healthBefore; i++) await pause(25);
+  assert.equal(healthReads.at(-1).connection.profile_id, "p-nav-3", "the explicit read is the login to the clicked member");
+  assert.equal(healthReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // Refresh all reads the reports of the members the Replication and Cluster
+  // places read, never overwriting them with the connection in use.
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  const clusterBadgeBefore = await page.$eval('.main-nav button[data-place="cluster"]', (e) => e.textContent);
+  const replReadsBeforeAll = replicationReads.length, clusterReadsBeforeAll = state.seen.length;
+  await page.click('.server-view[data-view="health"] button[aria-label="Refresh options"]');
+  await page.click('[data-action="refresh-all"]');
+  for (let i = 0; i < 200 && !(replicationReads.length > replReadsBeforeAll && state.seen.length > clusterReadsBeforeAll); i++) await pause(25);
+  assert.ok(replicationReads.length > replReadsBeforeAll && state.seen.length > clusterReadsBeforeAll, "Refresh all read both topology reports");
+  await page.waitForFunction(() => !document.querySelector(".refresh-all-stop"));
+  assert.equal(replicationReads.at(-1).connection.profile_id, "p-nav-2", "Refresh all keeps the member the Replication place reads");
+  assert.equal(replicationReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(state.seen.at(-1).connection.profile_id, "p-nav-1", "Refresh all keeps the member the Cluster place reads");
+  assert.equal(await page.$eval('.main-nav button[data-place="cluster"]', (e) => e.textContent), clusterBadgeBefore, "the Cluster badge is the same report after Refresh all");
+  // The replication place still shows its own member's report, never a report
+  // the connection in use overwrote it with.
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  assert.equal(await page.$('.replication-place .gate.other-connection'), null, "Refresh all never overwrote the replication member's report");
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  assert.equal(topologyCalls.length, 1, "the map never re-read on navigation");
+  assert.equal(connectCalls.length, connectsBefore, "no card ever opened a new connection");
+
+  // A group edit that removes a member a place was on: the notice names the
+  // removal and never hides another place's "Using <member>" note, and it
+  // clears on the next navigation.
+  await page.click('.main-nav button[data-place="readyset"]');
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  await page.click('.window-statusbar .statusbar-group-edit');
+  await page.waitForSelector('dialog.group-editor-sheet[open]', { visible: true });
+  await page.click('dialog.group-editor-sheet[open] .group-editor-item[data-profile-id="p-nav-proxy"] input[type="checkbox"]');
+  await page.click('dialog.group-editor-sheet[open] .sheet-buttons button.primary');
+  await page.waitForFunction(() => !document.querySelector('dialog.group-editor-sheet[open]'));
+  await page.waitForFunction(() => {
+    const text = document.querySelector('.nav-member-note')?.textContent || "";
+    return text.includes("nav-proxy is not in this group any more; its views moved to nav-db-1.") &&
+      text.includes("Using nav-rs from group mf-nav.");
+  });
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.getAttribute("title")), await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "the joined note keeps its full text in the title");
+  await page.click('.main-nav button[data-place="cluster"]');
+  await page.waitForSelector('.main-nav button[data-place="cluster"].active');
+  assert.equal(await page.$('.nav-member-note'), null, "the removal notice clears on navigation");
+  await page.click('.main-nav button[data-place="readyset"]');
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), rsNote, "only the place's own note remains");
+
+  // ---------------------------------------------------------------------------
+  // 9. Write-safety S4: a skip loop started on p-nav-2 stays visible with Stop
+  //    bound to p-nav-2 when p-nav-3's card moves Replication (non-replica or
+  //    replica), and survives View > Reload without a false restart note.
+  //    Variant: a running maintenance job on another member stays visible with
+  //    Cancel bound to that member.
+  // ---------------------------------------------------------------------------
+  // Mark p-nav-3 as a replica card on the map so its card opens Replication.
+  navMembers.find((m) => m.profile_id === "p-nav-3").role = "replica";
+  navMapReport.map.nodes.find((n) => n.id === "p-nav-3").role = "replica";
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  const topoBeforeRefresh = topologyCalls.length;
+  await page.click('.topology-place button[data-action="refresh"]');
+  for (let i = 0; i < 100 && topologyCalls.length === topoBeforeRefresh; i++) await pause(25);
+  await page.waitForFunction(() => (document.querySelector('.topology-map-node[data-node="p-nav-3"]')?.getAttribute("aria-label") || "").startsWith("Open nav-db-3 in Replication:"));
+
+  // Start a skip loop on p-nav-2 from its card.
+  loopRegistry.clear();
+  let nav3IsReplica = false;
+  replicationReportFor = (body) => {
+    if (body.connection.profile_id === "p-nav-2") return structuredClone(replicationError);
+    if (body.connection.profile_id === "p-nav-3" && !nav3IsReplica) {
+      return {
+        ...structuredClone(replicationBase),
+        replica: false,
+        channels: [],
+        message: "This server is not a replica: it has no replication channel.",
+      };
+    }
+    return structuredClone(replicationBase);
+  };
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  const replBeforeStart = replicationReads.length;
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  for (let i = 0; i < 100 && replicationReads.length === replBeforeStart; i++) await pause(25);
+  await page.evaluate(() => {
+    [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')]
+      .find((b) => b.offsetParent && b.textContent.startsWith("Channels"))?.click();
+  });
+  await page.waitForSelector(`${replicationView} [data-row-key="channel:"]`, { visible: true });
+  await page.click(`${replicationView} [data-row-key="channel:"]`);
+  await page.waitForFunction(() => [...document.querySelectorAll('.replication-place .view-inspector button')]
+    .some((b) => b.textContent.includes("Skip until stopped") && !b.disabled));
+  await page.evaluate(() => {
+    [...document.querySelectorAll('.replication-place .view-inspector button')]
+      .find((b) => b.textContent.includes("Skip until stopped"))?.click();
+  });
+  await page.waitForSelector('dialog.ops-confirm[open]', { visible: true });
+  await page.click('dialog.ops-confirm[open] .ops-loop-options label:first-of-type input');
+  const startsBeforeS4 = loopStarts.length;
+  await page.click('dialog.ops-confirm[open] .sheet-actions button:last-of-type');
+  for (let i = 0; i < 100 && loopStarts.length === startsBeforeS4; i++) await pause(25);
+  assert.equal(loopStarts.at(-1).connection.profile_id, "p-nav-2", "loop start runs on p-nav-2");
+  await page.waitForFunction(() => !document.querySelector('dialog.ops-confirm[open]'));
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    s.replication_loop_member === "p-nav-2" &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+
+  // Open p-nav-3's card as a non-replica: Server's banner (and Replication)
+  // must still show the nav-db-2 loop.
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  const replBeforeNav3NonReplica = replicationReads.length;
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  for (let i = 0; i < 100 && replicationReads.length === replBeforeNav3NonReplica; i++) await pause(25);
+  await page.waitForFunction(() => document.querySelector('.replication-place')?.textContent.includes("Not a replica"));
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  assert.ok(await page.$$eval('.server-content > .ops-loop .ops-last',
+    (els) => els.some((e) => e.textContent.trim() === "on nav-db-2 · 10.0.1.12:3306 · SECONDARY")),
+    "Server's banner still names nav-db-2 after opening non-replica p-nav-3");
+
+  // Open p-nav-3's card as a replica (whose own loop poll returns []): it must
+  // publish only p-nav-3's key and never overwrite nav-db-2's loop or Stop.
+  nav3IsReplica = true;
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  const statusBeforeNav3Replica = loopStatusReads.length;
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  for (let i = 0; i < 120 && !loopStatusReads.slice(statusBeforeNav3Replica).some((b) => b.connection.profile_id === "p-nav-3"); i++) await pause(25);
+  assert.ok(loopStatusReads.slice(statusBeforeNav3Replica).some((b) => b.connection.profile_id === "p-nav-3"), "p-nav-3 polled its own loop status");
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  assert.ok(await page.$$eval('.server-content > .ops-loop .ops-last',
+    (els) => els.some((e) => e.textContent.trim() === "on nav-db-2 · 10.0.1.12:3306 · SECONDARY")),
+    "Server's banner still names nav-db-2 after replica p-nav-3 polled []");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    s.replication_loop_member === "p-nav-2" &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  const stopsBeforeS4 = loopStops.length;
+  await page.click('.server-content > .ops-loop[data-loop="running"] button');
+  for (let i = 0; i < 100 && loopStops.length === stopsBeforeS4; i++) await pause(25);
+  assert.equal(loopStops.at(-1).connection.profile_id, "p-nav-2", "Stop posts skip-loop/stop with profile_id p-nav-2 even while Replication is on p-nav-3");
+  assert.equal(loopStops.at(-1).connection.group_name, "mf-nav");
+  assert.equal(loopStops.at(-1).connection.host, "10.0.1.12");
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_member);
+
+  // View > Reload with the registry still running on nav-db-2: restore polls
+  // p-nav-2, shows no "Stopped when myflames restarted" note, and keeps the
+  // nav-db-2 loop visible with a working Stop.
+  loopRegistry.set("10.0.1.12:3306:dba", [structuredClone(loopRunning)]);
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    s.replication_loop_member === "p-nav-2" &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const statusBeforeReload = loopStatusReads.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  for (let i = 0; i < 160 && !loopStatusReads.slice(statusBeforeReload).some((b) => b.connection.profile_id === "p-nav-2"); i++) await pause(25);
+  assert.ok(loopStatusReads.slice(statusBeforeReload).some((b) => b.connection.profile_id === "p-nav-2"), "reload polls the persisted loop member p-nav-2");
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  assert.equal(await page.$('.replication-place .ops-note'), null, "no false Stopped when myflames restarted note on reload");
+  assert.ok(await page.$$eval('.replication-place .ops-loop[data-loop="running"] .ops-last',
+    (els) => els.some((e) => e.textContent.includes("on nav-db-2"))),
+    "the reloaded Replication place names the running nav-db-2 loop");
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  assert.ok(await page.$$eval('.server-content > .ops-loop[data-loop="running"] .ops-last',
+    (els) => els.some((e) => e.textContent.includes("on nav-db-2"))),
+    "the reloaded Server banner names the running nav-db-2 loop");
+  const stopsBeforeReloadStop = loopStops.length;
+  await page.click('.server-content > .ops-loop[data-loop="running"] button');
+  for (let i = 0; i < 100 && loopStops.length === stopsBeforeReloadStop; i++) await pause(25);
+  assert.equal(loopStops.at(-1).connection.profile_id, "p-nav-2", "Stop after reload targets p-nav-2");
+  assert.equal(loopStops.at(-1).connection.host, "10.0.1.12");
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+
+  // Variant: a running maintenance job on another member of the active group
+  // stays visible in Server's banner with a working Cancel bound to that member.
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: "job-nav-2" }]);
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await h.view("maintenance");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .group-server-select, .server-view[data-view="maintenance"] .group-server-segmented', { visible: true });
+  const chooseMaintServer = async (id) => {
+    const sel = await page.$('.server-view[data-view="maintenance"] .group-server-select');
+    if (sel) await page.select('.server-view[data-view="maintenance"] .group-server-select', id);
+    else await page.evaluate((target) => {
+      const m = [...document.querySelectorAll('.server-view[data-view="maintenance"] .group-server-segmented button')]
+        .find((b) => b.title.includes(target));
+      m?.click();
+    }, id === "p-nav-2" ? "nav-db-2" : "nav-db-3");
+  };
+  await chooseMaintServer("p-nav-2");
+  await page.evaluate(() => {
+    [...document.querySelectorAll('.server-view[data-view="maintenance"] [aria-label="Maintenance task"] button')]
+      .find((b) => b.textContent.trim() === "Dump")?.click();
+  });
+  await page.waitForSelector('.server-view[data-view="maintenance"] .ops-job[data-job="job-nav-2"][data-state="running"]');
+  await chooseMaintServer("p-nav-3");
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-nav-2"]', { visible: true });
+  await h.view("health");
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-nav-2"]', { visible: true });
+  assert.match(await page.$eval('.server-content > .ops-loop[data-maintenance-job="job-nav-2"]', (e) => e.textContent),
+    /Dump on nav-db-2 · 10\.0\.1\.12:3306 · SECONDARY is running\./);
+  const cancelsBefore = lifecycleCancels.length;
+  await page.click('.server-content > .ops-loop[data-maintenance-job="job-nav-2"] button.action-button');
+  for (let i = 0; i < 100 && lifecycleCancels.length === cancelsBefore; i++) await pause(25);
+  assert.equal(lifecycleCancels.at(-1).id, "job-nav-2");
+  assert.equal(lifecycleCancels.at(-1).connection.profile_id, "p-nav-2", "Cancel targets the job's member p-nav-2");
+  assert.equal(lifecycleCancels.at(-1).connection.group_name, "mf-nav");
+  assert.equal(lifecycleCancels.at(-1).connection.host, "10.0.1.12");
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job="job-nav-2"]'));
+
+  // ---------------------------------------------------------------------------
+  // 10. Write-safety S6-S9: multi-member reload (p-nav-1, p-nav-2, p-nav-3),
+  //     background polling of advancing/finished other-member loops and jobs,
+  //     endpoint-key Stop with visible stale-key refusal reason, and keeping
+  //     the loop flag with a note when the active profile moves out of group.
+  // ---------------------------------------------------------------------------
+  // S6: three loops running on p-nav-1 (active), p-nav-2 and p-nav-3 survive
+  // View > Reload when Server is on screen, polling every member including the
+  // active one.
+  loopRegistry.clear();
+  loopRegistry.set("10.0.1.11:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-nav-1" }]);
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-nav-2" }]);
+  loopRegistry.set("10.0.1.13:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-nav-3" }]);
+  replicationReportFor = () => structuredClone(replicationBase);
+  // Switch Replication away from p-nav-1 first (to p-nav-2 and p-nav-3), then
+  // reopen mf-nav so Replication reads p-nav-1 fresh and polls its running loop.
+  for (const id of ["p-nav-2", "p-nav-3"]) {
+    await page.click('.main-nav button[data-place="topology"]');
+    await page.waitForSelector('.main-nav button[data-place="topology"].active');
+    const sb = loopStatusReads.length;
+    await page.click(`.topology-map-node[data-node="${id}"]`);
+    await page.waitForSelector('.main-nav button[data-place="replication"].active');
+    await page.click(`${replicationView} button[data-action="refresh"]`);
+    for (let i = 0; i < 120 && !loopStatusReads.slice(sb).some((b) => b.connection.profile_id === id); i++) await pause(25);
+    assert.ok(loopStatusReads.slice(sb).some((b) => b.connection.profile_id === id), `${id} polled its running loop`);
+  }
+  const soloOpt = await connectionOption(page, "solo-db");
+  await page.keyboard.press("Escape");
+  await chooseConnection(page, soloOpt);
+  await page.waitForFunction(() => /10\.0\.0\.99/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  const stBeforeMulti = loopStatusReads.length;
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  for (let i = 0; i < 120 && !loopStatusReads.slice(stBeforeMulti).some((b) => b.connection.profile_id === "p-nav-1"); i++) await pause(25);
+  assert.ok(loopStatusReads.slice(stBeforeMulti).some((b) => b.connection.profile_id === "p-nav-1"), "p-nav-1 polled its running loop");
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForFunction(() => document.querySelectorAll('.server-content > .ops-loop[data-loop="running"]').length === 3);
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    ["p-nav-1", "p-nav-2", "p-nav-3"].every((id) => s.replication_loop_members.includes(id)));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const statusBeforeMultiReload = loopStatusReads.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  for (let i = 0; i < 200; i++) {
+    const polled = new Set(loopStatusReads.slice(statusBeforeMultiReload).map((b) => b.connection.profile_id));
+    if (polled.has("p-nav-1") && polled.has("p-nav-2") && polled.has("p-nav-3")) break;
+    await pause(25);
+  }
+  const polledAfterMulti = new Set(loopStatusReads.slice(statusBeforeMultiReload).map((b) => b.connection.profile_id));
+  assert.ok(polledAfterMulti.has("p-nav-1"), "S6 reload keeps the active member's own loop poll");
+  assert.ok(polledAfterMulti.has("p-nav-2") && polledAfterMulti.has("p-nav-3"), "S6 reload polls every persisted group member");
+  await page.waitForFunction(() => document.querySelectorAll('.server-content > .ops-loop[data-loop="running"]').length === 3);
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  assert.equal(await page.$('.replication-place .ops-note'), null, "no false restart note when all three loops are still running");
+  await page.waitForFunction(() => document.querySelectorAll('.replication-place .ops-loop[data-loop="running"]').length === 3);
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  // Stop all three from Server's banner and confirm each targets its own server.
+  for (const [label, expectedId, expectedHost] of [
+    ["", "p-nav-1", "10.0.1.11"],
+    ["nav-db-2", "p-nav-2", "10.0.1.12"],
+    ["nav-db-3", "p-nav-3", "10.0.1.13"],
+  ]) {
+    const stopsBefore = loopStops.length;
+    const clicked = await page.evaluate((targetLabel) => {
+      const rows = [...document.querySelectorAll('.server-content > .ops-loop[data-loop="running"]')];
+      const row = rows.find((e) => targetLabel === ""
+        ? ![...e.querySelectorAll(".ops-last")].some((s) => s.textContent.trim().startsWith("on "))
+        : e.textContent.includes(targetLabel));
+      const b = row && [...row.querySelectorAll("button")].find((x) => x.textContent.includes("Stop"));
+      if (!b) return false;
+      b.click();
+      return true;
+    }, label);
+    assert.equal(clicked, true, `Stop clicked for ${expectedId}`);
+    for (let i = 0; i < 100 && loopStops.length === stopsBefore; i++) await pause(25);
+    assert.equal(loopStops.at(-1).connection.profile_id, expectedId, `Stop targets ${expectedId}`);
+    assert.equal(loopStops.at(-1).connection.host, expectedHost);
+  }
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_members);
+
+  // S7: background shell polling refreshes an advancing other-member loop and
+  // clears it once the loop ends, then stops polling; maintenance-job variant
+  // clears a finished other-member job banner too.
+  loopRegistry.clear();
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-s7" }]);
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  // Advance p-nav-2's registry while Replication shows p-nav-3.
+  loopRegistry.set("10.0.1.12:3306:dba", [{
+    ...structuredClone(loopRunning),
+    job_id: "job-s7",
+    skips_done: 400,
+    message: "Skipping 1062 on channel '': 400 skipped since 18:16 UTC.",
+  }]);
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.replication-place .ops-loop[data-loop="running"] strong')]
+      .some((e) => e.textContent.includes("400 skipped")),
+    { timeout: 8000 });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  assert.ok(await page.$$eval('.server-content > .ops-loop[data-loop="running"] strong',
+    (els) => els.some((e) => e.textContent.includes("400 skipped"))),
+    "S7 Server banner shows the refreshed skip count");
+  // End p-nav-2's loop in the registry: Server's banner must clear and polling must stop.
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopStopped), job_id: "job-s7" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'), { timeout: 8000 });
+  const nav2PollsAfterStop = loopStatusReads.filter((b) => b.connection.profile_id === "p-nav-2").length;
+  await pause(2500);
+  assert.equal(loopStatusReads.filter((b) => b.connection.profile_id === "p-nav-2").length, nav2PollsAfterStop,
+    "S7 stops background polling once the other member's loop ends");
+
+  // S7 maintenance-job variant: a running job on p-nav-2 updates while Server shows p-nav-3.
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: "job-s7-maint" }]);
+  await h.view("maintenance");
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .ops-job[data-job="job-s7-maint"][data-state="running"]');
+  await chooseMaintServer("p-nav-3");
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-s7-maint"]', { visible: true });
+  const maintPollsBefore = lifecycleStatusReads.filter((b) => b.connection.profile_id === "p-nav-2" && b.id === "job-s7-maint").length;
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobCancelled), id: "job-s7-maint" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job="job-s7-maint"]'), { timeout: 8000 });
+  assert.ok(lifecycleStatusReads.filter((b) => b.connection.profile_id === "p-nav-2" && b.id === "job-s7-maint").length > maintPollsBefore,
+    "S7 maintenance variant polled the other member's job and cleared its banner");
+
+  // S8: plain connection loop -> open group Stop succeeds by endpointKey;
+  // edited endpoint -> Stop sends nothing and shows a visible refusal reason.
+  loopRegistry.clear();
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-s8-plain" }]);
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  const nav2Opt = await connectionOption(page, "nav-db-2");
+  await page.keyboard.press("Escape");
+  await chooseConnection(page, nav2Opt);
+  await page.waitForFunction(() => /10\.0\.1\.12/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  const stopsBeforeS8Plain = loopStops.length;
+  await page.click('.server-content > .ops-loop[data-loop="running"] button');
+  for (let i = 0; i < 100 && loopStops.length === stopsBeforeS8Plain; i++) await pause(25);
+  assert.equal(loopStops.at(-1).connection.profile_id, "p-nav-2", "S8 plain->group Stop matches by endpointKey");
+  assert.equal(loopStops.at(-1).connection.host, "10.0.1.12");
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+
+  // S8 stale endpoint edit: host changes to 10.0.1.99 -> Stop sends nothing and
+  // displays a visible alert reason on the banner.
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-s8-stale" }]);
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  const nav2Profile = profiles.find((p) => p.id === "p-nav-2");
+  nav2Profile.host = "10.0.1.99";
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await pause(800);
+  const stopsBeforeStale = loopStops.length;
+  await page.click('.server-content > .ops-loop[data-loop="running"] button');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"] .ops-loop-error[role="alert"]', { visible: true });
+  assert.equal(loopStops.length, stopsBeforeStale, "S8 stale endpoint sends no Stop request");
+  assert.match(await page.$eval('.server-content > .ops-loop[data-loop="running"] .ops-loop-error', (e) => e.textContent),
+    /Could not send Stop:.*changed/, "S8 banner explains why Stop was refused");
+  // Restore p-nav-2's host so S9 runs with the original endpoint.
+  nav2Profile.host = "10.0.1.12";
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await pause(600);
+
+  // S9: active profile p-nav-1 moves to another group before reload while
+  // p-nav-2 stays in mf-nav -> zero status reads to p-nav-2, flag kept, visible
+  // .ops-note naming nav-db-2.
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const nav1Profile = profiles.find((p) => p.id === "p-nav-1");
+  nav1Profile.group = "other-group";
+  const statusBeforeMoved = loopStatusReads.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector('.server-content > .ops-note', { visible: true });
+  assert.equal(loopStatusReads.slice(statusBeforeMoved).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "S9 never polls a saved loop member outside the active connection's group");
+  const movedNoteServer = await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim());
+  assert.match(movedNoteServer, /nav-db-2.*mf-nav/, "S9 Server note names the outside-group member and group");
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.waitForSelector('.replication-place .ops-note', { visible: true });
+  assert.match(await page.$eval('.replication-place .ops-note', (e) => e.textContent.trim()), /nav-db-2.*mf-nav/,
+    "S9 Replication note names the outside-group member and group");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  // S10: when the loop member itself leaves its group, the backend keeps the
+  // loop running, so restore keeps the flag and shows the no-group note without
+  // polling p-nav-2; an id is dropped only when its saved connection is deleted.
+  nav1Profile.group = "mf-nav";
+  nav2Profile.group = "";
+  const statusBeforeLeft = loopStatusReads.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector('.replication-place .ops-note', { visible: true });
+  assert.equal(loopStatusReads.slice(statusBeforeLeft).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "S10 never polls a saved loop member that left its group");
+  const noGroupPattern = /nav-db-2, which is no longer in a connection group\. Open nav-db-2 to check or stop it\./;
+  assert.match(await page.$eval('.replication-place .ops-note', (e) => e.textContent.trim()), noGroupPattern,
+    "S10 Replication note names the member with the no-group wording after reload");
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-note', { visible: true });
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()), noGroupPattern,
+    "S10 Server note names the member with the no-group wording after reload");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+
+  // S10 in-window: a member removed from the active group by a refresh while
+  // its loop runs leaves the live banner, gets no polls, keeps the saved flag,
+  // and stays visible in the note list until its saved connection is deleted.
+  async function focusProfilesRefresh() {
+    const before = profilesListCalls;
+    await pause(1100);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    for (let i = 0; i < 120 && profilesListCalls === before; i++) await pause(25);
+    assert.ok(profilesListCalls > before, "focus refreshed /api/profiles/list");
+    await pause(200);
+  }
+  nav2Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  nav2Profile.group = "";
+  await focusProfilesRefresh();
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Refresh group connection mf-nav"]', { visible: true });
+  const connectsBeforeS10Refresh = connectCalls.length;
+  await page.click('button[aria-label="Refresh group connection mf-nav"]');
+  for (let i = 0; i < 120 && connectCalls.length === connectsBeforeS10Refresh; i++) await pause(25);
+  await pause(400);
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+  await page.waitForSelector('.server-content > .ops-note', { visible: true });
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()), noGroupPattern,
+    "S10 in-window refresh moves the removed member's running loop into the no-group note");
+  const pollsAfterInWindowLeave = loopStatusReads.length;
+  await pause(2500);
+  assert.equal(loopStatusReads.slice(pollsAfterInWindowLeave).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "S10 in-window refresh stops polling the removed member");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  // Control: deleting the saved connection itself drops the note and flag.
+  const nav2Idx = profiles.indexOf(nav2Profile);
+  profiles.splice(nav2Idx, 1);
+  await focusProfilesRefresh();
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-note'));
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_members);
+  profiles.splice(nav2Idx, 0, nav2Profile);
+  nav2Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+
+  // S11: one failed /api/profiles/list read marks the unresolved loop row
+  // "Status not refreshed" without killing the poller; once the list recovers
+  // and the registry advances to 400, the banner updates within two LOOP_POLL_MS
+  // and clears when the loop ends.
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-s11" }]);
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Refresh group connection mf-nav"]', { visible: true });
+  const connectsBeforeS11 = connectCalls.length;
+  await page.click('button[aria-label="Refresh group connection mf-nav"]');
+  for (let i = 0; i < 120 && connectCalls.length === connectsBeforeS11; i++) await pause(25);
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-place button[data-action="refresh"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  const pollsBeforeS11Fail = loopStatusReads.length;
+  for (let i = 0; i < 180 && !loopStatusReads.slice(pollsBeforeS11Fail).some((b) => b.connection.profile_id === "p-nav-2"); i++) await pause(25);
+  assert.ok(loopStatusReads.slice(pollsBeforeS11Fail).some((b) => b.connection.profile_id === "p-nav-2"),
+    "S11 baseline background poller polls p-nav-2 after reload");
+  profilesFail = true;
+  await focusProfilesRefresh();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.server-content > .ops-loop[data-loop="running"] .ops-loop-stale')]
+      .some((e) => e.textContent.trim() === "Status not refreshed"),
+    { timeout: 4000 });
+  // Let at least one LOOP_POLL_MS tick fire while no target resolves.
+  await pause(2500);
+  profilesFail = false;
+  loopRegistry.set("10.0.1.12:3306:dba", [{
+    ...structuredClone(loopRunning),
+    job_id: "job-s11",
+    skips_done: 400,
+    checks: 400,
+    message: "Skipping 1062 on channel '': 400 skipped since 18:16 UTC.",
+  }]);
+  const pollsBeforeRecover = loopStatusReads.length;
+  const listBeforeRecover = profilesListCalls;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  for (let i = 0; i < 120 && profilesListCalls === listBeforeRecover; i++) await pause(25);
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.server-content > .ops-loop[data-loop="running"] strong')]
+      .some((e) => e.textContent.includes("400 skipped")) &&
+    !document.querySelector('.server-content > .ops-loop[data-loop="running"] .ops-loop-stale'),
+    { timeout: 4500 });
+  assert.ok(loopStatusReads.slice(pollsBeforeRecover).some((b) => b.connection.profile_id === "p-nav-2"),
+    "S11 poller resumed after /api/profiles/list recovered");
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopStopped), job_id: "job-s11" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'),
+    { timeout: 5000 });
+
   assert.deepEqual(h.errors, [], "Group actions and replication branch changes produce no runtime exceptions");
 
   console.log(`topology-groups: ok (${writtenShots.length} screenshots: ${writtenShots.join(", ")})`);

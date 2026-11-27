@@ -111,6 +111,8 @@ def fail(message):
 def run_one(part_sql):
     text = re.sub(r'^/\*myflames:[^*]*\*/\s*', '', part_sql.strip()).rstrip(';')
     lower = text.lower()
+    if cfg.get('pause_on') and cfg['pause_on'].lower() in lower:
+        time.sleep(cfg.get('pause_on_seconds', 0.5))
     if cfg.get('error_on') and cfg['error_on'].lower() == lower:
         fail(cfg.get('query_error', 'ERROR 1045 (28000): Refused login secret_payload'))
     if lower == 'select @@version_comment':
@@ -118,6 +120,27 @@ def run_one(part_sql):
         emit(['@@version_comment'], [[comment]])
     elif lower == 'select @@version':
         emit(['@@version'], [[variables['version']]])
+    elif lower == 'select @@server_uuid':
+        if cfg.get('proxied_uuid_error'):
+            fail(cfg['proxied_uuid_error'])
+        if 'proxied_server_uuid' in cfg:
+            val = cfg['proxied_server_uuid']
+            emit(['@@server_uuid'], [[val]] if val is not None else [])
+        elif cfg.get('proxy') == 'readyset':
+            emit(['@@server_uuid'], [])
+        else:
+            val = variables.get('server_uuid')
+            emit(['@@server_uuid'], [[val]] if val is not None else [])
+    elif lower == 'select @@hostname, @@port':
+        if cfg.get('proxied_host_port_error'):
+            fail(cfg['proxied_host_port_error'])
+        if 'proxied_hostname' in cfg or 'proxied_port' in cfg:
+            h, p = cfg.get('proxied_hostname'), cfg.get('proxied_port')
+            emit(['@@hostname', '@@port'], [[h, p]] if (h is not None or p is not None) else [])
+        elif cfg.get('proxy') == 'readyset':
+            emit(['@@hostname', '@@port'], [])
+        else:
+            emit(['@@hostname', '@@port'], [[variables.get('hostname'), variables.get('port')]])
     elif lower.startswith('select @@global.'):
         name = lower[len('select @@global.'):]
         if cfg.get('exact_denied'):
@@ -130,8 +153,16 @@ def run_one(part_sql):
     elif lower == 'show readyset version':
         emit(['name', 'value'], [['release version', 'stable-test']])
     elif lower == 'show readyset status':
-        emit(['name', 'value'], [['Status', 'Online'], ['CDC Server', cfg.get('cdc_server')]])
+        rows = [['Status', 'Online'], ['CDC Server', cfg.get('cdc_server')]]
+        if 'replication_status' in cfg:
+            if cfg['replication_status'] is not None:
+                rows.append(['Replication Status', cfg['replication_status']])
+        else:
+            rows.append(['Replication Status', 'Running'])
+        emit(['name', 'value'], rows)
     elif 'from replication_status limit 0' in lower:
+        if cfg.get('readyset_adapter'):
+            fail("ERROR 1146 (42S02): Table 'replication_status' doesn't exist")
         emit([], [])
     elif 'from readyset.upstream_servers' in lower or 'from upstream_servers' in lower:
         rows = cfg.get('upstreams', [])
@@ -216,6 +247,28 @@ def run_one(part_sql):
             emit(['MEMBER_ROLE', 'MEMBER_STATE'], [[role, state]] if present else [])
     elif 'from performance_schema.replication_group_member_stats' in lower:
         emit(['COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE'], [[cfg.get('queue', 0)]])
+    elif 'performance_schema.user_variables_by_thread' in lower:
+        if cfg.get('dump_threads_error'):
+            fail(cfg['dump_threads_error'])
+        sessions = cfg.get('dump_threads')
+        if sessions is None:
+            sessions = cfg.get('readyset_replicas', [])
+        out_rows = []
+        for idx, row in enumerate(sessions):
+            pid = row.get('pid', idx + 1)
+            attrs = row.get('attrs') or []
+            if not attrs:
+                out_rows.append([pid, row.get('uuid'), row.get('host'), row.get('user'), None, None])
+            else:
+                for attr_name, attr_val in attrs:
+                    out_rows.append([pid, row.get('uuid'), row.get('host'), row.get('user'), attr_name, attr_val])
+        emit(['PROCESSLIST_ID', 'replica_uuid', 'PROCESSLIST_HOST', 'PROCESSLIST_USER', 'ATTR_NAME', 'ATTR_VALUE'],
+             out_rows)
+    elif 'from performance_schema.threads' in lower and 'performance_schema.session_connect_attrs' in lower:
+        if cfg.get('readyset_clients_error'):
+            fail(cfg['readyset_clients_error'])
+        rows = cfg.get('readyset_clients', [])
+        emit(['PROCESSLIST_HOST', 'PROCESSLIST_USER'], [[row.get('host'), row.get('user')] for row in rows])
     elif 'from performance_schema.session_connect_attrs' in lower:
         if cfg.get('attrs_error'):
             fail(cfg['attrs_error'])
@@ -223,8 +276,15 @@ def run_one(part_sql):
         count = routed if isinstance(routed, int) and not isinstance(routed, bool) else (1 if routed else 0)
         emit(['COUNT(*)'], [[count]])
     elif lower.startswith('show global status'):
-        values = cfg.get('status', {})
+        if 'performance_schema_session_connect_attrs_lost' in lower and cfg.get('attrs_lost_error'):
+            fail(cfg['attrs_lost_error'])
+        values = dict(cfg.get('status', {}))
         names = re.findall(r"'([^']+)'", text)
+        if ('Performance_schema_session_connect_attrs_lost' in names
+                and 'Performance_schema_session_connect_attrs_lost' not in values
+                and not cfg.get('attrs_lost_missing')
+                and 'mariadb' not in str(variables.get('version', '')).lower()):
+            values['Performance_schema_session_connect_attrs_lost'] = '0'
         emit(['Variable_name', 'Value'], [[name, values[name]] for name in names if name in values])
     elif lower in ('show replica status', 'show slave status', 'show all slaves status'):
         channels = cfg.get('channels', [])
@@ -272,7 +332,9 @@ def member_fixture(uuid=UUID_A, engine='mysql', role=None, gtid=None, **fields):
                  'server_id': '1', 'hostname': 'own-member', 'port': '3306', 'read_only': 'OFF',
                  'gtid_current_pos' if engine == 'mariadb' else 'gtid_executed': gtid or ''}
     if engine == 'mysql':
-        variables.update(server_uuid=uuid, super_read_only='OFF', gtid_mode='ON')
+        variables.update(server_uuid=uuid, super_read_only='OFF', gtid_mode='ON',
+                         performance_schema='ON',
+                         performance_schema_session_connect_attrs_size='512')
         if role:
             variables.update(group_replication_group_name=UUID_D, group_replication_single_primary_mode='ON')
     result = dict(variables=variables, role=role)
@@ -3107,6 +3169,1178 @@ class TopologyReadTests(GroupCase):
         self.assertEqual(edge['evidence'], 'endpoint')
         self.assertIs(edge['verified'], False)
 
+    def test_map_readyset_proxied_uuid_verifies_upstream_without_copying_identity(self):
+        self.save('primary', 'G', host='203.0.113.10', port=3307)
+        readyset = member_fixture(
+            proxy='readyset',
+            readyset_adapter=True,
+            proxied_server_uuid=UUID_B,
+            cdc_server='internal-primary:3306',
+            upstreams=[{
+                'host': 'internal-primary', 'port': '3306', 'user': 'secret_upstream_user',
+                'database': 'secret_table', 'purpose': 'cdc, proxy', 'active_cdc': '1',
+                'health': 'up', 'password': 'secret_channel_password',
+            }],
+        )
+        readyset['variables']['version_comment'] = 'Readyset'
+        primary = member_fixture(UUID_B)
+        primary['variables'].update(hostname='vox1-host', port='3307')
+        with self.clients({'active.example': readyset, '203.0.113.10': primary}):
+            report = self.read('map')
+        nodes = self.assert_map_schema(report)
+        # Readyset never stores the proxied UUID as its own server_uuid or alias.
+        rs_member = next(m for m in report['members'] if m['profile_id'] == 'active')
+        self.assertIsNone(rs_member['server_uuid'])
+        self.assertIsNone(rs_member['duplicate_of'])
+        self.assertIsNone(nodes['active']['server_uuid'])
+        self.assertIsNone(nodes['active']['duplicate_of'])
+        self.assertEqual(set(nodes), {'active', 'primary'}, 'unmatched upstream address must not create a peer card')
+        self.assertEqual(len(report['map']['edges']), 1)
+        edge = report['map']['edges'][0]
+        self.assertEqual((edge['from'], edge['to'], edge['kind'], edge['evidence'], edge['verified'],
+                          edge['state'], edge['label']),
+                         ('active', 'primary', 'cache_upstream', 'proxied_identity', True, 'up', 'Upstream'))
+
+    def test_map_readyset_multi_upstream_labels_queries_and_preserves_other_address_evidence(self):
+        self.save('primary', 'G')
+        self.save('replica', 'G')
+        cases = (
+            ('queries_only', UUID_C, 'primary.example:3306', 'replica.example', 'replica', 'Upstream (queries)', 'primary'),
+            ('queries_unmatched_host', UUID_C, 'primary.example:3306', 'internal-replica', 'replica', 'Upstream (queries)', 'primary'),
+            ('cdc_matches_proxied', UUID_B, 'primary.example:3306', 'replica.example', 'primary', 'Upstream', 'replica'),
+        )
+        for name, proxied_uuid, cdc_server, query_host, verified_to, expected_label, addr_to in cases:
+            with self.subTest(case=name):
+                readyset = member_fixture(
+                    proxy='readyset',
+                    readyset_adapter=True,
+                    proxied_server_uuid=proxied_uuid,
+                    cdc_server=cdc_server,
+                    upstreams=[
+                        {'host': 'primary.example', 'port': '3306', 'purpose': 'cdc, proxy' if verified_to == 'primary' else 'cdc',
+                         'active_cdc': '1', 'health': 'up'},
+                        {'host': query_host, 'port': '3306', 'purpose': 'proxy', 'active_cdc': '0', 'health': 'up'},
+                    ],
+                )
+                readyset['variables']['version_comment'] = 'Readyset'
+                with self.clients({
+                    'active.example': readyset,
+                    'primary.example': member_fixture(UUID_B),
+                    'replica.example': member_fixture(UUID_C),
+                }):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(set(nodes), {'active', 'primary', 'replica'})
+                edges = {edge['to']: edge for edge in report['map']['edges']}
+                self.assertEqual(set(edges), {'primary', 'replica'})
+                self.assertEqual((edges[verified_to]['evidence'], edges[verified_to]['verified'], edges[verified_to]['label']),
+                                 ('proxied_identity', True, expected_label))
+                self.assertEqual((edges[addr_to]['evidence'], edges[addr_to]['verified'], edges[addr_to]['label']),
+                                 ('endpoint', False, 'Upstream'))
+
+    def test_map_readyset_registration_attributed_positively_on_mysql8_and_mysql57(self):
+        rs_replica_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        ext_replica_uuid = 'eeeeeeee-0000-4000-8000-000000000005'
+        self.save('replica', 'G')
+        self.save('readyset', 'G', port=3309)
+        cases = (
+            ('mysql84_show_replicas', '8.4.13', None, [
+                {'Server_Id': '103', 'Host': 'mf-rs-readyset', 'Port': '3307', 'Source_Id': '101', 'Replica_UUID': rs_replica_uuid},
+                {'Server_Id': '102', 'Host': 'replica.example', 'Port': '3306', 'Source_Id': '101', 'Replica_UUID': UUID_B},
+                {'Server_Id': '104', 'Host': 'ext-replica.example', 'Port': '3306', 'Source_Id': '101', 'Replica_UUID': ext_replica_uuid},
+            ]),
+            ('mysql57_show_slave_hosts', '5.7.44-48', 'SHOW REPLICAS', [
+                {'Server_id': '103', 'Host': '', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': rs_replica_uuid},
+                {'Server_id': '102', 'Host': 'replica.example', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': UUID_B},
+                {'Server_id': '104', 'Host': 'ext-replica.example', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': ext_replica_uuid},
+            ]),
+        )
+        for name, version, err_on, replica_rows in cases:
+            with self.subTest(case=name):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=replica_rows,
+                    dump_threads=[
+                        {'pid': 10, 'uuid': UUID_B, 'host': '192.168.112.3', 'user': 'mf_repl',
+                         'attrs': [('program_name', 'mysqld'), ('_client_role', 'binary_log_listener')]},
+                        {'pid': 26, 'uuid': rs_replica_uuid, 'host': '192.168.112.4',
+                         'user': 'secret_upstream_user', 'attrs': []},
+                    ],
+                    readyset_clients=[{'host': '192.168.112.4', 'user': 'secret_upstream_user'}],
+                )
+                primary['variables']['version'] = version
+                if err_on:
+                    primary['error_on'] = err_on
+                    primary['query_error'] = "ERROR 1064 (42000) at line 1: You have an error in your SQL syntax near 'REPLICAS'"
+                replica = member_fixture(UUID_B, channels=[{
+                    'Source_UUID': UUID_A, 'Source_Host': 'active.example', 'Source_Port': '3306',
+                    'Replica_IO_Running': 'Yes', 'Replica_SQL_Running': 'Yes',
+                }])
+                readyset = member_fixture(
+                    proxy='readyset',
+                    readyset_adapter=True,
+                    proxied_server_uuid=UUID_A,
+                    proxied_hostname='internal-primary',
+                    proxied_port='3306',
+                    cdc_server='internal-primary:3306',
+                    upstreams=[{'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy',
+                                'active_cdc': '1', 'health': 'up', 'user': 'secret_upstream_user'}],
+                )
+                readyset['variables']['version_comment'] = 'Readyset'
+                with self.clients({
+                    'active.example': primary,
+                    'replica.example': replica,
+                    'readyset.example': readyset,
+                }):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                # Readyset registration must not produce a peer card; the real unsaved replica must stay a peer.
+                self.assertEqual(set(nodes), {'active', 'replica', 'readyset', 'peer:' + ext_replica_uuid})
+                rs_edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertEqual((rs_edge['from'], rs_edge['to'], rs_edge['evidence'], rs_edge['verified']),
+                                 ('readyset', 'active', 'proxied_identity', True))
+                self.assertEqual(rs_edge['reason'], 'Also registered on active as a replica (server ID 103)')
+                self.assertNotIn('estimate', rs_edge['reason'])
+                # No separate replication edge to Readyset or a Readyset peer.
+                repl_targets = {e['to'] for e in report['map']['edges'] if e['kind'] == 'replication'}
+                self.assertEqual(repl_targets, {'replica', 'peer:' + ext_replica_uuid})
+
+    def test_map_readyset_dump_session_classes_and_no_endpoint_discriminator(self):
+        rs_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        other_uuid = 'eeeeeeee-0000-4000-8000-000000000005'
+        self.save('readyset', 'G', port=3309)
+
+        def rs_fixture(proxied=UUID_A, host='internal-primary', user='rs_user', upstreams=None,
+                       cdc_server=None, replication_status='Running', proxied_hostname=None, proxied_port=None):
+            if upstreams is None:
+                row = {'host': host, 'port': '3306', 'purpose': 'cdc, proxy', 'active_cdc': '1', 'health': 'up'}
+                if user is not None:
+                    row['user'] = user
+                upstreams = [row]
+            f = member_fixture(
+                proxy='readyset',
+                readyset_adapter=True,
+                proxied_server_uuid=proxied,
+                proxied_hostname=proxied_hostname,
+                proxied_port=proxied_port,
+                cdc_server=cdc_server if cdc_server is not None else (host + ':3306'),
+                replication_status=replication_status,
+                upstreams=upstreams,
+            )
+            f['variables']['version_comment'] = 'Readyset'
+            return f
+
+        # 1. Self-reported registration endpoint matching Readyset host+port is NEVER positive identity on its own.
+        with self.subTest(case='self_reported_endpoint_not_positive_identity'):
+            primary = member_fixture(UUID_A, replicas=[
+                {'Server_Id': '103', 'Host': 'readyset.example', 'Port': '3309', 'Replica_UUID': rs_uuid},
+            ], dump_threads=[])
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_uuid, nodes)
+            self.assertEqual(nodes['peer:' + rs_uuid]['label'], 'readyset.example:3309')
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertNotIn('reason', edge)
+
+        # 2. Each dump session class: "mysqld" (all 3 spellings), "other", "unknown" (attrs_lost > 0), and "none".
+        for case, attrs, lost, host, should_attr in (
+            ('class_none', [], '0', 'mf-rs-readyset', True),
+            ('class_mysqld_program_name', [('program_name', 'mysqld')], '0', '', False),
+            ('class_mysqld_underscore_program_name', [('_program_name', 'mysqld')], '0', '', False),
+            ('class_mysqld_client_role', [('_client_role', 'binary_log_listener')], '0', '', False),
+            ('class_other_attrs', [('_client_name', 'debezium'), ('_os', 'Linux')], '0', '', False),
+            ('class_unknown_attrs_lost_with_host', [], '2', 'mf-rs-readyset', False),
+            ('class_mysqld_even_with_attrs_lost', [('program_name', 'mysqld')], '2', '', False),
+        ):
+            with self.subTest(case=case):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=[{'Server_Id': '103', 'Host': host, 'Port': '3307', 'Replica_UUID': rs_uuid}],
+                    dump_threads=[{'pid': 10, 'uuid': rs_uuid, 'host': 'readyset.example', 'user': 'rs_user', 'attrs': attrs}],
+                    status={'Performance_schema_session_connect_attrs_lost': lost},
+                )
+                with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                if should_attr:
+                    self.assertNotIn('peer:' + rs_uuid, nodes)
+                    self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103)')
+                else:
+                    self.assertIn('peer:' + rs_uuid, nodes)
+                    self.assertNotIn('reason', edge)
+
+        # 3. attrs_lost > 0 with empty Host triggers estimate fallback (every dump session is "unknown"), never positive.
+        with self.subTest(case='attrs_lost_positive_empty_host_estimate_fallback'):
+            primary = member_fixture(
+                UUID_A,
+                replicas=[{'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid}],
+                dump_threads=[{'pid': 10, 'uuid': rs_uuid, 'host': 'readyset.example', 'user': 'rs_user', 'attrs': []}],
+                status={'Performance_schema_session_connect_attrs_lost': '1'},
+            )
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset'})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103) (estimate)')
+
+        # 4. mysqld replica and Readyset on the SAME host: Readyset claims only class "none"; mysqld stays a peer.
+        with self.subTest(case='mysqld_replica_and_readyset_same_host'):
+            primary = member_fixture(
+                UUID_A,
+                replicas=[
+                    {'Server_Id': '102', 'Host': 'shared-host', 'Port': '3306', 'Replica_UUID': other_uuid},
+                    {'Server_Id': '103', 'Host': 'shared-host', 'Port': '3307', 'Replica_UUID': rs_uuid},
+                ],
+                dump_threads=[
+                    {'pid': 10, 'uuid': other_uuid, 'host': 'readyset.example', 'user': 'rs_user',
+                     'attrs': [('program_name', 'mysqld')]},
+                    {'pid': 11, 'uuid': rs_uuid, 'host': 'readyset.example', 'user': 'rs_user', 'attrs': []},
+                ],
+            )
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset', 'peer:' + other_uuid})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103)')
+
+        # 5. When Readyset exposes no upstream user, same (PROCESSLIST_HOST, USER) READYSET% attrs decide.
+        for has_client_attr in (True, False):
+            with self.subTest(case='no_upstream_user_readyset_attr', has_attr=has_client_attr):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=[{'Server_Id': '103', 'Host': 'mf-rs-readyset', 'Port': '3307', 'Replica_UUID': rs_uuid}],
+                    dump_threads=[{'pid': 10, 'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'rs_user', 'attrs': []}],
+                    readyset_clients=[{'host': '192.168.112.4', 'user': 'rs_user'}] if has_client_attr else [],
+                )
+                rs_no_user = rs_fixture(user=None)
+                with self.clients({'active.example': primary, 'readyset.example': rs_no_user}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                if has_client_attr:
+                    self.assertEqual(set(nodes), {'active', 'readyset'})
+                    self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103)')
+                else:
+                    self.assertIn('peer:' + rs_uuid, nodes)
+                    self.assertNotIn('reason', edge)
+
+        # 6. Two Readysets on one source (one saved, one outside): the outside one stays a peer.
+        for case, outside_host, outside_user in (
+            ('distinct_hosts_outside_first', 'outside-rs.example', 'rs_user'),
+            ('distinct_users', '192.168.112.9', 'outside_user'),
+        ):
+            with self.subTest(case='saved_and_outside_readyset_' + case):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=[
+                        {'Server_Id': '205', 'Host': 'outside-rs', 'Port': '3307', 'Replica_UUID': other_uuid},
+                        {'Server_Id': '103', 'Host': 'saved-rs', 'Port': '3307', 'Replica_UUID': rs_uuid},
+                    ],
+                    dump_threads=[
+                        {'pid': 10, 'uuid': other_uuid, 'host': outside_host, 'user': outside_user, 'attrs': []},
+                        {'pid': 11, 'uuid': rs_uuid, 'host': 'readyset.example', 'user': 'rs_user', 'attrs': []},
+                    ],
+                )
+                with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertEqual(set(nodes), {'active', 'readyset', 'peer:' + other_uuid})
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103)')
+
+        # 7. Claim-once: a second matching registration for the same owner stays a peer.
+        with self.subTest(case='claim_once_second_match_stays_peer'):
+            primary = member_fixture(
+                UUID_A,
+                replicas=[
+                    {'Server_Id': '103', 'Host': 'rs-a', 'Port': '3307', 'Replica_UUID': rs_uuid},
+                    {'Server_Id': '104', 'Host': 'rs-b', 'Port': '3307', 'Replica_UUID': other_uuid},
+                ],
+                dump_threads=[
+                    {'pid': 10, 'uuid': rs_uuid, 'host': 'readyset.example', 'user': 'rs_user', 'attrs': []},
+                    {'pid': 11, 'uuid': other_uuid, 'host': 'readyset.example', 'user': 'rs_user', 'attrs': []},
+                ],
+            )
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset', 'peer:' + other_uuid})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103)')
+
+        # 8. SQL error on SELECT @@server_uuid stays optional and keeps address evidence.
+        with self.subTest(case='proxied_uuid_sql_error_falls_back_to_address'):
+            rs_err = rs_fixture(proxied=None, host='active.example')
+            rs_err['proxied_uuid_error'] = "ERROR 1193 (HY000) at line 1: Unknown system variable 'server_uuid'"
+            with self.clients({'active.example': member_fixture(UUID_A), 'readyset.example': rs_err}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset'})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual((edge['evidence'], edge['verified']), ('endpoint', False))
+
+    def test_map_readyset_adapter_plus_admin_dedup_and_fallback_negative_conditions(self):
+        rs_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        other_uuid = 'eeeeeeee-0000-4000-8000-000000000005'
+        pfs_denied = "ERROR 1142 (42000): SELECT command denied to user 'dba'@'%' for table 'user_variables_by_thread'"
+        self.save('readyset', 'G', port=3309)
+
+        def rs_fixture(proxied=UUID_A, host='internal-primary', adapter=True, repl_status='Running',
+                       upstreams=None, cdc_server=None):
+            if upstreams is None:
+                upstreams = [{'host': host, 'port': '3306', 'purpose': 'cdc, proxy', 'active_cdc': '1',
+                              'health': 'up', 'user': 'rs_user'}]
+            f = member_fixture(
+                proxy='readyset',
+                readyset_adapter=adapter,
+                proxied_server_uuid=proxied,
+                cdc_server=cdc_server if cdc_server is not None else (host + ':3306'),
+                replication_status=repl_status,
+                upstreams=upstreams,
+            )
+            f['variables']['version_comment'] = 'Readyset'
+            return f
+
+        # Positive estimate fallback: pfs denied via dump_threads_error, MySQL 5.7 empty Host,
+        # verified CDC, 1 unmatched row, 1 Readyset, Replication Status Running.
+        with self.subTest(case='fallback_estimate_pfs_denied'):
+            primary = member_fixture(
+                UUID_A,
+                error_on='SHOW REPLICAS',
+                query_error="ERROR 1064 (42000) at line 1: syntax error near 'REPLICAS'",
+                dump_threads_error=pfs_denied,
+                replicas=[{'Server_id': '103', 'Host': '', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': rs_uuid}],
+            )
+            primary['variables']['version'] = '5.7.44'
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset'})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertTrue(edge['verified'])
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103) (estimate)')
+
+        # Positive estimate fallback when performance_schema is OFF (skips pfs dump queries entirely).
+        with self.subTest(case='fallback_estimate_pfs_off'):
+            primary = member_fixture(
+                UUID_A,
+                replicas=[{'Server_Id': '103', 'Host': '', 'Port': '0', 'Replica_UUID': rs_uuid}],
+            )
+            primary['variables']['performance_schema'] = 'OFF'
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}) as observed:
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset'})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103) (estimate)')
+            self.assertFalse(any('user_variables_by_thread' in sql
+                                 for sql in self.statements(observed, 'active.example')))
+
+        # Negative fallback conditions (every single one must keep the row as a peer):
+        # (a) Dump evidence IS available (pfs ON, attrs_lost=0, no matching dump row).
+        with self.subTest(case='fallback_refused_dump_available'):
+            primary = member_fixture(UUID_A, replicas=[
+                {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid},
+            ], dump_threads=[])
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_uuid, nodes)
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertNotIn('reason', edge)
+
+        # (b) Row has a reported Host (even with pfs denied).
+        with self.subTest(case='fallback_refused_non_empty_host'):
+            primary = member_fixture(UUID_A, dump_threads_error=pfs_denied, replicas=[
+                {'Server_Id': '103', 'Host': 'ext-replica.example', 'Port': '3306', 'Replica_UUID': rs_uuid},
+            ])
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_uuid, nodes)
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertNotIn('reason', edge)
+
+        # (c) Readyset Replication Status is not Running (Stopped, Disabled, missing).
+        for status_val in ('Stopped', 'Disabled', None):
+            with self.subTest(case='fallback_refused_repl_status', status=status_val):
+                primary = member_fixture(UUID_A, dump_threads_error=pfs_denied, replicas=[
+                    {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid},
+                ])
+                with self.clients({'active.example': primary,
+                                   'readyset.example': rs_fixture(repl_status=status_val)}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertIn('peer:' + rs_uuid, nodes)
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertNotIn('reason', edge)
+
+        # (d) Source has 2 unmatched registration rows (even with pfs denied and empty Hosts).
+        with self.subTest(case='fallback_refused_two_unmatched_rows'):
+            primary = member_fixture(UUID_A, dump_threads_error=pfs_denied, replicas=[
+                {'Server_id': '103', 'Host': '', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': rs_uuid},
+                {'Server_id': '205', 'Host': '', 'Port': '3306', 'Master_id': '101', 'Slave_UUID': other_uuid},
+            ])
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_uuid, nodes)
+            self.assertIn('peer:' + other_uuid, nodes)
+            self.assertEqual(nodes['peer:' + rs_uuid]['label'],
+                             'Replica without a reported address (server ID 103, port 3306)')
+            self.assertEqual(nodes['peer:' + other_uuid]['label'],
+                             'Replica without a reported address (server ID 205, port 3306)')
+            self.assertNotIn('?:3306', json.dumps(report))
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertNotIn('reason', edge)
+
+        # (e) Readyset upstream is unverified (address-only estimate, verified_cdc is False).
+        with self.subTest(case='fallback_refused_unverified_upstream'):
+            primary = member_fixture(UUID_A, dump_threads_error=pfs_denied, replicas=[
+                {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid},
+            ])
+            with self.clients({'active.example': primary,
+                               'readyset.example': rs_fixture(proxied=None, host='active.example')}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_uuid, nodes)
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertFalse(edge['verified'])
+            self.assertNotIn('reason', edge)
+
+        # (f) Proxied queries-only upstream (verified_cdc is False) never triggers fallback.
+        with self.subTest(case='fallback_refused_queries_only_upstream'):
+            primary = member_fixture(UUID_A, dump_threads_error=pfs_denied, replicas=[
+                {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid},
+            ])
+            rs_q = rs_fixture(
+                proxied=UUID_A, cdc_server='other-cdc:3306',
+                upstreams=[{'host': 'other-cdc', 'port': '3306', 'purpose': 'cdc', 'active_cdc': '1'}],
+            )
+            with self.clients({'active.example': primary, 'readyset.example': rs_q}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_uuid, nodes)
+            self.assertIn('peer:other-cdc:3306', nodes)
+            edge = next(e for e in report['map']['edges']
+                        if e['kind'] == 'cache_upstream' and e['to'] == 'active')
+            self.assertEqual(edge['label'], 'Upstream (queries)')
+            self.assertNotIn('reason', edge)
+
+        # (g) Adapter + Admin of one deployment (same host, upstreams, cdc_server) are counted ONCE.
+        with self.subTest(case='adapter_plus_admin_counted_once'):
+            profiles = [
+                {'id': 'active', 'name': 'active', 'host': 'active.example', 'port': 3306, 'group': 'G'},
+                {'id': 'rs-sql', 'name': 'rs-sql', 'host': '127.0.0.1', 'port': 34507, 'group': 'G'},
+                {'id': 'rs-adm', 'name': 'rs-adm', 'host': '127.0.0.1', 'port': 34536, 'group': 'G'},
+            ]
+            ups = [{'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy', 'active_cdc': '1',
+                    'health': 'up', 'user': 'rs_user'}]
+            for mode in ('positive', 'fallback'):
+                probes = {
+                    'active': {
+                        'kind': 'database', 'hostname': 'internal-primary', 'port': 3306,
+                        'channels': [], 'cluster_members': [],
+                        'replicas': [{'host': 'mf-rs-readyset' if mode == 'positive' else None,
+                                      'port': 3307 if mode == 'positive' else None,
+                                      'uuid': rs_uuid, 'server_id': 103}],
+                        'dump_threads': ([{'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'rs_user', 'class': 'none'}]
+                                         if mode == 'positive' else []),
+                        'readyset_clients': ([{'host': '192.168.112.4', 'user': 'rs_user'}]
+                                             if mode == 'positive' else []),
+                        'dump_read_failed': mode == 'fallback',
+                    },
+                    'rs-sql': {'kind': 'readyset', 'port_role': 'adapter', 'proxied_server_uuid': UUID_A,
+                               'cdc_server': 'internal-primary:3306', 'replication_status': 'Running', 'upstreams': ups},
+                    'rs-adm': {'kind': 'readyset', 'port_role': 'admin', 'proxied_server_uuid': None,
+                               'cdc_server': 'internal-primary:3306', 'replication_status': 'Running', 'upstreams': ups},
+                }
+                entries = []
+                for p in profiles:
+                    e = topology_group._entry(p)
+                    is_rs = probes[p['id']]['kind'] == 'readyset'
+                    e.update(outcome='read', engine='mysql', product='Readyset' if is_rs else 'MySQL',
+                             version='8.4.11', role='cache' if is_rs else 'source', state='reachable',
+                             server_uuid=None if is_rs else UUID_A)
+                    entries.append(e)
+                built = topology_group._build_map(entries, probes, profiles)
+                self.assertEqual([n for n in built['nodes'] if n['kind'] == 'peer'], [], mode)
+                sql_edge = next(e for e in built['edges'] if e['from'] == 'rs-sql' and e['to'] == 'active')
+                expected_reason = ('Also registered on active as a replica (server ID 103)' +
+                                   (' (estimate)' if mode == 'fallback' else ''))
+                self.assertEqual(sql_edge['reason'], expected_reason, mode)
+
+        # (h) More than one candidate owner (same host + same user) stays a peer, and SSH loopback never crosses.
+        with self.subTest(case='more_than_one_candidate_owner_stays_peer'):
+            profiles = [
+                {'id': 'active', 'name': 'active', 'host': '127.0.0.1', 'port': 3306, 'group': 'G'},
+                {'id': 'rs1', 'name': 'rs1', 'host': 'rs-shared.example', 'port': 3307, 'group': 'G'},
+                {'id': 'rs2', 'name': 'rs2', 'host': 'rs-shared.example', 'port': 3308, 'group': 'G'},
+            ]
+            probes = {
+                'active': {
+                    'kind': 'database', 'hostname': 'primary', 'port': 3306,
+                    'channels': [], 'cluster_members': [],
+                    'replicas': [{'host': 'rs-shared', 'port': 3307, 'uuid': rs_uuid, 'server_id': 103}],
+                    'dump_threads': [{'uuid': rs_uuid, 'host': 'rs-shared.example', 'user': 'rs_user', 'class': 'none'}],
+                    'dump_read_failed': False,
+                },
+                'rs1': {'kind': 'readyset', 'port_role': 'adapter', 'proxied_server_uuid': UUID_A,
+                        'cdc_server': 'primary:3306', 'replication_status': 'Running',
+                        'upstreams': [{'host': 'primary', 'port': '3306', 'purpose': 'cdc, proxy', 'user': 'rs_user'}]},
+                'rs2': {'kind': 'readyset', 'port_role': 'adapter', 'proxied_server_uuid': UUID_A,
+                        'cdc_server': 'primary:3306', 'replication_status': 'Running',
+                        'upstreams': [{'host': 'primary', 'port': '3306', 'purpose': 'cdc, proxy', 'user': 'rs_user'}]},
+            }
+            entries = []
+            for p in profiles:
+                e = topology_group._entry(p)
+                is_rs = probes[p['id']]['kind'] == 'readyset'
+                e.update(outcome='read', engine='mysql', product='Readyset' if is_rs else 'MySQL',
+                         version='8.4.11', role='cache' if is_rs else 'source', state='reachable',
+                         server_uuid=None if is_rs else UUID_A)
+                entries.append(e)
+            built = topology_group._build_map(entries, probes, profiles)
+            self.assertIn('peer:' + rs_uuid, {n['id'] for n in built['nodes']})
+            for edge in built['edges']:
+                if edge['kind'] == 'cache_upstream':
+                    self.assertNotIn('reason', edge)
+
+        # (i) Two distinct Readyset deployments on the same source refuse fallback.
+        with self.subTest(case='fallback_refused_two_readysets'):
+            self.save('readyset2', 'G', port=3310)
+            primary = member_fixture(UUID_A, dump_threads_error=pfs_denied, replicas=[
+                {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid},
+            ])
+            with self.clients({
+                'active.example': primary,
+                'readyset.example': rs_fixture(),
+                'readyset2.example': rs_fixture(),
+            }):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_uuid, nodes)
+            for edge in report['map']['edges']:
+                if edge['kind'] == 'cache_upstream':
+                    self.assertNotIn('reason', edge)
+
+    def test_map_readyset_cdc_evidence_rules_and_dump_query_gating(self):
+        self.save('primary', 'G', host='primary.example')
+        self.save('replica', 'G', host='replica.example')
+        self.save('readyset', 'G', host='readyset.example', port=3309)
+
+        # (a1) Single upstream with no purpose column -> affirmative CDC evidence -> "Upstream".
+        with self.subTest(case='cdc_rule_a_no_purpose_column'):
+            rs = member_fixture(
+                proxy='readyset', readyset_adapter=True, proxied_server_uuid=UUID_B,
+                cdc_server='internal-primary:3306',
+                upstreams=[{'host': 'internal-primary', 'port': '3306', 'health': 'up'}],
+            )
+            rs['variables']['version_comment'] = 'Readyset'
+            with self.clients({
+                'active.example': member_fixture(UUID_A),
+                'primary.example': member_fixture(UUID_B),
+                'replica.example': member_fixture(UUID_C),
+                'readyset.example': rs,
+            }):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual([n for n in nodes.values() if n['kind'] == 'peer'], [])
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual((edge['to'], edge['label'], edge['verified']), ('primary', 'Upstream', True))
+
+        # (b) Two unresolved upstreams: CDC Server == proxied @@hostname:@@port proves CDC ("Upstream");
+        # mismatch keeps "Upstream (queries)" and keeps the unresolved CDC address visible as a peer.
+        for proxied_host, expected_label, expect_cdc_peer in (
+            ('internal-primary', 'Upstream', False),
+            ('internal-replica', 'Upstream (queries)', True),
+        ):
+            with self.subTest(case='cdc_rule_b_proxied_hostname_port', proxied_host=proxied_host):
+                target_uuid = UUID_B if proxied_host == 'internal-primary' else UUID_C
+                target_id = 'primary' if proxied_host == 'internal-primary' else 'replica'
+                rs = member_fixture(
+                    proxy='readyset', readyset_adapter=True,
+                    proxied_server_uuid=target_uuid,
+                    proxied_hostname=proxied_host,
+                    proxied_port='3306',
+                    cdc_server='internal-primary:3306',
+                    upstreams=[
+                        {'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy', 'active_cdc': '1', 'health': 'up'},
+                        {'host': 'internal-replica', 'port': '3306', 'purpose': 'proxy', 'active_cdc': '0', 'health': 'up'},
+                    ],
+                )
+                rs['variables']['version_comment'] = 'Readyset'
+                with self.clients({
+                    'active.example': member_fixture(UUID_A),
+                    'primary.example': member_fixture(UUID_B),
+                    'replica.example': member_fixture(UUID_C),
+                    'readyset.example': rs,
+                }):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                edge = next(e for e in report['map']['edges']
+                            if e['kind'] == 'cache_upstream' and e['to'] == target_id)
+                self.assertEqual((edge['label'], edge['verified']), (expected_label, True))
+                self.assertEqual('peer:internal-primary:3306' in nodes, expect_cdc_peer)
+
+        # P1 regression: single CDC-only upstream (or CDC Server only with empty upstream_servers)
+        # without affirmative CDC match MUST NOT be swallowed by covered.add(0).
+        for case, upstreams in (
+            ('single_cdc_only_row', [{'host': 'unresolved-cdc', 'port': '3306', 'purpose': 'cdc', 'active_cdc': '1'}]),
+            ('empty_upstreams_with_cdc_server', []),
+        ):
+            with self.subTest(case=case):
+                rs = member_fixture(
+                    proxy='readyset', readyset_adapter=True,
+                    proxied_server_uuid=UUID_C,
+                    proxied_hostname='other-host', proxied_port='3306',
+                    cdc_server='unresolved-cdc:3306',
+                    upstreams=upstreams,
+                )
+                rs['variables']['version_comment'] = 'Readyset'
+                with self.clients({
+                    'active.example': member_fixture(UUID_A),
+                    'primary.example': member_fixture(UUID_B),
+                    'replica.example': member_fixture(UUID_C),
+                    'readyset.example': rs,
+                }):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertIn('peer:unresolved-cdc:3306', nodes)
+                q_edge = next(e for e in report['map']['edges']
+                              if e['kind'] == 'cache_upstream' and e['to'] == 'replica')
+                self.assertEqual((q_edge['label'], q_edge['verified']), ('Upstream (queries)', True))
+
+        # P6 gating: dump SQL runs ONLY when group has a Readyset member, ONLY on MySQL members
+        # that report replicas, and uses the 5 s statement budget.
+        with self.subTest(case='dump_read_runs_with_5s_budget_only_on_mysql_source_with_replicas'):
+            primary = member_fixture(UUID_B, replicas=[
+                {'Server_Id': '102', 'Host': 'replica.example', 'Port': '3306', 'Replica_UUID': UUID_C},
+            ], dump_threads=[])
+            replica = member_fixture(UUID_C, channels=[{'Source_UUID': UUID_B}])
+            maria = member_fixture(engine='mariadb', replicas=[{'Server_id': '2', 'Host': 'm-rep', 'Port': '3306'}])
+            rs = member_fixture(proxy='readyset', readyset_adapter=True, proxied_server_uuid=UUID_B,
+                                cdc_server='primary.example:3306',
+                                upstreams=[{'host': 'primary.example', 'port': '3306', 'purpose': 'cdc, proxy'}])
+            rs['variables']['version_comment'] = 'Readyset'
+            with self.clients({
+                'active.example': maria,
+                'primary.example': primary,
+                'replica.example': replica,
+                'readyset.example': rs,
+            }) as observed:
+                report = self.read('map')
+            self.assertEqual(report['summary']['read'], 4)
+            self.assertTrue(any('user_variables_by_thread' in s for s in self.statements(observed, 'primary.example')))
+            self.assertFalse(any('user_variables_by_thread' in s for s in self.statements(observed, 'replica.example')))
+            self.assertFalse(any('user_variables_by_thread' in s for s in self.statements(observed, 'active.example')))
+            self.assertTrue(any(t <= topology_group.DUMP_QUERY_SECONDS for t in observed.timeouts))
+
+        with self.subTest(case='dump_read_skipped_when_group_has_no_readyset'):
+            self.store.assign_profile_group(['readyset'], '')
+            primary = member_fixture(UUID_B, replicas=[
+                {'Server_Id': '102', 'Host': 'replica.example', 'Port': '3306', 'Replica_UUID': UUID_C},
+            ])
+            with self.clients({
+                'active.example': member_fixture(UUID_A),
+                'primary.example': primary,
+                'replica.example': member_fixture(UUID_C, channels=[{'Source_UUID': UUID_B}]),
+            }) as observed:
+                report = self.read('map')
+            self.assertEqual(report['summary']['read'], 3)
+            all_sql = '\n'.join(self.statements(observed))
+            self.assertNotIn('user_variables_by_thread', all_sql)
+            self.assertNotIn('Performance_schema_session_connect_attrs_lost', all_sql)
+
+    def test_map_readyset_r2_attrs_size_zero_or_unknown_marks_dump_unknown(self):
+        # R2-1: performance_schema_session_connect_attrs_size = 0 stores no
+        # attributes and leaves Performance_schema_session_connect_attrs_lost
+        # at 0, so disabled or unknown attribute storage makes every dump class
+        # "unknown" (never "none").
+        rs_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        self.save('readyset', 'G', port=3309)
+
+        def rs_fixture():
+            f = member_fixture(
+                proxy='readyset', readyset_adapter=True,
+                proxied_server_uuid=UUID_A,
+                cdc_server='internal-primary:3306',
+                replication_status='Running',
+                upstreams=[{'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy',
+                            'active_cdc': '1', 'health': 'up', 'user': 'rs_user'}],
+            )
+            f['variables']['version_comment'] = 'Readyset'
+            return f
+
+        for case, size_val, pfs_val, rep_host, dump_user, expect_peer, expect_estimate in (
+            ('size_zero_named_host_blocks_positive', '0', 'ON', 'replica-a.example', 'rs_user', True, False),
+            ('size_missing_named_host_blocks_positive', None, 'ON', 'replica-a.example', 'rs_user', True, False),
+            ('pfs_missing_named_host_blocks_positive', '512', None, 'replica-a.example', 'rs_user', True, False),
+            ('size_zero_empty_host_matching_user_estimates', '0', 'ON', '', 'rs_user', False, True),
+            ('size_zero_empty_host_disjoint_user_stays_peer', '0', 'ON', '', 'other_user', True, False),
+        ):
+            with self.subTest(case=case):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=[{'Server_Id': '103', 'Host': rep_host, 'Port': '3307', 'Replica_UUID': rs_uuid}],
+                    dump_threads=[{'pid': 10, 'uuid': rs_uuid, 'host': 'readyset.example', 'user': dump_user, 'attrs': []}],
+                    status={'Performance_schema_session_connect_attrs_lost': '0'},
+                )
+                if size_val is None:
+                    primary['variables'].pop('performance_schema_session_connect_attrs_size', None)
+                else:
+                    primary['variables']['performance_schema_session_connect_attrs_size'] = size_val
+                if pfs_val is None:
+                    primary['variables'].pop('performance_schema', None)
+                else:
+                    primary['variables']['performance_schema'] = pfs_val
+                with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}) as observed:
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertEqual(
+                    sum('performance_schema_session_connect_attrs_size' in s
+                        for s in self.statements(observed, 'active.example')),
+                    1,
+                )
+                if expect_peer:
+                    self.assertIn('peer:' + rs_uuid, nodes)
+                    self.assertNotIn('reason', edge)
+                else:
+                    self.assertNotIn('peer:' + rs_uuid, nodes)
+                    if expect_estimate:
+                        self.assertEqual(edge['reason'],
+                                         'Also registered on active as a replica (server ID 103) (estimate)')
+        # Direct unit check of _classify_dump_attrs when storage is disabled/unknown.
+        self.assertEqual(topology_group._classify_dump_attrs([], 0, attrs_storage_enabled=False), 'unknown')
+        self.assertEqual(topology_group._classify_dump_attrs(
+            [('program_name', 'mysqld')], 0, attrs_storage_enabled=False), 'unknown')
+
+    def test_map_readyset_r2_dump_timeout_keeps_member_read_and_unknown_class(self):
+        # R2-2: a DUMP_QUERY_SECONDS timeout on optional dump queries must never
+        # latch _ReadConnection.failure or TargetEvidenceConnection.problem;
+        # the member read continues (including later cluster queries) and the
+        # dump read falls back safely. An actual node switch still fails.
+        rs_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        self.save('readyset', 'G', port=3309)
+
+        def rs_fixture():
+            f = member_fixture(
+                proxy='readyset', readyset_adapter=True,
+                proxied_server_uuid=UUID_A,
+                cdc_server='internal-primary:3306',
+                replication_status='Running',
+                upstreams=[{'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy',
+                            'active_cdc': '1', 'health': 'up', 'user': 'rs_user'}],
+            )
+            f['variables']['version_comment'] = 'Readyset'
+            return f
+
+        gr_rows = [[UUID_A, 'active.example', 3306, 'ONLINE', 'PRIMARY']]
+        for case, pause_on, rep_host, expect_peer, expect_estimate in (
+            ('pfs_vars_timeout_named_host', 'performance_schema_session_connect_attrs_size', 'mf-rs-readyset', True, False),
+            ('dump_threads_timeout_named_host', 'user_variables_by_thread', 'mf-rs-readyset', True, False),
+            ('dump_threads_timeout_empty_host', 'user_variables_by_thread', '', False, True),
+            ('attrs_lost_timeout_named_host', 'performance_schema_session_connect_attrs_lost', 'mf-rs-readyset', True, False),
+            ('readyset_clients_timeout_named_host', "attr_value like 'readyset%'", 'mf-rs-readyset', True, False),
+        ):
+            with self.subTest(case=case):
+                primary = self.gr_map_fixture(
+                    UUID_A, 'PRIMARY', gr_rows,
+                    innodb_cluster=True,
+                    cluster_metadata=[{'cluster_id': 'c1', 'cluster_name': 'ClusterAfterDump',
+                                       'primary_mode': 'pm', 'group_name': UUID_D}],
+                    replicas=[{'Server_Id': '103', 'Host': rep_host, 'Port': '3307', 'Replica_UUID': rs_uuid}],
+                    dump_threads=[{'pid': 10, 'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'rs_user', 'attrs': []}],
+                    readyset_clients=[{'host': '192.168.112.4', 'user': 'rs_user'}],
+                    pause_on=pause_on,
+                    pause_on_seconds=0.45,
+                )
+                with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}), \
+                        mock.patch.object(topology_group, 'DUMP_QUERY_SECONDS', 0.12):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                members = {m['profile_id']: m for m in report['members']}
+                self.assertEqual(members['active']['outcome'], 'read', report)
+                self.assertEqual(report['summary']['failed'], 0, report)
+                # Post-dump cluster metadata query still ran on the healthy member connection.
+                self.assertEqual(report['map']['clusters'][0]['name'], 'ClusterAfterDump')
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertTrue(edge['verified'])
+                if expect_peer:
+                    self.assertIn('peer:' + rs_uuid, nodes)
+                    self.assertNotIn('reason', edge)
+                else:
+                    self.assertNotIn('peer:' + rs_uuid, nodes)
+                    self.assertEqual(edge['reason'],
+                                     'Also registered on active as a replica (server ID 103) (estimate)')
+
+        # Identity switch during _read_dump_threads MUST still fail the member.
+        with self.subTest(case='identity_switch_during_dump_read_still_fails_member'):
+            primary = member_fixture(
+                UUID_A,
+                replicas=[{'Server_Id': '103', 'Host': 'mf-rs-readyset', 'Port': '3307', 'Replica_UUID': rs_uuid}],
+                switch_on='user_variables_by_thread',
+                evidence_variables={'server_uuid': UUID_B},
+            )
+            with self.clients({'active.example': primary, 'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            members = {m['profile_id']: m for m in report['members']}
+            self.assertEqual(members['active']['outcome'], 'failed')
+            self.assertIsNone(members['active']['server_uuid'])
+
+    def test_map_r2_phase1_cancellation_closes_every_connection_and_ssh_tunnel(self):
+        # R2-3: CancelledRead is a BaseException. Cancelling during phase 1 must
+        # still run ExitStack cleanup for both the cancelled worker and every
+        # sibling that already finished phase 1 with an open stack.
+        from myflames import read_cancel
+        self.save('member-b', 'G')
+        self.save('member-c', 'G')
+        fixtures = {
+            'active.example': member_fixture(UUID_A),
+            'member-b.example': member_fixture(UUID_B),
+            'member-c.example': member_fixture(UUID_C),
+        }
+        cancel_event = threading.Event()
+        opened_conns = []
+        closed_conns = []
+        released_tunnels = []
+        exited_contexts = []
+        lock = threading.Lock()
+        real_open = topology_group.open_group_member
+        real_identify = topology_group._identity
+        phase1_done = [0]
+
+        @contextlib.contextmanager
+        def tracked_open(store, group_name, profile, active_guard, options_override=None):
+            with real_open(store, group_name, profile, active_guard, options_override) as opened:
+                conn, options = opened
+                lease = mock.Mock()
+                lease.release.side_effect = lambda h=conn.host: released_tunnels.append(h)
+                conn._held_lease = lease
+                orig_close = conn.close
+
+                def tracked_close(orig=orig_close, host=conn.host):
+                    with lock:
+                        if host not in closed_conns:
+                            closed_conns.append(host)
+                    return orig()
+
+                conn.close = tracked_close
+                with lock:
+                    opened_conns.append(conn.host)
+                try:
+                    yield conn, options
+                finally:
+                    with lock:
+                        exited_contexts.append(conn.host)
+
+        def identify_and_cancel(conn, member, read_position=True):
+            res = real_identify(conn, member, read_position=read_position)
+            if read_position:
+                with lock:
+                    phase1_done[0] += 1
+                    # Member 1 completes phase 1 (holding an open stack);
+                    # Member 2 cancels mid-phase-1 while its own stack is open.
+                    if phase1_done[0] >= 2:
+                        cancel_event.set()
+                        read_cancel.check()
+            return res
+
+        with self.clients(fixtures), \
+                mock.patch.object(topology_group, 'MAX_CONCURRENCY', 1), \
+                mock.patch.object(topology_group, 'open_group_member', side_effect=tracked_open), \
+                mock.patch.object(topology_group, '_identity', side_effect=identify_and_cancel):
+            with read_cancel.scope(cancel_event):
+                with self.assertRaises(read_cancel.CancelledRead):
+                    self.read('map')
+        self.assertGreaterEqual(len(opened_conns), 2, opened_conns)
+        self.assertEqual(sorted(closed_conns), sorted(opened_conns))
+        self.assertEqual(sorted(exited_contexts), sorted(opened_conns))
+        self.assertEqual(sorted(released_tunnels), sorted(opened_conns))
+
+    def test_map_readyset_r2_pass_b_sole_requires_running_attrs_and_unique_candidate(self):
+        # R2-4: Pass B ("sole") claims only when the owner's Replication Status
+        # is running, a READYSET% client attribute exists on the dump row's
+        # host, and exactly one unmatched row resolves to that owner.
+        rs_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        rs_uuid_2 = 'bd67a025-bc44-42bf-9521-58f7dc4e4f96'
+        ext_uuid = 'eeeeeeee-0000-4000-8000-000000000005'
+        self.save('readyset', 'G', host='127.0.0.1', port=34507)
+
+        def rs_fixture(repl_status='Running'):
+            f = member_fixture(
+                proxy='readyset', readyset_adapter=True,
+                proxied_server_uuid=UUID_A,
+                cdc_server='internal-primary:3306',
+                replication_status=repl_status,
+                upstreams=[{'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy',
+                            'active_cdc': '1', 'health': 'up', 'user': 'rs_user'}],
+            )
+            f['variables']['version_comment'] = 'Readyset'
+            return f
+
+        # 1. Replication Status not running -> stays peer even with READYSET% client attrs on host.
+        for status_val in ('Stopped', 'Disabled', None):
+            with self.subTest(case='pass_b_refused_repl_not_running', status=status_val):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=[{'Server_Id': '103', 'Host': 'mf-rs-readyset', 'Port': '3307', 'Replica_UUID': rs_uuid}],
+                    dump_threads=[{'pid': 10, 'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'rs_user', 'attrs': []}],
+                    readyset_clients=[{'host': '192.168.112.4', 'user': 'rs_user'}],
+                )
+                with self.clients({'active.example': primary, '127.0.0.1': rs_fixture(status_val)}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertIn('peer:' + rs_uuid, nodes)
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertNotIn('reason', edge)
+
+        # 2. Missing READYSET% client attrs on dump row's host (none, or on another host) -> stays peer.
+        for case, clients in (
+            ('no_readyset_clients', []),
+            ('readyset_client_on_other_host', [{'host': '192.168.112.99', 'user': 'rs_user'}]),
+        ):
+            with self.subTest(case='pass_b_refused_' + case):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=[{'Server_Id': '103', 'Host': 'mf-rs-readyset', 'Port': '3307', 'Replica_UUID': rs_uuid}],
+                    dump_threads=[{'pid': 10, 'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'rs_user', 'attrs': []}],
+                    readyset_clients=clients,
+                )
+                with self.clients({'active.example': primary, '127.0.0.1': rs_fixture()}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertIn('peer:' + rs_uuid, nodes)
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertNotIn('reason', edge)
+
+        # 3. Two competing unmatched rows both resolving to the one owner via Pass B -> BOTH stay peers.
+        with self.subTest(case='pass_b_refused_two_competing_unmatched_rows'):
+            primary = member_fixture(
+                UUID_A,
+                replicas=[
+                    {'Server_Id': '103', 'Host': 'rs-one', 'Port': '3307', 'Replica_UUID': rs_uuid},
+                    {'Server_Id': '104', 'Host': 'rs-two', 'Port': '3307', 'Replica_UUID': rs_uuid_2},
+                ],
+                dump_threads=[
+                    {'pid': 10, 'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'rs_user', 'attrs': []},
+                    {'pid': 11, 'uuid': rs_uuid_2, 'host': '192.168.112.5', 'user': 'rs_user', 'attrs': []},
+                ],
+                readyset_clients=[
+                    {'host': '192.168.112.4', 'user': 'rs_user'},
+                    {'host': '192.168.112.5', 'user': 'rs_user'},
+                ],
+            )
+            with self.clients({'active.example': primary, '127.0.0.1': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertIn('peer:' + rs_uuid, nodes)
+            self.assertIn('peer:' + rs_uuid_2, nodes)
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertNotIn('reason', edge)
+
+        # 4. Positive Pass B: running + READYSET% on dump host + exactly one row resolving to owner
+        #    (even alongside an unrelated external mysqld replica that does not resolve to owner).
+        with self.subTest(case='pass_b_succeeds_with_running_attrs_and_unique_match'):
+            primary = member_fixture(
+                UUID_A,
+                replicas=[
+                    {'Server_Id': '103', 'Host': 'mf-rs-readyset', 'Port': '3307', 'Replica_UUID': rs_uuid},
+                    {'Server_Id': '104', 'Host': 'ext-replica', 'Port': '3306', 'Replica_UUID': ext_uuid},
+                ],
+                dump_threads=[
+                    {'pid': 10, 'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'rs_user', 'attrs': []},
+                    {'pid': 11, 'uuid': ext_uuid, 'host': '192.168.112.9', 'user': 'mf_repl',
+                     'attrs': [('program_name', 'mysqld')]},
+                ],
+                readyset_clients=[{'host': '192.168.112.4', 'user': 'rs_sampler'}],
+            )
+            with self.clients({'active.example': primary, '127.0.0.1': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'readyset', 'peer:' + ext_uuid})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103)')
+
+    def test_map_readyset_r2_estimate_fallback_uses_row_evidence_and_checks_user(self):
+        # R2-5: estimate fallback inspects the unmatched row's own evidence
+        # (not all dump classes), so a matched in-group mysqld replica does not
+        # block fallback when attrs were lost; refuse when the row's dump user
+        # is known and disjoint from the owner's upstream users.
+        rs_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        self.save('replica', 'G')
+        self.save('readyset', 'G', port=3309)
+
+        def rs_fixture(user='rs_user'):
+            row = {'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy',
+                   'active_cdc': '1', 'health': 'up'}
+            if user is not None:
+                row['user'] = user
+            f = member_fixture(
+                proxy='readyset', readyset_adapter=True,
+                proxied_server_uuid=UUID_A,
+                cdc_server='internal-primary:3306',
+                replication_status='Running',
+                upstreams=[row],
+            )
+            f['variables']['version_comment'] = 'Readyset'
+            return f
+
+        replica = member_fixture(UUID_B, channels=[{
+            'Source_UUID': UUID_A, 'Source_Host': 'active.example', 'Source_Port': '3306',
+            'Replica_IO_Running': 'Yes', 'Replica_SQL_Running': 'Yes',
+        }])
+
+        # 1. Matched in-group mysqld replica + attrs_lost > 0 + unmatched hostless Readyset (matching user) -> estimate!
+        with self.subTest(case='in_group_mysqld_does_not_block_estimate_when_attrs_lost'):
+            primary = member_fixture(
+                UUID_A,
+                replicas=[
+                    {'Server_Id': '102', 'Host': 'replica.example', 'Port': '3306', 'Replica_UUID': UUID_B},
+                    {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid},
+                ],
+                dump_threads=[
+                    {'pid': 10, 'uuid': UUID_B, 'host': 'replica.example', 'user': 'mf_repl',
+                     'attrs': [('program_name', 'mysqld')]},
+                    {'pid': 11, 'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'rs_user', 'attrs': []},
+                ],
+                status={'Performance_schema_session_connect_attrs_lost': '1'},
+            )
+            with self.clients({'active.example': primary, 'replica.example': replica,
+                               'readyset.example': rs_fixture()}):
+                report = self.read('map')
+            nodes = self.assert_map_schema(report)
+            self.assertEqual(set(nodes), {'active', 'replica', 'readyset'})
+            edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+            self.assertEqual(edge['reason'], 'Also registered on active as a replica (server ID 103) (estimate)')
+
+        # 2. Contrary known dump user refuses estimate fallback (both when attrs_lost > 0 and when attrs_size = 0).
+        for case, lost, size in (('attrs_lost_contrary_user', '1', '512'), ('attrs_size_zero_contrary_user', '0', '0')):
+            with self.subTest(case=case):
+                primary = member_fixture(
+                    UUID_A,
+                    replicas=[
+                        {'Server_Id': '102', 'Host': 'replica.example', 'Port': '3306', 'Replica_UUID': UUID_B},
+                        {'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid},
+                    ],
+                    dump_threads=[
+                        {'pid': 10, 'uuid': UUID_B, 'host': 'replica.example', 'user': 'mf_repl',
+                         'attrs': [('program_name', 'mysqld')]},
+                        {'pid': 11, 'uuid': rs_uuid, 'host': '192.168.112.4', 'user': 'different_user', 'attrs': []},
+                    ],
+                    status={'Performance_schema_session_connect_attrs_lost': lost},
+                )
+                primary['variables']['performance_schema_session_connect_attrs_size'] = size
+                with self.clients({'active.example': primary, 'replica.example': replica,
+                                   'readyset.example': rs_fixture('rs_user')}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertIn('peer:' + rs_uuid, nodes)
+                edge = next(e for e in report['map']['edges'] if e['kind'] == 'cache_upstream')
+                self.assertNotIn('reason', edge)
+
+    def test_map_readyset_r2_contradicting_unresolved_cdc_server_never_hidden(self):
+        # R2-6: a single purpose-less or "cdc, proxy" upstream row never hides
+        # a different unresolved CDC Server and never sets verified_cdc; only
+        # an equal endpoint is a duplicate.
+        rs_uuid = 'ad67a025-bc44-42bf-9521-58f7dc4e4f95'
+        self.save('primary', 'G', host='primary.example')
+        self.save('readyset', 'G', host='readyset.example', port=3309)
+
+        for case, upstream_row, cdc_server, expect_cdc_peer, expect_label in (
+            ('single_no_purpose_different_cdc_server',
+             {'host': 'internal-primary', 'port': '3306', 'health': 'up'},
+             'other-cdc:3306', True, 'Upstream (queries)'),
+            ('single_cdc_proxy_different_cdc_server',
+             {'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy', 'active_cdc': '1', 'health': 'up'},
+             'other-cdc:3306', True, 'Upstream (queries)'),
+            ('single_cdc_proxy_same_host_different_port_cdc_server',
+             {'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy', 'active_cdc': '1', 'health': 'up'},
+             'internal-primary:3307', True, 'Upstream (queries)'),
+            ('single_no_purpose_equal_cdc_server',
+             {'host': 'INTERNAL-PRIMARY.', 'port': '3306', 'health': 'up'},
+             'internal-primary:3306', False, 'Upstream'),
+            ('single_cdc_proxy_equal_cdc_server',
+             {'host': 'internal-primary', 'port': '3306', 'purpose': 'cdc, proxy', 'active_cdc': '1', 'health': 'up'},
+             'internal-primary:3306', False, 'Upstream'),
+        ):
+            with self.subTest(case=case):
+                primary = member_fixture(
+                    UUID_B,
+                    dump_threads_error="ERROR 1142 (42000): SELECT command denied",
+                    replicas=[{'Server_Id': '103', 'Host': '', 'Port': '3306', 'Replica_UUID': rs_uuid}],
+                )
+                rs = member_fixture(
+                    proxy='readyset', readyset_adapter=True,
+                    proxied_server_uuid=UUID_B,
+                    proxied_hostname='internal-primary',
+                    proxied_port='3306',
+                    cdc_server=cdc_server,
+                    replication_status='Running',
+                    upstreams=[upstream_row],
+                )
+                rs['variables']['version_comment'] = 'Readyset'
+                with self.clients({
+                    'active.example': member_fixture(UUID_A),
+                    'primary.example': primary,
+                    'readyset.example': rs,
+                }):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                edge = next(e for e in report['map']['edges']
+                            if e['kind'] == 'cache_upstream' and e['to'] == 'primary')
+                self.assertEqual((edge['label'], edge['verified']), (expect_label, True))
+                if expect_cdc_peer:
+                    self.assertIn('peer:' + cdc_server.lower(), nodes)
+                    # verified_cdc is False, so the hostless registration on primary cannot be attributed.
+                    self.assertIn('peer:' + rs_uuid, nodes)
+                    self.assertNotIn('reason', edge)
+                else:
+                    self.assertNotIn('peer:' + cdc_server.lower(), nodes)
+                    self.assertNotIn('peer:' + rs_uuid, nodes)
+                    self.assertEqual(edge['reason'],
+                                     'Also registered on primary as a replica (server ID 103) (estimate)')
+
+    def test_map_hostless_registration_peer_never_uses_question_mark_label(self):
+        cases = (
+            ('mysql57_uuid', '5.7.44', 'SHOW REPLICAS',
+             {'Server_id': '42', 'Host': '', 'Port': '3306', 'Master_id': '1', 'Slave_UUID': UUID_C},
+             'peer:' + UUID_C, 3306, 'Replica without a reported address (server ID 42, port 3306)'),
+            ('mysql84_uuid', '8.4.13', None,
+             {'Server_Id': '42', 'Host': '', 'Port': '3306', 'Source_Id': '1', 'Replica_UUID': UUID_C},
+             'peer:' + UUID_C, 3306, 'Replica without a reported address (server ID 42, port 3306)'),
+            ('mysql57_no_uuid', '5.7.44', 'SHOW REPLICAS',
+             {'Server_id': '42', 'Host': '', 'Port': '3306', 'Master_id': '1', 'Slave_UUID': ''},
+             'peer:active:server-id:42:3306', 3306, 'Replica without a reported address (server ID 42, port 3306)'),
+            ('mysql57_port_zero_omits_port', '5.7.44', 'SHOW REPLICAS',
+             {'Server_id': '42', 'Host': '', 'Port': '0', 'Master_id': '1', 'Slave_UUID': UUID_C},
+             'peer:' + UUID_C, None, 'Replica without a reported address (server ID 42)'),
+            ('mysql84_port_null_omits_port', '8.4.13', None,
+             {'Server_Id': '42', 'Host': '', 'Port': None, 'Source_Id': '1', 'Replica_UUID': ''},
+             'peer:active:server-id:42', None, 'Replica without a reported address (server ID 42)'),
+        )
+        for name, version, err_on, row, expected_id, expected_port, expected_label in cases:
+            with self.subTest(case=name):
+                primary = member_fixture(UUID_A, replicas=[row])
+                primary['variables']['version'] = version
+                if err_on:
+                    primary['error_on'] = err_on
+                    primary['query_error'] = "ERROR 1064 (42000) at line 1: syntax error near 'REPLICAS'"
+                with self.clients({'active.example': primary}):
+                    report = self.read('map')
+                nodes = self.assert_map_schema(report)
+                self.assertIn(expected_id, nodes)
+                peer = nodes[expected_id]
+                self.assertEqual(peer['label'], expected_label)
+                self.assertIsNone(peer['host'])
+                self.assertEqual(peer['port'], expected_port)
+                self.assertNotIn('?:3306', json.dumps(report))
+
     def test_map_external_source_deduplicates_peer_uuid_across_member_reads(self):
         self.save('second', 'G')
         channel = {'Source_UUID': UUID_C, 'Source_Host': 'outside.example', 'Source_Port': '3306',
@@ -3235,10 +4469,14 @@ class MapBoundsTests(unittest.TestCase):
         for profile in profiles:
             entry = topology_group._entry(profile)
             probe = probes.get(profile['id'], {})
-            entry.update(outcome='read', engine='mysql', product='ProxySQL Admin' if probe.get('kind') == 'proxysql' else 'MySQL',
-                         version='3.0.11' if probe.get('kind') == 'proxysql' else '8.4.11',
-                         role='proxy' if probe.get('kind') == 'proxysql' else 'standalone',
-                         state='reachable', server_uuid=probe.get('server_uuid'),
+            kind = probe.get('kind')
+            product = ('ProxySQL Admin' if kind == 'proxysql' else
+                       'Readyset' if kind == 'readyset' else 'MySQL')
+            role = 'proxy' if kind == 'proxysql' else 'cache' if kind == 'readyset' else 'standalone'
+            entry.update(outcome='read', engine='mysql', product=product,
+                         version='3.0.11' if kind == 'proxysql' else '8.4.11',
+                         role=role, state='reachable',
+                         server_uuid=None if kind in ('proxysql', 'readyset') else probe.get('server_uuid'),
                          duplicate_of=(duplicates or {}).get(profile['id']))
             entries.append(entry)
         result = topology_group._build_map(entries, probes, profiles)
@@ -3460,6 +4698,99 @@ class MapBoundsTests(unittest.TestCase):
         self.assertEqual(len(result['edges']), 1)
         self.assertEqual(len(result['nodes']), 2)
         self.assertTrue(any('rows capped' in note['message'] for note in result['notes']))
+
+    def test_readyset_attribution_cost_long_hosts_and_edge_reason_are_bounded(self):
+        from myflames import topology_links
+        shared_uuid = '11111111-2222-3333-4444-555555555555'
+        long_pad = 'a' * 65536
+        call_counts = {}
+
+        for n_rs in (2, 15):
+            for dump_kind in ('long_hosts', 'multi_host_uuid', 'single_host_match'):
+                with self.subTest(n_rs=n_rs, dump_kind=dump_kind):
+                    profiles = [{'id': 's', 'name': 'source', 'host': 'source.example', 'port': 3306, 'group': 'G'}]
+                    for i in range(n_rs):
+                        profiles.append({'id': 'r%d' % i, 'name': 'rs%d' % i, 'host': 'rs%d.example' % i,
+                                         'port': 3307, 'group': 'G'})
+                    replicas = [{'host': 'h%d.example' % j, 'port': 3306, 'uuid': shared_uuid, 'server_id': j + 2}
+                                for j in range(2048)]
+                    if dump_kind == 'long_hosts':
+                        dump_rows = [{'uuid': shared_uuid, 'host': '%s%d' % (long_pad, k), 'user': 'u', 'class': 'none'}
+                                     for k in range(256)]
+                    elif dump_kind == 'multi_host_uuid':
+                        dump_rows = [{'uuid': shared_uuid, 'host': 'd%d.example' % k, 'user': 'u', 'class': 'none'}
+                                     for k in range(256)]
+                    else:
+                        dump_rows = [{'uuid': shared_uuid, 'host': 'rs0.example', 'user': 'u', 'class': 'none'}]
+                    probes = {
+                        's': {'kind': 'database', 'server_uuid': UUID_A, 'channels': [], 'cluster_members': [],
+                              'replicas': replicas, 'dump_threads': dump_rows, 'dump_read_failed': False},
+                    }
+                    for i in range(n_rs):
+                        probes['r%d' % i] = {
+                            'kind': 'readyset', 'port_role': 'adapter', 'proxied_server_uuid': None,
+                            'replication_status': 'Running',
+                            'upstreams': [{'host': 'source.example', 'port': 3306, 'purpose': 'cdc',
+                                           'active_cdc': '1', 'user': 'u'}],
+                        }
+                    with mock.patch.object(topology_links, '_host_key',
+                                           wraps=topology_links._host_key) as host_key_spy:
+                        result = self.build(profiles, probes)
+                    calls = host_key_spy.call_count
+                    call_counts[(n_rs, dump_kind)] = calls
+                    # Strictly linear in rows + dump rows + Readyset members (never O(n_rs * n_replicas * n_dump)).
+                    self.assertLessEqual(calls, 10 * (2048 + 256 + n_rs), (n_rs, dump_kind, calls))
+                    if dump_kind == 'long_hosts':
+                        for call in host_key_spy.call_args_list:
+                            arg = call[0][0] if call[0] else ''
+                            self.assertFalse(isinstance(arg, str) and len(arg) > 255,
+                                             'overlong dump hosts must be dropped before _host_key')
+                    if dump_kind in ('long_hosts', 'multi_host_uuid'):
+                        # Rejected long hosts and multi-host UUIDs never attribute to any Readyset edge.
+                        self.assertIn('peer:' + shared_uuid, {n['id'] for n in result['nodes']})
+                        for edge in result['edges']:
+                            if edge['kind'] == 'cache_upstream':
+                                self.assertNotIn('reason', edge)
+                    else:
+                        # Claim-once: r0 claims at most one registration; remaining rows stay a peer.
+                        r0_edge = next(e for e in result['edges'] if e['from'] == 'r0' and e['to'] == 's')
+                        self.assertEqual(r0_edge['reason'], 'Also registered on source as a replica (server ID 2)')
+                    for edge in result['edges']:
+                        self.assertLessEqual(len(edge.get('reason') or ''), 512)
+
+        # Scaling from 2 to 15 Readyset members adds O(n_rs) host_key calls, not O(n_rs * n_replicas).
+        for dump_kind in ('long_hosts', 'multi_host_uuid', 'single_host_match'):
+            delta = call_counts[(15, dump_kind)] - call_counts[(2, dump_kind)]
+            self.assertLess(delta, 200, (dump_kind, delta))
+
+        # Overlong dump usernames (> 32 chars) are dropped and cannot match a Readyset member.
+        long_user = 'u' * 33
+        self.assertIsNone(topology_group._map_user(long_user))
+        self.assertEqual(topology_group._map_user('u' * 32), 'u' * 32)
+        long_user_res = self.build(
+            [{'id': 's', 'name': 'source', 'host': 'source.example', 'port': 3306, 'group': 'G'},
+             {'id': 'r0', 'name': 'rs0', 'host': 'rs0.example', 'port': 3307, 'group': 'G'}],
+            {'s': {'kind': 'database', 'server_uuid': UUID_A, 'channels': [], 'cluster_members': [],
+                   'replicas': [{'host': 'rs0', 'port': 3307, 'uuid': shared_uuid, 'server_id': 2}],
+                   'dump_threads': [{'uuid': shared_uuid, 'host': 'rs0.example', 'user': long_user, 'class': 'none'}],
+                   'dump_read_failed': False},
+             'r0': {'kind': 'readyset', 'port_role': 'adapter', 'proxied_server_uuid': UUID_A,
+                    'replication_status': 'Running',
+                    'upstreams': [{'host': 'source.example', 'port': 3306, 'purpose': 'cdc, proxy',
+                                   'active_cdc': '1', 'user': 'u' * 32}]}},
+        )
+        self.assertIn('peer:' + shared_uuid, {n['id'] for n in long_user_res['nodes']})
+
+        # Defense-in-depth cap on notes per edge ("and N more registrations").
+        edges = {'k': {'from': 'r0', 'to': 's', 'kind': 'cache_upstream', 'evidence': 'proxied_identity',
+                       'verified': True, 'state': 'up', 'label': 'Upstream'}}
+        note_state = {}
+        for sid in range(1, 25):
+            topology_group._attach_replica_note(edges, 'k', 'source', sid, estimate=False, note_state=note_state)
+        reason = edges['k']['reason']
+        self.assertIn('and %d more registrations' % (24 - topology_group.MAP_NOTES_PER_EDGE), reason)
+        self.assertEqual(reason.count('Also registered on source'), topology_group.MAP_NOTES_PER_EDGE)
+        self.assertLess(len(reason), 400)
 
 
 if __name__ == '__main__':

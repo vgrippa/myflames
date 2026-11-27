@@ -117,6 +117,29 @@ test("inventory table column layouts survive session restore", () => {
   assert.deepEqual(normalizeLab({slow:{columns_v1:layouts}}).slow.columns_v1, layouts);
 });
 
+test("restored skip-loop members are cut, deduplicated, capped and dropped when inactive", () => {
+  const longStem = "m".repeat(200);
+  const many = Array.from({ length: 80 }, (_, i) => `p-${i}`);
+  const active = normalizeLab({
+    slow: {
+      replication_loop_active: true,
+      replication_loop_members: [longStem + "-a", longStem + "-b", "", 42, "p-2", "p-2"],
+      replication_loop_member: "p-legacy",
+    },
+  });
+  assert.deepEqual(active.slow.replication_loop_members, [longStem, "p-2", "p-legacy"]);
+  assert.equal(active.slow.replication_loop_member, longStem);
+  const capped = normalizeLab({ slow: { replication_loop_active: true, replication_loop_members: many } });
+  assert.equal(capped.slow.replication_loop_members.length, 64);
+  const legacyOnly = normalizeLab({ slow: { replication_loop_active: true, replication_loop_member: "p-only" } });
+  assert.deepEqual(legacyOnly.slow.replication_loop_members, ["p-only"]);
+  assert.equal(legacyOnly.slow.replication_loop_member, "p-only");
+  const inactive = normalizeLab({ slow: { replication_loop_active: false, replication_loop_members: ["p-2"], replication_loop_member: "p-2" } });
+  assert.equal("replication_loop_active" in inactive.slow, false);
+  assert.equal("replication_loop_members" in inactive.slow, false);
+  assert.equal("replication_loop_member" in inactive.slow, false);
+});
+
 test("unconfirmed changes over the keepalive limit are at risk on unload", () => {
   const saver = new SessionSaver(() => {}, () => {});
   saver.enable("{}");
