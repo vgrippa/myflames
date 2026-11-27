@@ -4,9 +4,11 @@ Each member owns one standard connector for the request. Every query uses
 the connector's guarded client path. Reported peers are drawn without logging
 in to them; background polling and server writes are not permitted here.
 """
+import contextlib
 import json
 import re
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
@@ -21,14 +23,51 @@ SCHEMA_VERSION = 'topology-group-1.0'
 SECTIONS = ('map', 'members', 'parameters', 'accounts', 'plugins')
 MAX_CONCURRENCY = 4
 QUERY_SECONDS = 30
+DUMP_QUERY_SECONDS = 5
 REQUEST_SECONDS = 120
 ACCOUNTS_REQUEST_SECONDS = 300
 MAP_PEERS_PER_MEMBER = 256
 MAP_EDGES_PER_MEMBER = 1024
 MAP_ROWS_PER_MEMBER = 2048
 MAP_MAX_NODES = 4096
+MAP_DUMP_ATTR_ROWS = 4096
+MAP_USER_MAX_CHARS = 32
+MAP_NOTES_PER_EDGE = 4
 TAG = '/*myflames:topology*/ '
 _UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
+_DUMP_PFS_VARS_SQL = (
+    "SHOW GLOBAL VARIABLES WHERE Variable_name IN "
+    "('performance_schema', 'performance_schema_session_connect_attrs_size')"
+)
+_DUMP_ATTRS_LOST_SQL = "SHOW GLOBAL STATUS LIKE 'Performance_schema_session_connect_attrs_lost'"
+# Collect every Binlog Dump thread on a MySQL source with its replica/slave
+# UUID, client host, client user, and ALL connect attributes (never filtering
+# with NOT EXISTS so lost or non-mysqld attributes are classified explicitly).
+_DUMP_THREADS_SQL = (
+    "SELECT DISTINCT t.PROCESSLIST_ID, LOWER(CAST(u.VARIABLE_VALUE AS CHAR(64))), "
+    "t.PROCESSLIST_HOST, t.PROCESSLIST_USER, a.ATTR_NAME, a.ATTR_VALUE "
+    "FROM performance_schema.threads t "
+    "JOIN performance_schema.user_variables_by_thread u "
+    "ON u.THREAD_ID = t.THREAD_ID "
+    "AND u.VARIABLE_NAME IN ('replica_uuid', 'slave_uuid') "
+    "LEFT JOIN performance_schema.session_connect_attrs a "
+    "ON a.PROCESSLIST_ID = t.PROCESSLIST_ID "
+    "WHERE t.PROCESSLIST_COMMAND LIKE 'Binlog Dump%' "
+    "ORDER BY t.PROCESSLIST_ID "
+    "LIMIT " + str(MAP_DUMP_ATTR_ROWS + 1)
+)
+# Active client (host, user) pairs carrying READYSET% connect attributes, used
+# only when a Readyset member exposes no upstream user in upstream_servers.
+_READYSET_CLIENTS_SQL = (
+    "SELECT DISTINCT t.PROCESSLIST_HOST, t.PROCESSLIST_USER "
+    "FROM performance_schema.threads t "
+    "JOIN performance_schema.session_connect_attrs a "
+    "ON a.PROCESSLIST_ID = t.PROCESSLIST_ID "
+    "WHERE a.ATTR_NAME IN ('_program_name', 'program_name', '_client_name') "
+    "AND a.ATTR_VALUE LIKE 'READYSET%' "
+    "AND t.PROCESSLIST_HOST IS NOT NULL AND t.PROCESSLIST_HOST != '' "
+    "LIMIT " + str(MAP_PEERS_PER_MEMBER)
+)
 
 
 class _NotReached(ConnectorError):
@@ -211,9 +250,9 @@ def _number(value):
         return None
 
 
-def _optional(reader, sql, notes, named=False):
+def _optional(reader, sql, notes, named=False, timeout=None):
     try:
-        return reader.named(sql) if named else reader.rows(sql)
+        return reader.named(sql) if named else reader.rows(sql, timeout=timeout)
     except ConnectorError as exc:
         notes.append(connection_groups.safe_problem(exc))
         return None
@@ -246,7 +285,7 @@ def _identity(conn, member, read_position=True):
         return {}, 'ProxySQL Admin is read for identity only.'
     values = reader.pairs("SHOW GLOBAL VARIABLES WHERE Variable_name IN "
         "('version','version_comment','server_uuid','server_id','hostname','port','report_host','read_only','super_read_only',"
-        "'gtid_mode','group_replication_group_name',"
+        "'gtid_mode','performance_schema','group_replication_group_name',"
         "'group_replication_single_primary_mode','wsrep_on','wsrep_auto_increment_control',"
         "'wsrep_provider','wsrep_cluster_name','wsrep_node_name','wsrep_node_incoming_address')")
     version, comment = values.get('version'), values.get('version_comment') or comment
@@ -535,7 +574,201 @@ def _uuid(value):
             and value != '00000000-0000-0000-0000-000000000000' else None)
 
 
-def _map_probe(conn, profile, member, variables):
+def _classify_dump_attrs(attrs, attrs_lost, attrs_unreadable=False, attrs_storage_enabled=True):
+    """Classify one Binlog Dump session from its full connect attributes.
+
+    MySQL storage/perfschema/pfs.cc:8307-8365 skips attribute storage and
+    leaves Performance_schema_session_connect_attrs_lost at 0 when
+    performance_schema_session_connect_attrs_size is 0, so disabled or unknown
+    attribute storage makes every dump class "unknown".
+    """
+    if not attrs_storage_enabled:
+        return 'unknown'
+    has_mysqld = any(
+        (name in ('program_name', '_program_name') and (value or '').strip().lower() == 'mysqld')
+        or (name == '_client_role' and (value or '').strip().lower() == 'binary_log_listener')
+        for name, value in attrs
+    )
+    if has_mysqld:
+        return 'mysqld'
+    if attrs_unreadable or attrs_lost is None or attrs_lost > 0:
+        return 'unknown'
+    if not attrs:
+        return 'none'
+    return 'other'
+
+
+def _is_query_timeout(exc):
+    """True for a per-statement client timeout, never for overall read-budget expiry."""
+    return isinstance(exc, ConnectorError) and str(exc).startswith('Query timed out after ')
+
+
+def _dump_guard(conn):
+    """Build an isolated evidence/read guard for best-effort dump reads.
+
+    A short DUMP_QUERY_SECONDS timeout on optional performance_schema reads
+    must never latch the member's _ReadConnection.failure or
+    TargetEvidenceConnection.problem. Identity verification still checks
+    against the member's observed identity, and non-timeout failures still
+    propagate to the member guard.
+    """
+    parent_ev = conn if isinstance(conn, dbops.TargetEvidenceConnection) else None
+    parent_read = (
+        parent_ev.connection
+        if parent_ev is not None and isinstance(parent_ev.connection, _ReadConnection)
+        else conn if isinstance(conn, _ReadConnection) else None
+    )
+    if parent_ev is not None:
+        raw = parent_read.connection if parent_read is not None else parent_ev.connection
+        isolated_read = _ReadConnection(raw)
+        if parent_read is not None:
+            isolated_read.authenticated = parent_read.authenticated
+        isolated_ev = dbops.TargetEvidenceConnection(isolated_read)
+        if parent_ev.variables is not None:
+            isolated_ev.variables = dict(parent_ev.variables)
+        return isolated_ev, isolated_read, parent_ev, parent_read
+    if parent_read is not None:
+        isolated_read = _ReadConnection(parent_read.connection)
+        isolated_read.authenticated = parent_read.authenticated
+        return isolated_read, isolated_read, None, parent_read
+    return conn, None, None, None
+
+
+def _read_dump_threads(conn, reader, variables):
+    """Collect and classify Binlog Dump sessions on a MySQL source (5 s budget)."""
+    pfs_state = _on(variables.get('performance_schema'))
+    if pfs_state is False:
+        return [], [], True, False
+
+    def _run_dump_query(sql):
+        dump_conn, dump_read, parent_ev, parent_read = _dump_guard(conn)
+        dump_reader = Reader(dump_conn, TAG) if dump_conn is not conn else reader
+        try:
+            return dump_reader.rows(sql, timeout=DUMP_QUERY_SECONDS), False
+        except ConnectorError as exc:
+            if (dump_read is not None and _is_query_timeout(dump_read.failure)) or _is_query_timeout(exc):
+                return None, True
+            if isinstance(dump_conn, dbops.TargetEvidenceConnection) and dump_conn.problem:
+                if dump_read is None or dump_read.failure is None:
+                    if parent_ev is not None:
+                        parent_ev.problem = dump_conn.problem
+                        parent_ev.check()
+                    raise
+            if dump_read is not None and dump_read.failure is not None:
+                if parent_ev is not None and isinstance(dump_conn, dbops.TargetEvidenceConnection) and dump_conn.problem:
+                    parent_ev.problem = dump_conn.problem
+                if parent_read is not None:
+                    parent_read.failure = dump_read.failure
+                    parent_read.check()
+                raise
+            return None, False
+
+    pfs_var_rows, pfs_vars_timed_out = _run_dump_query(_DUMP_PFS_VARS_SQL)
+    if pfs_vars_timed_out:
+        return [], [], True, False
+    pfs_vars = {}
+    for row in pfs_var_rows or ():
+        if len(row) >= 2 and row[0]:
+            pfs_vars[str(row[0]).strip().lower()] = row[1]
+    if 'performance_schema' in pfs_vars:
+        pfs_state = _on(pfs_vars.get('performance_schema'))
+        if pfs_state is False:
+            return [], [], True, False
+    attrs_size = _number(pfs_vars.get('performance_schema_session_connect_attrs_size'))
+    attrs_storage_enabled = (
+        pfs_state is True
+        and isinstance(attrs_size, int)
+        and attrs_size > 0
+    )
+
+    attrs_lost = None
+    if attrs_storage_enabled:
+        lost_rows, lost_timed_out = _run_dump_query(_DUMP_ATTRS_LOST_SQL)
+        if lost_timed_out:
+            return [], [], True, False
+        if lost_rows:
+            for row in lost_rows:
+                if len(row) >= 2 and str(row[0] or '').lower() == 'performance_schema_session_connect_attrs_lost':
+                    val = _number(row[1])
+                    if isinstance(val, int):
+                        attrs_lost = val
+                    break
+    rows, dump_timed_out = _run_dump_query(_DUMP_THREADS_SQL)
+    dump_attrs_lost = bool(attrs_lost is not None and attrs_lost > 0)
+    if rows is None:
+        return [], [], True, dump_attrs_lost
+    truncated = len(rows) > MAP_DUMP_ATTR_ROWS
+    if truncated:
+        rows = rows[:MAP_DUMP_ATTR_ROWS]
+    last_pid = str(rows[-1][0]) if truncated and rows else None
+
+    sessions = {}
+    order = []
+    for row in rows:
+        if len(row) < 4:
+            continue
+        pid_key = str(row[0]) if row[0] is not None else ''
+        duuid = _uuid(row[1])
+        dhost = _map_host(row[2])
+        if not duuid or not dhost:
+            continue
+        duser = _map_user(row[3])
+        key = (pid_key, duuid, dhost, duser)
+        if key not in sessions:
+            if len(order) >= MAP_PEERS_PER_MEMBER:
+                continue
+            sessions[key] = {'uuid': duuid, 'host': dhost, 'user': duser, 'attrs': [],
+                             'unreadable': bool(truncated and pid_key == last_pid)}
+            order.append(key)
+        attr_name = row[4] if len(row) > 4 else None
+        attr_value = row[5] if len(row) > 5 else None
+        if attr_name is not None:
+            sessions[key]['attrs'].append((str(attr_name).strip().lower(),
+                                           None if attr_value is None else str(attr_value)))
+
+    dump_threads = []
+    has_none_class = False
+    for key in order:
+        item = sessions[key]
+        dclass = _classify_dump_attrs(
+            item['attrs'], attrs_lost,
+            attrs_unreadable=item['unreadable'],
+            attrs_storage_enabled=attrs_storage_enabled,
+        )
+        if dclass == 'none':
+            has_none_class = True
+        dump_threads.append({
+            'uuid': item['uuid'],
+            'host': item['host'],
+            'user': item['user'],
+            'class': dclass,
+        })
+
+    readyset_clients = []
+    if has_none_class:
+        client_rows, clients_timed_out = _run_dump_query(_READYSET_CLIENTS_SQL)
+        if clients_timed_out:
+            for item in dump_threads:
+                if item['class'] != 'mysqld':
+                    item['class'] = 'unknown'
+        else:
+            for row in (client_rows or [])[:MAP_PEERS_PER_MEMBER]:
+                if len(row) < 2:
+                    continue
+                chost = _map_host(row[0])
+                cuser = _map_user(row[1])
+                if chost:
+                    readyset_clients.append({'host': chost, 'user': cuser})
+    dump_read_failed = bool(
+        not dump_threads and (
+            pfs_state is None
+            or (attrs_storage_enabled and attrs_lost is None)
+        )
+    )
+    return dump_threads, readyset_clients, dump_read_failed, dump_attrs_lost
+
+
+def _map_probe(conn, profile, member, variables, has_readyset=False):
     """Collect topology on this member only; keep the raw probe private.
 
     The shared probe supplies routes and peers. Cluster identity comes from
@@ -573,11 +806,34 @@ def _map_probe(conn, profile, member, variables):
                              % (table, MAP_ROWS_PER_MEMBER + 1), notes)
             offline.update(_number(r[0]) for r in (rows or [])[:MAP_ROWS_PER_MEMBER] if r)
         probe['offline_hostgroups'] = [hg for hg in offline if isinstance(hg, int)]
+    if probe['kind'] == 'readyset':
+        # Readyset forwards SELECT @@server_uuid and SELECT @@hostname, @@port
+        # to the MySQL upstream that serves queries. Keep them private to the
+        # probe; never store them as the Readyset member's own identity.
+        proxied_notes = []
+        rows = _optional(reader, 'SELECT @@server_uuid', proxied_notes)
+        conn.check()
+        probe['proxied_server_uuid'] = _uuid(rows[0][0]) if rows and rows[0] else None
+        probe['proxied_hostname'] = None
+        probe['proxied_port'] = None
+        if probe['proxied_server_uuid']:
+            hp_rows = _optional(reader, 'SELECT @@hostname, @@port', proxied_notes)
+            conn.check()
+            if hp_rows and hp_rows[0] and len(hp_rows[0]) >= 2:
+                probe['proxied_hostname'] = _map_host(hp_rows[0][0])
+                probe['proxied_port'] = _map_port(hp_rows[0][1])
     if probe['kind'] != 'database':
         return probe, notes
     if (_uuid(probe.get('server_uuid')) and member['server_uuid'] and
             _uuid(probe['server_uuid']) != _uuid(member['server_uuid'])):
         raise ConnectorError('The member identity changed during the topology read.')
+    if has_readyset and member['engine'] == 'mysql' and probe.get('replicas'):
+        dump_threads, readyset_clients, dump_read_failed, dump_attrs_lost = _read_dump_threads(
+            conn, reader, variables)
+        probe['dump_threads'] = dump_threads
+        probe['readyset_clients'] = readyset_clients
+        probe['dump_read_failed'] = dump_read_failed
+        probe['dump_attrs_lost'] = dump_attrs_lost
     group = _uuid(variables.get('group_replication_group_name'))
     provider = variables.get('wsrep_provider')
     wsrep = _on(variables.get('wsrep_on')) or (provider and str(provider).lower() != 'none')
@@ -640,12 +896,64 @@ def _map_host(value):
     if not isinstance(value, str):
         return None
     value = value.strip()
+    if not value or len(value) > 255:
+        return None
     return value if re.fullmatch(r'[A-Za-z0-9._:%\[\]-]{1,255}', value) else None
+
+
+def _map_user(value):
+    """Accept bounded MySQL account names (up to 32 characters)."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > MAP_USER_MAX_CHARS:
+        return None
+    return value
 
 
 def _map_port(value):
     number = _number(value)
     return number if isinstance(number, int) and 1 <= number <= 65535 else None
+
+
+def _is_truthy(value):
+    return value is not None and str(value).strip().lower() in ('1', 'true', 't', 'yes', 'on')
+
+
+def _attach_replica_note(edges, edge_key, source_name, server_id, estimate=False, note_state=None):
+    """Attach a bounded replica-registration note onto a Readyset upstream edge."""
+    target_edge = edges.get(edge_key)
+    if target_edge is None:
+        return
+    sid = _number(server_id)
+    if isinstance(sid, int) and sid > 0:
+        note = 'Also registered on %s as a replica (server ID %d)' % (source_name, sid)
+    else:
+        note = 'Also registered on %s as a replica' % source_name
+    if estimate:
+        note += ' (estimate)'
+    if note_state is None:
+        note_state = {}
+    state = note_state.get(edge_key)
+    if state is None:
+        existing = target_edge.get('reason')
+        state = {
+            'notes': [existing] if existing else [],
+            'seen': {existing} if existing else set(),
+            'extra': 0,
+        }
+        note_state[edge_key] = state
+    if note in state['seen']:
+        return
+    state['seen'].add(note)
+    if len(state['notes']) < MAP_NOTES_PER_EDGE:
+        state['notes'].append(note)
+    else:
+        state['extra'] += 1
+    reason = '; '.join(state['notes'])
+    if state['extra']:
+        reason += '; and %d more registration%s' % (state['extra'], '' if state['extra'] == 1 else 's')
+    target_edge['reason'] = reason
 
 
 def _build_map(entries, probes, profiles):
@@ -687,6 +995,9 @@ def _build_map(entries, probes, profiles):
                 rows = rows[:remaining]
             bounded[pid][key] = rows
             remaining -= len(rows)
+        for aux_key in ('dump_threads', 'readyset_replicas', 'readyset_clients'):
+            if aux_key in probe:
+                bounded[pid][aux_key] = list(islice(iter(probe.get(aux_key) or []), MAP_PEERS_PER_MEMBER))
     probes = bounded
     candidates, galera_candidates = [], []
     for entry in entries:
@@ -702,11 +1013,27 @@ def _build_map(entries, probes, profiles):
         if entry['outcome'] != 'read':
             notes.append({'profile_id': pid, 'message': entry['message']})
 
-    def peer(host, port, uuid, observer):
-        if not uuid and not host:
+    def peer(host, port, uuid, observer, server_id=None, is_replica=False):
+        sid = _number(server_id)
+        sid = sid if isinstance(sid, int) and sid > 0 else None
+        if not uuid and not host and not (is_replica and sid is not None):
             return None
-        address = topology_links.format_endpoint(host, port)
-        key = 'peer:' + (uuid or address.lower())
+        if host:
+            label = topology_links.format_endpoint(host, port)
+        else:
+            details = []
+            if is_replica and sid is not None:
+                details.append('server ID %d' % sid)
+            if port is not None:
+                details.append('port %d' % port)
+            base = 'Replica without a reported address' if is_replica else 'Server without a reported address'
+            label = '%s (%s)' % (base, ', '.join(details)) if details else base
+        if uuid:
+            key = 'peer:' + uuid
+        elif host:
+            key = 'peer:' + topology_links.format_endpoint(host, port).lower()
+        else:
+            key = 'peer:%s:server-id:%d' % (observer, sid) + (':%d' % port if port is not None else '')
         if key not in peers:
             if peer_counts.get(observer, 0) >= MAP_PEERS_PER_MEMBER:
                 cap(observer, 'Map peers capped at %d per member; some reported peers are omitted.' % MAP_PEERS_PER_MEMBER)
@@ -715,15 +1042,37 @@ def _build_map(entries, probes, profiles):
                 cap(observer, 'Map nodes capped at %d; some reported peers are omitted.' % MAP_MAX_NODES)
                 return None
             peer_counts[observer] = peer_counts.get(observer, 0) + 1
-            peers[key] = dict(id=key, kind='peer', profile_id=None, label=address,
+            peers[key] = dict(id=key, kind='peer', profile_id=None, label=label,
                               host=host, port=port, server_uuid=uuid, seen_by=[], reason='Not in this group')
+        elif not peers[key]['host'] and host:
+            peers[key]['host'] = host
+            peers[key]['port'] = port
+            peers[key]['label'] = label
         if observer not in peers[key]['seen_by']:
             peers[key]['seen_by'].append(observer)
         return key
 
-    def target(observer, host, port, uuid=None, server_id=None, identity_only=False, galera=False):
+    target_cache = {}
+
+    def target(observer, host, port, uuid=None, server_id=None, identity_only=False, galera=False,
+               allow_peer=True, database_only=False):
         host, port, uuid = _map_host(host), _map_port(port), _uuid(uuid)
+        sid = _number(server_id)
+        cache_key = None
+        if not allow_peer:
+            cache_key = (observer, host, port, uuid, sid, identity_only, galera, database_only)
+            if cache_key in target_cache:
+                return target_cache[cache_key]
+
+        def _finish(result):
+            if cache_key is not None:
+                target_cache[cache_key] = result
+            return result
+
         matching = galera_candidates if galera else candidates
+        if database_only:
+            matching = [candidate for candidate in matching
+                        if probes.get(candidate['profile_id'], {}).get('kind') not in ('readyset', 'proxysql')]
         observer_host = replication.reached_host(stored[observer])
         # Aliases attest the canonical server's identity, never a second
         # server. Address-only routes can still name their saved endpoint.
@@ -756,16 +1105,15 @@ def _build_map(entries, probes, profiles):
                 if resolved is not None:
                     found, evidence = resolved
         if evidence == 'server_uuid':
-            return found['profile_id'], evidence, True
+            return _finish((found['profile_id'], evidence, True))
         # IDs can collide (including the default 1), so retain an ID-only
         # match as an explicit estimate, not verified identity evidence.
-        sid = _number(server_id)
         mariadb_sid = not uuid and isinstance(sid, int) and sid > 0 and by_id[observer]['engine'] == 'mariadb'
         if mariadb_sid:
             identities = [pid for pid, probe in probes.items() if probe.get('kind') == 'database'
                           and by_id[pid]['engine'] == 'mariadb' and by_id[pid]['server_id'] == sid]
             if len(identities) == 1:
-                return identities[0], 'server_id', bool(found and found['profile_id'] == identities[0])
+                return _finish((identities[0], 'server_id', bool(found and found['profile_id'] == identities[0])))
         # A contrary UUID is stronger than a matching address. Do not draw
         # that known different server as this saved member.
         contrary_uuid = found and uuid and found.get('server_uuid') and _uuid(found['server_uuid']) != uuid
@@ -774,12 +1122,14 @@ def _build_map(entries, probes, profiles):
                         by_id[found['profile_id']].get('server_id') is not None and
                         by_id[found['profile_id']]['server_id'] != sid)
         if found and not identity_only and not contrary_uuid and not contrary_sid:
-            return found['profile_id'], evidence, False
+            return _finish((found['profile_id'], evidence, False))
+        if not allow_peer:
+            return _finish((None, None, False))
         return peer(host, port, uuid, observer), None, False
 
     def edge(observer, source, destination, kind, evidence, verified, state, label, reason=None, target_key=('', 0)):
         if not source or not destination or source == destination:
-            return
+            return None
         key = (source, destination, kind, '' if kind == 'replication' else label, target_key)
         if kind == 'replication' and evidence == 'server_id' and not verified:
             label = 'server ID match, not verified'
@@ -791,7 +1141,7 @@ def _build_map(entries, probes, profiles):
         if old is None:
             if edge_counts.get(observer, 0) >= MAP_EDGES_PER_MEMBER:
                 cap(observer, 'Map edges capped at %d per member; some reported links are omitted.' % MAP_EDGES_PER_MEMBER)
-                return
+                return None
             edge_counts[observer] = edge_counts.get(observer, 0) + 1
         if old is None or verified and not old['verified']:
             if old is not None and state is None:
@@ -804,6 +1154,7 @@ def _build_map(entries, probes, profiles):
                 old['state'] = state
             if reason and 'reason' not in old:
                 old['reason'] = reason
+        return key
 
     attestations, observations = {}, {}
     for pid, probe in probes.items():
@@ -836,6 +1187,203 @@ def _build_map(entries, probes, profiles):
         else:
             notes.append({'profile_id': pid, 'message': 'This member could not confirm its own cluster membership.'})
 
+    host_key_cache = {}
+    loopback_cache = {}
+
+    def _cached_host_key(raw):
+        clean = _map_host(raw)
+        if not clean:
+            return ''
+        key = host_key_cache.get(clean)
+        if key is None:
+            key = topology_links._host_key(clean)
+            host_key_cache[clean] = key
+        return key
+
+    def _cached_is_loopback(hkey):
+        if not hkey:
+            return False
+        res = loopback_cache.get(hkey)
+        if res is None:
+            res = topology_links.is_loopback(hkey)
+            loopback_cache[hkey] = res
+        return res
+
+    # Compute host keys once per member so attribution stays linear in rows.
+    member_host_keys = {entry['profile_id']: _cached_host_key(entry['host']) for entry in entries}
+    member_ssh_keys = {entry['profile_id']: _cached_host_key(stored[entry['profile_id']].get('ssh_host'))
+                       for entry in entries}
+    member_is_loopback = {pid: _cached_is_loopback(hkey) for pid, hkey in member_host_keys.items()}
+
+    # Pass 1: resolve Readyset upstreams first so database SHOW REPLICAS /
+    # SHOW SLAVE HOSTS rows can be attributed to their Readyset member.
+    readyset_cdc = {}
+    rs_deploy_keys = {}
+    valid_health = ('up', 'down', 'healthy', 'unhealthy', 'unknown', 'Online', 'Offline')
+    for pid, probe in probes.items():
+        if by_id[pid].get('duplicate_of') or probe.get('kind') != 'readyset':
+            continue
+        proxied_uuid = _uuid(probe.get('proxied_server_uuid'))
+        proxied_matches = [
+            db_pid for db_pid, db_probe in probes.items()
+            if db_probe.get('kind') == 'database'
+            and by_id[db_pid]['outcome'] == 'read'
+            and not by_id[db_pid].get('duplicate_of')
+            and _uuid(by_id[db_pid].get('server_uuid')) == proxied_uuid
+        ] if proxied_uuid else []
+        proxied_target = proxied_matches[0] if len(proxied_matches) == 1 else None
+        proxied_host = _map_host(probe.get('proxied_hostname'))
+        proxied_host_key = _cached_host_key(proxied_host) if proxied_host else ''
+        proxied_port = _map_port(probe.get('proxied_port'))
+
+        raw_upstreams = [u for u in (probe.get('upstreams') or ()) if isinstance(u, dict)]
+        cdc_raw_host, cdc_raw_port = topology_links.split_host_port(probe.get('cdc_server'), 3306)
+        cdc_host = _map_host(cdc_raw_host)
+        cdc_host_key = _cached_host_key(cdc_host) if cdc_host else ''
+        cdc_port = _map_port(cdc_raw_port) if cdc_host else None
+
+        upstreams = [dict(u, _from_cdc_server=False) for u in raw_upstreams]
+        if cdc_host:
+            cdc_eff_port = cdc_port or 3306
+            already_present = any(
+                _cached_host_key(u.get('host')) == cdc_host_key
+                and (_map_port(u.get('port')) or 3306) == cdc_eff_port
+                for u in upstreams
+            )
+            if not already_present:
+                upstreams.append({
+                    'host': cdc_host, 'port': cdc_port, 'purpose': 'cdc',
+                    'active_cdc': '1', '_from_cdc_server': True,
+                })
+
+        ups_sig = tuple(sorted(
+            (_cached_host_key(u.get('host')), _map_port(u.get('port')) or 3306)
+            for u in raw_upstreams if _map_host(u.get('host'))
+        ))
+        rs_deploy_keys[pid] = (
+            member_host_keys[pid],
+            member_ssh_keys[pid],
+            ups_sig,
+            str(probe.get('cdc_server') or '').strip().lower(),
+        )
+        replication_running = str(probe.get('replication_status') or '').strip().lower() == 'running'
+
+        resolved = []
+        for upstream in upstreams:
+            dest, ev, ver = target(pid, upstream.get('host'), upstream.get('port'),
+                                   allow_peer=False, database_only=True)
+            health = upstream.get('health')
+            state = health if health in valid_health else None
+            purpose = str(upstream.get('purpose') or '').strip().lower()
+            no_purpose = not purpose
+            has_cdc_purpose = 'cdc' in purpose
+            has_proxy_purpose = ('proxy' in purpose) or ('query' in purpose)
+            is_cdc = _is_truthy(upstream.get('active_cdc')) or has_cdc_purpose
+            is_proxy = no_purpose or has_proxy_purpose
+            is_cdc_and_proxy = has_cdc_purpose and has_proxy_purpose
+            user = _map_user(upstream.get('user'))
+            uhkey = _cached_host_key(upstream.get('host'))
+            uport = _map_port(upstream.get('port'))
+            resolved.append({
+                'host': upstream.get('host'), 'port': upstream.get('port'),
+                'host_key': uhkey, 'port_val': uport,
+                'dest': dest, 'evidence': ev, 'verified': ver, 'state': state,
+                'is_cdc': is_cdc, 'active_cdc': _is_truthy(upstream.get('active_cdc')),
+                'is_proxy': is_proxy, 'is_cdc_and_proxy': is_cdc_and_proxy,
+                'no_purpose': no_purpose, 'from_cdc_server': bool(upstream.get('_from_cdc_server')),
+                'user': user,
+            })
+
+        cdc_server_dest = None
+        if cdc_host and cdc_port is not None:
+            cdc_server_dest, _, _ = target(pid, cdc_host, cdc_port, allow_peer=False, database_only=True)
+
+        covered = set()
+        if proxied_target is not None:
+            # Affirmative CDC evidence for Readyset -> proxied_target:
+            # (a) one real upstream row whose purpose includes both cdc and proxy
+            #     (or one upstream with no purpose column), not contradicted by
+            #     a resolved endpoint to another member;
+            # (b) CDC Server equals the proxied @@hostname:@@port read in the
+            #     same pass;
+            # (c) CDC address resolves by endpoint to proxied_target.
+            cond_a = (
+                len(resolved) == 1
+                and not resolved[0]['from_cdc_server']
+                and (resolved[0]['is_cdc_and_proxy'] or resolved[0]['no_purpose'])
+                and resolved[0]['dest'] in (None, proxied_target)
+                and cdc_server_dest in (None, proxied_target)
+            )
+            cond_b = (
+                bool(cdc_host_key) and cdc_port is not None
+                and bool(proxied_host_key) and proxied_port is not None
+                and cdc_host_key == proxied_host_key
+                and cdc_port == proxied_port
+                and cdc_server_dest in (None, proxied_target)
+            )
+            other_active_cdc = any(
+                item['active_cdc'] and item['dest'] != proxied_target
+                for item in resolved
+            )
+            cond_c = (
+                cdc_server_dest == proxied_target
+                or (cdc_server_dest is None and not other_active_cdc and any(
+                    item['is_cdc'] and item['dest'] == proxied_target for item in resolved
+                ))
+            )
+            cdc_matches_proxied = bool(cond_a or cond_b or cond_c)
+
+            for idx, item in enumerate(resolved):
+                if item['dest'] == proxied_target:
+                    covered.add(idx)
+                elif (item['dest'] is None and proxied_host_key and proxied_port is not None
+                      and item['host_key'] == proxied_host_key
+                      and (item['port_val'] or 3306) == proxied_port):
+                    covered.add(idx)
+            if cond_a and resolved[0]['dest'] is None:
+                covered.add(0)
+            elif not covered:
+                # Never let an unmatched CDC-only upstream be swallowed here.
+                unmatched_proxy = [
+                    idx for idx, item in enumerate(resolved)
+                    if item['dest'] is None and item['is_proxy'] and not item['is_cdc']
+                ]
+                if len(unmatched_proxy) == 1:
+                    covered.add(unmatched_proxy[0])
+
+            proxied_label = 'Upstream' if cdc_matches_proxied else 'Upstream (queries)'
+            proxied_state = next((resolved[idx]['state'] for idx in sorted(covered)
+                                  if resolved[idx]['state'] is not None), None)
+            edge_key = edge(pid, pid, proxied_target, 'cache_upstream', 'proxied_identity',
+                            True, proxied_state, proxied_label)
+            if cdc_matches_proxied and edge_key is not None:
+                cdc_users = {resolved[idx]['user'] for idx in covered if resolved[idx]['user']}
+                readyset_cdc.setdefault(proxied_target, []).append({
+                    'profile_id': pid, 'verified_cdc': True, 'edge_key': edge_key,
+                    'users': cdc_users, 'replication_running': replication_running,
+                })
+
+        any_explicit_cdc = any(item['is_cdc'] for item in resolved)
+        for idx, item in enumerate(resolved):
+            if idx in covered:
+                continue
+            dest, ev, ver = item['dest'], item['evidence'], item['verified']
+            if dest is None:
+                dest = peer(_map_host(item['host']), _map_port(item['port']), None, pid)
+            ek = edge(pid, pid, dest, 'cache_upstream', ev, ver, item['state'], 'Upstream')
+            if (item['dest'] is not None and ek is not None and
+                    (item['is_cdc'] or (len(resolved) == 1 and not any_explicit_cdc))):
+                existing = readyset_cdc.setdefault(item['dest'], [])
+                if not any(entry['profile_id'] == pid for entry in existing):
+                    existing.append({
+                        'profile_id': pid, 'verified_cdc': False, 'edge_key': ek,
+                        'users': {item['user']} if item['user'] else set(),
+                        'replication_running': replication_running,
+                    })
+
+    edge_note_state = {}
+    class_rank = {'none': 0, 'unknown': 1, 'other': 2, 'mysqld': 3}
+
     for pid, probe in probes.items():
         alias = by_id[pid].get('duplicate_of')
         if alias:
@@ -852,13 +1400,237 @@ def _build_map(entries, probes, profiles):
                         box['members'].append(node_id)
         for channel in probe.get('channels', []):
             source, evidence, verified = target(pid, channel.get('source_host'), channel.get('source_port'),
-                                                channel.get('source_uuid'), channel.get('source_server_id'))
+                                                channel.get('source_uuid'), channel.get('source_server_id'),
+                                                database_only=True)
             state = _replica_state([channel])
             edge(pid, source, pid, 'replication', evidence, verified, state, 'Replication')
+
+        unmatched_replicas = []
         for replica in probe.get('replicas', []):
             destination, evidence, verified = target(pid, replica.get('host'), replica.get('port'),
-                                                     replica.get('uuid'), replica.get('server_id'))
-            edge(pid, pid, destination, 'replication', evidence, verified, None, 'Replication')
+                                                     replica.get('uuid'), replica.get('server_id'),
+                                                     allow_peer=False, database_only=True)
+            if destination is not None:
+                edge(pid, pid, destination, 'replication', evidence, verified, None, 'Replication')
+            else:
+                unmatched_replicas.append(replica)
+        if unmatched_replicas:
+            rs_users = readyset_cdc.get(pid, [])
+            adapter_keys = {
+                rs_deploy_keys.get(item['profile_id']) for item in rs_users
+                if probes.get(item['profile_id'], {}).get('port_role') == 'adapter'
+            }
+            rs_owners = [
+                item for item in rs_users
+                if not (probes.get(item['profile_id'], {}).get('port_role') == 'admin'
+                        and rs_deploy_keys.get(item['profile_id']) in adapter_keys)
+            ]
+
+            # Build normalized READYSET% client host and (host_key, user) sets once per source.
+            rs_client_hosts = set()
+            rs_client_pairs = set()
+            for crow in probe.get('readyset_clients') or ():
+                if not isinstance(crow, dict):
+                    continue
+                chkey = _cached_host_key(crow.get('host'))
+                cuser = _map_user(crow.get('user'))
+                if chkey:
+                    rs_client_hosts.add(chkey)
+                    if cuser:
+                        rs_client_pairs.add((chkey, cuser))
+            rs_client_has_loopback = any(_cached_is_loopback(h) for h in rs_client_hosts)
+
+            # Re-validate dump rows in _build_map: drop rejected hosts before
+            # calling _host_key, cap users at 32 chars, and ignore any UUID
+            # seen with more than one dump host.
+            legacy_dump = 'dump_threads' not in probe and 'readyset_replicas' in probe
+            raw_dumps = probe.get('readyset_replicas') if legacy_dump else probe.get('dump_threads')
+            dump_by_uuid = {}
+            for row in raw_dumps or ():
+                if not isinstance(row, dict):
+                    continue
+                duuid = _uuid(row.get('uuid'))
+                dhost = _map_host(row.get('host'))
+                if not duuid or not dhost:
+                    continue
+                dhkey = _cached_host_key(dhost)
+                if not dhkey:
+                    continue
+                duser = _map_user(row.get('user'))
+                dclass = row.get('class')
+                if dclass not in class_rank:
+                    dclass = 'none' if legacy_dump else 'unknown'
+                dh_loop = _cached_is_loopback(dhkey)
+                has_rs_client = bool(row.get('readyset_client')) or (
+                    bool(duser) and (dhkey, duser) in rs_client_pairs
+                )
+                has_rs_client_host = (
+                    bool(row.get('readyset_client'))
+                    or dhkey in rs_client_hosts
+                    or (dh_loop and rs_client_has_loopback)
+                )
+                existing = dump_by_uuid.get(duuid)
+                if existing is None:
+                    dump_by_uuid[duuid] = {
+                        'host_key': dhkey,
+                        'is_loopback': dh_loop,
+                        'ambiguous_host': False,
+                        'users': {duser} if duser else set(),
+                        'class': dclass,
+                        'readyset_client': has_rs_client,
+                        'readyset_client_host': has_rs_client_host,
+                    }
+                else:
+                    if existing['host_key'] != dhkey:
+                        existing['ambiguous_host'] = True
+                    if duser:
+                        existing['users'].add(duser)
+                    if has_rs_client:
+                        existing['readyset_client'] = True
+                    if has_rs_client_host:
+                        existing['readyset_client_host'] = True
+                    if class_rank[dclass] > class_rank[existing['class']]:
+                        existing['class'] = dclass
+
+            observer_host = replication.reached_host(stored[pid])
+            source_name = by_id[pid]['profile_name']
+            rs_host_meta = {}
+            for rs in rs_owners:
+                rs_pid = rs['profile_id']
+                rs_host_meta[rs_pid] = {
+                    'host_key': member_host_keys[rs_pid],
+                    'loopback_ok': (
+                        topology_links._loopback_scope_matches(observer_host, stored[rs_pid].get('ssh_host'))
+                        and member_is_loopback[rs_pid]
+                    ),
+                }
+            sole_verified_cdc = (
+                len(rs_owners) == 1
+                and bool(rs_owners[0]['verified_cdc'])
+                and bool(rs_owners[0]['replication_running'])
+            )
+            match_cache = {}
+
+            def _resolve_candidate(replica):
+                rep_uuid = _uuid(replica.get('uuid'))
+                rep_host = _map_host(replica.get('host'))
+                rep_port = _map_port(replica.get('port'))
+                ckey = (rep_uuid, rep_host, rep_port)
+                if ckey in match_cache:
+                    return match_cache[ckey]
+                result = None
+                if rs_owners and rep_uuid and rep_uuid in dump_by_uuid:
+                    info = dump_by_uuid[rep_uuid]
+                    if not info['ambiguous_host'] and info['class'] == 'none':
+                        user_candidates = []
+                        for rs in rs_owners:
+                            if rs['users']:
+                                ok = bool(info['users'] & rs['users'])
+                            else:
+                                ok = info['readyset_client']
+                            if ok:
+                                user_candidates.append(rs)
+                        if user_candidates:
+                            host_candidates = []
+                            dhkey = info['host_key']
+                            dh_loop = info['is_loopback']
+                            for rs in user_candidates:
+                                meta = rs_host_meta[rs['profile_id']]
+                                rkey = meta['host_key']
+                                if dh_loop:
+                                    hmatch = meta['loopback_ok'] and (
+                                        dhkey == rkey or (
+                                            dhkey in topology_links._LOCAL_NAMES
+                                            and rkey in topology_links._LOCAL_NAMES
+                                        )
+                                    )
+                                else:
+                                    hmatch = bool(rkey) and dhkey == rkey
+                                if hmatch:
+                                    host_candidates.append(rs)
+                            if len(host_candidates) == 1:
+                                result = ('host', host_candidates[0])
+                            elif len(host_candidates) > 1:
+                                result = None
+                            elif (sole_verified_cdc and len(user_candidates) == 1
+                                  and info['readyset_client_host']):
+                                result = ('sole', user_candidates[0])
+                match_cache[ckey] = result
+                return result
+
+            # Pass A claims direct host matches first (at most one per Readyset
+            # member). Pass B ("sole") claims only when the owner is unclaimed,
+            # its Replication Status is running, a READYSET% client attribute
+            # exists on the dump row's host, and exactly one remaining unmatched
+            # row resolves to that owner; otherwise competing rows stay peers.
+            evaluated = [(replica, _resolve_candidate(replica)) for replica in unmatched_replicas]
+            claimed_rs = set()
+            matched_indices = set()
+            for idx, (replica, match) in enumerate(evaluated):
+                if match is None or match[0] != 'host':
+                    continue
+                owner = match[1]
+                if owner['profile_id'] in claimed_rs:
+                    continue
+                claimed_rs.add(owner['profile_id'])
+                matched_indices.add(idx)
+                _attach_replica_note(edges, owner['edge_key'], source_name,
+                                     replica.get('server_id'), estimate=False,
+                                     note_state=edge_note_state)
+            sole_by_owner = {}
+            for idx, (replica, match) in enumerate(evaluated):
+                if idx in matched_indices or match is None or match[0] != 'sole':
+                    continue
+                owner = match[1]
+                if owner['profile_id'] in claimed_rs:
+                    continue
+                sole_by_owner.setdefault(owner['profile_id'], []).append((idx, replica, owner))
+            for rs_pid, items in sole_by_owner.items():
+                if len(items) != 1:
+                    continue
+                idx, replica, owner = items[0]
+                claimed_rs.add(rs_pid)
+                matched_indices.add(idx)
+                _attach_replica_note(edges, owner['edge_key'], source_name,
+                                     replica.get('server_id'), estimate=False,
+                                     note_state=edge_note_state)
+            remaining_unmatched = [
+                replica for idx, (replica, _) in enumerate(evaluated) if idx not in matched_indices
+            ]
+
+            # Estimate fallback: inspect the unmatched row's own evidence (dump
+            # read failed, its dump class is unknown, or connect attrs were
+            # lost), never all dump classes on S. Refuse when the row's dump
+            # user is known and disjoint from the owner's upstream users.
+            if (len(unmatched_replicas) == 1 and len(remaining_unmatched) == 1
+                    and len(rs_owners) == 1 and rs_owners[0]['verified_cdc']
+                    and rs_owners[0]['replication_running']):
+                only_row = remaining_unmatched[0]
+                raw_host = str(only_row.get('host') or '').strip()
+                row_uuid = _uuid(only_row.get('uuid'))
+                row_info = dump_by_uuid.get(row_uuid) if row_uuid else None
+                row_class = row_info['class'] if row_info is not None else None
+                row_users = row_info['users'] if row_info is not None else set()
+                owner = rs_owners[0]
+                row_evidence_unavailable = (
+                    bool(probe.get('dump_read_failed'))
+                    or row_class == 'unknown'
+                    or bool(probe.get('dump_attrs_lost'))
+                )
+                contrary_user = bool(row_users and owner['users'] and not (row_users & owner['users']))
+                if (row_evidence_unavailable and not raw_host
+                        and row_class not in ('mysqld', 'other', 'none')
+                        and not contrary_user):
+                    _attach_replica_note(edges, owner['edge_key'], source_name,
+                                         only_row.get('server_id'), estimate=True,
+                                         note_state=edge_note_state)
+                    remaining_unmatched = []
+            for replica in remaining_unmatched:
+                dest = peer(_map_host(replica.get('host')), _map_port(replica.get('port')),
+                            _uuid(replica.get('uuid')), pid,
+                            server_id=replica.get('server_id'), is_replica=True)
+                edge(pid, pid, dest, 'replication', None, False, None, 'Replication')
+
         if probe.get('kind') == 'proxysql':
             servers = probe.get('servers', [])
             states = {}
@@ -900,17 +1672,6 @@ def _build_map(entries, probes, profiles):
                 edge(pid, pid, destination, 'proxy_route', evidence, verified, state, label,
                      ' '.join(reasons) if reasons else None,
                      target_key=(backend_host.lower(), backend_port))
-        if probe.get('kind') == 'readyset':
-            upstreams = list(probe.get('upstreams') or [])
-            if not upstreams:
-                host, port = topology_links.split_host_port(probe.get('cdc_server'), 3306)
-                if host:
-                    upstreams.append({'host': host, 'port': port})
-            for upstream in upstreams:
-                destination, evidence, verified = target(pid, upstream.get('host'), upstream.get('port'))
-                health = upstream.get('health')
-                state = health if health in ('up', 'down', 'healthy', 'unhealthy', 'unknown', 'Online', 'Offline') else None
-                edge(pid, pid, destination, 'cache_upstream', evidence, verified, state, 'Upstream')
     for node in peers.values():
         node['seen_by'].sort()
     for box in boxes.values():
@@ -1069,60 +1830,122 @@ def read_group(store, group_name, section, active_member_profile_id,
     deadline = started + request_seconds
     facts = {}
 
-    def read_one(profile):
-        entry, snapshot, position, exclusion = _entry(profile), None, None, None
+    def _record_member_failure(profile, exc, began):
+        if not isinstance(exc, (ConnectorError, ValueError, OSError)):
+            # A programming error belongs to this member, not its peers.
+            # Reuse HTTP traceback redaction, including the saved group
+            # credentials, without exposing exception text in the report.
+            from .ui import _log_unexpected_error
+            _log_unexpected_error('/api/live/topology', sys.exc_info(), route, store)
+            exc = ConnectorError('The connection could not be read.')
+        # No observed identity, role or inventory from a rejected read
+        # may influence the group summary or another member's comparison.
+        entry = _entry(profile)
+        entry.update(outcome='failed', message=connection_groups.probe_note(profile, exc))
+        entry['elapsed_s'] = round(time.monotonic() - began, 3)
+        return entry, None, None, connection_groups.safe_problem(exc), False
+
+    def _finalize_member(profile, entry, variables, conn, transport, exclusion):
+        # Optional inventory readers may catch a failure, but cannot
+        # make mixed-server data or a failed transport usable again.
+        if isinstance(conn, dbops.TargetEvidenceConnection):
+            conn.check()
+        transport.check()
+        entry['outcome'] = 'read'
+        provider = str(variables.get('wsrep_provider') or '').strip().lower()
+        active_cluster = None
+        if (entry['role'] in ('primary', 'secondary') and entry['state'] in ('ONLINE', 'RECOVERING')
+                and _uuid(variables.get('group_replication_group_name'))):
+            active_cluster = 'group_replication'
+        elif (_on(variables.get('wsrep_on')) and provider and provider != 'none'
+              and variables.get('wsrep_cluster_status') == 'Primary'):
+            active_cluster = 'galera'
+        facts[profile['id']] = dict(role=entry['role'], state=entry['state'],
+            gr_group=_uuid(variables.get('group_replication_group_name')), active_cluster=active_cluster,
+            hostname=variables.get('hostname'), report_host=variables.get('report_host'),
+            port=_map_port((conn.variables or {}).get('port'))
+            if isinstance(conn, dbops.TargetEvidenceConnection) else None)
+        if entry['message'].startswith('Not read:'):
+            entry['message'] = exclusion or 'Read from this member.'
+
+    def _open_and_identify(profile, stack):
+        entry, position, exclusion = _entry(profile), None, None
         multi_primary = False
         began = time.monotonic()
         # Reserve a complete query window. Queued members never log in with
         # too little time left for their first query, and are never retried.
         if deadline - began < QUERY_SECONDS:
-            return entry, snapshot, position, entry['message'], multi_primary
+            return {'ok': False, 'result': (entry, None, None, entry['message'], False)}
         try:
             active_guard()
-            with open_group_member(store, group_name, profile, active_guard,
-                                   {'query_timeout': QUERY_SECONDS, 'connect_timeout': QUERY_SECONDS}) as opened:
-                member_conn = opened[0]
-                consent_guard = member_conn._login_guard
+            opened = stack.enter_context(open_group_member(
+                store, group_name, profile, active_guard,
+                {'query_timeout': QUERY_SECONDS, 'connect_timeout': QUERY_SECONDS},
+            ))
+            member_conn = opened[0]
+            consent_guard = member_conn._login_guard
 
-                def login_guard():
-                    consent_guard()
-                    remaining = deadline - time.monotonic()
-                    # The connector rechecks this after transport setup too.
-                    if not member_conn._group_login_started and remaining < QUERY_SECONDS:
-                        raise _NotReached(entry['message'])
-                    if remaining <= 0:
-                        raise ConnectorError('The topology read time budget expired.')
-
-                member_conn._login_guard = login_guard
+            def login_guard():
+                consent_guard()
                 remaining = deadline - time.monotonic()
-                if remaining < QUERY_SECONDS:
+                # The connector rechecks this after transport setup too.
+                if not member_conn._group_login_started and remaining < QUERY_SECONDS:
                     raise _NotReached(entry['message'])
-                transport = _ReadConnection(param_compare.BoundedConnection(
-                    member_conn, seconds=min(remaining, request_seconds)))
-                conn = transport
-                preflight, exclusion = _identity(conn, entry, read_position=False)
-                variables = preflight
+                if remaining <= 0:
+                    raise ConnectorError('The topology read time budget expired.')
+
+            member_conn._login_guard = login_guard
+            remaining = deadline - time.monotonic()
+            if remaining < QUERY_SECONDS:
+                raise _NotReached(entry['message'])
+            transport = _ReadConnection(param_compare.BoundedConnection(
+                member_conn, seconds=min(remaining, request_seconds)))
+            conn = transport
+            preflight, exclusion = _identity(conn, entry, read_position=False)
+            variables = preflight
+            if exclusion is None:
+                conn = dbops.TargetEvidenceConnection(transport)
+                read_position = section in ('members', 'map', 'parameters')
+                variables, second_exclusion = _identity(conn, entry, read_position=read_position)
+                conn.check()
+                observed = conn.variables or {}
+                if second_exclusion is not None or is_readyset_comment(observed.get('version_comment') or ''):
+                    raise ConnectorError('The member identity changed during the read.')
+                keys = (('server_id', 'hostname', 'version') if entry['engine'] == 'mariadb'
+                        else ('server_uuid',))
+                if any(str(preflight.get(key)) != str(observed.get(key)) or
+                       str(variables.get(key)) != str(observed.get(key)) for key in keys):
+                    raise ConnectorError('The member identity changed during the read.')
+                notes = _read_routed(conn, entry)
+                if section in ('members', 'map', 'parameters'):
+                    position, member_notes = _member_facts(conn, entry, variables)
+                    notes.extend(member_notes)
+                    multi_primary = (entry['role'] in ('primary', 'secondary')
+                                     and _on(variables.get('group_replication_single_primary_mode')) is False)
+                if notes:
+                    entry['message'] = 'Read with unavailable facts: ' + ' '.join(dict.fromkeys(notes))
+            return {
+                'ok': True, 'profile': profile, 'entry': entry, 'position': position,
+                'exclusion': exclusion, 'multi_primary': multi_primary, 'conn': conn,
+                'transport': transport, 'variables': variables, 'began': began, 'stack': stack,
+            }
+        except _NotReached:
+            entry['elapsed_s'] = round(time.monotonic() - began, 3)
+            return {'ok': False, 'result': (entry, None, None, entry['message'], False)}
+        except Exception as exc:
+            return {'ok': False, 'result': _record_member_failure(profile, exc, began)}
+
+    def read_one(profile):
+        with contextlib.ExitStack() as stack:
+            state = _open_and_identify(profile, stack)
+            if not state['ok']:
+                return state['result']
+            entry, position, exclusion = state['entry'], state['position'], state['exclusion']
+            multi_primary, conn, transport = state['multi_primary'], state['conn'], state['transport']
+            variables, began = state['variables'], state['began']
+            snapshot = None
+            try:
                 if exclusion is None:
-                    conn = dbops.TargetEvidenceConnection(transport)
-                    read_position = section in ('members', 'map', 'parameters')
-                    variables, second_exclusion = _identity(conn, entry, read_position=read_position)
-                    conn.check()
-                    observed = conn.variables or {}
-                    if second_exclusion is not None or is_readyset_comment(observed.get('version_comment') or ''):
-                        raise ConnectorError('The member identity changed during the read.')
-                    keys = (('server_id', 'hostname', 'version') if entry['engine'] == 'mariadb'
-                            else ('server_uuid',))
-                    if any(str(preflight.get(key)) != str(observed.get(key)) or
-                           str(variables.get(key)) != str(observed.get(key)) for key in keys):
-                        raise ConnectorError('The member identity changed during the read.')
-                    notes = _read_routed(conn, entry)
-                    if section in ('members', 'map', 'parameters'):
-                        position, member_notes = _member_facts(conn, entry, variables)
-                        notes.extend(member_notes)
-                        multi_primary = (entry['role'] in ('primary', 'secondary')
-                                         and _on(variables.get('group_replication_single_primary_mode')) is False)
-                    if notes:
-                        entry['message'] = 'Read with unavailable facts: ' + ' '.join(dict.fromkeys(notes))
                     if section == 'parameters':
                         snapshot = param_compare.capture(conn, server=entry, full_provider_options=True)
                     elif section == 'accounts':
@@ -1134,48 +1957,13 @@ def read_group(store, group_name, section, active_member_profile_id,
                                                 'on this server.' % (len(snapshot['items']), accounts_seconds))
                     elif section == 'plugins':
                         snapshot = _plugins(conn, entry)
-                if section == 'map':
-                    probe, notes = _map_probe(conn, profile, entry, variables)
-                    snapshot, exclusion = {'probe': probe, 'notes': notes}, None
-                # Optional inventory readers may catch a failure, but cannot
-                # make mixed-server data or a failed transport usable again.
-                if isinstance(conn, dbops.TargetEvidenceConnection):
-                    conn.check()
-                transport.check()
-                entry['outcome'] = 'read'
-                provider = str(variables.get('wsrep_provider') or '').strip().lower()
-                active_cluster = None
-                if (entry['role'] in ('primary', 'secondary') and entry['state'] in ('ONLINE', 'RECOVERING')
-                        and _uuid(variables.get('group_replication_group_name'))):
-                    active_cluster = 'group_replication'
-                elif (_on(variables.get('wsrep_on')) and provider and provider != 'none'
-                      and variables.get('wsrep_cluster_status') == 'Primary'):
-                    active_cluster = 'galera'
-                facts[profile['id']] = dict(role=entry['role'], state=entry['state'],
-                    gr_group=_uuid(variables.get('group_replication_group_name')), active_cluster=active_cluster,
-                    hostname=variables.get('hostname'), report_host=variables.get('report_host'),
-                    port=_map_port((conn.variables or {}).get('port'))
-                    if isinstance(conn, dbops.TargetEvidenceConnection) else None)
-                if entry['message'].startswith('Not read:'):
-                    entry['message'] = exclusion or 'Read from this member.'
-        except _NotReached:
-            exclusion = entry['message']
-        except Exception as exc:
-            if not isinstance(exc, (ConnectorError, ValueError, OSError)):
-                # A programming error belongs to this member, not its peers.
-                # Reuse HTTP traceback redaction, including the saved group
-                # credentials, without exposing exception text in the report.
-                from .ui import _log_unexpected_error
-                _log_unexpected_error('/api/live/topology', sys.exc_info(), route, store)
-                exc = ConnectorError('The connection could not be read.')
-            # No observed identity, role or inventory from a rejected read
-            # may influence the group summary or another member's comparison.
-            entry = _entry(profile)
-            entry.update(outcome='failed', message=connection_groups.probe_note(profile, exc))
-            snapshot, position, exclusion = None, None, connection_groups.safe_problem(exc)
-            multi_primary = False
-        entry['elapsed_s'] = round(time.monotonic() - began, 3)
-        return entry, snapshot, position, exclusion, multi_primary
+                _finalize_member(profile, entry, variables, conn, transport, exclusion)
+            except _NotReached:
+                exclusion = entry['message']
+            except Exception as exc:
+                return _record_member_failure(profile, exc, began)
+            entry['elapsed_s'] = round(time.monotonic() - began, 3)
+            return entry, snapshot, position, exclusion, multi_primary
 
     from . import read_cancel
     request_cancel = read_cancel.current()
@@ -1187,8 +1975,71 @@ def read_group(store, group_name, section, active_member_profile_id,
         with read_cancel.scope(request_cancel, request_guard):
             return read_one(profile)
 
-    with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
-        results = list(pool.map(read_member, members))
+    if section == 'map':
+        stacks_lock = threading.Lock()
+        open_stacks = []
+
+        def phase1_member(profile):
+            stack = contextlib.ExitStack()
+            with stacks_lock:
+                open_stacks.append(stack)
+            try:
+                with read_cancel.scope(request_cancel, request_guard):
+                    state = _open_and_identify(profile, stack)
+            except BaseException:
+                stack.close()
+                raise
+            if not state['ok']:
+                stack.close()
+                state['stack'] = None
+            return state
+
+        try:
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
+                phase1_states = list(pool.map(phase1_member, members))
+                has_readyset = any(
+                    state['ok'] and state['entry']['product'] == 'Readyset'
+                    for state in phase1_states
+                )
+
+                def phase2_member(state):
+                    stack = state.get('stack')
+                    try:
+                        with read_cancel.scope(request_cancel, request_guard):
+                            if not state['ok']:
+                                return state['result']
+                            profile, entry = state['profile'], state['entry']
+                            position, multi_primary = state['position'], state['multi_primary']
+                            conn, transport = state['conn'], state['transport']
+                            variables, began = state['variables'], state['began']
+                            try:
+                                probe, notes = _map_probe(conn, profile, entry, variables,
+                                                          has_readyset=has_readyset)
+                                snapshot, exclusion = {'probe': probe, 'notes': notes}, None
+                                _finalize_member(profile, entry, variables, conn, transport, exclusion)
+                                entry['elapsed_s'] = round(time.monotonic() - began, 3)
+                                return entry, snapshot, position, exclusion, multi_primary
+                            except _NotReached:
+                                entry['elapsed_s'] = round(time.monotonic() - began, 3)
+                                return entry, None, None, entry['message'], False
+                            except Exception as exc:
+                                return _record_member_failure(profile, exc, began)
+                    finally:
+                        state['stack'] = None
+                        if stack is not None:
+                            stack.close()
+
+                results = list(pool.map(phase2_member, phase1_states))
+        finally:
+            with stacks_lock:
+                remaining_stacks = list(open_stacks)
+                open_stacks.clear()
+            with contextlib.ExitStack() as cleanup:
+                for stack in remaining_stacks:
+                    cleanup.callback(stack.close)
+    else:
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
+            results = list(pool.map(read_member, members))
     entries = [result[0] for result in results]
     duplicate_notes = _duplicate_notes(entries, members, facts)
     primary_id, primary_reason = _primary(entries, members, multi_primary=any(result[4] for result in results))

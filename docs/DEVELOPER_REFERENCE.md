@@ -7176,7 +7176,7 @@ Backend `myflames/replication.py` (contract and evidence: the replication skill 
 - Every 400 answer of `do_POST` (ValueError and friends, and ConnectorError) goes through `ui.request_error_text`. A common connection error leads with plain words and what to check (`dbops.connection_error_text`), then the client's line from `ERROR n` on, with the `mysql client exited N:` wrapper dropped and anything after the line (an SSH tunnel note) kept. 2002/2003: "Could not connect to the server. Check that it is running and that the host and port are right." ("… the socket path is right." for a socket failure; MariaDB's client reports a refused TCP connection as 2002). 2005: "Could not find the server's host name. Check the host for a typing error, or use its IP address." 2006/2013: "Lost the connection to the server. Check that it is still running: it may have restarted, or a network or time limit ended the connection." followed by the whole original message, so a write's context ("Could not end connection 41: …") stays. 1045 only when the text says Access denied: "The server refused the user name or password. Check both, and that the account may connect from your address." ("The server refused the login, and no password was sent. Enter the password, or check the user name." for `(using password: NO)`); a 1045 without Access denied gets no password hint. For 2002, 2003, 2005 and 1045 no session was opened, so a reader's context before the error ("Could not read the server status: ") is dropped. Other messages keep their words; only one that does not start with "Could not ", "Cannot ", "Can't ", "Unable to " or "Failed to " gets "Could not complete the request: ", and a ConnectorError without a mapped code passes through unchanged. The neutral 500 text is unchanged. Codes come from `include/errmsg.h` (texts checked in MySQL's `libmysql/errmsg.cc` and MariaDB's `sql-common/errmsg.c`). The CLI still prints its own context ("Could not read the server status: ERROR 2003 …"), and Cluster's `failureText` keeps its one sentence. Tests: `TestConnectionErrorText` in `test/test_dbops.py`; `test_failed_reads_lead_with_plain_words_on_every_server_view` and `test_a_reader_context_and_the_generic_prefix_never_stack` in `test/test_ui_http.py`.
 - Saved passwords are bound to the exact `ENDPOINT_FIELDS` (`host`, `port`, `user`, `ssl_mode`, `ssl_ca`): a profile saved without `ssl_mode` means the client's own default (not PREFERRED for every client, for example MariaDB 11.4+ verifies by default), so a request that names PREFERRED is refused until the profile is saved with it (`test_saved_password_binds_to_the_exact_tls_mode`). `scripts/ga-matrix.sh profiles` saves `ssl_mode` PREFERRED for that reason; an endpoint mismatch also shows the connection as Production in the picker (`connectionSafety`).
 - Endpoints: `POST /api/live/replication` (status; `_CONNECTION_PATHS`, saved-password helper), `POST /api/live/replication/skip` (`channel`, `expect`, `statements`, `confirmed: true`; `_WRITE_PATHS`: policy, then the saved password, then `skip_one`), `POST /api/live/replication/skip-loop/start` (`channel`, `codes`, `max_skips`, `max_minutes`, `poll_s`, `confirmed: true`; same order; the loop keeps its own connection and closes it when it stops), `.../skip-loop/status` (`job_id` or every loop of this connection) and `.../skip-loop/stop` (`job_id`). Loops live in `workspace.replication_loops` (`SkipLoopRegistry`) keyed by `dbops.connection_identity` and matched by its endpoint (`dbops.identity_endpoint`: saved connection id, host, port, user, TLS), so status and stop from another connection are refused while a change of the connection's type or read-only flag keeps them (one loop per channel and endpoint); status and stop open no connection. A refused or unconfirmed request is audited.
-- Workspace UI (`ReplicationPlace.tsx`, `ReplicationTopology.tsx` and `Replication.tsx`, the standalone Replication place): `ConnectionGroupBar` (`ConnectionGroupBar.tsx`) sits above the topology on the Topology tab (and above `.view-empty` when `replica` is false and `connection_group` is present) and re-reads `/api/live/replication` after a group change; `ReplicationTopology.tsx` renders `report.topology_tiers` above the channels via `UpstreamTopologyTiers.tsx` on the shared `TopologyTiers.tsx` tier module (Cluster card anatomy, labelled `ProxySQL routing tier` and `Readyset cache tier` rows with `Open ProxySQL` / `Open Readyset` jump links, `Use <connection>` only when the backend set `profile_id` under group consent, vertical stem links with screen-reader-readable label plates beside the line; ProxySQL cards show `"Matched by address"` from `evidence: "mysql_servers"` when no QueryPilot rules exist, and read `"Not read"` with an `"unread"` link because this view reads only the database tier; Readyset tier items carry `database_connection` and `replication_error`, marking `"problem"` with detached cards, broken stems, and `"error"` links (`"Replication error or upstream unreachable · query fallback"`) when `replication_error` is true, `database_connection` is `"Unreachable"`, `status` contains `"unavail"`, or `replication_status` is `"Error"`, `"watch"` with `"stopped"` links (`"Replication stopped · query fallback"` / `"Replication disabled · query fallback"`) on `"Stopped"` or `"Disabled"`, `"running"` (`"CDC binlog stream & query fallback"`) only when every Readyset tier reports `"Running"` without a problem, and `"unread"` (`"Replication not read · query fallback"`) when unreported or `"Unknown"`); the channel table and inspector; Skip this transaction and Skip until stopped re-read the failure before their sheets open, show the tagged statements, plan again (nothing sent) when the identity or statements changed or the sheet is older than `PLAN_TTL_MS` (60 s), and call `audit/declined` on Cancel and Escape. Loop status is read once a replica report is shown, while a loop runs, and after Start or Stop; a running loop's line (with Stop) also sits above other Server views. The session keeps only `slow.replication_loop_active`, so a restored workspace mounts Replication, reads loop status, and says "Stopped when myflames restarted" when the registry is empty; it never starts a loop. Both views take `missingPrivileges` (`opsApi.MissingPrivileges`, "Requires CLONE_ADMIN") to grey an action with its reason once a privilege context passes it; absent means unknown and the server decides. Browser suite `apps/workspace/test/replication.mjs`, `topology-groups.mjs`.
+- Workspace UI (`ReplicationPlace.tsx`, `ReplicationTopology.tsx` and `Replication.tsx`, the standalone Replication place): `ConnectionGroupBar` (`ConnectionGroupBar.tsx`) sits above the topology on the Topology tab (and above `.view-empty` when `replica` is false and `connection_group` is present) and re-reads `/api/live/replication` after a group change; `ReplicationTopology.tsx` renders `report.topology_tiers` above the channels via `UpstreamTopologyTiers.tsx` on the shared `TopologyTiers.tsx` tier module (Cluster card anatomy, labelled `ProxySQL routing tier` and `Readyset cache tier` rows with `Open ProxySQL` / `Open Readyset` jump links, `Use <connection>` only when the backend set `profile_id` under group consent, vertical stem links with screen-reader-readable label plates beside the line; ProxySQL cards show `"Matched by address"` from `evidence: "mysql_servers"` when no QueryPilot rules exist, and read `"Not read"` with an `"unread"` link because this view reads only the database tier; Readyset tier items carry `database_connection` and `replication_error`, marking `"problem"` with detached cards, broken stems, and `"error"` links (`"Replication error or upstream unreachable · query fallback"`) when `replication_error` is true, `database_connection` is `"Unreachable"`, `status` contains `"unavail"`, or `replication_status` is `"Error"`, `"watch"` with `"stopped"` links (`"Replication stopped · query fallback"` / `"Replication disabled · query fallback"`) on `"Stopped"` or `"Disabled"`, `"running"` (`"CDC binlog stream & query fallback"`) only when every Readyset tier reports `"Running"` without a problem, and `"unread"` (`"Replication not read · query fallback"`) when unreported or `"Unknown"`); the channel table and inspector; Skip this transaction and Skip until stopped re-read the failure before their sheets open, show the tagged statements, plan again (nothing sent) when the identity or statements changed or the sheet is older than `PLAN_TTL_MS` (60 s), and call `audit/declined` on Cancel and Escape. Loop status is read once a replica report is shown, while a loop runs, and after Start or Stop; a running loop's line (with Stop) also sits above other Server views. Server's persistent status area lists the running loops and maintenance jobs (dump, restore, clone) of every member of the active Group connection (a loop's bound key is in scope when its profile id is a group member, its endpoint matches the member on screen or the member the Replication place reads, or it is a restored same-group member after a reload), so switching members never hides one. The shell polls `/api/live/replication/skip-loop/status` (registry only, no database login) every `LOOP_POLL_MS` (2 s) for each active loop whose endpoint is not the Replication place's current endpoint through the Stop resolver, stopping when the loop ends or leaves scope; when a target cannot be resolved on a tick (for example, while saved connections fail to load) or a status poll fails, the poller re-arms instead of stopping and marks the row `"Status not refreshed"` until a later poll succeeds. `Server` polls `/api/lifecycle/status` (registry only, no database login) every `JOB_POLL_MS` (1.5 s) the same way for active maintenance jobs on other members, re-arming and marking unresolved rows `"Status not refreshed"` until refreshed. Stop and Cancel rebuild a connection for the member the loop or job runs on (`loopMemberRequest`, which after a reload before the group is opened again resolves a saved connection in the same saved group as the connection in use) and send when `endpointKey(connectionKey(c)) === endpointKey(boundKey)` (matching the backend's `dbops.identity_endpoint` rule across plain-to-group opens, group renames and policy edits); when no matching endpoint exists (for example, the saved connection's address or TLS settings changed, or it was deleted or removed from the group), nothing is sent and the banner shows the refusal reason, while request failures stay in that member's own view (the banner stays quiet). The session keeps `slow.replication_loop_active` with every running loop member's saved-connection id in `slow.replication_loop_members` (deduplicated, capped at 64, each up to 200 characters; `slow.replication_loop_member` stays as the first id for older snapshots), so a restored workspace mounts Server and Replication, polls each same-group member's loop registry through `loopMemberRequest` once saved connections load (no database login), and keeps the active member's own restore poll when its id is listed (or when no member ids were stored for an unsaved connection). Ids outside the active connection's saved group get no read: a saved member id is dropped only when its saved connection was deleted (leaving a group or deleting the group does not stop a running loop on the backend, because `decision_reader` keeps its policy). When the saved connection still exists (whether it belongs to another group, the active connection moved or was deleted, or the member has no group because it left its group or was removed from the active group by a refresh while its loop was running), the workspace keeps the flag and its id and shows a note naming that member (and its group, or stating that it is no longer in a connection group) until the user opens it or its group. "Stopped when myflames restarted" shows only on a restored member's endpoint when its registry is empty, and a restore never starts a loop. Both views take `missingPrivileges` (`opsApi.MissingPrivileges`, "Requires CLONE_ADMIN") to grey an action with its reason once a privilege context passes it; absent means unknown and the server decides. Browser suite `apps/workspace/test/replication.mjs`, `topology-groups.mjs`.
 
 ### Cluster: Galera, Percona XtraDB Cluster, InnoDB Cluster
 
@@ -9021,7 +9021,10 @@ logs in.
     group'`, deduplicated by UUID or lowercased address) and are never logged in
     to. Edges (`replication`, `proxy_route`, `cache_upstream`) have `verified:
     true` only on identity match: `'server_uuid'` (from
-    `match_database_endpoint`), or `'server_id'` only when `not uuid`, observer
+    `match_database_endpoint`), `'proxied_identity'` on a Readyset
+    `cache_upstream` edge when the `@@server_uuid` forwarded by Readyset
+    matches exactly one read database member (see the Readyset evidence rules
+    below), or `'server_id'` only when `not uuid`, observer
     is MariaDB, `server_id > 0` matches a single read MariaDB database member
     AND `match_database_endpoint` matched that exact same member by address. An
     uncorroborated MariaDB `server_id` match keeps `verified: false` and `label:
@@ -9068,6 +9071,98 @@ logs in.
     `ONLINE` (`ok`), `connecting` and `recovering` (`watch`), and
     `OFFLINE_SOFT`, `OFFLINE_HARD`, `offline`, and every `SHUNNED*` value
     (`SHUNNED[A-Za-z0-9_]{0,56}`) to `problem`.
+  - **Readyset upstream evidence, registration attribution and bounds**: on a
+    Readyset member, `SELECT @@server_uuid` and `SELECT @@hostname, @@port` are
+    forwarded to the MySQL upstream that serves Readyset's queries and stay
+    private to the probe (never stored as the Readyset member's own identity).
+    `SHOW READYSET STATUS` supplies `CDC Server` and `Replication Status`, and
+    the `upstream_servers` rows supply host, port, purpose, `active_cdc`,
+    health and user. On a MySQL source with replicas when the group has a
+    Readyset member (`has_readyset`), `_read_dump_threads` runs best-effort
+    queries via `_dump_guard` with an isolated `DUMP_QUERY_SECONDS = 5` s
+    per-query timeout so a query timeout never latches `_ReadConnection.failure`
+    or `TargetEvidenceConnection.problem` (non-timeout failures and identity
+    mismatches still propagate to the member guard). It reads
+    `performance_schema` and `performance_schema_session_connect_attrs_size`,
+    and when attribute storage is enabled (`performance_schema` `ON` and
+    `performance_schema_session_connect_attrs_size` > 0) also reads
+    `Performance_schema_session_connect_attrs_lost`, then collects Binlog Dump
+    sessions with their replica/slave UUID, client host, client user and all
+    connect attributes. When attribute storage size is 0 or unknown (or
+    `performance_schema` is not `ON`), `_classify_dump_attrs` marks every dump
+    session `unknown` (checked before `mysqld` attributes); otherwise each
+    session is classified as `mysqld` (`program_name`/`_program_name` `mysqld`
+    or `_client_role` `binary_log_listener`), `unknown` (truncated last
+    session or `Performance_schema_session_connect_attrs_lost` NULL or above
+    0), `none` (no attributes) or `other`. The READYSET% client read
+    (`_READYSET_CLIENTS_SQL`, also under `DUMP_QUERY_SECONDS = 5` s) runs only
+    when a `none` class exists, and if it times out every non-`mysqld` dump
+    session becomes `unknown`. When `performance_schema` is `OFF`, any of the
+    three initial dump queries times out, `_DUMP_THREADS_SQL` returns `None`, or
+    `dump_threads` is empty with `performance_schema` unknown or `attrs_lost`
+    unreadable while storage is enabled, `dump_read_failed` is set.
+
+    | Read | What it proves | Line or note |
+    | --- | --- | --- |
+    | Proxied `@@server_uuid` (with `@@hostname`, `@@port`) forwarded by Readyset | which read MySQL member serves Readyset's queries | `cache_upstream` with evidence `proxied_identity`, verified (solid) |
+    | `CDC Server` plus `upstream_servers` purpose and `active_cdc` | the same member also feeds base-table replication (CDC) | the proxied edge is labelled `Upstream`; without CDC evidence the label is `Upstream (queries)` |
+    | An `upstream_servers` row resolving only by address | a possible upstream | `cache_upstream` dashed (address match, not verified), or a peer |
+    | A source Binlog Dump session (UUID, one host, matching upstream user or READYSET% client when no upstream user is exposed, class `none`) | this Readyset member owns a `SHOW REPLICAS` row | a registration note on its verified upstream edge instead of a stray replica peer |
+    | A single `SHOW REPLICAS` row with no reported Host, row dump evidence unavailable, one CDC-verified Readyset with Replication Status `Running` | the probable owner of that row | the same note with ` (estimate)` |
+
+    A `CDC Server` endpoint not already present in `upstream_servers` is added
+    as a synthetic `cdc` upstream (`_from_cdc_server: True`), so a different
+    `CDC Server` (resolved or unresolved) is kept instead of being hidden. CDC
+    evidence for the proxied member needs one of: (a) a single real
+    `upstream_servers` row (`len(resolved) == 1` and not `_from_cdc_server`)
+    whose purpose covers both CDC and proxy or has no purpose, with neither
+    that row nor `CDC Server` resolving to another member, (b) `CDC Server`
+    equal to the proxied `@@hostname:@@port` read in the same pass (with `CDC
+    Server` not resolving to another member), or (c) `CDC Server` resolving by
+    endpoint to the proxied member (or unresolved with no other active CDC
+    upstream resolving elsewhere and a CDC upstream resolving to it). An
+    unmatched CDC-only upstream (or different `CDC Server`) is never swallowed
+    and keeps its own edge or peer; when no row matched `proxied_target`
+    directly, only a single unmatched proxy (non-CDC) upstream can fold into
+    the proxied edge. Registration attribution tries a database source's
+    unmatched `SHOW REPLICAS` rows against the Readyset members with CDC
+    evidence on that source (`readyset_cdc`), ignoring an Admin listener whose
+    deployment signature (saved host, SSH host, upstream endpoints, `CDC
+    Server`) matches an adapter listener. A dump row attributes only when its
+    class is `none`, its UUID appears with exactly one dump host, and its user
+    matches the Readyset member's upstream users (or, only when that Readyset
+    member exposes no upstream user, the READYSET% client `(host_key, user)`
+    set). Pass A claims single direct host matches under the loopback rules
+    first (ambiguity across multiple matching owners yields nothing); Pass B
+    (`"sole"`) claims only when the owner is unclaimed after Pass A, is the
+    sole owner on that source, has `verified_cdc` and `Replication Status`
+    `Running`, has one user candidate, has a READYSET% client attribute on the
+    dump row's host, and has exactly one remaining unmatched row resolving to
+    it (otherwise competing rows stay peers). Each Readyset member claims at
+    most one registration per source. Its verified upstream edge gains
+    `Also registered on <source> as a replica (server ID <n>)` (without the
+    server ID when it is not a positive integer). The estimate fallback inspects
+    the row's own evidence and fires only when a single unmatched `SHOW
+    REPLICAS` row exists and remains unmatched, a single CDC-verified owner on
+    that source reports `Replication Status` `Running`, the row reports no
+    Host, the row's dump evidence is unavailable (`dump_read_failed`, row
+    class `unknown`, or `dump_attrs_lost`), its dump class is none of `mysqld`,
+    `other` or `none`, and its dump user(s) when known are not disjoint from
+    the owner's upstream users; every other unmatched row becomes a peer
+    (labelled `Replica without a reported address`, with its server ID and port
+    when reported, whenever it reports no host and has a UUID or positive
+    server ID). A `SHOW REPLICAS` `Port` of 0
+    means no port: `topology_links._probe_connection` keeps it `None` instead
+    of coercing 3306, so the peer label shows the host alone rather than an
+    invented `(port 3306)`. Bounds: dump attribute rows at
+    `MAP_DUMP_ATTR_ROWS = 4096` (a truncated last session counts as unreadable,
+    hence `unknown`), sessions and READYSET% clients at
+    `MAP_PEERS_PER_MEMBER`, users at `MAP_USER_MAX_CHARS = 32` characters,
+    registration notes per edge at `MAP_NOTES_PER_EDGE = 4` followed by
+    `; and N more registrations`, host keys computed once per member and
+    cached, and a UUID seen with more than one dump host marked ambiguous so
+    it attributes nothing. The `evidence` enum of
+    `docs/schemas/topology-group-1.0.json` includes `proxied_identity`.
 - `parameters`: `param_compare.capture(conn, server=entry,
   full_provider_options=True)` + `param_compare.compare_many(snapshots,
   role_settings=..., active_clusters=...)`. Re-reads
@@ -9430,6 +9525,77 @@ logs in.
   excluded and unread members with reasons below; **Accounts** rows open an
   inspector with differences and **Open in Users and roles on `<member>`**
   links.
+- **Member cards open the member's place (`TopologyMap.tsx`,
+  `TopologyPlace.tsx`, `main.tsx`)**: on the Map, a member card's click (and
+  the member inspector's **Open in `<Place>`**) navigates to the single-server
+  place of that member. `memberPlace` picks `readyset` for role `cache` or
+  product `Readyset`, `proxysql` for role `proxy` or product `ProxySQL` /
+  `ProxySQL Admin`, `cluster` for `primary`/`secondary`/`node`, `replication`
+  for `source`/`replica`, and `server` otherwise; **Use in Server views**
+  selects the member for Server without navigating, and a peer card's click
+  keeps opening its inspector. A card whose click navigates is not a pressed
+  toggle; its accessible name is `Open <label> in <Place>: <facts>` and its
+  title ends with `Opens the <Place> place on this member`, while its
+  **Details** button (`Details for <label>`, only on navigating cards) opens
+  the inspector instead. The click records the member in
+  `memberByPlace[<place>]`: Server (via `serverRequest`, covering Server,
+  Workload, Tuning and Database diagram), Query editor (via `queryRequest` for
+  new tabs), Readyset (`readysetRequest`), ProxySQL (`proxyRequest`), Cluster
+  (`clusterRequest`) and Replication (`replicationRequest`) route reads to
+  that member's own saved connection (`memberRequest`, the member's endpoint
+  under the group's strictest safety, with the group name so membership is
+  re-checked at every login), falling back to the active member (the primary
+  or source the backend picked) when no choice exists or the member left the
+  group (which sets the removal notice `<names> is/are not in this group any
+  more; its views moved to <member>.`). `usingNote` derives
+  `Using <member> from group <group>.` from each place's own request when it
+  reads a member other than the group's active member (`req.profile_id !==
+  labState.profile_id`). The removal notice no longer hides it: the two show
+  together, joined with a space. Readyset, ProxySQL, Cluster and Replication
+  render `[memberNote, placeMemberNote].filter(Boolean).join(" ")` in the top
+  bar (`.nav-member-note`), whereas Server passes `[memberNote,
+  serverMemberNote].filter(Boolean).join(" ")` via `groupServer.note` to
+  `Server.tsx`, which renders it in each view header (`.group-server-note` via
+  `ViewServerContext` in `kit.tsx`). `go()` clears `memberNote` when a place
+  that rendered it (Server's view header, or the top bar of Readyset, ProxySQL,
+  Cluster or Replication) is left; places without a note never showed it, so
+  leaving them keeps it until it is seen once. The connection's group label
+  (`Group connection <group> · N servers · <member>`) names the active member
+  in use. Because Server views use `useOpenRead`, a Server view that already
+  showed another member's report keeps that report greyed (`otherConnection`)
+  until an explicit **Refresh**. Focus lands on the place heading after a card
+  opens a place, and the Back chip returns to Topology with its tab, scroll and
+  selection, returning focus to the card that was activated. `Server` receives
+  `placeConnections={{ replication: replicationRequest, cluster:
+  clusterRequest }}` (`main.tsx`), so its Refresh all reads the `cluster` and
+  `replication` reports on the members the Cluster and Replication places read
+  (`latestPlaceConnections` in `Server.tsx`, falling back to Server's own
+  connection when `placeConnections` is absent), and its persistent status area
+  (`activeLoopBounds`, `maintenanceJobsNow`) lists the running skip loops and
+  maintenance jobs (dump, restore, clone) of every member of the active Group
+  connection, with **Stop** (`stopLoopNow`) and **Cancel** (`cancelJobNow`)
+  acting on the member the loop or job runs on: the connection is rebuilt for
+  that member and the request is sent when its `endpointKey` matches the
+  entry's bound `endpointKey` (otherwise nothing is sent and the banner shows
+  the reason), while the shell polls other members' active loops every
+  `LOOP_POLL_MS` and `Server` polls other members' active maintenance jobs
+  every `JOB_POLL_MS` (registry only, no database login).
+  `ReplicationPlace`'s `clusterKind` checks `clusterReport?.key` against
+  `connectionKey(replicationRequest)`. Sidebar badges and staleness
+  (`clusterState`, `proxyNav`, `readysetDbStale`/`readysetNavState`,
+  `replicationState`) compare each place's report against `connectionKey` of
+  its own request (`clusterRequest`, `proxyRequest`, `readysetRequest`,
+  `replicationRequest`), and `proxyHere(req)` / `readysetHere(req)` prove a
+  product only for the one member that report was read on, so the muted states
+  check them per place: `clusterMuted` adds `proxyHere(clusterRequest)` and
+  `readysetHere(clusterRequest)`, `proxyMuted` adds
+  `readysetHere(proxyRequest)`, `readysetMuted` adds
+  `proxyHere(readysetRequest)` and `replicationMuted` adds
+  `readysetHere(replicationRequest)`; `shownClusterReport` drops the shared
+  cluster report while the Cluster place's member is proven ProxySQL or
+  Readyset by a report read there. The connection type strip shows
+  `placeRequest.read_only`, so a member read through a non-active saved
+  connection keeps its own Read-only badge.
 - **Rolling change UI (`RollingChangeSheet.tsx`, `rollingRuns.ts`)**: a
   **Parameters** row's inspector offers **Change on every member…** (disabled
   with its reason by `rollingChangeBlock` when `effective_safety.read_only` or

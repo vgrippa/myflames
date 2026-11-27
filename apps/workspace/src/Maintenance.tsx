@@ -11,7 +11,7 @@ import { ClientToolsDialog, UsedForServer } from "./ClientTools";
 import { reasonSentence, toolUseLine } from "./clientToolsText";
 import { privilegeResult, targetPrivilege, usePrivilege, usePrivileges } from "./privileges";
 import { download, recordDeclined, type Connection, type Profile } from "./api";
-import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
+import { connectionKey, connectionLabel, endpointKey, useConnectionReads, type Bound } from "./binding";
 import { ConnectionTypeBand, TYPE_LABEL, useWritePolicy } from "./Connections";
 import { bytes, SchemaPicker, useSchemaCatalog } from "./PerfShared";
 import {
@@ -25,7 +25,7 @@ import { joinPath, localReveal, parentPath } from "./filesApi";
 import { MAC, WINDOWS } from "./platform";
 import { durationText } from "./duration";
 import {
-  cancelLifecycleJob, checkUpgrade, documentationUrl, jobActive, listLifecycleJobs,
+  JOB_POLL_MS, cancelLifecycleJob, checkUpgrade, documentationUrl, jobActive, listLifecycleJobs,
   prepareLifecycle, readDumpInfo, readLifecycleJob, readLifecycleTools, readUpgradeTargets, startLifecycle, upgradeLinkUrl, useOpsScope,
   type DumpInfo, type LifecycleJob, type LifecyclePlan, type LifecycleTools, type UpgradeTarget, type UpgradeTargets,
   type MissingPrivileges, type PrepareRequest, type Tool, type UpgradeFinding,
@@ -53,7 +53,6 @@ export const emptyMaintenance: MaintenanceMemory = { tools: null, upgrade: null,
 const SECTION_LABEL: Record<MaintenanceSection, string> = { tools: "Tools", upgrade: "Upgrade check", dump: "Dump", restore: "Restore", clone: "Clone" };
 /** A preflight older than this is prepared again before anything starts. */
 export const PREFLIGHT_TTL_MS = 60_000;
-const JOB_POLL_MS = 1500;
 /** Finished jobs kept per workspace (the server keeps 20 for an hour). */
 const KEEP_FINISHED = 20;
 // A convenience for this viewer session only; no directories are created here.
@@ -603,7 +602,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   const privilegeBlock = operation ? missingPrivileges[operation] || operationGate.disabledReason : "";
   const sheetGate = sheet ? lifecycleGate(sheet.report.operation, sheet.report) : privilegeResult();
   const sheetBlock = sheet ? blocked || missingPrivileges[sheet.report.operation] || sheetGate.disabledReason : "";
-  const activeIds = memory.jobs.filter((b) => b.key === key && b.report.id && jobActive(b.report)).map((b) => b.report.id as string).sort().join(",");
+  const activeIds = memory.jobs.filter((b) => endpointKey(b.key) === endpointKey(key) && b.report.id && jobActive(b.report)).map((b) => b.report.id as string).sort().join(",");
 
   // The jobs this myflames holds for the connection in use: after a reload,
   // a switch back, or a policy change, they come back here to be followed and
@@ -638,7 +637,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
         if (answer.status === "rejected") { errors.push(String((answer.reason as Error).message)); continue; }
         const job = answer.value;
         denied(job.error, jobConnections.current.get(job.id || "") || connection);
-        publish.current((previous) => ({ ...previous, jobs: previous.jobs.map((bound) => bound.key === key && bound.report.id === job.id ? { ...bound, report: job } : bound) }));
+        publish.current((previous) => ({ ...previous, jobs: previous.jobs.map((bound) => endpointKey(bound.key) === endpointKey(key) && bound.report.id === job.id ? { ...bound, report: job } : bound) }));
       }
       if (errors.length) { setFailure({ key, poll: true, text: `Job status could not be read: ${errors.join("; ")}. Retry status; never start the same operation again while it may be running.` }); return; }
       setFailure((f) => (f?.poll ? null : f));
@@ -848,11 +847,17 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   }
   async function cancel(bound: Bound<LifecycleJob>) {
     const id = bound.report.id;
-    if (!id || bound.key !== reads.currentKey() || cancelPending.current.has(id)) return;
+    if (!id || cancelPending.current.has(id)) return;
+    if (endpointKey(bound.key) !== endpointKey(reads.currentKey())) {
+      setFailure({ key, text: "Could not send Cancel: the connection changed since this job started." });
+      return;
+    }
     cancelPending.current.add(id); setCancelling(id);
     const live = captureScope();
     try {
-      const job = await cancelLifecycleJob(jobConnections.current.get(id) || connection, id);
+      const c = jobConnections.current.get(id);
+      const target = c && endpointKey(connectionKey(c)) === endpointKey(bound.key) ? c : connection;
+      const job = await cancelLifecycleJob(target, id);
       if (live()) {
         onMemory((m) => ({ ...m, jobs: m.jobs.map((b) => b.key === bound.key && b.report.id === id ? { ...b, report: job } : b) }));
         setPollRetry((n) => n + 1);

@@ -35,11 +35,11 @@ import type { EditorState, QueryLabHandle, QueryNavigation } from "./QueryLab";
 import { Home } from "./Home";
 import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS, ALL_SERVER_VIEWS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
-import { connectionKey, connectionLabel, type Bound } from "./binding";
+import { connectionKey, connectionLabel, endpointKey, keyProfileId, type Bound } from "./binding";
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { useSchemaCatalog } from "./PerfShared";
 import { showCreateSql } from "./sqlHighlight";
-import { NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
+import { LOOP_POLL_MS, loopActive, NOT_A_REPLICA, readSkipLoops, replicationNav, stopSkipLoop, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
 import { NOT_A_READYSET, readysetNav, type ReadysetFailure, type ReadysetReport } from "./readysetApi";
@@ -71,6 +71,7 @@ import { ActionButton, ActionStatus, useAction, ColumnStoreContext, Popover, use
 import {
   defaultLab,
   loadSession,
+  loopMemberIds,
   normalizeLab,
   sameLab,
   serializePlans,
@@ -99,6 +100,7 @@ const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
 const TopologyPlace = lazyComponent(() => import("./TopologyPlace").then((m) => m.TopologyPlace));
+import type { MemberPlace, OpenMemberInfo } from "./TopologyPlace";
 const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
 const ReadysetPlace = lazyComponent(() => import("./ReadysetPlace").then((m) => m.ReadysetPlace));
 const FilesPlace = lazyComponent(() => import("./FilesPlace").then((m) => m.FilesPlace));
@@ -176,6 +178,25 @@ const PLACE_MODE: Record<Exclude<Place, "plans">, Mode> = {
 };
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
+/** After a topology card opened a place, focus lands on the place's heading
+ * (the chunk can still be loading, so retry briefly); the page never scrolls. */
+function focusPlaceHeadingSoon() {
+  let attempts = 0;
+  const tick = () => {
+    const main = document.getElementById("main");
+    const target = main
+      ? Array.from(main.querySelectorAll<HTMLElement>('h2[id$="-title"]')).find((el) => !el.closest("[hidden]"))
+        || main.querySelector<HTMLElement>(
+          ':scope > div:not([hidden]) button, :scope > div:not([hidden]) input, :scope > div:not([hidden]) select, :scope > div:not([hidden]) [tabindex]:not([tabindex="-1"])')
+      : null;
+    if (target) { target.focus({ preventScroll: true }); return; }
+    if (++attempts < 80) window.setTimeout(tick, 25);
+  };
+  window.setTimeout(tick, 0);
+}
+/** Back to Topology returns focus to the card that was activated: the shell
+ * hands the card's key to the Topology place (topologyFocusCard), which
+ * focuses it in a layout effect once its map shows the card on screen. */
 /** One stop in the window's navigation history (Back and Forward, the cross-link
  * chip, the palette's Recent views). In-memory only. */
 type NavEntry = {
@@ -288,7 +309,34 @@ function App() {
   }, []);
   const chrome = useRef<HTMLDivElement>(null);
   const [placeActionsWidth, setPlaceActionsWidth] = useState(0);
-  const [replicationLoops, setReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
+  const [replicationLoops, setReplicationLoops] = useState<Record<string, Bound<SkipLoop[]>>>({});
+  const [loopRevision, setLoopRevision] = useState(0);
+  const [restoredMembers, setRestoredMembers] = useState<{
+    reset: number;
+    activeKeys: string[];
+    stoppedKeys: string[];
+    outsideGroup: { id: string; name: string; group: string }[];
+    anyFailed: boolean;
+  } | null>(null);
+  const restoredMembersPolled = useRef(-1);
+  const unreachedRechecked = useRef(new Set<string>());
+  const [otherLoopErrors, setOtherLoopErrors] = useState<Record<string, string>>({});
+  const [pollerStaleEndpoints, setPollerStaleEndpoints] = useState<string[]>([]);
+  const publishReplicationLoops = useCallback((next: Bound<SkipLoop[]>) => {
+    setReplicationLoops((current) => {
+      const endpoint = endpointKey(next.key);
+      const updated: Record<string, Bound<SkipLoop[]>> = {};
+      for (const [k, v] of Object.entries(current)) {
+        // Replace any older key for the same endpoint (e.g. a safety/type edit
+        // on the same saved connection) while keeping every other member's slot.
+        if (k !== next.key && endpointKey(k) === endpoint) continue;
+        updated[k] = v;
+      }
+      updated[next.key] = next;
+      return updated;
+    });
+    setLoopRevision((n) => n + 1);
+  }, []);
   const [plans, setPlans] = useState<(Plan & { origin?: "sample" })[]>([]);
   const plansInUse = useRef(plans);
   plansInUse.current = plans;
@@ -471,9 +519,44 @@ function App() {
     [patchLab],
   );
   const reportSlow = useCallback(
-    (slow: SlowState) => patchLab({ slow }),
-    [patchLab],
+    (slow: SlowState) => setLabState((current) => {
+      const members = current.slow?.replication_loop_active
+        ? loopMemberIds(current.slow.replication_loop_members, current.slow.replication_loop_member)
+        : [];
+      const merged: SlowState = {
+        ...slow,
+        ...(current.slow?.replication_loop_active ? { replication_loop_active: true } : {}),
+        ...(members.length
+          ? { replication_loop_members: members, replication_loop_member: members[0] }
+          : {}),
+      };
+      const next = normalizeLab({ ...current, slow: merged });
+      return sameLab(current, next) ? current : next;
+    }),
+    [],
   );
+  const syncLoopSession = useCallback((active: boolean, members: string[] = []) => {
+    setLabState((current) => {
+      const slow: SlowState = { ...(current.slow || { kind: "health" }) };
+      if (active) {
+        const ids = [...new Set(members.map((id) => id.slice(0, 200)).filter(Boolean))].slice(0, 64);
+        slow.replication_loop_active = true;
+        if (ids.length) {
+          slow.replication_loop_members = ids;
+          slow.replication_loop_member = ids[0];
+        } else {
+          delete slow.replication_loop_members;
+          delete slow.replication_loop_member;
+        }
+      } else {
+        delete slow.replication_loop_active;
+        delete slow.replication_loop_members;
+        delete slow.replication_loop_member;
+      }
+      const next = normalizeLab({ ...current, slow });
+      return sameLab(current, next) ? current : next;
+    });
+  }, []);
   // Column widths and hidden columns of the workspace's tables by table id
   // (Server's views and the Cluster place), one record for both so each
   // table keeps its own layout and it is saved with the workspace
@@ -502,6 +585,8 @@ function App() {
   // not known again while the latest read of it failed.
   const profilesLoaded = savedList.loaded;
   const profilesFailed = savedList.error;
+  const profilesStatusRef = useRef({ loaded: profilesLoaded, failed: profilesFailed });
+  profilesStatusRef.current = { loaded: profilesLoaded, failed: profilesFailed };
   const secretStore = savedList.secretStore;
   const [activePassword, setActivePassword] = useState("");
   const [connectionNote, setConnectionNote] = useState("");
@@ -691,12 +776,18 @@ function App() {
     setConnectionNote(`Group ${name} was deleted. Its saved connections stay; the active member stays in use as a plain connection.`);
   }
   // The member each single-server place works on, by place ("server",
-  // "query"): chosen in the place's Server: control, an explicit open of that
-  // member's saved connection. Absent entries mean the primary or source (the
-  // active member the backend picked). Never saved; a reload starts there.
+  // "query", "readyset", "proxysql", "cluster", "replication"): chosen in the
+  // place's Server: control, an explicit open of that member's saved
+  // connection, or a Topology map card. Absent entries mean the primary or
+  // source (the active member the backend picked). Never saved; a reload
+  // starts there.
   const [memberByPlace, setMemberByPlace] = useState<Record<string, string>>({});
   // A group edit removed a member a place was on: its views moved to the
-  // primary and this note says so until the next explicit choice.
+  // primary and this note says so until the next navigation or explicit
+  // choice (go() and chooseMember clear it). The "Using <member>" note is not
+  // stored: it is derived per place from the request the place reads
+  // (placeMemberNote below), so it can never name another member, and the two
+  // notes show together when both apply.
   const [memberNote, setMemberNote] = useState("");
   /** The member's saved connection as a request connection (its profile id,
    * its own endpoint, the group's strictest safety), with the group name so
@@ -713,11 +804,38 @@ function App() {
       : connectionFields({ name: member.profile_name, host: member.host, port: member.port, user: "", type: member.safety.type, read_only: member.safety.read_only });
     const active = { id, fields, password: "" };
     const c = requestConnection(active, currentGroupSafety(active, group,
-      profilesLoaded && !profilesFailed ? profilesRef.current : null));
+      profilesStatusRef.current.loaded && !profilesStatusRef.current.failed ? profilesRef.current : null));
     c.group_name = group.group_name;
     c.name = `${groupConnectionLabel(group.group_name, group.members.length)} · ${profile?.name || member.profile_name}`;
     return c;
   }
+  /** Rebuild a connection for *id* when it is a member of the active group, or
+   * (after View > Reload, before the group is opened again) a saved connection
+   * in the same saved group as the active connection. Null outside that group. */
+  const loopMemberRequest = useCallback((id: string): Connection | null => {
+    if (!id) return null;
+    if (groupActiveRef.current) return memberRequest(id);
+    if (id === activeRef.current.id) return requestRef.current;
+    if (!profilesStatusRef.current.loaded || profilesStatusRef.current.failed) return null;
+    const list = profilesRef.current;
+    const currentProfile = list.find((p) => p.id === activeRef.current.id);
+    const groupName = (currentProfile?.group || "").trim();
+    if (!groupName) return null;
+    const targetProfile = list.find((p) => p.id === id);
+    if (!targetProfile || (targetProfile.group || "").trim() !== groupName) return null;
+    const members = list.filter((p) => (p.group || "").trim() === groupName);
+    const fields = connectionFields(targetProfile);
+    const active = { id: targetProfile.id, fields, password: "" };
+    const baseSafety = connectionSafety(active, list);
+    const c = requestConnection(active, {
+      ...baseSafety,
+      type: baseSafety.endpointMatches && members.length && members.every((p) => p.type === "development")
+        ? "development" : "production",
+    });
+    c.group_name = groupName;
+    c.name = `${groupConnectionLabel(groupName, members.length)} · ${targetProfile.name}`;
+    return c;
+  }, []);
   function selectOperator(id: string) {
     setStatsIds([]);
     const ancestors = new Set<string>();
@@ -1143,6 +1261,13 @@ function App() {
     setReturnToPlan(false);
     setLabInitial(undefined);
     setLabState(defaultLab());
+    setReplicationLoops({});
+    setLoopRevision(0);
+    setRestoredMembers(null);
+    restoredMembersPolled.current = -1;
+    unreachedRechecked.current.clear();
+    setOtherLoopErrors({});
+    setPollerStaleEndpoints([]);
     setColumnLayouts({});
     setActivePassword("");
     setPasswordRevision(value => value + 1);
@@ -1347,6 +1472,13 @@ function App() {
     setTeachLesson(lessonKey);
     setLabInitial(lab);
     setLabState(lab);
+    setReplicationLoops({});
+    setLoopRevision(0);
+    setRestoredMembers(null);
+    restoredMembersPolled.current = -1;
+    unreachedRechecked.current.clear();
+    setOtherLoopErrors({});
+    setPollerStaleEndpoints([]);
     setColumnLayouts(lab.slow?.columns_v1 || {});
     setActivePassword("");
     setPasswordRevision(value => value + 1);
@@ -1628,8 +1760,11 @@ function App() {
       }
       // Confirmation must preserve the Group connection's identity and use
       // its freshly read strictest type. Read-only remains this member's flag.
+      // The name carries the member (target?.name already does; the active
+      // member's fallback adds it), so the review sheet names the server.
+      const activeName = members.find((p) => p.id === asked.id)?.name;
       checked.group_name = group.group_name;
-      checked.name = target?.name || groupConnectionLabel(group.group_name, members.length);
+      checked.name = target?.name || `${groupConnectionLabel(group.group_name, members.length)}${activeName ? ` · ${activeName}` : ""}`;
       checked.type = members.some((p) => p.type !== "development") ? "production" : "development";
     }
     return checked;
@@ -1647,14 +1782,18 @@ function App() {
       );
       // A Group connection carries its group name: the backend re-checks the
       // membership on every request, and the key reloads the views on a change.
-      // Its display name is the group's ("Group connection mf-ic · 3 servers").
+      // Its display name is the group's with the active member's name
+      // ("Group connection mf-ic · 3 servers · db-1"), so a review sheet names
+      // the server the reviewed statement runs on, not only the group.
       if (groupActive) {
         c.group_name = groupActive.group_name;
-        c.name = groupConnectionLabel(groupActive.group_name, groupActive.members.length);
+        const activeName = profiles.find((p) => p.id === labState.profile_id)?.name
+          || groupActive.members.find((m) => m.profile_id === labState.profile_id)?.profile_name || "";
+        c.name = groupConnectionLabel(groupActive.group_name, groupActive.members.length) + (activeName ? ` · ${activeName}` : "");
       }
       return c;
     },
-    [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known, groupActive],
+    [labState.profile_id, labState.connection, activePassword, safety.type, safety.read_only, safety.endpointMatches, safety.known, groupActive, profiles],
   );
   const requestRef = useRef(request);
   requestRef.current = request;
@@ -1675,6 +1814,30 @@ function App() {
     () => (groupActive && serverMemberId ? memberRequest(serverMemberId) || request : request),
     [groupActive, serverMemberId, request, profiles],
   );
+  // Readyset and ProxySQL route their reads to their chosen member too: the
+  // Topology map's card opens the place on the member the card names.
+  const readysetMemberId = memberOf("readyset");
+  const proxyMemberId = memberOf("proxysql");
+  const readysetRequest = useMemo(
+    () => (groupActive && readysetMemberId ? memberRequest(readysetMemberId) || request : request),
+    [groupActive, readysetMemberId, request, profiles],
+  );
+  const proxyRequest = useMemo(
+    () => (groupActive && proxyMemberId ? memberRequest(proxyMemberId) || request : request),
+    [groupActive, proxyMemberId, request, profiles],
+  );
+  // Cluster and Replication route the same way: a card or the inspector opens
+  // the place on the clicked member.
+  const clusterMemberId = memberOf("cluster");
+  const replicationMemberId = memberOf("replication");
+  const clusterRequest = useMemo(
+    () => (groupActive && clusterMemberId ? memberRequest(clusterMemberId) || request : request),
+    [groupActive, clusterMemberId, request, profiles],
+  );
+  const replicationRequest = useMemo(
+    () => (groupActive && replicationMemberId ? memberRequest(replicationMemberId) || request : request),
+    [groupActive, replicationMemberId, request, profiles],
+  );
   const serverRequestRef = useRef(serverRequest);
   serverRequestRef.current = serverRequest;
   const serverWritePolicy = useMemo(() => ({
@@ -1692,9 +1855,31 @@ function App() {
   // An orphaned member tab has no endpoint. Keep the same disconnected key
   // as QueryLab, rather than borrowing the window's status or grants.
   const placeRequest = mode === "query" ? queryRequest || unavailableMemberConnection(queryTab.member!, queryTab.member_name)
-    : ["server", "workload", "tuning", "diagram"].includes(mode) ? serverRequest : request;
+    : ["server", "workload", "tuning", "diagram"].includes(mode) ? serverRequest
+    : mode === "readyset" ? readysetRequest
+    : mode === "proxysql" ? proxyRequest
+    : mode === "cluster" ? clusterRequest
+    : mode === "replication" ? replicationRequest
+    : request;
   const queryRequestRef = useRef(queryRequest);
   queryRequestRef.current = queryRequest;
+  // The "Using <member> from group <group>." note is derived per place from
+  // the request the place on screen actually reads: it can never name another
+  // member, and navigating to a place that reads the active member (or the
+  // connection in use) shows no stale note. The removal notice (memberNote)
+  // is separate and takes precedence until the next navigation or choice.
+  const memberNameOf = (id: string) =>
+    profiles.find((p) => p.id === id)?.name
+    || groupActive?.members.find((m) => m.profile_id === id)?.profile_name
+    || id;
+  const usingNote = (req: Connection) =>
+    groupActive && req.profile_id && req.profile_id !== labState.profile_id
+      ? `Using ${memberNameOf(req.profile_id)} from group ${groupActive.group_name}.`
+      : "";
+  const serverMemberNote = usingNote(serverRequest);
+  const placeMemberNote = mode === "readyset" || mode === "proxysql" || mode === "cluster" || mode === "replication"
+    ? usingNote(placeRequest)
+    : "";
   const placeConnected = ready && safety.known && !!placeRequest.host;
   const placeConnectionName = groupActive && placeRequest.profile_id
     ? profiles.find((p) => p.id === placeRequest.profile_id)?.name
@@ -1705,6 +1890,24 @@ function App() {
     setMemberNote("");
     setMemberByPlace((current) => (current[place] === id ? current : { ...current, [place]: id }));
   }, []);
+  // A member card's click opens that member's place in the click's frame:
+  // Server, Readyset, ProxySQL, Cluster and Replication route their reads to
+  // the chosen member and the per-place note (derived from placeRequest) says
+  // whose connection the place uses; the Back chip returns to the map with
+  // its tab, scroll and selection, and focus returns to the card.
+  const topologyCardFocus = useRef("");
+  // The card a return to Topology focuses: set by applyNavEntry, consumed and
+  // cleared by the Topology place once its map shows the card (no timer).
+  const [topologyFocusCard, setTopologyFocusCard] = useState("");
+  const clearTopologyFocusCard = useCallback(() => setTopologyFocusCard(""), []);
+  const openTopologyMember = useCallback((member: OpenMemberInfo, place: MemberPlace) => {
+    const back = linkOrigin();
+    chooseMember(place, member.profile_id);
+    go(place);
+    finishLink(back);
+    topologyCardFocus.current = member.profile_id;
+    focusPlaceHeadingSoon();
+  }, [chooseMember]);
   const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
   // Navigation history (Back/Forward, the cross-link chip, the palette's
   // Recent views): one entry per settled place or view, in-memory only.
@@ -1831,6 +2034,14 @@ function App() {
     const now = navStateRef.current;
     if (entry.connection && entry.connection !== now.key)
       setNotice(`${entry.label} was open on ${entry.connectionName}; this window is on ${now.name}. Nothing was switched: views read the connection in use.`);
+    // Back to Topology after a card opened a member's place: the Topology
+    // place focuses the card itself once its map shows it (the map stays
+    // mounted, but its render after the traversal is not timed).
+    if (entry.mode === "topology" && topologyCardFocus.current) {
+      const cardId = topologyCardFocus.current;
+      topologyCardFocus.current = "";
+      setTopologyFocusCard(cardId);
+    }
   }
   function navMove(dir: -1 | 1) {
     const h = navHistory.current;
@@ -1858,33 +2069,39 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  // The Cluster item names the state of the connection in use once the place
-  // or Refresh all has read it: muted when it is not part of a cluster (still
-  // focusable; the place explains), otherwise the cluster's status. Before
-  // the first read it looks like any other place.
-  const isProxyHere = proxyReport?.key === connectionKey(request) && proxyReport.report.is_proxysql;
-  const isReadysetHere = readysetReport?.key === connectionKey(request) && readysetReport.report.is_readyset;
-  const shownClusterReport = (isProxyHere || isReadysetHere) && clusterReport?.key !== connectionKey(request) ? null : clusterReport;
-  const clusterState = clusterNav(shownClusterReport, connectionKey(request));
-  const clusterMuted = clusterState.state === "none" || isProxyHere || isReadysetHere;
-  const proxyNav = proxySqlNav(proxyReport, connectionKey(request));
-  const proxyMuted = proxyNav === "none" || isReadysetHere;
-  const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(request) ? proxyReport.report : null;
+  // The Cluster item names the state of the member the Cluster place reads
+  // (clusterRequest) once the place or Refresh all has read it: muted when it
+  // is not part of a cluster (still focusable; the place explains), otherwise
+  // the cluster's status. Before the first read it looks like any other place.
+  // A ProxySQL or Readyset report proves the product of the one member it was
+  // read on: it mutes (or hides a stale report of) only a place whose own
+  // request is that member. A card that opened the ProxySQL or Readyset place
+  // on one member never greys the Cluster, Replication or the other place
+  // reading a different member, and never replaces its report.
+  const proxyHere = (req: Connection) => proxyReport?.key === connectionKey(req) && proxyReport.report.is_proxysql;
+  const readysetHere = (req: Connection) => readysetReport?.key === connectionKey(req) && readysetReport.report.is_readyset;
+  const shownClusterReport = (proxyHere(clusterRequest) || readysetHere(clusterRequest)) && clusterReport?.key !== connectionKey(clusterRequest) ? null : clusterReport;
+  const clusterState = clusterNav(shownClusterReport, connectionKey(clusterRequest));
+  const clusterMuted = clusterState.state === "none" || proxyHere(clusterRequest) || readysetHere(clusterRequest);
+  const proxyNav = proxySqlNav(proxyReport, connectionKey(proxyRequest));
+  const proxyMuted = proxyNav === "none" || readysetHere(proxyRequest);
+  const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(proxyRequest) ? proxyReport.report : null;
   const proxyIssues = proxyNow && (proxyNow.status === "problem" || proxyNow.status === "watch") ? proxyNow.status_why.length : 0;
   const proxyBadge = !proxyNow ? null
     : proxyIssues > 0
       ? <NavMarker compact tone={proxyNow.status} count={proxyIssues} countTone={proxyNow.status === "problem" ? "danger" : "warn"} text={`ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}, ${proxyIssues} ${proxyIssues === 1 ? "issue" : "issues"}`} />
       : <NavMarker compact tone={proxyNow.status === "unknown" ? "unknown" : proxyNow.status} text={proxyNow.status === "ok" ? "ProxySQL OK" : proxyNow.status === "unknown" ? "ProxySQL not judged" : `ProxySQL ${proxyNow.status === "problem" ? "problem" : "to watch"}`} />;
   // A report read with another default database is stale like an unread one:
-  // the sidebar names Readyset's state only from a report of this database.
+  // the sidebar names Readyset's state only from a report of this database,
+  // read on the member the Readyset place reads (readysetRequest).
   const readysetDbStale =
     !!readysetReport &&
-    readysetReport.key === connectionKey(request) &&
+    readysetReport.key === connectionKey(readysetRequest) &&
     readysetReport.report.is_readyset &&
-    (readysetReport.report.session_database || null) !== (request.database || null);
-  const readysetNavState = readysetDbStale ? "unread" : readysetNav(readysetReport, connectionKey(request));
-  const readysetMuted = readysetNavState === "none" || isProxyHere;
-  const readysetNow = (readysetNavState === "ok" || readysetNavState === "watch" || readysetNavState === "problem" || readysetNavState === "unknown") && readysetReport && readysetReport.key === connectionKey(request) ? readysetReport.report : null;
+    (readysetReport.report.session_database || null) !== (readysetRequest.database || null);
+  const readysetNavState = readysetDbStale ? "unread" : readysetNav(readysetReport, connectionKey(readysetRequest));
+  const readysetMuted = readysetNavState === "none" || proxyHere(readysetRequest);
+  const readysetNow = (readysetNavState === "ok" || readysetNavState === "watch" || readysetNavState === "problem" || readysetNavState === "unknown") && readysetReport && readysetReport.key === connectionKey(readysetRequest) ? readysetReport.report : null;
   const readysetIssues = readysetNow && (readysetNow.status === "problem" || readysetNow.status === "watch") ? readysetNow.status_why.length : 0;
   const readysetBadge = !readysetNow ? null
     : readysetIssues > 0
@@ -1895,12 +2112,13 @@ function App() {
       ? <NavMarker compact tone="problem" count={clusterState.problems} countTone="danger" text={clusterState.text} />
       // Not judged (an account that cannot read): no marker word of its own; the place says why.
       : <NavMarker compact tone={clusterState.status === "unknown" ? undefined : clusterState.status} text={clusterState.text} />;
-  // Replication names the state of the connection in use the same way, from
-  // the one report the place and Refresh all share: muted when it is not a
-  // replica (a neutral state; Group Replication's own channels do not count),
-  // Unknown only when the status could not be read.
-  const replicationState = replicationNav(replicationReport, connectionKey(request));
-  const replicationMuted = replicationState.state === "none" || isReadysetHere;
+  // Replication names the state of the member the Replication place reads
+  // (replicationRequest) the same way, from the one report the place and
+  // Refresh all share: muted when it is not a replica (a neutral state; Group
+  // Replication's own channels do not count), Unknown only when the status
+  // could not be read.
+  const replicationState = replicationNav(replicationReport, connectionKey(replicationRequest));
+  const replicationMuted = replicationState.state === "none" || readysetHere(replicationRequest);
   const replicationBadge = replicationState.state !== "replica" ? null
     : replicationState.failed > 0
       ? <NavMarker compact tone="problem" count={replicationState.failed} countTone="danger" text={replicationState.text} />
@@ -1942,9 +2160,390 @@ function App() {
   const mountProxySql = visited.current.proxysql;
   const mountReadyset = visited.current.readyset;
   const mountFiles = visited.current.files;
+  const initialProfileId = labInitial?.profile_id || "";
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
+  const restoredLoopMembers = useMemo(
+    () => (restoredLoop ? loopMemberIds(labInitial?.slow?.replication_loop_members, labInitial?.slow?.replication_loop_member) : []),
+    [restoredLoop, labInitial],
+  );
+  // Keep the active member's own restore poll when no member ids were stored
+  // (an unsaved connection) or when the active member's own id is listed.
+  const restoredLoopForCurrent =
+    restoredLoop && (restoredLoopMembers.length === 0 || (!!initialProfileId && restoredLoopMembers.includes(initialProfileId)));
+  const restoredOtherMembers = useMemo(
+    () => restoredLoopMembers.filter((id) => id !== initialProfileId),
+    [restoredLoopMembers, initialProfileId],
+  );
+  const restoreMemberPending =
+    restoredOtherMembers.length > 0 && !profilesFailed && restoredMembers?.reset !== resetKey;
+  const activeRestoredLoopKeys = useMemo(
+    () =>
+      restoredMembers &&
+      restoredMembers.reset === resetKey &&
+      !groupActive &&
+      labState.profile_id === initialProfileId
+        ? restoredMembers.activeKeys
+        : [],
+    [restoredMembers, resetKey, groupActive, labState.profile_id, initialProfileId],
+  );
+  const stoppedRestoredLoopKeys = useMemo(
+    () => (restoredMembers && restoredMembers.reset === resetKey ? restoredMembers.stoppedKeys : []),
+    [restoredMembers, resetKey],
+  );
+  // Active skip loops belonging to the connection in use, any member of the
+  // active group, or restored same-group members after View > Reload.
+  const requestKey = connectionKey(request);
+  const replicationKey = connectionKey(replicationRequest);
+  const shellActiveLoops = useMemo(() => {
+    const memberIds = groupActive ? new Set(groupActive.members.map((m) => m.profile_id)) : null;
+    const reqEp = endpointKey(requestKey);
+    const replEp = endpointKey(replicationKey);
+    const activeEps = new Set(activeRestoredLoopKeys.map(endpointKey));
+    const list = Object.values(replicationLoops).filter((bound) => {
+      if (!bound.report.some(loopActive)) return false;
+      const ep = endpointKey(bound.key);
+      if (ep === reqEp || ep === replEp) return true;
+      if (activeEps.has(ep)) return true;
+      const pid = keyProfileId(bound.key);
+      return !!memberIds && !!pid && memberIds.has(pid);
+    });
+    const order = groupActive
+      ? new Map(groupActive.members.map((m, i) => [m.profile_id, i]))
+      : null;
+    list.sort((a, b) => {
+      if (endpointKey(a.key) === reqEp) return -1;
+      if (endpointKey(b.key) === reqEp) return 1;
+      if (order) {
+        const ai = order.get(keyProfileId(a.key)) ?? 9999;
+        const bi = order.get(keyProfileId(b.key)) ?? 9999;
+        if (ai !== bi) return ai - bi;
+      }
+      return a.key.localeCompare(b.key);
+    });
+    return list;
+  }, [replicationLoops, requestKey, replicationKey, activeRestoredLoopKeys, groupActive]);
+  // Saved loop members that are outside the active connection's group (or no
+  // longer in any group): restored ids not yet polled, plus in-window active
+  // loops whose member left scope (e.g. removed from the group by a refresh).
+  // Drop an id only when its saved connection was deleted (leaving a group does
+  // not stop a running loop on the backend).
+  const unreachedLoopMembers = useMemo(() => {
+    const out: { id: string; name: string; group: string }[] = [];
+    const seen = new Set<string>();
+    const profilesKnown = profilesLoaded && !profilesFailed;
+    if (restoredMembers && restoredMembers.reset === resetKey) {
+      for (const m of restoredMembers.outsideGroup) {
+        if (seen.has(m.id)) continue;
+        if (Object.values(replicationLoops).some((b) => keyProfileId(b.key) === m.id)) continue;
+        const p = profiles.find((item) => item.id === m.id);
+        if (profilesKnown && !p) continue;
+        seen.add(m.id);
+        out.push({
+          id: m.id,
+          name: p?.name || m.name || m.id,
+          group: p ? (p.group || "").trim() : m.group,
+        });
+      }
+    }
+    const inScopeKeys = new Set(shellActiveLoops.map((b) => b.key));
+    for (const bound of Object.values(replicationLoops)) {
+      if (!bound.report.some(loopActive) || inScopeKeys.has(bound.key)) continue;
+      const pid = keyProfileId(bound.key);
+      if (!pid || seen.has(pid)) continue;
+      const p = profiles.find((item) => item.id === pid);
+      if (profilesKnown && !p) continue;
+      seen.add(pid);
+      out.push({
+        id: pid,
+        name: p?.name || bound.label || pid,
+        group: p ? (p.group || "").trim() : "",
+      });
+    }
+    return out;
+  }, [restoredMembers, resetKey, replicationLoops, shellActiveLoops, profiles, profilesLoaded, profilesFailed]);
+  const restoredOutsideNote = useMemo(() => {
+    if (!unreachedLoopMembers.length) return "";
+    if (unreachedLoopMembers.length === 1) {
+      const m = unreachedLoopMembers[0];
+      if (!m.group) {
+        return `A skip loop was running on ${m.name}, which is no longer in a connection group. Open ${m.name} to check or stop it.`;
+      }
+      return `A skip loop was running on ${m.name} (group ${m.group}), which is outside the active connection's group. Switch to that connection or open its group to check or stop it.`;
+    }
+    if (unreachedLoopMembers.every((m) => !m.group)) {
+      const names = unreachedLoopMembers.map((m) => m.name);
+      return `Skip loops were running on ${names.join(", ")}, which are no longer in a connection group. Open those connections to check or stop them.`;
+    }
+    const names = unreachedLoopMembers.map((m) => (m.group ? `${m.name} (group ${m.group})` : `${m.name} (no group)`));
+    return `Skip loops were running on ${names.join(", ")}, which are outside the active connection's group. Switch to those connections or open their group to check or stop them.`;
+  }, [unreachedLoopMembers]);
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
+  // When a restored workspace had skip loops on other members, poll each
+  // same-group member's loop registry once saved connections load (no database
+  // login). Members outside the active connection's group (or with no group)
+  // get no read: drop an id only when its saved connection was deleted; keep
+  // the flag and warn naming it otherwise.
+  useEffect(() => {
+    if (!ready || restoredOtherMembers.length === 0 || !profilesLoaded || profilesFailed) return;
+    if (restoredMembersPolled.current === resetKey) return;
+    restoredMembersPolled.current = resetKey;
+    const list = profilesRef.current;
+    const toPoll: { id: string; c: Connection; key: string; label: string }[] = [];
+    const outsideGroup: { id: string; name: string; group: string }[] = [];
+    for (const id of restoredOtherMembers) {
+      const c = loopMemberRequest(id);
+      if (c) {
+        toPoll.push({ id, c, key: connectionKey(c), label: connectionLabel(c) });
+        continue;
+      }
+      const target = list.find((p) => p.id === id);
+      if (target) {
+        outsideGroup.push({ id, name: target.name || id, group: (target.group || "").trim() });
+      }
+    }
+    if (toPoll.length === 0) {
+      setRestoredMembers({ reset: resetKey, activeKeys: [], stoppedKeys: [], outsideGroup, anyFailed: false });
+      if (!restoredLoopForCurrent) {
+        if (outsideGroup.length === 0) syncLoopSession(false, []);
+        else syncLoopSession(true, outsideGroup.map((m) => m.id));
+      }
+      return;
+    }
+    const controller = new AbortController();
+    let done = false;
+    void Promise.allSettled(
+      toPoll.map(async (item) => {
+        const answer = await readSkipLoops(item.c, controller.signal);
+        return { item, loops: answer.loops };
+      }),
+    ).then((results) => {
+      if (controller.signal.aborted) return;
+      done = true;
+      const activeKeys: string[] = [];
+      const stoppedKeys: string[] = [];
+      let anyFailed = false;
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        const item = toPoll[i];
+        if (r.status === "fulfilled") {
+          publishReplicationLoops({ key: item.key, label: item.label, report: r.value.loops });
+          if (r.value.loops.some(loopActive)) activeKeys.push(item.key);
+          else if (r.value.loops.length === 0) stoppedKeys.push(item.key);
+        } else {
+          anyFailed = true;
+        }
+      }
+      setRestoredMembers({ reset: resetKey, activeKeys, stoppedKeys, outsideGroup, anyFailed });
+      if (!anyFailed && activeKeys.length === 0 && outsideGroup.length === 0 && !restoredLoopForCurrent) {
+        syncLoopSession(false, []);
+      }
+    });
+    return () => {
+      if (!done) restoredMembersPolled.current = -1;
+      controller.abort();
+    };
+  }, [ready, resetKey, restoredOtherMembers, restoredLoopForCurrent, profilesLoaded, profilesFailed, loopMemberRequest, publishReplicationLoops, syncLoopSession]);
+  // If the user later switches to an unreached restored loop's connection or
+  // opens its group, poll its registry (no database login) and clear the note.
+  useEffect(() => {
+    if (!ready || !unreachedLoopMembers.length || !profilesLoaded || profilesFailed) return;
+    const reachable = unreachedLoopMembers
+      .filter((m) => !unreachedRechecked.current.has(m.id))
+      .map((m) => ({ m, c: loopMemberRequest(m.id) }))
+      .filter((item): item is { m: { id: string; name: string; group: string }; c: Connection } => !!item.c);
+    if (!reachable.length) return;
+    const controller = new AbortController();
+    const finished = new Set<string>();
+    for (const { m } of reachable) unreachedRechecked.current.add(m.id);
+    void Promise.allSettled(
+      reachable.map(async ({ m, c }) => {
+        const answer = await readSkipLoops(c, controller.signal);
+        if (controller.signal.aborted) return;
+        finished.add(m.id);
+        const targetKey = connectionKey(c);
+        publishReplicationLoops({ key: targetKey, label: connectionLabel(c), report: answer.loops });
+        if (answer.loops.length === 0) {
+          setRestoredMembers((prev) =>
+            prev && prev.reset === resetKey
+              ? { ...prev, stoppedKeys: [...new Set([...prev.stoppedKeys, targetKey])] }
+              : prev,
+          );
+        }
+      }),
+    );
+    return () => {
+      for (const { m } of reachable) {
+        if (!finished.has(m.id)) unreachedRechecked.current.delete(m.id);
+      }
+      controller.abort();
+    };
+  }, [ready, resetKey, unreachedLoopMembers, profilesLoaded, profilesFailed, groupActive, requestKey, loopMemberRequest, publishReplicationLoops]);
+  const restoreCurrentPending =
+    restoredLoopForCurrent &&
+    labState.profile_id === initialProfileId &&
+    !Object.values(replicationLoops).some((b) => endpointKey(b.key) === endpointKey(requestKey));
+  useEffect(() => {
+    const restoredReady = restoredMembers?.reset === resetKey && !restoredMembers.anyFailed;
+    if ((loopRevision === 0 && !restoredReady) || restoreMemberPending || restoreCurrentPending) return;
+    const activeIds = shellActiveLoops.map((b) => keyProfileId(b.key)).filter(Boolean);
+    const unreachedIds = unreachedLoopMembers.map((m) => m.id);
+    const allIds = [...new Set([...activeIds, ...unreachedIds])];
+    const hasActive = shellActiveLoops.length > 0 || unreachedIds.length > 0;
+    syncLoopSession(hasActive, allIds);
+  }, [loopRevision, restoredMembers, resetKey, restoreMemberPending, restoreCurrentPending, shellActiveLoops, unreachedLoopMembers, syncLoopSession]);
+  const resolveBoundLoopConnection = useCallback((boundKey: string): { connection: Connection | null; reason: string } => {
+    const wanted = endpointKey(boundKey);
+    if (endpointKey(connectionKey(requestRef.current)) === wanted) {
+      return { connection: requestRef.current, reason: "" };
+    }
+    const pid = keyProfileId(boundKey);
+    if (!pid) {
+      return {
+        connection: null,
+        reason: "Could not send Stop: the active connection changed since this skip loop started.",
+      };
+    }
+    const rebuilt = loopMemberRequest(pid);
+    if (rebuilt) {
+      if (endpointKey(connectionKey(rebuilt)) === wanted) {
+        return { connection: rebuilt, reason: "" };
+      }
+      return {
+        connection: null,
+        reason: "Could not send Stop: this saved connection's address, user, TLS or SSH settings changed since the skip loop started.",
+      };
+    }
+    const known = profilesRef.current.find((p) => p.id === pid);
+    return {
+      connection: null,
+      reason: known
+        ? `Could not send Stop: ${known.name || pid} is no longer in the active connection group.`
+        : "Could not send Stop: this saved connection was deleted.",
+    };
+  }, [loopMemberRequest]);
+  // Refresh active skip loops running on other members (ReplicationView polls
+  // only its own key) through the same endpoint-key Stop resolver. Registry
+  // only, no database login; re-arms when a target cannot be resolved and marks
+  // unresolved or failed rows "Status not refreshed" until a poll succeeds.
+  const otherActiveLoopKeys = useMemo(
+    () => shellActiveLoops
+      .filter((b) => endpointKey(b.key) !== endpointKey(replicationKey))
+      .map((b) => b.key)
+      .sort()
+      .join("\n"),
+    [shellActiveLoops, replicationKey],
+  );
+  useEffect(() => {
+    if (!otherActiveLoopKeys) {
+      setPollerStaleEndpoints((prev) => (prev.length ? [] : prev));
+      return;
+    }
+    const keys = otherActiveLoopKeys.split("\n");
+    const activeEps = new Set(keys.map(endpointKey));
+    setPollerStaleEndpoints((prev) => {
+      const kept = prev.filter((ep) => activeEps.has(ep));
+      return kept.length === prev.length ? prev : kept;
+    });
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const updateStale = (staleSet: Set<string>) => {
+      const next = [...staleSet].sort();
+      setPollerStaleEndpoints((prev) =>
+        prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next,
+      );
+    };
+    async function poll() {
+      const resolved = keys.map((boundKey) => ({
+        boundKey,
+        ep: endpointKey(boundKey),
+        c: resolveBoundLoopConnection(boundKey).connection,
+      }));
+      const targets = resolved.filter((item): item is { boundKey: string; ep: string; c: Connection } => !!item.c);
+      const stale = new Set(resolved.filter((item) => !item.c).map((item) => item.ep));
+      if (targets.length) {
+        const answers = await Promise.allSettled(
+          targets.map(async (t) => ({ t, answer: await readSkipLoops(t.c, controller.signal) })),
+        );
+        if (controller.signal.aborted) return;
+        for (let i = 0; i < answers.length; i++) {
+          const r = answers[i];
+          if (r.status === "fulfilled") {
+            publishReplicationLoops({
+              key: connectionKey(r.value.t.c),
+              label: connectionLabel(r.value.t.c),
+              report: r.value.answer.loops,
+            });
+          } else {
+            stale.add(targets[i].ep);
+          }
+        }
+      }
+      if (!controller.signal.aborted) {
+        updateStale(stale);
+        timer = window.setTimeout(() => { void poll(); }, LOOP_POLL_MS);
+      }
+    }
+    timer = window.setTimeout(() => { void poll(); }, LOOP_POLL_MS);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [otherActiveLoopKeys, resolveBoundLoopConnection, publishReplicationLoops]);
+  const staleLoopEndpoints = useMemo(() => {
+    const set = new Set(pollerStaleEndpoints);
+    if (otherActiveLoopKeys) {
+      for (const boundKey of otherActiveLoopKeys.split("\n")) {
+        if (!resolveBoundLoopConnection(boundKey).connection) {
+          set.add(endpointKey(boundKey));
+        }
+      }
+    }
+    return [...set];
+  }, [pollerStaleEndpoints, otherActiveLoopKeys, profiles, profilesLoaded, profilesFailed, groupActive, requestKey, resolveBoundLoopConnection]);
+  const [otherLoopStopping, setOtherLoopStopping] = useState<{ key: string; id: string } | null>(null);
+  const otherLoopStoppingRef = useRef(new Set<string>());
+  const stopOtherLoop = useCallback(async (bound: Bound<SkipLoop[]>, loop: SkipLoop) => {
+    const id = loop.job_id;
+    const stopKey = id ? `${bound.key}:${id}` : "";
+    if (!id || otherLoopStoppingRef.current.has(stopKey)) return;
+    const { connection: c, reason } = resolveBoundLoopConnection(bound.key);
+    if (!c) {
+      setOtherLoopErrors((prev) => ({ ...prev, [stopKey]: reason }));
+      return;
+    }
+    setOtherLoopErrors((prev) => {
+      if (!(stopKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[stopKey];
+      return next;
+    });
+    otherLoopStoppingRef.current.add(stopKey);
+    setOtherLoopStopping({ key: bound.key, id });
+    try {
+      await stopSkipLoop(c, id);
+      const answer = await readSkipLoops(c);
+      publishReplicationLoops({ key: connectionKey(c), label: connectionLabel(c), report: answer.loops });
+    } catch {
+      // Banner stays quiet; the member's own view shows status errors.
+    } finally {
+      otherLoopStoppingRef.current.delete(stopKey);
+      setOtherLoopStopping((pending) => (pending?.key === bound.key && pending.id === id ? null : pending));
+    }
+  }, [resolveBoundLoopConnection, publishReplicationLoops]);
+  const otherReplicationLoops = useMemo(
+    () => shellActiveLoops
+      .filter((bound) => endpointKey(bound.key) !== endpointKey(replicationKey))
+      .map((bound) => {
+        const pid = keyProfileId(bound.key);
+        const member = pid ? groupActive?.members.find((m) => m.profile_id === pid) : undefined;
+        const profile = !member && pid ? profiles.find((p) => p.id === pid) : undefined;
+        const server = member
+          ? `${member.profile_name} · ${member.host}:${member.port}${member.role ? ` · ${member.role.toUpperCase()}` : ""}`
+          : profile
+            ? `${profile.name} · ${profile.host}:${profile.port}`
+            : bound.label;
+        return { bound, server, stale: staleLoopEndpoints.includes(endpointKey(bound.key)) };
+      }),
+    [shellActiveLoops, replicationKey, groupActive, profiles, staleLoopEndpoints],
+  );
   // Once the first screen is up, load the code of the places opened most
   // (Server, Workload and Tuning, Replication, the Plans chart) in idle time,
   // so their first visit does not wait. Nothing mounts or reads a server.
@@ -1980,6 +2579,12 @@ function App() {
     setNotice("");
     setRestored(null);
     setConfirmFresh(false);
+    // The removed-member notice is consumed when the place that rendered it
+    // (Server's view header, or the topbar of Readyset, ProxySQL, Cluster and
+    // Replication) is left. Places without a note never showed it, so leaving
+    // them keeps it until it is seen once.
+    if (mode === "server" || mode === "workload" || mode === "tuning" || mode === "diagram" ||
+        mode === "readyset" || mode === "proxysql" || mode === "cluster" || mode === "replication") setMemberNote("");
   }
   /** The Audit log (Settings): a screen of its own, not a place. */
   function openAuditLog() {
@@ -2433,7 +3038,7 @@ function App() {
       />
       <div ref={chrome} data-place={place || (mode === "settings" ? "settings" : "audit")} className="workspace" style={{ "--place-actions-width": `${placeActionsWidth}px` } as CSSProperties}>
         <div className="topbar-stack">
-        {ready && connectionPlace && <ConnectionTypeStrip safety={safety} />}
+        {ready && connectionPlace && <ConnectionTypeStrip safety={{ ...safety, type: placeRequest.type === "development" ? "development" : "production", read_only: placeRequest.read_only === true }} />}
         <header className="topbar window-toolbar" aria-label={`${placeLabel} toolbar`}>
           <SidebarToggle expanded={sidebarOpen} narrow={sidebar.narrow}
             onToggle={() => setSidebar((current) => ({ ...current, open: !current.open }))} />
@@ -2452,6 +3057,13 @@ function App() {
               <Icon name="back" size={12} />
               <span>{linkBack.label}</span>
             </button>
+          )}
+          {/* The Server place shows the same note inside its view header. The
+              "Using" note is the current place's own (derived from
+              placeRequest); the removed-member notice shows beside it, never
+              instead of it, and clears on the next navigation. */}
+          {(memberNote || placeMemberNote) && (mode === "readyset" || mode === "proxysql" || mode === "cluster" || mode === "replication") && (
+            <span className="group-server-note nav-member-note" role="status" title={[memberNote, placeMemberNote].filter(Boolean).join(" ")}>{[memberNote, placeMemberNote].filter(Boolean).join(" ")}</span>
           )}
           {ready && mode === "library" && (
             <Popover label="About Investigations" className="topbar-info">
@@ -2780,11 +3392,11 @@ function App() {
                 onToggleNavCollapsed={toggleServerNavCollapsed}
                 picker={null}
                 connection={serverRequest}
-                topologyConnection={request}
+                placeConnections={{ replication: replicationRequest, cluster: clusterRequest }}
                 groupServer={groupActive ? {
                   group: groupActive,
                   member: serverMemberId,
-                  note: memberNote,
+                  note: [memberNote, serverMemberNote].filter(Boolean).join(" "),
                   onChoose: (id: string) => chooseMember("server", id),
                 } : null}
                 disabled={labBusy}
@@ -2800,7 +3412,11 @@ function App() {
                 onColumns={setColumnLayouts}
                 profiles={profiles}
                 replicationLoops={replicationLoops}
-                onReplicationLoops={setReplicationLoops}
+                onReplicationLoops={publishReplicationLoops}
+                restoredLoopKeys={activeRestoredLoopKeys}
+                staleLoopEndpoints={staleLoopEndpoints}
+                restoredOutsideNote={restoredOutsideNote}
+                resolveMemberConnection={loopMemberRequest}
                 replication={replicationReport}
                 onReplication={shareReplication}
                 cluster={clusterReport}
@@ -2840,28 +3456,26 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "replication"}>
                 <ReplicationPlace
-                  connection={request}
-                  restoredLoop={restoredLoop}
+                  key={resetKey}
+                  connection={replicationRequest}
+                  restoredLoop={restoredLoopForCurrent}
+                  restoredStoppedKeys={stoppedRestoredLoopKeys}
+                  restoredOutsideNote={restoredOutsideNote}
                   disabled={labBusy}
-                  clusterKind={clusterReport?.key === connectionKey(request) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
+                  clusterKind={clusterReport?.key === connectionKey(replicationRequest) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
                   onOpenCluster={() => go("cluster")}
                   onOpenReadyset={() => go("readyset")}
                   onOpenProxySql={() => go("proxysql")}
                   onSwitchConnection={switchConnection}
                   onOpenInstruments={openInstrumentsRow}
                   loops={replicationLoops}
-                  onLoops={setReplicationLoops}
+                  onLoops={publishReplicationLoops}
+                  otherLoops={otherReplicationLoops}
+                  otherLoopStopping={otherLoopStopping}
+                  otherLoopErrors={otherLoopErrors}
+                  onStopOtherLoop={(bound, loop) => { void stopOtherLoop(bound, loop); }}
                   report={replicationReport}
                   onReport={shareReplication}
-                  onLoopActivity={(active) => {
-                    setLabState(current => {
-                      const next = normalizeLab({
-                        ...current,
-                        slow: { ...(current.slow || { kind: "health" }), replication_loop_active: active },
-                      });
-                      return sameLab(current, next) ? current : next;
-                    });
-                  }}
                 />
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>
@@ -2874,11 +3488,13 @@ function App() {
               <ViewOnScreenContext.Provider value={mode === "topology"}>
               <ColumnStoreContext.Provider value={columnStore}>
                 <TopologyPlace connection={request} group={groupActive} profiles={profiles} disabled={labBusy}
+                  focusCard={topologyFocusCard} onCardFocused={clearTopologyFocusCard}
                   onOpenGroup={(name) => void openGroup(name, { probe: true })}
                   onNewGroup={(members) => setGroupCreate(members)}
                   onUseInServer={(id) => chooseMember("server", id)}
                   onOpenCluster={() => go("cluster")} onOpenReplication={() => go("replication")}
-                  onOpenAccounts={(id) => { chooseMember("server", id); chooseServerView("accounts"); }} />
+                  onOpenAccounts={(id) => { chooseMember("server", id); chooseServerView("accounts"); }}
+                  onOpenMember={openTopologyMember} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
             </div>
@@ -2888,7 +3504,7 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "cluster"}>
               <ColumnStoreContext.Provider value={columnStore}>
-                <ClusterPlace connection={request} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
+                <ClusterPlace connection={clusterRequest} disabled={labBusy} report={shownClusterReport} onReport={shareCluster}
                   failure={clusterFailure} onFailure={failCluster}
                   onOpenProxySql={() => go("proxysql")} onOpenReadyset={() => go("readyset")}
                   profiles={profiles} onSwitchConnection={switchConnection}
@@ -2903,7 +3519,7 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "proxysql"}>
               <ColumnStoreContext.Provider value={columnStore}>
-                <ProxySqlPlace connection={request} disabled={labBusy} report={proxyReport} onReport={shareProxySql}
+                <ProxySqlPlace connection={proxyRequest} disabled={labBusy} report={proxyReport} onReport={shareProxySql}
                   failure={proxyFailure} onFailure={failProxySql}
                   onSwitchConnection={switchConnection} onOpenReadyset={() => go("readyset")}
                   onOpenCluster={() => go("cluster")} onOpenReplication={() => go("replication")} />
@@ -2917,7 +3533,7 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "readyset"}>
               <ColumnStoreContext.Provider value={columnStore}>
-                <ReadysetPlace connection={request} disabled={labBusy} report={readysetReport} onReport={shareReadyset}
+                <ReadysetPlace connection={readysetRequest} disabled={labBusy} report={readysetReport} onReport={shareReadyset}
                   failure={readysetFailure} onFailure={failReadyset}
                   onOpenProxySql={() => go("proxysql")} onOpenCluster={() => go("cluster")}
                   onOpenReplication={() => go("replication")} onOpenServer={() => go("server")}

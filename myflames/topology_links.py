@@ -581,11 +581,16 @@ def _probe_connection(conn, profile, remaining=None):
             continue
         for row in hrows:
             rhost = _text(row.get("Host"))
-            rport = _int(row.get("Port")) or 3306
+            raw_port = _int(row.get("Port"))
+            rport = raw_port if raw_port is not None and 1 <= raw_port <= 65535 else None
             ruuid = _text(row.get("Replica_UUID") or row.get("Slave_UUID"))
-            # MySQL 8.0.22+ sql/rpl_source.cc:236 spells this Server_Id.
-            rsid = _int(row.get("Server_Id", row.get("Server_id")))
-            if rhost or ruuid:
+            # MySQL 8.0.22+ sql/rpl_source.cc:236 spells this Server_Id;
+            # MySQL 5.7 SHOW SLAVE HOSTS spells it Server_id with Slave_UUID.
+            raw_sid = row.get("Server_Id")
+            if raw_sid is None:
+                raw_sid = row.get("Server_id")
+            rsid = _int(raw_sid)
+            if rhost or ruuid or (rsid is not None and rsid > 0):
                 replicas.append({"host": rhost, "port": rport, "uuid": ruuid, "server_id": rsid})
         break
 
@@ -1501,6 +1506,8 @@ def build_readyset_topology(status_map, upstream_rows, connections_rows, port_ro
         for rep in dbm.get("replicas") or ():
             ruuid = _uuid_key(rep.get("uuid"))
             rhost, rport = rep.get("host"), _int(rep.get("port")) or 3306
+            if not rhost and not ruuid:
+                continue
             if (ruuid and ("uuid", ruuid) in seen_db_keys) or (rhost and (_host_key(rhost), rport) in seen_db_keys):
                 continue
             rep_prof, rev = match_database_endpoint(rhost, rport, probed, uuid=ruuid,

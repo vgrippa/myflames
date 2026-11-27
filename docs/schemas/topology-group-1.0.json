@@ -983,12 +983,13 @@
           ]
         },
         "evidence": {
-          "description": "server_id alone links a unique read MariaDB member with verified false; an address match to that same member also verifies it. A read database member's server_id that contradicts the MariaDB channel prevents an address-only match. Alias edges use server_uuid with verified false because they are another connection to the same server.",
+          "description": "server_id alone links a unique read MariaDB member with verified false; an address match to that same member also verifies it. A read database member's server_id that contradicts the MariaDB channel prevents an address-only match. Alias edges use server_uuid with verified false because they are another connection to the same server. Readyset cache_upstream edges use proxied_identity with verified true when SELECT @@server_uuid forwarded by Readyset matches a read database member's own server_uuid.",
           "enum": [
             "server_uuid",
             "server_id",
             "endpoint",
             "hostname_port",
+            "proxied_identity",
             null
           ]
         },
@@ -1007,7 +1008,7 @@
           "type": "string"
         },
         "reason": {
-          "description": "Why a ProxySQL route is in its state (monitor offline hostgroup, no ONLINE member, offline or lag shunning), joined sentences. Absent when there is nothing to explain. The link list and tooltip carry it; the drawn label stays the short label.",
+          "description": "Why a ProxySQL route is in its state (monitor offline hostgroup, no ONLINE member, offline or lag shunning), or an attributed Readyset replica registration note on a cache_upstream link. Absent when there is nothing to explain. The link list and tooltip carry it; the drawn label stays the short label.",
           "type": "string"
         }
       },

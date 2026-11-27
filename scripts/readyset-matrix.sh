@@ -366,7 +366,7 @@ sys.path.insert(0, os.path.join(repo, "test"))
 from test_readyset import assert_matches_schema
 import unittest
 
-from myflames import connector, dbops, mcp_server, proxysql, readyset, replication, reviewed_writes, ui
+from myflames import connector, dbops, mcp_server, proxysql, readyset, replication, reviewed_writes, topology_group, ui
 from myflames.live import connection_options
 from myflames.workspace_store import WorkspaceStore
 
@@ -473,6 +473,47 @@ tc.assertEqual(repl_replica["channels"][0]["source"]["host"], "mf-rs-primary")
 rep_tiers = repl_replica.get("topology_tiers") or {}
 tc.assertTrue(len(rep_tiers.get("proxysql") or []) >= 1, f"Expected ProxySQL tier in replica Replication view: {rep_tiers}")
 tc.assertEqual(len(rep_tiers.get("readyset") or []), 1, f"Expected deduplicated Readyset SQL tier in replica Replication view: {rep_tiers}")
+
+# Group connection map: primary + replica + Readyset in one group
+def save_map_conn(name, port, user, password, database=None, ssl_mode="PREFERRED"):
+    return store.save(
+        "profile",
+        {
+            "name": name,
+            "host": "127.0.0.1",
+            "port": port,
+            "user": user,
+            "database": database or "",
+            "ssl_mode": ssl_mode,
+            "type": "development",
+            "read_only": False,
+            "group": "rs-map-lab",
+        },
+        password=password,
+        remember=True,
+    )
+
+map_pri = save_map_conn("map-primary", port_primary, "mf_admin", admin_pw, "shop", "PREFERRED")
+map_rep = save_map_conn("map-replica", port_replica, "mf_admin", admin_pw, "shop", "PREFERRED")
+map_rs = save_map_conn("map-readyset", port_rs_sql, "mf_admin", admin_pw, "shop", "DISABLED")
+map_active = store.get("profile", map_pri["id"])
+group_map = topology_group.read_group(
+    store, "rs-map-lab", "map", map_active["id"], map_active, map_active["group_generation"],
+)
+map_nodes = {n["id"]: n for n in group_map["map"]["nodes"]}
+map_peers = [n for n in group_map["map"]["nodes"] if n["kind"] == "peer"]
+tc.assertEqual(map_peers, [], f"Expected no peer cards for Readyset registration: {map_peers}")
+tc.assertIsNone(map_nodes[map_rs["id"]]["server_uuid"], "Readyset member must keep server_uuid empty")
+rs_upstream_edges = [
+    e for e in group_map["map"]["edges"]
+    if e["from"] == map_rs["id"] and e["to"] == map_pri["id"] and e["kind"] == "cache_upstream"
+]
+tc.assertEqual(len(rs_upstream_edges), 1, f"Expected verified Readyset -> primary upstream edge: {group_map['map']['edges']}")
+tc.assertTrue(rs_upstream_edges[0]["verified"], rs_upstream_edges[0])
+tc.assertEqual(rs_upstream_edges[0]["evidence"], "proxied_identity", rs_upstream_edges[0])
+rs_reason = rs_upstream_edges[0].get("reason") or ""
+tc.assertIn("Also registered on map-primary as a replica (server ID 103)", rs_reason)
+tc.assertNotIn("(estimate)", rs_reason, f"Lab registration must be positively attributed, not estimated: {rs_reason}")
 
 print("[3/7] Verifying live EXPLAIN CREATE CACHE (supported, unsupported, and collisions)...")
 exp_ok = ui.api_response("/api/live/readyset/explain-cache", {

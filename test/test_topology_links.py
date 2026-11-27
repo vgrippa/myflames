@@ -216,6 +216,17 @@ class TestProbeChannels(unittest.TestCase):
                 self.assertEqual(len(report['replicas']), 1)
                 self.assertEqual(report['replicas'][0]['server_id'], 42)
 
+    def test_show_replicas_port_zero_or_null_stays_none_never_3306(self):
+        for raw_port, expected in (('0', None), (0, None), (None, None), ('', None), ('3307', 3307)):
+            with self.subTest(raw_port=raw_port):
+                conn = FakeProbeConn('database', version='5.7.44',
+                    replicas=[{'Server_id': '42', 'Host': '', 'Port': raw_port}])
+                report = topology_links._probe_connection(conn, {'id': 'source', 'host': 'source.example', 'port': 3306})
+                self.assertEqual(len(report['replicas']), 1)
+                self.assertEqual(report['replicas'][0]['port'], expected)
+                self.assertIsNone(report['replicas'][0]['host'])
+                self.assertEqual(report['replicas'][0]['server_id'], 42)
+
     def test_mariadb_read_only_enum_protects_every_non_off_mode(self):
         for value, expected in (('NO_LOCK', True), ('NO_LOCK_NO_ADMIN', True), ('ON', True),
                                 ('1', True), ('TRUE', True), ('OFF', False), ('0', False), ('FALSE', False)):

@@ -1024,7 +1024,7 @@ try {
   const db2Key = clusterFixture.members[1].key;
   const db3Key = clusterFixture.members[2].key;
   const groupRequest = {
-    name: "Group connection mf-ic · 2 servers", host: "10.0.0.11", port: 3306, user: "dba", database: "",
+    name: "Group connection mf-ic · 2 servers · db-1", host: "10.0.0.11", port: 3306, user: "dba", database: "",
     ssl_mode: "PREFERRED", ssl_ca: "", read_only: false, password: "", type: "production",
     profile_id: "p-ic-1", group_name: "mf-ic",
   };
@@ -1107,7 +1107,7 @@ try {
     .some((b) => b.textContent.trim() === "Stop Group Replication…" && b.getAttribute("aria-disabled") === "false"));
   assert.ok(clusterCalls.length > readsBeforeSave, "saving the group reads the Cluster place again");
   assert.equal(clusterCalls.at(-1).connection.group_name, "mf-ic");
-  assert.equal(clusterCalls.at(-1).connection.name, "Group connection mf-ic · 3 servers");
+  assert.equal(clusterCalls.at(-1).connection.name, "Group connection mf-ic · 3 servers · db-1");
   assert.deepEqual(connectCalls.at(-1), { group_name: "mf-ic", active_member_profile_id: "p-ic-1" });
   assert.equal(await page.$(".view-inspector .cluster-edit-group"), null, "the fresh catalog has a saved route for db-3");
   assert.equal(await cardUse(db3Key), "Use db-3", "in the group, db-3's card suggests its own saved connection");
