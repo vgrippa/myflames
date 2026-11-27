@@ -9011,7 +9011,10 @@ logs in.
     group'`, deduplicated by UUID or lowercased address) and are never logged in
     to. Edges (`replication`, `proxy_route`, `cache_upstream`) have `verified:
     true` only on identity match: `'server_uuid'` (from
-    `match_database_endpoint`), or `'server_id'` only when `not uuid`, observer
+    `match_database_endpoint`), `'proxied_identity'` on a Readyset
+    `cache_upstream` edge when the `@@server_uuid` forwarded by Readyset
+    matches exactly one read database member (see the Readyset evidence rules
+    below), or `'server_id'` only when `not uuid`, observer
     is MariaDB, `server_id > 0` matches a single read MariaDB database member
     AND `match_database_endpoint` matched that exact same member by address. An
     uncorroborated MariaDB `server_id` match keeps `verified: false` and `label:
@@ -9058,6 +9061,68 @@ logs in.
     `ONLINE` (`ok`), `connecting` and `recovering` (`watch`), and
     `OFFLINE_SOFT`, `OFFLINE_HARD`, `offline`, and every `SHUNNED*` value
     (`SHUNNED[A-Za-z0-9_]{0,56}`) to `problem`.
+  - **Readyset upstream evidence, registration attribution and bounds**: on a
+    Readyset member, `SELECT @@server_uuid` and `SELECT @@hostname, @@port` are
+    forwarded to the MySQL upstream that serves Readyset's queries and stay
+    private to the probe (never stored as the Readyset member's own identity).
+    `SHOW READYSET STATUS` supplies `CDC Server` and `Replication Status`, and
+    the `upstream_servers` rows supply host, port, purpose, `active_cdc`,
+    health and user. On a MySQL source with replicas when the group has a
+    Readyset member (`has_readyset`), `_read_dump_threads` collects Binlog
+    Dump sessions with their replica/slave UUID, client host, client user and
+    all connect attributes within `DUMP_QUERY_SECONDS = 5` s, classifying each
+    session as `mysqld` (`program_name`/`_program_name` `mysqld` or
+    `_client_role` `binary_log_listener`), `unknown` (attributes unreadable,
+    or `Performance_schema_session_connect_attrs_lost` NULL or above 0),
+    `none` (no attributes) or `other`; the READYSET% client read
+    (`_READYSET_CLIENTS_SQL`) runs only when a `none` class exists.
+
+    | Read | What it proves | Line or note |
+    | --- | --- | --- |
+    | Proxied `@@server_uuid` (with `@@hostname`, `@@port`) forwarded by Readyset | which read MySQL member serves Readyset's queries | `cache_upstream` with evidence `proxied_identity`, verified (solid) |
+    | `CDC Server` plus `upstream_servers` purpose and `active_cdc` | the same member also feeds base-table replication (CDC) | the proxied edge is labelled `Upstream`; without CDC evidence the label is `Upstream (queries)` |
+    | An `upstream_servers` row resolving only by address | a possible upstream | `cache_upstream` dashed (address match, not verified), or a peer |
+    | A source Binlog Dump session (UUID, one host, matching user or READYSET% client, class `none`) | this Readyset member owns a `SHOW REPLICAS` row | a registration note on its verified upstream edge instead of a stray replica peer |
+    | A single `SHOW REPLICAS` row with no reported Host, dump evidence unavailable, one CDC-verified Readyset with Replication Status `Running` | the probable owner of that row | the same note with ` (estimate)` |
+
+    CDC evidence for the proxied member needs one of: (a) one real upstream
+    row whose purpose covers both CDC and proxy (or one purpose-less row),
+    not contradicted by a resolved endpoint to another member, (b) `CDC
+    Server` equal to the proxied `@@hostname:@@port` read in the same pass, or
+    (c) the CDC address resolving by endpoint to the proxied member (or
+    unresolved with no other active CDC upstream and a CDC upstream resolving
+    to it). An unmatched CDC-only upstream is never swallowed: it keeps its
+    own edge or peer unless one unmatched proxy upstream covers the proxied
+    member. Registration attribution tries a database source's unmatched
+    `SHOW REPLICAS` rows against the Readyset members with CDC evidence on
+    that source (`readyset_cdc`), ignoring an Admin listener whose deployment
+    signature (saved host, SSH host, upstream endpoints, `CDC Server`) matches
+    an adapter listener. A dump row attributes only when its class is `none`,
+    its UUID appears with exactly one dump host, its user matches the Readyset
+    member's upstream users or the READYSET% client set, and its host matches
+    the Readyset member's endpoint under the loopback rules; a single host
+    match wins (pass A), else a sole CDC-verified Readyset with one user
+    candidate wins (pass B), and each Readyset member claims at most one
+    registration per source. Its verified upstream edge gains
+    `Also registered on <source> as a replica (server ID <n>)` (without the
+    server ID when it is not a positive integer). The estimate fallback fires
+    only when dump evidence is unavailable (the dump read failed or every
+    session is `unknown`), exactly one unmatched row remains, it reports no
+    Host, its dump class is neither `mysqld` nor `other`, and the single
+    CDC-verified Readyset reports `Replication Status` `Running`; every other
+    unmatched row becomes a `Replica without a reported address` peer (with
+    its server ID and port when reported). A `SHOW REPLICAS` `Port` of 0
+    means no port: `topology_links._probe_connection` keeps it `None` instead
+    of coercing 3306, so the peer label shows the host alone rather than an
+    invented `(port 3306)`. Bounds: dump attribute rows at
+    `MAP_DUMP_ATTR_ROWS = 4096` (a truncated last session counts as unreadable,
+    hence `unknown`), sessions and READYSET% clients at
+    `MAP_PEERS_PER_MEMBER`, users at `MAP_USER_MAX_CHARS = 32` characters,
+    registration notes per edge at `MAP_NOTES_PER_EDGE = 4` followed by
+    `; and N more registrations`, host keys computed once per member and
+    cached, and a UUID seen with more than one dump host marked ambiguous so
+    it attributes nothing. The `evidence` enum of
+    `docs/schemas/topology-group-1.0.json` includes `proxied_identity`.
 - `parameters`: `param_compare.capture(conn, server=entry,
   full_provider_options=True)` + `param_compare.compare_many(snapshots,
   role_settings=..., active_clusters=...)`. Re-reads
@@ -9420,6 +9485,40 @@ logs in.
   excluded and unread members with reasons below; **Accounts** rows open an
   inspector with differences and **Open in Users and roles on `<member>`**
   links.
+- **Member cards open the member's place (`TopologyMap.tsx`,
+  `TopologyPlace.tsx`, `main.tsx`)**: on the Map, a member card's click (and
+  the member inspector's **Open in `<Place>`**) navigates to the single-server
+  place of that member. `memberPlace` picks `readyset` for role `cache` or
+  product `Readyset`, `proxysql` for role `proxy` or product `ProxySQL` /
+  `ProxySQL Admin`, `cluster` for `primary`/`secondary`/`node`, `replication`
+  for `source`/`replica`, and `server` otherwise; **Use in Server views**
+  selects the member for Server without navigating, and a peer card's click
+  keeps opening its inspector. A card whose click navigates is not a pressed
+  toggle; its accessible name is `Open <label> in <Place>: <facts>` and its
+  title ends with `Opens the <Place> place on this member`, while its
+  **Details** button (`Details for <label>`, only on navigating cards) opens
+  the inspector instead. The click records the member in
+  `memberByPlace[<place>]`: Readyset, ProxySQL, Cluster and Replication route
+  every read of the place to that member's own saved connection
+  (`memberRequest`, the member's endpoint under the group's strictest safety,
+  with the group name so membership is re-checked at every login), falling
+  back to the active member (the primary or source the backend picked) when
+  no choice exists or the member left the group (which sets the removal
+  notice `<names> is/are not in this group any more; its views moved to
+  <member>.`). The top bar's `Using <member> from group <group>.` note is
+  derived per place from the request that place reads (`placeRequest`), so it
+  can never name another member, shows only when the place reads a member
+  other than the connection in use, and yields to the removal notice; the
+  connection's group label (`Group connection <group> · N servers ·
+  <member>`) names the member in use. Focus lands on the place heading after
+  a card opens a place, and the Back chip returns to Topology with its tab,
+  scroll and selection, returning focus to the card that was activated.
+  Sidebar badges, muted states and staleness compare each place's report
+  against `connectionKey` of its own request (`proxyRequest`,
+  `readysetRequest`, `clusterRequest`, `replicationRequest`), never the
+  window's `request`, and the connection type strip shows
+  `placeRequest.read_only`, so a member read through a non-active saved
+  connection keeps its own Read-only badge.
 - **Rolling change UI (`RollingChangeSheet.tsx`, `rollingRuns.ts`)**: a
   **Parameters** row's inspector offers **Change on every member…** (disabled
   with its reason by `rollingChangeBlock` when `effective_safety.read_only` or
