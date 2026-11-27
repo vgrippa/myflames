@@ -82,7 +82,7 @@ While Home is open, the app fetches up to six headlines from Planet MySQL and th
 
 For manual MySQL JSON generation on 8.3+, select format version 2 with `SET SESSION explain_json_format_version=2` before EXPLAIN. Timed JSON analysis needs MySQL 8.3 or later (8.4 LTS); on earlier versions myflames refuses it before sending anything. MySQL 5.7 is end of life; myflames reads it and says in plain sentences what 5.7 lacks (roles, `SET PERSIST`, `EXPLAIN ANALYZE`, `CLONE`, `performance_schema.error_log`, invisible indexes). A MySQL 5.6 or older server gets a note that results may be missing or wrong.
 
-The ProxySQL place reads ProxySQL 2.x and 3.x through its Admin interface. Reviewed changes need ProxySQL 2.4.0 or later and a readable instance UUID; otherwise changes stay listed and disabled, with the reason and fix on click. Readyset is supported in the Readyset place when connected to a Readyset SQL listener (default port 3307) or admin SQL listener (default port 6036).
+The ProxySQL place reads ProxySQL 2.x and 3.x through its Admin interface: ProxySQL 2.6.0 and later (including 2.7.x and 3.x) work with the bundled MySQL 8.4 client, while ProxySQL 2.4.x–2.5.x require a MySQL 8.0 or MariaDB client in **Settings > Client tools** (MySQL 8.1+ clients fail on Admin's startup `select $$` check with `ERROR 2014`, and MariaDB 11.4+ clients require TLS **Disabled** or a trusted CA certificate). Reviewed changes need ProxySQL 2.4.0 or later and a readable instance UUID; otherwise changes stay listed and disabled, with the reason and fix on click. Readyset is supported in the Readyset place when connected to a Readyset SQL listener (default port 3307) or admin SQL listener (default port 6036).
 
 ## Appearance
 
