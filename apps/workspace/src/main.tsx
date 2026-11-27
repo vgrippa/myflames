@@ -99,6 +99,7 @@ const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));
 const TopologyPlace = lazyComponent(() => import("./TopologyPlace").then((m) => m.TopologyPlace));
+import type { MemberPlace, OpenMemberInfo } from "./TopologyPlace";
 const ProxySqlPlace = lazyComponent(() => import("./ProxySqlPlace").then((m) => m.ProxySqlPlace));
 const ReadysetPlace = lazyComponent(() => import("./ReadysetPlace").then((m) => m.ReadysetPlace));
 const FilesPlace = lazyComponent(() => import("./FilesPlace").then((m) => m.FilesPlace));
@@ -1675,6 +1676,18 @@ function App() {
     () => (groupActive && serverMemberId ? memberRequest(serverMemberId) || request : request),
     [groupActive, serverMemberId, request, profiles],
   );
+  // Readyset and ProxySQL route their reads to their chosen member too: the
+  // Topology map's card opens the place on the member the card names.
+  const readysetMemberId = memberOf("readyset");
+  const proxyMemberId = memberOf("proxysql");
+  const readysetRequest = useMemo(
+    () => (groupActive && readysetMemberId ? memberRequest(readysetMemberId) || request : request),
+    [groupActive, readysetMemberId, request, profiles],
+  );
+  const proxyRequest = useMemo(
+    () => (groupActive && proxyMemberId ? memberRequest(proxyMemberId) || request : request),
+    [groupActive, proxyMemberId, request, profiles],
+  );
   const serverRequestRef = useRef(serverRequest);
   serverRequestRef.current = serverRequest;
   const serverWritePolicy = useMemo(() => ({
@@ -1692,7 +1705,10 @@ function App() {
   // An orphaned member tab has no endpoint. Keep the same disconnected key
   // as QueryLab, rather than borrowing the window's status or grants.
   const placeRequest = mode === "query" ? queryRequest || unavailableMemberConnection(queryTab.member!, queryTab.member_name)
-    : ["server", "workload", "tuning", "diagram"].includes(mode) ? serverRequest : request;
+    : ["server", "workload", "tuning", "diagram"].includes(mode) ? serverRequest
+    : mode === "readyset" ? readysetRequest
+    : mode === "proxysql" ? proxyRequest
+    : request;
   const queryRequestRef = useRef(queryRequest);
   queryRequestRef.current = queryRequest;
   const placeConnected = ready && safety.known && !!placeRequest.host;
@@ -1705,6 +1721,25 @@ function App() {
     setMemberNote("");
     setMemberByPlace((current) => (current[place] === id ? current : { ...current, [place]: id }));
   }, []);
+  // A member card's click opens that member's place in the click's frame:
+   // Server, Readyset and ProxySQL route their reads to the chosen member and
+   // the note says whose connection the place uses; the Back chip returns to
+   // the map with its tab, scroll and selection. Cluster and Replication keep
+   // reading the connection in use, so no member is chosen for them.
+  const openTopologyMember = useCallback((member: OpenMemberInfo, place: MemberPlace) => {
+    const back = linkOrigin();
+    if (place === "cluster" || place === "replication") {
+      setMemberNote("");
+      go(place);
+      finishLink(back);
+      return;
+    }
+    chooseMember(place, member.profile_id);
+    const group = groupActiveRef.current;
+    if (group) setMemberNote(`Using ${member.profile_name} from group ${group.group_name}.`);
+    go(place);
+    finishLink(back);
+  }, [chooseMember]);
   const [serverNavigation, setServerNavigation] = useState<{ view: ServerKind; n: number } | undefined>(undefined);
   // Navigation history (Back/Forward, the cross-link chip, the palette's
   // Recent views): one entry per settled place or view, in-memory only.
@@ -2452,6 +2487,10 @@ function App() {
               <span>{linkBack.label}</span>
             </button>
           )}
+          {/* The Server place shows the same note inside its view header. */}
+          {memberNote && (mode === "readyset" || mode === "proxysql") && (
+            <span className="group-server-note nav-member-note" role="status">{memberNote}</span>
+          )}
           {ready && mode === "library" && (
             <Popover label="About Investigations" className="topbar-info">
               <p>Saved collections of plans, notes, and tags on this computer.</p>
@@ -2877,7 +2916,8 @@ function App() {
                   onNewGroup={(members) => setGroupCreate(members)}
                   onUseInServer={(id) => chooseMember("server", id)}
                   onOpenCluster={() => go("cluster")} onOpenReplication={() => go("replication")}
-                  onOpenAccounts={(id) => { chooseMember("server", id); chooseServerView("accounts"); }} />
+                  onOpenAccounts={(id) => { chooseMember("server", id); chooseServerView("accounts"); }}
+                  onOpenMember={openTopologyMember} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
             </div>
@@ -2902,7 +2942,7 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "proxysql"}>
               <ColumnStoreContext.Provider value={columnStore}>
-                <ProxySqlPlace connection={request} disabled={labBusy} report={proxyReport} onReport={shareProxySql}
+                <ProxySqlPlace connection={proxyRequest} disabled={labBusy} report={proxyReport} onReport={shareProxySql}
                   failure={proxyFailure} onFailure={failProxySql}
                   onSwitchConnection={switchConnection} onOpenReadyset={() => go("readyset")}
                   onOpenCluster={() => go("cluster")} onOpenReplication={() => go("replication")} />
@@ -2916,7 +2956,7 @@ function App() {
               <WritePolicyContext.Provider value={writePolicy}>
               <ViewOnScreenContext.Provider value={mode === "readyset"}>
               <ColumnStoreContext.Provider value={columnStore}>
-                <ReadysetPlace connection={request} disabled={labBusy} report={readysetReport} onReport={shareReadyset}
+                <ReadysetPlace connection={readysetRequest} disabled={labBusy} report={readysetReport} onReport={shareReadyset}
                   failure={readysetFailure} onFailure={failReadyset}
                   onOpenProxySql={() => go("proxysql")} onOpenCluster={() => go("cluster")}
                   onOpenReplication={() => go("replication")} onOpenServer={() => go("server")}

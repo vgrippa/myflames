@@ -12,13 +12,21 @@
 //    - unsaved connections never acquire a saved identity by name or endpoint
 //    - busy, result and error states on /api/profiles/group, then re-read
 // 3. layoutMatrix on the bar and on the open sheet (1440/720 x light/dark).
+// 4. The Topology map on a Group connection: a member card opens that
+//    member's place (Readyset, ProxySQL, Cluster, Replication or Server),
+//    with a Details button that keeps the inspector, a member note, and a
+//    Back to Topology chip that keeps the map's selection.
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { chooseConnection, connectionOption, layoutMatrix, openConnectionPicker } from "./chrome-helpers.mjs";
-import { load, open, pause } from "./perf-harness.mjs";
+import { load, open, pause, setUiPreferences } from "./perf-harness.mjs";
 
 const clusterBase = await load("cluster-ic-8.4-healthy.json");
 const replicationBase = await load("replication-mysql-8.4-healthy.json");
 const proxysqlBase = await load("proxysql-lab.json");
+const readysetBase = await load("readyset-lab.json");
+const healthBase = await load("health-mysql-8.4.json");
 
 const profiles = [
   {
@@ -100,6 +108,66 @@ let onGroupSuccess = null;
 let replicationReport = structuredClone(replicationBase);
 let proxysqlReport = structuredClone(proxysqlBase);
 
+// Section 8 (Topology map navigation): the Group connection mf-nav, its Map
+// report and the reads of the member places it opens.
+const connectCalls = [];
+const topologyCalls = [];
+const readysetReads = [];
+const healthReads = [];
+function navMember(over) {
+  return {
+    profile_id: "", profile_name: "", host: "", port: 3306,
+    safety: { type: "production", read_only: false },
+    outcome: "read", message: "Read from this member.", elapsed_s: 0.1,
+    engine: "mysql", product: "MySQL", version: "8.4.6", version_comment: "MySQL Community Server - GPL",
+    server_uuid: null, server_id: null, hostname: null,
+    read_only: false, read_only_value: "OFF", super_read_only: false,
+    role: "standalone", state: "reachable", lag: null, behind: null, behind_reason: null, channels: [],
+    duplicate_of: null, ...over,
+  };
+}
+const navMembers = [
+  navMember({ profile_id: "p-nav-1", profile_name: "nav-db-1", host: "10.0.1.11", role: "primary", state: "ONLINE", server_uuid: "11111111-1111-1111-1111-1111111111aa" }),
+  navMember({ profile_id: "p-nav-2", profile_name: "nav-db-2", host: "10.0.1.12", role: "source", state: "running", server_uuid: "22222222-2222-2222-2222-2222222222aa" }),
+  navMember({ profile_id: "p-nav-3", profile_name: "nav-db-3", host: "10.0.1.13", server_uuid: "33333333-3333-3333-3333-3333333333aa" }),
+  navMember({ profile_id: "p-nav-proxy", profile_name: "nav-proxy", host: "10.0.1.14", port: 6032, engine: null, product: "ProxySQL", version: "2.5.1", version_comment: null, role: "proxy" }),
+  navMember({ profile_id: "p-nav-rs", profile_name: "nav-rs", host: "10.0.1.15", port: 3307, engine: null, product: "Readyset", version: "2410.30", version_comment: null, role: "cache" }),
+];
+function navMapNode(over) {
+  return {
+    id: "", kind: "member", profile_id: "", label: "", host: "", port: 3306,
+    engine: "mysql", product: "MySQL", version: "8.4.6", role: "standalone",
+    state: "reachable", outcome: "read", server_uuid: null, cluster_id: null, duplicate_of: null,
+    ...over,
+  };
+}
+const navMapReport = {
+  schema_version: "topology-group-1.0", section: "map", group_name: "mf-nav",
+  taken_at: "2026-11-26T12:00:00Z", elapsed_s: 0.3,
+  effective_safety: { type: "production", read_only: false },
+  active_member_profile_id: "p-nav-1", primary_profile_id: "p-nav-1",
+  members: navMembers,
+  summary: { read: 5, failed: 0, not_reached: 0, versions: ["8.4.6"], text: "5 read." },
+  map: {
+    nodes: [
+      navMapNode({ id: "p-nav-proxy", profile_id: "p-nav-proxy", label: "nav-proxy", host: "10.0.1.14", port: 6032, engine: null, product: "ProxySQL", version: "2.5.1", role: "proxy" }),
+      navMapNode({ id: "p-nav-rs", profile_id: "p-nav-rs", label: "nav-rs", host: "10.0.1.15", port: 3307, engine: null, product: "Readyset", version: "2410.30", role: "cache" }),
+      navMapNode({ id: "p-nav-1", profile_id: "p-nav-1", label: "nav-db-1", host: "10.0.1.11", role: "primary", state: "ONLINE", server_uuid: "11111111-1111-1111-1111-1111111111aa" }),
+      navMapNode({ id: "p-nav-2", profile_id: "p-nav-2", label: "nav-db-2", host: "10.0.1.12", role: "source", state: "running", server_uuid: "22222222-2222-2222-2222-2222222222aa" }),
+      navMapNode({ id: "p-nav-3", profile_id: "p-nav-3", label: "nav-db-3", host: "10.0.1.13", server_uuid: "33333333-3333-3333-3333-3333333333aa" }),
+      { id: "peer:10.0.0.88:3306", kind: "peer", profile_id: null, label: "10.0.0.88:3306", host: "10.0.0.88", port: 3306, server_uuid: null, seen_by: ["p-nav-2"], reason: "Not in this group" },
+    ],
+    edges: [
+      { from: "p-nav-proxy", to: "p-nav-rs", kind: "proxy_route", evidence: "endpoint", verified: true, state: "ONLINE", label: "ProxySQL route" },
+      { from: "p-nav-rs", to: "p-nav-1", kind: "cache_upstream", evidence: "server_uuid", verified: true, state: "running", label: "Cache upstream" },
+      { from: "p-nav-2", to: "p-nav-3", kind: "replication", evidence: "server_uuid", verified: true, state: "running", label: "Replication" },
+      { from: "p-nav-2", to: "peer:10.0.0.88:3306", kind: "replication", evidence: "endpoint", verified: false, state: null, label: "Replication" },
+    ],
+    clusters: [],
+    notes: [],
+  },
+};
+
 const h = await open("/api/live/cluster", "topology-groups", {
   "/api/profiles/list": () => ({
     status: 200,
@@ -167,6 +235,52 @@ const h = await open("/api/live/cluster", "topology-groups", {
   "/api/live/proxysql": (body) => {
     proxysqlReads.push(body);
     return { status: 200, body: proxysqlReport };
+  },
+  "/api/connect": (body) => {
+    connectCalls.push(body);
+    const name = typeof body.group_name === "string" ? body.group_name.trim() : "";
+    const grouped = profiles.filter((p) => (p.group || "") === name);
+    if (!grouped.length) return { status: 400, body: { error: "No saved connection belongs to this connection group." } };
+    const active = grouped.find((m) => m.id === body.active_member_profile_id) || grouped[0];
+    return { status: 200, body: {
+      version: "8.4.6",
+      engine: "mysql",
+      flavor: "mysql",
+      product: "MySQL",
+      databases: ["shop"],
+      schemas: ["shop"],
+      group_connection: {
+        group_name: name,
+        effective_safety: { type: "production", read_only: false },
+        active_member_profile_id: active.id,
+        primary_profile_id: active.id,
+        members: grouped.map((m) => ({
+          profile_id: m.id,
+          profile_name: m.name,
+          host: m.host,
+          port: m.port,
+          safety: { type: m.type, read_only: !!m.read_only },
+          server_uuid: null,
+          role: m.id === active.id ? "PRIMARY" : "SECONDARY",
+          state: null,
+          reachable: body.probe_members === true ? true : null,
+        })),
+      },
+    } };
+  },
+  "/api/live/topology": (body) => {
+    topologyCalls.push(body);
+    assert.equal(body.connection.group_name, "mf-nav", "the map read names its group");
+    assert.equal(body.section, "map", "only the Map tab is read here");
+    return { status: 200, body: navMapReport };
+  },
+  "/api/live/readyset": (body) => {
+    readysetReads.push(body);
+    return { status: 200, body: readysetBase };
+  },
+  "/api/live/health": (body) => {
+    healthReads.push(body);
+    return { status: 200, body: healthBase };
   },
 });
 
@@ -852,6 +966,143 @@ try {
   await page.waitForFunction((sel) => !document.querySelector(sel), {}, sheetSel);
   assert.deepEqual(groupCalls.at(-1), { profile_ids: ["p-ic-2"], group: "mfcluster" },
     "Review adds only the selected saved suggestion when the current connection is unsaved");
+
+  // ---------------------------------------------------------------------------
+  // 8. Topology map on a Group connection: a member card opens that member's
+  //    place; Details keeps the inspector; the note and Back chip follow.
+  // ---------------------------------------------------------------------------
+  profiles.push(
+    { id: "p-nav-1", name: "nav-db-1", host: "10.0.1.11", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    { id: "p-nav-2", name: "nav-db-2", host: "10.0.1.12", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    { id: "p-nav-3", name: "nav-db-3", host: "10.0.1.13", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    { id: "p-nav-proxy", name: "nav-proxy", host: "10.0.1.14", port: 6032, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "production", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+    { id: "p-nav-rs", name: "nav-rs", host: "10.0.1.15", port: 3307, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development", read_only: false, group: "mf-nav", remember_password: true, has_saved_password: true, secret_backend: "vault", secret_backend_label: "myflames encrypted vault" },
+  );
+  // The saved-connections list re-reads on window focus.
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await pause(1100);
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-rs"]', { visible: true });
+  assert.equal(topologyCalls.length, 1, "the Map tab read once when shown");
+  assert.equal(connectCalls.length, 1, "opening the group connection is the one /api/connect");
+  const connectsBefore = connectCalls.length;
+  const topoShots = fileURLToPath(new URL("../../../local/topo-shots/", import.meta.url));
+  await fs.mkdir(topoShots, { recursive: true });
+  const rsCard = '.topology-map-node[data-node="p-nav-rs"]';
+  async function takeShots(name, hover) {
+    for (const width of [1440, 720]) {
+      await page.setViewport({ width, height: 900 });
+      for (const theme of ["light", "dark"]) {
+        await setUiPreferences(page, { theme });
+        if (hover) await page.hover(hover);
+        await pause(150);
+        await page.screenshot({ path: `${topoShots}${name}-${width}-${theme}.png` });
+        writtenShots.push(`${name}-${width}-${theme}`);
+      }
+    }
+    await page.setViewport({ width: 1440, height: 900 });
+    await setUiPreferences(page, { theme: "light" });
+    await pause(150);
+  }
+  // The map with the Details button visible on hover.
+  await takeShots("topo-map-details", rsCard);
+  await page.hover(rsCard);
+  await pause(180);
+  const rsDetails = '.topology-map-node-details[aria-label="Details for nav-rs"]';
+  const hoverOpacity = await page.$eval(rsDetails, (e) => getComputedStyle(e).opacity);
+  assert.equal(hoverOpacity, "1", "Details shows while its card is hovered");
+  await page.hover(".topology-map-legend");
+  await pause(180);
+  const restOpacity = await page.$eval(rsDetails, (e) => getComputedStyle(e).opacity);
+  assert.equal(restOpacity, "0", "Details hides again when the pointer leaves");
+
+  // The Details button opens the inspector without navigating.
+  await page.click('.topology-map-node-details[aria-label="Details for nav-rs"]');
+  await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector .inspector-title")]
+    .some((e) => e.getClientRects().length > 0));
+  assert.match(await h.inspector(), /nav-rs/, "Details opens the member inspector");
+  assert.match(await h.inspector(), /Readyset/, "the inspector names the engine");
+  await page.waitForFunction(() => [...document.querySelectorAll(".view-inspector button")]
+    .some((b) => b.textContent.trim() === "Open in Readyset"));
+  assert.ok(await page.$('.main-nav button[data-place="topology"].active'), "Details never leaves the map");
+  assert.equal(readysetReads.length, 0, "Details never reads the member's place");
+  await page.click('.topology-place .inspector-close');
+
+  // A peer card opens the inspector and never navigates.
+  await page.click('.topology-map-node[data-node="peer:10.0.0.88:3306"]');
+  assert.match(await h.inspector(), /Not in this group/, "a peer keeps its inspector");
+  assert.ok(await page.$('.main-nav button[data-place="topology"].active'), "a peer never navigates");
+  await page.click('.topology-place .inspector-close');
+
+  // A Readyset member opens the Readyset place on that member.
+  await page.click(rsCard);
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  for (let i = 0; i < 100 && !readysetReads.length; i++) await pause(25);
+  assert.equal(readysetReads.length, 1, "the Readyset place reads when opened");
+  assert.equal(readysetReads[0].connection.profile_id, "p-nav-rs", "the read carries the clicked member");
+  assert.equal(readysetReads[0].connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(connectCalls.length, connectsBefore, "navigation never opens a new connection");
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "Using nav-rs from group mf-nav.");
+  // The arrival note in the Readyset place.
+  await takeShots("topo-arrive-readyset");
+  // Back to Topology returns with the same selection kept.
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  assert.ok(await page.$(`${rsCard}.is-selected`), "the clicked card stays selected on return");
+
+  // A ProxySQL member opens the ProxySQL place on that member.
+  const proxyReadsBefore = proxysqlReads.length;
+  await page.click('.topology-map-node[data-node="p-nav-proxy"]');
+  await page.waitForSelector('.main-nav button[data-place="proxysql"].active');
+  for (let i = 0; i < 100 && proxysqlReads.length === proxyReadsBefore; i++) await pause(25);
+  assert.equal(proxysqlReads.at(-1).connection.profile_id, "p-nav-proxy", "the read carries the clicked member");
+  assert.equal(proxysqlReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "Using nav-proxy from group mf-nav.");
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // A cluster member opens the Cluster place.
+  state.fallback = { status: 200, body: clusterBase };
+  await page.click('.topology-map-node[data-node="p-nav-1"]');
+  await page.waitForSelector('.main-nav button[data-place="cluster"].active');
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // A replication member opens the Replication place.
+  replicationReport = structuredClone(replicationBase);
+  const replReadsNav = replicationReads.length;
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  for (let i = 0; i < 100 && replicationReads.length === replReadsNav; i++) await pause(25);
+  assert.equal(replicationReads.at(-1).connection.profile_id, "p-nav-1", "the Replication place keeps the connection in use (the active member)");
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // Any other database member opens the Server place on that member, with the
+  // member note in the view header.
+  const healthBefore = healthReads.length;
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  for (let i = 0; i < 100 && healthReads.length === healthBefore; i++) await pause(25);
+  assert.equal(healthReads.at(-1).connection.profile_id, "p-nav-3", "the Server place reads the clicked member");
+  assert.equal(healthReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(await page.$eval('.server-place .group-server-note', (e) => e.textContent.trim()), "Using nav-db-3 from group mf-nav.");
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
+  // Keyboard Enter on a focused card navigates the same way.
+  const readysetReadsBefore = readysetReads.length;
+  await page.focus(rsCard);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  for (let i = 0; i < 100 && readysetReads.length === readysetReadsBefore; i++) await pause(25);
+  assert.equal(readysetReads.at(-1).connection.profile_id, "p-nav-rs", "Enter opens the member's place");
+  await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  assert.equal(connectCalls.length, connectsBefore, "no card ever opened a new connection");
+
   assert.deepEqual(h.errors, [], "Group actions and replication branch changes produce no runtime exceptions");
 
   console.log(`topology-groups: ok (${writtenShots.length} screenshots: ${writtenShots.join(", ")})`);

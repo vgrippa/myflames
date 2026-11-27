@@ -23,7 +23,7 @@ import {
 import { plural } from "./OpsShared";
 import { useViewOnScreen } from "./viewOnScreen";
 import {
-  readTopology, type AccountRow, type MapEdge, type ParameterRow, type PluginRow, type TopologyGroupReport,
+  readTopology, type AccountRow, type MapEdge, type MemberRole, type ParameterRow, type PluginRow, type TopologyGroupReport,
   type TopologyMember, type TopologySection,
 } from "./topologyApi";
 import "./topology-place.css";
@@ -43,6 +43,22 @@ const ROLE_LABEL: Record<string, string> = {
 const OUTCOME_LABEL: Record<string, string> = { read: "Read", failed: "Failed", not_reached: "Not reached" };
 const CLUSTER_ROLES = new Set(["primary", "secondary", "node"]);
 const REPLICATION_ROLES = new Set(["source", "replica"]);
+/** The single-server place a member's card opens, from its role and product. */
+export type MemberPlace = "server" | "cluster" | "replication" | "proxysql" | "readyset";
+/** What a member's card or inspector action needs to open its place. */
+export type OpenMemberInfo = {
+  profile_id: string;
+  profile_name: string;
+  role: MemberRole | null;
+  product: string | null;
+};
+function memberPlace(member: { role: MemberRole | null; product: string | null }): MemberPlace {
+  if (member.role === "cache" || member.product === "Readyset") return "readyset";
+  if (member.role === "proxy" || member.product === "ProxySQL") return "proxysql";
+  if (member.role && CLUSTER_ROLES.has(member.role)) return "cluster";
+  if (member.role && REPLICATION_ROLES.has(member.role)) return "replication";
+  return "server";
+}
 const PARAMETER_STATUS: Record<string, [BadgeTone | "info", string]> = {
   same: ["ok", "Same"], different: ["warn", "Different"], missing: ["warn", "Missing"], per_server: ["info", "Per server"],
 };
@@ -94,7 +110,7 @@ function reportKey(connection: Connection, group: GroupConnection | null | undef
   return `${connectionKey(connection)}|${membership}`;
 }
 
-export function TopologyPlace({ connection, group = null, profiles, disabled = false, onOpenGroup, onNewGroup, onUseInServer, onOpenCluster, onOpenReplication, onOpenAccounts }: {
+export function TopologyPlace({ connection, group = null, profiles, disabled = false, onOpenGroup, onNewGroup, onUseInServer, onOpenCluster, onOpenReplication, onOpenAccounts, onOpenMember }: {
   connection: Connection;
   /** The active Group connection, when the connection in use is one. */
   group?: GroupConnection | null;
@@ -110,6 +126,9 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   onOpenReplication: () => void;
   /** Open Server > Users and roles with this member chosen. */
   onOpenAccounts: (profileId: string) => void;
+  /** Open the place of a member's card (Readyset, ProxySQL, Cluster,
+   * Replication or Server), reading that member where the place routes one. */
+  onOpenMember?: (member: OpenMemberInfo, place: MemberPlace) => void;
 }) {
   const [tab, setTab] = useState<TopologySection>("map");
   const [selectedKey, setSelectedKey] = useState("");
@@ -293,6 +312,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
     const aliasName = member.duplicate_of
       ? report.members.find((other) => other.profile_id === member.duplicate_of)?.profile_name || member.duplicate_of
       : "";
+    const openPlace = memberPlace(member);
     const actions = (
       <div className="topology-member-actions">
         <ToolbarButton className="small" onClick={() => onUseInServer(member.profile_id)}>Use in Server views</ToolbarButton>
@@ -301,6 +321,10 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
         )}
         {member.role && REPLICATION_ROLES.has(member.role) && (
           <ToolbarButton className="small" onClick={onOpenReplication}>Open in Replication</ToolbarButton>
+        )}
+        {onOpenMember && (openPlace === "readyset" || openPlace === "proxysql") && (
+          <ToolbarButton className="small" onClick={() => onOpenMember(member, openPlace)}>
+            Open in {openPlace === "readyset" ? "Readyset" : "ProxySQL"}</ToolbarButton>
         )}
       </div>
     );
@@ -356,7 +380,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
         {tab === "map" && <MapNodeLinks report={report} nodeId={report.map?.nodes.find((node) => node.profile_id === member.profile_id)?.id || member.profile_id} />}
       </>,
     };
-  }, [tab, report, selection.key, onUseInServer, onOpenCluster, onOpenReplication]);
+  }, [tab, report, selection.key, onUseInServer, onOpenCluster, onOpenReplication, onOpenMember]);
 
   const peerContent: InspectorContent | null = useMemo(() => {
     if (tab !== "map" || !report?.map || !selection.key) return null;
@@ -516,7 +540,7 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
             tab === "members" ? (
               <MembersTab report={report} summary={summary} selection={selection} />
             ) : tab === "map" ? (
-              <MapTab report={report} memberName={memberName} selection={selection} />
+              <MapTab report={report} memberName={memberName} selection={selection} onOpenMember={onOpenMember} />
             ) : drift ? (
               <>
                 {tab === "parameters" && (changeDone || !!(ownPlaceRun && runTerminal(ownPlaceRun))) && (
@@ -727,7 +751,7 @@ function DriftTab({ tab, drift, report, memberName, selection }: {
 }
 
 /** The diagram and its accessible text alternative share the same report. */
-function MapTab({ report, memberName, selection }: { report: TopologyGroupReport; memberName: (profileId: string) => string; selection: Selection }) {
+function MapTab({ report, memberName, selection, onOpenMember }: { report: TopologyGroupReport; memberName: (profileId: string) => string; selection: Selection; onOpenMember?: (member: OpenMemberInfo, place: MemberPlace) => void }) {
   const map = report.map;
   const indexed = useMemo(() => map ? {
     labels: mapNodeLabels(map),
@@ -764,7 +788,11 @@ function MapTab({ report, memberName, selection }: { report: TopologyGroupReport
           ))}
         </div>
       )}
-      <TopologyMap map={map} selection={selection} />
+      <TopologyMap map={map} selection={selection} onOpenNode={onOpenMember ? (node) => {
+        if (node.kind !== "member") return;
+        const member = { profile_id: node.profile_id, profile_name: node.label, role: node.role, product: node.product };
+        onOpenMember(member, memberPlace(member));
+      } : undefined} />
       <section className="topology-map-section" aria-label="Servers">
         <h3>Servers</h3>
         <ul className="topology-map-list">

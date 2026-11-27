@@ -490,7 +490,8 @@ try {
   // The diagram keeps cluster membership, evidence and read outcomes visible.
   const diagram = ".topology-map-diagram";
   const nodeButton = (id) => `${diagram} button[data-node="${id}"]`;
-  assert.deepEqual(await page.$$eval(`${diagram} .topology-map-cluster button`, (nodes) => nodes.map((n) => n.dataset.node)),
+  const nodeDetails = (id) => `${diagram} button[data-details="${id}"]`;
+  assert.deepEqual(await page.$$eval(`${diagram} .topology-map-cluster button[data-node]`, (nodes) => nodes.map((n) => n.dataset.node)),
     ["p-topo-1", "p-topo-2"], "the cluster box contains its member buttons");
   assert.match(await page.$eval(`${diagram} .topology-map-cluster`, (e) => e.getAttribute("aria-label")), /Group Replication: cccccccc/);
   const peerId = "peer:10.0.0.77:3306";
@@ -506,27 +507,30 @@ try {
   assert.match(legend, /Dashed: not verified \(address or server ID match\)/, "the legend covers both unverified evidences");
   assert.match(legend, /Dotted: same server \(alias\)/, "the legend keeps the alias style");
   const positions = () => page.$$eval(`${diagram} button[data-node]`, (nodes) => nodes.map((n) => ({
-    id: n.dataset.node, x: n.offsetLeft + n.parentElement.offsetLeft, y: n.offsetTop + n.parentElement.offsetTop,
+    id: n.dataset.node, x: n.getBoundingClientRect().left, y: n.getBoundingClientRect().top,
   })));
   const firstPositions = await positions();
   const nodeY = (id) => firstPositions.find((n) => n.id === id).y;
   assert.ok(nodeY("p-topo-1") < nodeY("p-topo-2"), "a replication source is above its replica inside a cluster");
   assert.ok(nodeY("p-topo-1") < nodeY(peerId), "a replication peer appears downstream");
-  // Tab reaches every native button in visual group order. Enter uses the
-  // same member inspector as Members, without sending a read.
+  // Tab reaches every card and its Details button in visual group order.
+  // Enter on Details uses the same member inspector as Members, without
+  // sending a read; the card itself opens the member's place (covered in
+  // topology-groups.mjs).
   await page.focus(`${diagram} .topology-map-scroll`);
   const focusIds = [];
-  for (let i = 0; i < firstPositions.length; i++) {
+  for (let i = 0; i < firstPositions.length * 2; i++) {
     await page.keyboard.press("Tab");
-    focusIds.push(await page.evaluate(() => document.activeElement?.dataset.node));
+    focusIds.push(await page.evaluate(() => document.activeElement?.dataset.node || document.activeElement?.dataset.details));
   }
-  assert.deepEqual(focusIds, await page.$$eval(`${diagram} button[data-node]`, (nodes) => nodes.map((n) => n.dataset.node)));
-  await page.focus(nodeButton("p-topo-2"));
+  assert.deepEqual(focusIds, await page.$$eval(`${diagram} button[data-node], ${diagram} button[data-details]`,
+    (nodes) => nodes.map((n) => n.dataset.node || n.dataset.details)));
+  await page.focus(nodeDetails("p-topo-2"));
   await page.keyboard.press("Enter");
-  assert.match(await h.inspector(), /db-2.*Secondary.*super_read_only/s, "Enter opens the shared member inspector");
+  assert.match(await h.inspector(), /db-2.*Secondary.*super_read_only/s, "Enter on Details opens the shared member inspector");
   await page.click('.topology-place .inspector-close');
-  await page.click(nodeButton("p-topo-1"));
-  assert.match(await h.inspector(), /db-1.*Primary/s, "click opens the shared member inspector");
+  await page.click(nodeDetails("p-topo-1"));
+  assert.match(await h.inspector(), /db-1.*Primary/s, "click on Details opens the shared member inspector");
   assert.match(await h.inspector(), /address match, not verified/, "incident links explain address-only evidence in the inspector");
   await page.click('.topology-place .inspector-close');
   await page.click(nodeButton(peerId));
@@ -641,7 +645,7 @@ try {
   assert.equal(await page.$eval(".topbar-stack", (e) => getComputedStyle(e).position), "sticky", "the toolbar stays sticky");
   await layoutMatrix(page, mapShots, "topology-map");
   await page.setViewport({ width: 1440, height: 900 });
-  await page.click(nodeButton("p-topo-2"));
+  await page.click(nodeDetails("p-topo-2"));
   await page.waitForSelector('.topology-place .view-inspector', { visible: true });
   await layoutMatrix(page, mapShots, "topology-map-inspector");
   await page.click('.topology-place .inspector-close');
@@ -1014,7 +1018,7 @@ try {
     "2 4", "the alias link is dotted");
   assert.match(await page.$eval(`${diagram} .topology-map-edge[data-edge-kind="alias"] title`, (e) => e.textContent), /Same server \(alias\)/);
   assert.doesNotMatch(await placeText(), /more than one primary/i, "an alias never reads as a second primary");
-  await page.click(nodeButton("p-topo-5"));
+  await page.click(nodeDetails("p-topo-5"));
   assert.match(await h.inspector(),
     /This saved connection reaches the same server as db-1 \(for example a router or proxy port\)\. A rolling change refuses it when db-1 is also selected\. The map shows both saved connections, linked as aliases; db-1 represents the server in its cluster\. Drift tables list both\./,
     "the alias inspector explains the duplicate connection");
@@ -1104,7 +1108,7 @@ try {
     "6 5", "the ID-only link keeps the dashed style");
   assert.match(await page.$eval(`${diagram} .topology-map-edge[data-verified="false"] title`, (e) => e.textContent),
     /server ID match, not verified/, "the tooltip names the unverified ID match");
-  await page.click(nodeButton("maria-2"));
+  await page.click(nodeDetails("maria-2"));
   assert.match(await h.inspector(), /server ID match, not verified/, "the inspector names the unverified ID match");
   await page.click('.topology-place .inspector-close');
   // The cap note shows once, above the diagram; other notes stay in Notes.
