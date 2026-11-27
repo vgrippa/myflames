@@ -44,6 +44,65 @@ export function copyFeedback(base: string, removed: number, note = ""): string {
   return feedback;
 }
 
+/** The selection-copy listener for sandboxed srcdoc frames (plan fallback,
+ * Library comparisons, lessons). A frame has an opaque origin and CSP
+ * script-src 'unsafe-inline', so it cannot import this module; the components
+ * inline this one string instead. Its sanitize mirrors sanitizeClipboardText
+ * exactly, including the offset-aware underscore rule after --. */
+export const FRAME_COPY_SANITIZER_SCRIPT = `<script>(function(){
+  var CONTROLS=/[\\0-\\x08\\x0b-\\x1f\\x7f-\\x9f\\u061c\\u200e\\u200f\\u2028-\\u202e\\u2066-\\u2069]/g;
+  function sanitize(text){
+    var s=String(text==null?"":text).replace(/\\r\\n/g,"\\n");
+    return s.replace(CONTROLS,function(ch,offset){
+      return ch.charCodeAt(0)>=0x80&&s.charAt(offset-1)==="-"&&s.charAt(offset-2)==="-"?"_":" ";
+    });
+  }
+  function isPasswordInput(node){
+    return typeof HTMLInputElement!=="undefined"&&node instanceof HTMLInputElement&&node.type==="password";
+  }
+  function isTextField(node){
+    return (typeof HTMLTextAreaElement!=="undefined"&&node instanceof HTMLTextAreaElement)||
+      (typeof HTMLInputElement!=="undefined"&&node instanceof HTMLInputElement);
+  }
+  function readFieldSelection(field){
+    if(isPasswordInput(field)) return null;
+    var start=null,end=null;
+    try{start=field.selectionStart;end=field.selectionEnd;}catch(_){return null;}
+    return typeof start==="number"&&typeof end==="number"&&end>start?field.value.slice(start,end):null;
+  }
+  function selectedText(event){
+    var target=event.target||null;
+    if(isPasswordInput(target)) return null;
+    if(isTextField(target)){
+      var fieldText=readFieldSelection(target);
+      if(fieldText!==null) return fieldText;
+    }
+    var sel=typeof window!=="undefined"&&window.getSelection?window.getSelection():null;
+    if(sel&&!sel.isCollapsed) return sel.toString();
+    var active=typeof document!=="undefined"?document.activeElement:null;
+    if(isPasswordInput(active)) return null;
+    if(isTextField(active)) return readFieldSelection(active);
+    return null;
+  }
+  document.addEventListener("copy",function(event){
+    if(!event||event.defaultPrevented||!event.clipboardData) return;
+    var raw=selectedText(event);
+    if(!raw) return;
+    var clean=sanitize(raw);
+    if(clean===raw) return;
+    event.clipboardData.setData("text/plain",clean);
+    event.preventDefault();
+  });
+})();</script>`;
+
+/** Inject the frame copy sanitizer into a srcdoc document, before </head> or
+ * </body> when present so the listener is registered as early as possible. */
+export function withFrameCopySanitizer(html: string): string {
+  if (/<\/head\s*>/i.test(html)) return html.replace(/<\/head\s*>/i, (end) => FRAME_COPY_SANITIZER_SCRIPT + end);
+  if (/<\/body\s*>/i.test(html)) return html.replace(/<\/body\s*>/i, (end) => FRAME_COPY_SANITIZER_SCRIPT + end);
+  return html + FRAME_COPY_SANITIZER_SCRIPT;
+}
+
 let copyNotice: HTMLDivElement | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 

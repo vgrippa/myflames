@@ -69,13 +69,15 @@ try {
     const host = document.createElement("div");
     const pre = document.createElement("pre");
     pre.textContent = "SELECT\u001b[201~ 1\u20282\r\n3";
+    const dash = document.createElement("pre");
+    dash.textContent = "SELECT 1--\u0085+2;";
     const field = document.createElement("input");
     field.type = "text";
     field.value = "a\u0007b";
     const pw = document.createElement("input");
     pw.type = "password";
     pw.value = "p\u001bw";
-    host.append(pre, field, pw);
+    host.append(pre, dash, field, pw);
     document.body.appendChild(host);
     const runCopy = (el) => {
       const dt = new DataTransfer();
@@ -87,6 +89,9 @@ try {
     sel.selectAllChildren(pre);
     const textCopy = runCopy(pre);
     sel.removeAllRanges();
+    sel.selectAllChildren(dash);
+    const dashCopy = runCopy(dash);
+    sel.removeAllRanges();
     field.focus({ preventScroll: true });
     field.setSelectionRange(0, field.value.length);
     const fieldCopy = runCopy(field);
@@ -95,9 +100,12 @@ try {
     const pwCopy = runCopy(pw);
     host.remove();
     window.scrollTo(0, 0);
-    return { textCopy, fieldCopy, pwCopy, violations };
+    return { textCopy, dashCopy, fieldCopy, pwCopy, violations };
   });
   assert.deepEqual(lessonClip.textCopy, { prevented: true, plain: "SELECT [201~ 1 2\n3" });
+  // The offset-aware rule: a control right after -- becomes _ so no line
+  // comment appears where the client did not see one (L2, in the frame too).
+  assert.deepEqual(lessonClip.dashCopy, { prevented: true, plain: "SELECT 1--_+2;" });
   assert.deepEqual(lessonClip.fieldCopy, { prevented: true, plain: "a b" });
   assert.deepEqual(lessonClip.pwCopy, { prevented: false, plain: "" });
   assert.deepEqual(lessonClip.violations, []);

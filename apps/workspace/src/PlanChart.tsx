@@ -12,6 +12,7 @@ import { api, safePreview, type Plan } from "./api";
 import { availableViews, mount, type ChartHandle } from "./charts";
 import type { MetricName } from "./charts/core/types";
 import { bindFrameAppearance, themeFrame } from "./charts/core/appearance";
+import { withFrameCopySanitizer } from "./clipboard";
 import { PlanStats } from "./PlanStats";
 import { MIN_WORKSPACE_WIDTH as BAR_MIN_WIDTH } from "./charts/bargraph";
 import { MIN_WORKSPACE_WIDTH as TREE_MIN_WIDTH } from "./charts/tree";
@@ -416,57 +417,6 @@ function NativeChart({
       />
     </>
   );
-}
-
-// Sandboxed srcdoc frames run with an opaque origin and CSP script-src 'unsafe-inline',
-// so they cannot import clipboard.ts. Inline the same synchronous copy listener.
-const FRAME_COPY_SANITIZER_SCRIPT = `<script>(function(){
-  var CONTROLS=/[\\0-\\x08\\x0b-\\x1f\\x7f-\\x9f\\u061c\\u200e\\u200f\\u2028-\\u202e\\u2066-\\u2069]/g;
-  function sanitize(text){
-    return String(text==null?"":text).replace(/\\r\\n/g,"\\n").replace(CONTROLS," ");
-  }
-  function isPasswordInput(node){
-    return typeof HTMLInputElement!=="undefined"&&node instanceof HTMLInputElement&&node.type==="password";
-  }
-  function isTextField(node){
-    return (typeof HTMLTextAreaElement!=="undefined"&&node instanceof HTMLTextAreaElement)||
-      (typeof HTMLInputElement!=="undefined"&&node instanceof HTMLInputElement);
-  }
-  function readFieldSelection(field){
-    if(isPasswordInput(field)) return null;
-    var start=null,end=null;
-    try{start=field.selectionStart;end=field.selectionEnd;}catch(_){return null;}
-    return typeof start==="number"&&typeof end==="number"&&end>start?field.value.slice(start,end):null;
-  }
-  function selectedText(event){
-    var target=event.target||null;
-    if(isPasswordInput(target)) return null;
-    if(isTextField(target)){
-      var fieldText=readFieldSelection(target);
-      if(fieldText!==null) return fieldText;
-    }
-    var sel=typeof window!=="undefined"&&window.getSelection?window.getSelection():null;
-    if(sel&&!sel.isCollapsed) return sel.toString();
-    var active=typeof document!=="undefined"?document.activeElement:null;
-    if(isPasswordInput(active)) return null;
-    if(isTextField(active)) return readFieldSelection(active);
-    return null;
-  }
-  document.addEventListener("copy",function(event){
-    if(!event||event.defaultPrevented||!event.clipboardData) return;
-    var raw=selectedText(event);
-    if(!raw) return;
-    var clean=sanitize(raw);
-    if(clean===raw) return;
-    event.clipboardData.setData("text/plain",clean);
-    event.preventDefault();
-  });
-})();</script>`;
-
-function withFrameCopySanitizer(html: string): string {
-  if (/<\/head\s*>/i.test(html)) return html.replace(/<\/head\s*>/i, (end) => FRAME_COPY_SANITIZER_SCRIPT + end);
-  if (/<\/body\s*>/i.test(html)) return html.replace(/<\/body\s*>/i, (end) => FRAME_COPY_SANITIZER_SCRIPT + end);
-  return html + FRAME_COPY_SANITIZER_SCRIPT;
 }
 
 /** Fallback for views the runtime does not draw yet: the /api/render page. */

@@ -113,7 +113,7 @@ export function SchemaExportSheet({ source, onOpenSql, onClose }: {
       status={copied}
       actions={<>
         <button type="button" className="button" disabled={!current} title={notReady || "Copy the script"}
-          onClick={() => { if (current && result) void copyToClipboardResult(result.script).then((res) => setCopied(res.ok ? copyFeedback("Copied.", res.removed) : "Select the text to copy it.")); }}>
+          onClick={() => { if (current && result) void copyToClipboardResult(result.script).then((res) => setCopied(res.ok ? copyFeedback("Copied.", res.removed, res.note) : "Select the text to copy it.")); }}>
           Copy script
         </button>
         <button type="button" className="button" disabled={!current} title={notReady || (result ? `Save ${result.filename}` : "")}
