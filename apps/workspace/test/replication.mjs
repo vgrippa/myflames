@@ -498,6 +498,31 @@ try {
   assert.equal(calls(START).length, 2, "a restored workspace never starts a loop");
   await h.savedSlow((s) => s.replication_loop_active !== true);
 
+  // S12 variant: a running loop on a typed (unsaved) connection stays named
+  // in a note ("not in a connection group") when switching to another server,
+  // with no action buttons and without saving the flag onto the other server.
+  const unsavedEp = endpoint(calls(STATUS).at(-1).body.connection);
+  registry.set(unsavedEp, [{ ...loopRunning, job_id: "job-unsaved-out" }]);
+  await page.reload({ waitUntil: "networkidle0" });
+  await h.view("replication");
+  await page.waitForSelector(`${view} .ops-loop[data-loop=running]`, { visible: true });
+  const archiveSwitchOpt = await connectionOption(page, "Archive");
+  await chooseConnection(page, archiveSwitchOpt);
+  await page.waitForFunction(() => /archive\.test/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  await page.waitForSelector(`${view} .ops-note`, { visible: true });
+  const unsavedNote = (await text(`${view} .ops-note`)).trim();
+  assert.match(unsavedNote, /which is not in a connection group\. Switch back to .* to check or stop it\./,
+    "unsaved out-of-scope loop shows 'not in a connection group' note");
+  assert.doesNotMatch(unsavedNote, /no longer/, "unsaved connection never says 'no longer'");
+  assert.equal(await page.$$eval(`${view} .ops-note button, ${view} .ops-note a`, (els) => els.length), 0,
+    "unsaved out-of-scope note has no buttons or links");
+  await h.savedSlow((s) => s.replication_loop_active !== true);
+  registry.clear();
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  await page.reload({ waitUntil: "networkidle0" });
+  await h.view("replication");
+  await page.locator('[aria-label="Replication sub-tabs"] button ::-p-text(Channels)').click();
+
   // A loop keeps its Stop after the connection's type changes (same endpoint),
   // persists its member profile id with replication_loop_active, and survives
   // View > Reload when the registry still holds it running.

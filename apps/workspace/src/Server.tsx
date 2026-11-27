@@ -90,6 +90,7 @@ import {
   connectionKey,
   connectionLabel,
   endpointKey,
+  keyGroupName,
   keyProfileId,
   lastViewRead,
   latestGeneration,
@@ -326,6 +327,8 @@ export function Server({
   columns: propColumns,
   onColumns: propOnColumns,
   profiles = [],
+  profilesLoaded = true,
+  profilesFailed = "",
 }: {
   /** The place on screen (or shown last, while another place is): Server and
    * Workload list their views; Tuning and Database diagram show their one
@@ -415,6 +418,9 @@ export function Server({
   onColumns?: (update: (all: Record<string, ColumnPrefs>) => Record<string, ColumnPrefs>) => void;
   /** Saved connections (no passwords): Maintenance's Clone fills its donor from one. */
   profiles?: Profile[];
+  /** Whether the saved-connections list has loaded cleanly (and any load error). */
+  profilesLoaded?: boolean;
+  profilesFailed?: string;
 }) {
   // Tuning (with its Full analysis tab) is a place of its own, never a view
   // chosen inside Server: an earlier session that saved either as the Server
@@ -1545,6 +1551,12 @@ export function Server({
   latestResolveMember.current = resolveMemberConnection;
   const latestProfiles = useRef(profiles);
   latestProfiles.current = profiles;
+  const latestProfilesStatus = useRef({ loaded: profilesLoaded, failed: profilesFailed });
+  latestProfilesStatus.current = { loaded: profilesLoaded, failed: profilesFailed };
+  const seenJobProfileGroups = useRef(new Set<string>());
+  for (const p of profiles) {
+    if ((p.group || "").trim()) seenJobProfileGroups.current.add(p.id);
+  }
   function resolveBoundConnection(boundKey: string, action: "Stop" | "Cancel"): { connection: Connection | null; reason: string } {
     const wanted = endpointKey(boundKey);
     if (endpointKey(connectionKey(latestConnection.current)) === wanted) {
@@ -1569,6 +1581,18 @@ export function Server({
       return {
         connection: null,
         reason: `Could not send ${action}: this saved connection's address, user, TLS or SSH settings changed since the ${kindWord} started.`,
+      };
+    }
+    if (latestProfilesStatus.current.failed) {
+      return {
+        connection: null,
+        reason: `Could not send ${action}: the saved connections list could not be read.`,
+      };
+    }
+    if (!latestProfilesStatus.current.loaded) {
+      return {
+        connection: null,
+        reason: `Could not send ${action}: the saved connections list has not loaded yet.`,
       };
     }
     const known = latestProfiles.current.find((p) => p.id === pid);
@@ -1652,6 +1676,58 @@ export function Server({
   }
   const MAINTENANCE_JOB_LABEL: Record<string, string> = { dump: "Dump", restore: "Restore", clone: "Clone" };
   const jobsHere = maintenanceJobsNow.filter((b) => jobActive(b.report));
+  // Running maintenance jobs whose member left the active group (or is outside
+  // scope): named in a status note, dropped only when the saved connection was
+  // deleted, never polled or cancelled from the note.
+  const outOfScopeJobsNote = useMemo(() => {
+    const profilesKnown = profilesLoaded && !profilesFailed;
+    const inScope = new Set(jobsHere.map((b) => `${b.key}:${b.report.id || ""}`));
+    const items: { id: string; op: string; name: string; group: string; hadGroup: boolean; listFailed: boolean }[] = [];
+    const seen = new Set<string>();
+    for (const b of maintenance.jobs) {
+      if (!jobActive(b.report)) continue;
+      if (inScope.has(`${b.key}:${b.report.id || ""}`) || endpointKey(b.key) === endpointKey(activeKey)) continue;
+      const pid = keyProfileId(b.key);
+      const p = pid ? profiles.find((item) => item.id === pid) : undefined;
+      if (pid && profilesKnown && !p) continue;
+      const dedupeKey = b.report.id ? `${endpointKey(b.key)}:${b.report.id}` : `${endpointKey(b.key)}:${b.report.operation}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      const listFailed = !!pid && !!profilesFailed;
+      items.push({
+        id: pid,
+        op: (MAINTENANCE_JOB_LABEL[b.report.operation] || b.report.operation).toLowerCase(),
+        name: p?.name || b.label || pid,
+        group: listFailed ? "" : (p ? (p.group || "").trim() : ""),
+        hadGroup: !!keyGroupName(b.key) || (!!pid && seenJobProfileGroups.current.has(pid)),
+        listFailed,
+      });
+    }
+    if (!items.length) return "";
+    if (items.length === 1) {
+      const j = items[0];
+      if (j.listFailed) {
+        return `A ${j.op} was running on ${j.name}, and the saved connections list could not be read to check its group. Open ${j.name} or retry loading saved connections to check or cancel it.`;
+      }
+      if (!j.group) {
+        return j.hadGroup
+          ? `A ${j.op} was running on ${j.name}, which is no longer in a connection group. Open ${j.name} to check or cancel it.`
+          : `A ${j.op} was running on ${j.name}, which is not in a connection group. ${j.id ? `Open ${j.name}` : `Switch back to ${j.name}`} to check or cancel it.`;
+      }
+      return `A ${j.op} was running on ${j.name} (group ${j.group}), which is outside the active connection's group. Switch to that connection or open its group to check or cancel it.`;
+    }
+    const labels = items.map((j) => `${j.op} on ${j.name}${j.group ? ` (group ${j.group})` : ""}`);
+    if (items.every((j) => j.listFailed)) {
+      return `Maintenance jobs were running (${labels.join(", ")}), and the saved connections list could not be read to check their group. Open those connections or retry loading saved connections to check or cancel them.`;
+    }
+    if (items.every((j) => !j.group && !j.listFailed && j.hadGroup)) {
+      return `Maintenance jobs were running (${labels.join(", ")}), which are no longer in a connection group. Open those connections to check or cancel them.`;
+    }
+    if (items.every((j) => !j.group && !j.listFailed && !j.hadGroup)) {
+      return `Maintenance jobs were running (${labels.join(", ")}), which are not in a connection group. Open those connections to check or cancel them.`;
+    }
+    return `Maintenance jobs were running (${labels.join(", ")}), which are outside the active connection's group. Switch to those connections or open their group to check or cancel them.`;
+  }, [maintenance.jobs, jobsHere, activeKey, profiles, profilesLoaded, profilesFailed]);
   // Poll maintenance jobs running on other group members (MaintenanceView
   // polls only the member on screen): registry only, no database login.
   const otherActiveJobs = useMemo(
@@ -2126,6 +2202,7 @@ export function Server({
                 />
               ))}
               {restoredOutsideNote && <p className="ops-note" role="status">{restoredOutsideNote}</p>}
+              {outOfScopeJobsNote && <p className="ops-note" role="status">{outOfScopeJobsNote}</p>}
               {jobsHere
                 .filter((b) => kind !== "maintenance" || endpointKey(b.key) !== endpointKey(activeKey))
                 .map((b) => {

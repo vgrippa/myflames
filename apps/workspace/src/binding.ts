@@ -98,6 +98,18 @@ export function keyProfileId(key: string): string {
   }
 }
 
+/** The group name a connectionKey() text was built with, or "". */
+export function keyGroupName(key: string): string {
+  try {
+    const parts: unknown = JSON.parse(key);
+    if (!Array.isArray(parts) || parts.length < 8) return "";
+    const n = parts.length;
+    return parts[n - 2] === "group" && typeof parts[n - 1] === "string" ? parts[n - 1] : "";
+  } catch {
+    return "";
+  }
+}
+
 /** "Production (app@db1:3306)", or "app@db1:3306" without a name; a
  * connection through SSH adds "via bastion". A Group connection (group_name)
  * shows its group label with the member's name ("Group connection mf-ic ·

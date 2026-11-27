@@ -37,7 +37,7 @@ globalThis.window = globalThis;
 globalThis.location = { hash: "", pathname: "/", search: "" };
 const { serverKind, normalizeLab, sameLab, sessionEdits: contentEdits, SessionSaver, SERVER_KINDS, columnLayouts, TABLE_IDS } = await bundle("../src/session.ts");
 const binding = await bundle("../src/binding.ts");
-const { connectionKey, connectionLabel } = binding;
+const { connectionKey, connectionLabel, keyGroupName } = binding;
 
 let passed = 0;
 function test(name, body) {
@@ -168,6 +168,10 @@ test("the connection key is the identity without the password", () => {
   assert.notEqual(connectionKey({ ...base, profile_id: "p1" }), key, "a saved connection is its own identity");
   assert.equal(connectionLabel(base), "Prod (app@db.prod:3306)");
   assert.equal(connectionLabel({ ...base, name: "" }), "app@db.prod:3306");
+  assert.equal(keyGroupName(key), "");
+  assert.equal(keyGroupName(connectionKey({ ...base, profile_id: "p1", group_name: "mf-nav" })), "mf-nav");
+  assert.equal(keyGroupName(connectionKey({ ...base, profile_id: "p1", type: "development", read_only: true, group_name: "mf-nav" })), "mf-nav");
+  assert.equal(keyGroupName(connectionKey({ ...base, profile_id: "p1", type: "development", read_only: true })), "");
 });
 
 test("comparing lab states never serializes the query text", () => {
