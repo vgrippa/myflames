@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = path.join(here, "../src");
@@ -45,6 +46,20 @@ for (const file of sources) {
 const main = await read("main.tsx");
 const firstImport = main.match(/^import[^;]*;/m)?.[0];
 assert.equal(firstImport, 'import "./styles";', "main.tsx imports styles.ts before anything else");
+assert.match(main, /^import "\.\/themes";$/m, "the startup theme listener stays eager, including late backend preferences");
+let themeListener;
+const themeRoot = { dataset: { theme: "dark" } };
+const themeCode = ts.transpileModule(await read("themes.ts"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
+}).outputText;
+new Function("require", "exports", "document", themeCode)(() => ({
+  subscribeUiPreferences: (listener) => { themeListener = listener; },
+}), {}, { documentElement: themeRoot });
+assert.equal(typeof themeListener, "function", "eager themes registers its preference listener at startup");
+themeListener({ theme: "system" });
+assert.equal(themeRoot.dataset.theme, undefined, "the backend's System answer clears a legacy painted theme");
+themeListener({ theme: "fire" });
+assert.equal(themeRoot.dataset.theme, "fire", "a late backend theme answer paints without loading Settings or the palette");
 
 // CodeMirror's value code is confined to QueryLab and its editor modules.
 const editorImports = /^\s*import\s+(type\s+)?([^;]*?)\s+from\s*["']([^"']+)["'];/gm;
@@ -110,6 +125,123 @@ for (const module of ["PlanScreen", "Teach"]) {
   assert.match(main, new RegExp(`const ${module} = lazyComponent\\(`),
     `main.tsx loads ${module} through lazyComponent`);
 }
+// The Import dialog and the skip-loop polling of restored workspaces and other
+// members are not first-paint code: both load dynamically (the dialog through
+// lazyComponent with a startup preload, the pollers on demand); the shell
+// guard above already rejects a static import of either.
+for (const module of ["ImportPlanDialog", "loopPolling"]) {
+  assert.ok(dynamicIn(main).includes(module), `main.tsx loads ${module} dynamically`);
+}
+assert.match(main, /const ImportDialog = lazyComponent\(loadImportDialog,/,
+  "main.tsx loads the Import dialog through lazyComponent");
+
+// Execute the real shell handlers with a rejected chunk loader. These tests
+// cover import failure and abort timing without a server or a browser cache.
+const syntax = ts.createSourceFile("main.tsx", main, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+function find(node, predicate) {
+  if (predicate(node)) return node;
+  return ts.forEachChild(node, (child) => find(child, predicate));
+}
+const effect = (marker) => {
+  const call = find(syntax, (node) => ts.isCallExpression(node) && node.expression.getText(syntax) === "useEffect" && node.arguments[0]?.getText(syntax).includes(marker));
+  assert.ok(call, `shell effect exists: ${marker}`);
+  return call.arguments[0].getText(syntax);
+};
+const execute = (text, env) => {
+  const js = ts.transpileModule(`(${text.replaceAll('import("./loopPolling")', 'loadLoopPolling()')})`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
+  }).outputText;
+  return new Function(...Object.keys(env), `return ${js}`)(...Object.values(env));
+};
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+const cell = (value) => ({ value, set(next) { this.value = typeof next === "function" ? next(this.value) : next; } });
+const connection = { profile_id: "p-other" };
+const endpoint = "other-endpoint";
+const stale = cell([]), loadFailed = cell(false), restored = cell(null), errors = cell({}), stopping = cell(null);
+const order = [];
+const env = {
+  AbortController,
+  ready: true, resetKey: 7, profilesLoaded: true, profilesFailed: false,
+  restoredOtherMembers: ["p-other"], restoredLoopForCurrent: false,
+  restoredMembersPolled: { current: -1 },
+  profilesRef: { current: [{ id: "p-other", name: "Other member" }] },
+  activeRef: { current: { id: "p-active" } }, seenProfileGroups: { current: new Set() },
+  loopMemberRequest: () => connection,
+  otherActiveLoopKeys: endpoint,
+  endpointKey: (key) => key, connectionKey: () => endpoint, connectionLabel: () => "Other member",
+  resolveBoundLoopConnection: () => ({ connection, reason: "" }),
+  publishReplicationLoops: () => order.push("publish"), syncLoopSession: () => {},
+  setPollerStaleEndpoints: stale.set.bind(stale), setLoopPollingFailed: loadFailed.set.bind(loadFailed),
+  setRestoredMembers: restored.set.bind(restored),
+  otherLoopStoppingRef: { current: new Set() },
+  setOtherLoopErrors: errors.set.bind(errors), setOtherLoopStopping: stopping.set.bind(stopping),
+  loadLoopPolling: () => Promise.reject(new Error("Simulated missing polling chunk")),
+  stopSkipLoop: async () => { order.push("stop"); },
+  readSkipLoops: async () => { order.push("read"); return { loops: [] }; },
+};
+for (const aborted of [false, true]) {
+  stale.value = [];
+  loadFailed.value = false;
+  const cleanup = execute(effect("m.startOtherLoopPoll"), env)();
+  if (aborted) cleanup();
+  await settle();
+  assert.deepEqual(stale.value, aborted ? [] : [endpoint], "failed polling imports mark affected endpoints stale unless aborted");
+  assert.equal(loadFailed.value, !aborted, "a failed import offers visible Reload unless the effect was cancelled");
+  cleanup();
+}
+for (const aborted of [false, true]) {
+  restored.value = null;
+  loadFailed.value = false;
+  env.restoredMembersPolled.current = -1;
+  const cleanup = execute(effect("m.pollRestoredMembers"), env)();
+  if (aborted) cleanup();
+  await settle();
+  assert.equal(loadFailed.value, !aborted);
+  if (!aborted) {
+    assert.deepEqual(restored.value.failedMembers, [{ id: "p-other", name: "Other member" }], "failed restore imports preserve the saved member and expose Status not refreshed");
+    assert.equal(restored.value.reset, 7, "a failed import resolves restore pending so later loop changes can sync");
+  } else assert.equal(restored.value, null, "an aborted load cannot overwrite a newer restore");
+  cleanup();
+  assert.equal(env.restoredMembersPolled.current, aborted ? -1 : 7);
+}
+for (const aborted of [false, true]) {
+  loadFailed.value = false;
+  const cleanup = execute(effect("m.startRestoreRetry"), { ...env, restoreRetrySpec: "|p-other" })();
+  if (aborted) cleanup();
+  await settle();
+  assert.equal(loadFailed.value, !aborted, "a failed restore-retry import also exposes Reload unless aborted");
+  cleanup();
+}
+const stopNode = find(syntax, (node) => ts.isVariableDeclaration(node) && node.name.getText(syntax) === "stopOtherLoop");
+const stopText = stopNode.initializer.arguments[0].getText(syntax);
+const stop = execute(stopText, env);
+await stop({ key: endpoint }, { job_id: "job" });
+assert.deepEqual(order, ["stop", "read", "publish"], "Stop is sent before status and works while the polling chunk is unavailable");
+assert.equal(stopping.value, null);
+env.stopSkipLoop = async () => { throw new Error("Stop could not be sent"); };
+await execute(stopText, env)({ key: endpoint }, { job_id: "job" });
+assert.match(errors.value[`${endpoint}:job`], /Could not send Stop/, "a failed Stop is visible on the member's banner");
+env.stopSkipLoop = async () => {};
+env.readSkipLoops = async () => { throw new Error("Status unavailable"); };
+await execute(stopText, env)({ key: endpoint }, { job_id: "job" });
+assert.match(errors.value[`${endpoint}:job`], /Stop sent, but status was not refreshed/, "a failed status read does not misreport a successful Stop");
+
+const polling = ts.createSourceFile("loopPolling.ts", await read("loopPolling.ts"), ts.ScriptTarget.Latest, true);
+const restoreNode = find(polling, (node) => ts.isFunctionDeclaration(node) && node.name?.text === "pollRestoredMembers");
+for (const exists of [false, true]) {
+  const calls = [];
+  const args = {
+    ...env, members: ["p-outside"], profiles: exists ? [{ id: "p-outside", name: "Outside", group: "elsewhere" }] : [],
+    activeId: "p-active", seenProfileGroups: new Set(), loopMemberRequest: () => null,
+    syncLoopSession: (...values) => calls.push(values),
+  };
+  const applied = await execute(restoreNode.getText(polling).replace(/^export /, ""), env)(args, new AbortController().signal);
+  assert.equal(applied, true, "an empty restore poll is complete and must never re-arm");
+  assert.deepEqual(calls, [[exists, exists ? ["p-outside"] : []]]);
+}
+assert.match(main, /className="notice loop-polling-error" role="alert"/, "polling import failures have a visible shell alert");
+assert.match(main, /Status not refreshed: skip-loop polling could not be loaded/);
+console.log("Failed polling imports, eager Stop, aborts and empty restores passed.");
 
 // The committed build: one stylesheet, and the entry chunk stays small.
 const assets = path.join(here, "../../../myflames/ui_assets");
@@ -120,12 +252,9 @@ if (html) {
   const entry = html.match(/<script type="module" crossorigin src="\/assets\/([^"]+\.js)"/)?.[1];
   assert.ok(entry, "index.html loads the entry chunk");
   const size = (await fs.stat(path.join(assets, "assets", entry))).size;
-  // 451,196 bytes after moving the Client tools dialog, the accounts API,
-  // the SQL highlighter, the Server-view shared components, the command
-  // palette, the sample plan text, the update-check controls and the
-  // connection-readiness module behind lazy chunks (3.5.2), down from
-  // 499,503. Home, the connections manager and the shell stay eager. The
-  // budget is the new size plus about 5% of headroom for release work.
+  // The 474,000-byte limit is a ceiling, not a target. Home, the connections
+  // manager, startup theme handling and the shell's Stop stay eager; the
+  // Import form and loop pollers stay lazy to preserve release headroom.
   // A place or view belongs in a lazy chunk.
   assert.ok(size < 474_000, `entry chunk ${entry} is ${size} bytes; keep places and views out of it (lazy.tsx)`);
 
