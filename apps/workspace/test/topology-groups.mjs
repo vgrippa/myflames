@@ -1081,6 +1081,12 @@ try {
   await setUiPreferences(page, { theme: "light" });
 
   const rsDetails = '.topology-map-node-details[aria-label="Details for nav-rs"]';
+  // Details is always shown without a hover-capable pointer (touch, and some
+  // headless runners report hover: none) and while focus is inside its card
+  // (focus returns to the card after Back), so clear focus first and expect
+  // the rest state the media query gives.
+  const canHover = await page.evaluate(() => matchMedia("(hover: hover)").matches);
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
   await page.hover(rsCard);
   await pause(180);
   const hoverOpacity = await page.$eval(rsDetails, (e) => getComputedStyle(e).opacity);
@@ -1088,7 +1094,8 @@ try {
   await page.hover(".topology-map-legend");
   await pause(180);
   const restOpacity = await page.$eval(rsDetails, (e) => getComputedStyle(e).opacity);
-  assert.equal(restOpacity, "0", "Details hides again when the pointer leaves");
+  assert.equal(restOpacity, canHover ? "0" : "1",
+    canHover ? "Details hides again when the pointer leaves" : "Details stays visible without a hover-capable pointer");
   // On touch (no hover) the Details button is always visible: the stylesheet
   // keeps a (hover: none) rule for it. (Headless Chrome does not emulate the
   // hover media feature, so the rule itself is what the test can prove.)
