@@ -886,7 +886,7 @@ function ClusterView({ connection, disabled, report: incomingBound, onReport, fa
                     onCancel={() => setSetForm(null)}
                     onReview={(action, parameters) => { setSetForm(null); start(action, parameters); }} />
                 )}
-                <ClusterSetMap cs={cs} onOpen={openCluster} />
+                <ClusterSetMap cs={cs} onOpen={openCluster} current={!stale} />
               </div>
             ) : cs && zoom ? (
               <div className="clusterset-zoom" key={`zoom-${zoom.name}`}>

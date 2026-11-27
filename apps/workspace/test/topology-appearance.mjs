@@ -210,10 +210,23 @@ try {
 
       h.state.fallback = { status: 200, body: clusterSet };
       await h.refresh();
-      await page.waitForSelector('.clusterset-link:not(.is-broken) .clusterset-arrow');
+      // The set level is ClusterSetMap's own root, outside .cluster-topology.
+      const setRoot = '.clusterset-map';
+      await page.waitForSelector(`${setRoot} .clusterset-link:not(.is-broken) .clusterset-arrow`);
       for (const scheme of ['light', 'dark']) {
         await setUiPreferences(page, { theme: scheme });
-        await assertStaleHasNoGlow(root, '.clusterset-link:not(.is-broken) .clusterset-arrow', `ClusterSet ${scheme}`);
+        await assertStaleHasNoGlow(setRoot, '.clusterset-link:not(.is-broken) .clusterset-arrow', `ClusterSet ${scheme}`);
+        // A failed refresh disables motion on the root without adding an
+        // .is-stale ancestor. Its intact arrows must also lose their halos.
+        assert.equal(await page.$eval(setRoot, e => e.dataset.motion), 'on', `ClusterSet ${scheme}: current report enables motion`);
+        await page.$eval(setRoot, e => { e.dataset.motion = 'off'; });
+        try {
+          const shadows = await page.$$eval(`${setRoot} .clusterset-link:not(.is-broken) .clusterset-arrow`, elements => elements.map(e => getComputedStyle(e).boxShadow));
+          assert.ok(shadows.length > 0, `ClusterSet ${scheme}: motion-off map keeps its arrows`);
+          assert.deepEqual(shadows, shadows.map(() => 'none'), `ClusterSet ${scheme}: motion-off map has no arrow halo`);
+        } finally {
+          await page.$eval(setRoot, e => { e.dataset.motion = 'on'; });
+        }
       }
       h.state.fallback = { status: 200, body: cluster };
       await h.refresh();

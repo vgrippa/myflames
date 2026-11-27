@@ -243,9 +243,12 @@ function ClusterCard({ c, onOpen }: { c: ClusterSetCluster; onOpen: (c: ClusterS
 
 /** The ClusterSet map: the set status line, the primary cluster, an arrow to
  * each replica cluster, and the stored Router configuration as plain lists. */
-export function ClusterSetMap({ cs, onOpen }: {
+export function ClusterSetMap({ cs, onOpen, current }: {
   cs: ClusterSet;
   onOpen: (c: ClusterSetCluster) => void;
+  /** The place's verdict that this report is the connection in use's current
+   * one; the arrows are lit only then (the liveness gate owns the rest). */
+  current: boolean;
 }) {
   const base = useId();
   const [setReasonOpen, setSetReasonOpen] = useState(false);
@@ -261,7 +264,7 @@ export function ClusterSetMap({ cs, onOpen }: {
   const routers = cs.routers || [];
   const routingTarget = cs.routing_options?.options?.target_cluster;
   return (
-    <section className="clusterset-map" aria-label={`InnoDB ClusterSet ${cs.name || ""}`.trim()}>
+    <section className="clusterset-map" data-motion={current ? "on" : "off"} aria-label={`InnoDB ClusterSet ${cs.name || ""}`.trim()}>
       <div className="clusterset-setline">
         <span className="cluster-row-label">ClusterSet {cs.name || "(unnamed)"}</span>
         {set && <ClusterMark tone={set.tone} label={set.word} title={cs.status_reason || undefined} />}
