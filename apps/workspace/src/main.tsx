@@ -95,7 +95,7 @@ const QueryLab = lazyComponent(() => import("./QueryLab").then((m) => m.QueryLab
 // Start loading it now, alongside sign-in and the session read, so it is
 // usually ready when the first screen renders.
 void QueryLab.preload().catch(() => {});
-void loadClip().then((m) => m?.installCopySanitizer());
+void loadClip(); // Every successful clipboard load installs its selection listener.
 const Server = lazyComponent(() => import("./Server").then((m) => m.Server));
 const ReplicationPlace = lazyComponent(() => import("./ReplicationPlace").then((m) => m.ReplicationPlace));
 const ClusterPlace = lazyComponent(() => import("./ClusterPlace").then((m) => m.ClusterPlace));

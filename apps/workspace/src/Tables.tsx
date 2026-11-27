@@ -7,7 +7,7 @@ import { copyNote, unsafeNamesReason } from "./sqlPasteSafety";
 // time; the why, the checks and the fix statements are in the inspector.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
-import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport, type TableInventoryRow } from "./api";
+import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport, type TableInventoryRow, type TableStatement } from "./api";
 import { CompactNumber, CopySql, RowActionMenu, SchemaPicker, bytes, count, engineLabel, useSchemaCatalog, type RowMenuItem } from "./PerfShared";
 import { uptime } from "./Health";
 import { useConnectionReads, type Bound } from "./binding";
@@ -64,7 +64,7 @@ function Status({ status }: { status: string }) {
   );
 }
 
-function Statements({ items, hint, names }: { items: { label: string; sql: string; template?: boolean }[]; hint: string; names?: string[] }) {
+function Statements({ items, hint, names }: { items: TableStatement[]; hint: string; names?: string[] }) {
   if (!items.length) return null;
   return (
     <>
@@ -72,7 +72,9 @@ function Statements({ items, hint, names }: { items: { label: string; sql: strin
       {items.map((x) => (
         <div key={x.sql}>
           <p className="tables-statement-label">{x.label}</p>
-          <CopySql sql={x.sql} label={x.label} names={names} />
+          {/* The report names every identifier the statement embeds (index and
+              column names included); without them, fall back to schema.table. */}
+          <CopySql sql={x.sql} label={x.label} names={x.names ?? names} />
         </div>
       ))}
     </>

@@ -2063,45 +2063,91 @@ lazily by `kit.tsx`'s `loadClip`, `copyToClipboard` and `DataTable`'s
 `copyWithFeedback` so the entry chunk stays within budget; if loading the
 clipboard chunk fails, `loadClip` resolves to `null` with no unhandled
 rejection, `copyToClipboard` returns `false`, and `copyWithFeedback` shows
-`Could not copy to clipboard`). At startup, `main.tsx` calls `loadClip()` and
-registers one document-level `copy` listener (`installCopySanitizer`) so manual
-selection copies (`Cmd+C`, `Ctrl+C`, **Edit** > **Copy**) outside CodeMirror
-(`.cm-editor` / `.cm-content`) also write sanitized `text/plain` when any
-character changes, leaving clean selections, password inputs and CodeMirror's
-own copy handling untouched. Every path runs one shared sanitizer
-(`sanitizeClipboardText`) before calling `navigator.clipboard.writeText`, the
-textarea `execCommand("copy")` fallback, or `clipboardData.setData`: only CRLF
-(`\r\n`) normalizes to LF (`\n`); TAB and LF stay; lone CR, Unicode line and
-paragraph separators (`U+2028`, `U+2029`), all other C0 controls, DEL
-(`U+007F`), C1 controls (`U+0080`–`U+009F`), and bidirectional controls and
-marks (`U+061C`, `U+200E`, `U+200F`, `U+202A`–`U+202E`, `U+2066`–`U+2069`) are
-each replaced with a single ASCII space (`U+0020`) rather than deleted or turned
-into line breaks, keeping SQL comment boundaries, TSV rows and JSON string
-literals intact. Every character replaced with a space is counted in `removed`
-(CRLF to LF normalization is not counted). When `removed > 0`, `copyFeedback`
-appends a plain-language count (for example
-`Copied. Removed 2 control characters.`) to the caller's status confirmation.
+`Could not copy to clipboard`). At startup, `main.tsx` calls `loadClip()` once
+and registers one document-level `copy` listener (`installCopySanitizer`) so
+manual selection copies (`Cmd+C`, `Ctrl+C`, **Edit** > **Copy**) outside
+CodeMirror (`.cm-editor` / `.cm-content`) also write sanitized `text/plain`
+via `clipboardData.setData` and `preventDefault()` when `clean !== raw` (with no
+status banner or toast), leaving clean selections, password inputs,
+already-prevented events, and selections touching CodeMirror (via event target,
+selection anchor/focus node, or active element) untouched; if the startup chunk
+load fails, `main.tsx` does not retry registration later. Because the three
+sandboxed `srcDoc` frames (`PlanChart.tsx` fallback `/api/render` chart frame,
+`Library.tsx` baseline comparison frame, `Teach.tsx` lesson frame) run with an
+opaque origin and `safePreview`'s CSP (`default-src 'none'; script-src
+'unsafe-inline'; ...`), they cannot import `clipboard.ts` and instead inject an
+inline `copy` listener (`withFrameCopySanitizer`) that enforces the same
+synchronous sanitization on selections and non-password form fields inside the
+frame. Every clipboard path runs the same sanitizer rules (`sanitizeClipboardText`)
+before calling `navigator.clipboard.writeText`, the textarea `execCommand("copy")`
+fallback, or `clipboardData.setData`: only CRLF (`\r\n`) normalizes to LF (`\n`);
+TAB (`\t`) and LF (`\n`) stay; lone CR (`\r`), all other C0 controls
+(`U+0000`–`U+0008`, `U+000B`–`U+001F`), DEL (`U+007F`), C1 controls
+(`U+0080`–`U+009F`), Unicode line and paragraph separators (`U+2028`, `U+2029`),
+and bidirectional controls and marks (`U+061C`, `U+200E`, `U+200F`,
+`U+202A`–`U+202E`, `U+2066`–`U+2069`) are each replaced with a single ASCII
+space (`U+0020`) rather than deleted or turned into line breaks, keeping SQL
+comment boundaries, TSV rows and JSON string literals intact. Every character
+replaced with a space is counted in `removed` (CRLF to LF normalization is not
+counted). When `removed > 0`, `copyFeedback` appends a plain-language count (for
+example `Copied. Removed 2 control characters.`) to button/menu status
+confirmations. File downloads (`download(...)`) are not passed through
+`sanitizeClipboardText`.
 
-A SQL copy a view builds from server-reported names (`Tables.tsx` Copy table
-name, Copy SELECT query and Copy SELECT COUNT(*); `Indexes.tsx` Copy index
-name and Copy DROP INDEX SQL; the named-statement copy in `PerfShared.tsx`)
-is offered only when every name the statement is built from passes the
-printable-ASCII-without-backslash allowlist (`sqlPasteSafety.isPasteSafeName`,
-the same rule as `privileges._UNSAFE_GRANT_SQL`): without a UTF-8 locale the
-mysql client's libedit line editor reads bytes `0x80`–`0xFF` as editing keys,
-and a backslash can start a client command. Otherwise the action is disabled
-with `unsafeNamesReason` as its reason. When copied SQL contains a mysql
-client command (`\!`, `\.`, `\G`, ...) outside strings, quoted identifiers and
-non-executable comments (`sqlPasteSafety.findMysqlClientCommand`, mirroring
-the client's `add_line` in `client/mysql.cc`; commands stay live inside
-executable `/*! ... */` and hint `/*+ ... */` comments, which the client still
-scans), the copy confirmation appends `clientCommandNote` naming the command
-and saying the mysql client would run it itself instead of sending it to the
-server (`copyNote` combines the base text and the note). Every copy of SQL
-that can hold server-controlled text appends the note: the statement copies
-above, `TableStructure.tsx` Copy CREATE TABLE, the `SchemaVersions.tsx`
-definition, source, target and script copies, the **Locks** `CopyCommand`
-(KILL and XA commands) and the **Compare servers** grants-export Copy.
+Name gating (`sqlPasteSafety.isPasteSafeName` / `unsafeNamesReason`, allowing
+only printable ASCII without backslash `^[\x20-\x5b\x5d-\x7e]*$`, matching
+`privileges._UNSAFE_GRANT_SQL`, because without a UTF-8 locale the mysql
+client's libedit line editor reads bytes `0x80`–`0xFF` as editing keys and a
+backslash can start a client command) is enforced only at callers that pass
+names: `Tables.tsx` row context menu copies (Copy table name, Copy SELECT
+query, Copy SELECT COUNT(*), checking `[schema, table]`) and `Tables.tsx`
+missing-primary-key / online-rebuild `CopySql` calls (checking `[schema, table]`
+only, not column or index names interpolated inside missing-PK statements), and
+`Indexes.tsx` row context menu (`Copy index name` on `[index]`; `Copy DROP INDEX
+SQL` / `Copy DROP PRIMARY KEY SQL` on `[schema, table, index]`) and unused-index
+`CopySql` calls (`[schema, table, index]`). Row-menu items disable via
+`disabled` + `hint`; `PerfShared.tsx` `CopySql` sets `aria-disabled` and opens
+`WhyDisabled` on click. Other `CopySql` callers (including `IndexSuggestion.tsx`
+and `ContextPanel.tsx` `ANALYZE TABLE` statements), `TableStructure.tsx`,
+`SchemaVersions.tsx`, `Locks.tsx` and `ServerCompare.tsx` do not run
+`unsafeNamesReason`.
+
+Client-command warning (`sqlPasteSafety.findMysqlClientCommand`,
+`clientCommandNote`, `copyNote`): when a wired SQL copy contains a short
+backslash command matching `\` plus one character in `CLIENT_COMMAND_CHARS`
+(`?!#.cCdeGghnPpqRrstTuWwx`, excluding `\N`), the copy confirmation appends
+`clientCommandNote` naming the first match and warning that the mysql client
+would run it itself instead of sending it to the server. It currently appears at:
+`Tables.tsx` row menu (`copyNote`), `Indexes.tsx` row menu (`copyNote`),
+`PerfShared.tsx` `CopySql` (all callers, including `Tables.tsx`, `Indexes.tsx`,
+`StatementInspector.tsx`, `ContextPanel.tsx`, `IndexSuggestion.tsx`,
+`SlowQueries.tsx`, `ProxySqlPlace.tsx`, `ReadysetPlace.tsx`, `Accounts.tsx`,
+`ImportCsv.tsx`, `Report.tsx`, `Tuning.tsx`, `Config.tsx`, `Waits.tsx` and
+`Instruments.tsx`), `TableStructure.tsx` Copy CREATE TABLE,
+`SchemaVersions.tsx` `CodeBlock` / `SplitDiff` / `SyncPanel` copies,
+`Locks.tsx` `CopyCommand` (KILL and XA commands), and `ServerCompare.tsx`
+grants-export Copy (`copyNote`). It does not appear on `SchemaExport.tsx`
+(`Copy script`), `QueryDigest.tsx` (`CodeBlock` / `DigestValue`),
+`PlanScreen.tsx` (`Copy SQL`), `ObjectChanges.tsx`, `Audit.tsx`, `Commands.tsx`
+(`Maintenance.tsx`, `Replication.tsx`, `ClusterPlace.tsx`, `WhyDisabled.tsx`,
+`ActionReview.tsx`, `RollingChangeSheet.tsx`), `ErrorLog.tsx`, `Library.tsx`
+evidence Copy, `ResultsPane.tsx`, `TableData.tsx` or `Download .sql` exports.
+`findMysqlClientCommand` is a lexical **warning heuristic, not a guarantee**:
+it scans for two-character backslash commands outside `'...'`, `"..."`,
+`` `...` ``, `$tag$...$tag$`, `#...`, `-- <ws>`, and plain `/* ... */`
+comments while continuing to scan inside `/*! ... */` and `/*+ ... */` comments,
+and has known limits: it does not detect long-form client commands (`source`,
+`system`, `delimiter`, etc.) or track `DELIMITER` changes; it assumes backslash
+escaping in `'...'` and `"..."` strings (missing commands after `\'` under
+`NO_BACKSLASH_ESCAPES`); it treats `$tag$...$tag$` (not preceded by
+`[A-Za-z0-9_]`) as dollar-quoted even when the target server does not support
+dollar quoting or `$` appears in identifiers such as `a$$$`; it treats `/*M!
+... */` MariaDB executable comments as plain block comments; inside `/*+ ... */`
+optimizer hints it still enters quote, `#` and `--` states even though the
+client does not; it tests `--` using JS `/\s/` (matching non-ASCII spaces such
+as `\u00A0`) rather than ASCII-only whitespace; and `CopySql` also runs it on
+option-file (`my.cnf`) snippets where Windows backslash paths can trigger a
+false warning.
 Contracts: `apps/workspace/test/sql-paste-safety-unit.mjs`.
 
 ### Reviewed actions and session ownership
@@ -7194,7 +7240,7 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
 - CLONE (MySQL only): `clone_preflight` (engine, version series, plugin on both, BACKUP_ADMIN donor, CLONE_ADMIN recipient or BACKUP_ADMIN with DATA DIRECTORY, platform and character set variables, collations, plugins, `max_allowed_packet`, `clone_valid_donor_list` containing the donor address, different servers; DATA DIRECTORY absolute and not under `@@datadir` as text, existence `not_checked` without a recipient-host probe because the server refuses an existing or in-datadir path before copying). `donor_address` (`--donor-address`) is the donor as the recipient reaches it, used in the statement and the donor-list check. The statement goes on the client's stdin (`clone_statement(..., redact=False)`), shown and audited redacted. Clone plans add `expect` with `donor` and `recipient` objects (`endpoint`, `connection_key`, `type`, `read_only`), `donor_address` and `require_ssl`, all included in the binding. The workspace evaluates both saved profiles with `dbops.connection_safety`; a read-only donor is allowed. Before sending a remembered donor password, it verifies negotiated TLS on the recipient connection. Start checks the reviewed pair before retrieving the saved donor password, and rejects TLS downgrades when the donor profile requires TLS. Both passwords are scrubbed from errors, audit records, logs and manifest free text. Progress: a second connection polls `performance_schema.clone_progress` (job `progress` percent and `detail`). In place: ERROR 3707 (no supervisor, the server shuts down) or a lost connection is expected; the job waits up to `restart_wait` (`--restart-wait`, default `RESTART_WAIT` 180 s) and then reads `clone_status`, tied to this clone by `BEGIN_TIME`, `SOURCE` and `DESTINATION` (the table keeps the previous clone's row); result `needs_restart` when it does not come back, `needs_verification` when the recipient account is refused (it now has the donor's accounts). GTID: donor `gtid_executed` at preflight against `clone_status.GTID_EXECUTED` (empty for DATA DIRECTORY clones, `not_checked`).
 - Jobs (`LifecycleJob`, `lifecycle-job-1.0`: `id, operation, state queued|running|done|failed|refused|cancelled, progress, detail, events[] (last 200), phase, elapsed_s, output, result {status, verification[], partial_state, cancel_error, audit_id}, error`): `progress` is a percent only when the tool printed one (MySQL Shell's `showProgress`); `phase` names the step in words (`LifecycleJob.step`, also a `status` event, never with a percent sign): the repeated preflight, reading the table list, counting rows, dumping with the tool, checksumming, counting again, writing the manifest, and for restore copying to staging, loading and verifying. `elapsed_s` counts from the start of the job and stops when it ends. `output` is set for SQL dumps only (`mysqldump`, `mariadb-dump`, which print no progress): `written_bytes` is the size of `dump.sql`, sampled from its file descriptor every 0.5 s while the tool runs and once after it ends, and `estimated_bytes` the sum of `DATA_LENGTH` of the dumped tables (`BASE TABLE`, and MariaDB's `SYSTEM VERSIONED`) (None when unknown or structure only). On MySQL 8.0.3 and later the sizes are read from the storage engine, not the information_schema cache, in one bounded call (`SET SESSION information_schema_stats_expiry=0` first: information_schema caches table sizes for a day by default and the variable is not settable with `SET_VAR`); on MariaDB, MySQL 5.7 or when that read fails, the catalog's sizes stand. The estimate only feeds a progress bar; the written size can end above or below it. tool output drained on threads, CR progress parsed, ANSI colors stripped, secrets redacted. Cancel: SIGTERM then SIGKILL to the process group (EPERM from a zombie group tolerated), and `KILL QUERY` on the session the job printed on its own stdout (marker line; mysqlsh's `print` needs an explicit line break). `partial_state` names what may remain. `LifecycleJobs` (the workspace's registry: two running at most, never two on one target, finished ones kept an hour, closed with the server). Shutdown: `LifecycleJobs.shutdown()` runs first in `WorkspaceServer.server_close`, before replication loops, table data, live jobs and editor sessions (whose cleanup can block on `KILL QUERY`). It refuses new jobs and preflight runners, cancels every running job and runner, starts `KILL QUERY` on threads with the session id read before the tool stops, sends SIGTERM to every tool process group and SIGKILL after 1 s, then gives jobs 1.5 s to write their audit record (cancelled, outcome unknown, as for Cancel); `close()` finishes the rest. `ToolGroups` lists a tool's process group from just after it starts until the group is gone. Tools start through `ToolGroups.start`, serialized with shutdown (`close_spawning`): a tool being started is listed before shutdown's snapshot, and none starts afterwards. With `MYFLAMES_TOOL_GROUPS_FILE` (set only by the desktop app, in a 0700 directory it owns; a missing or shared directory refuses startup with exit 2) the list is also kept in an owner-only `tool-groups-1.0` file (`{"schema_version", "groups"}`), written before the launch line, replaced atomically and kept (empty) after a clean close. When it cannot be rewritten it is removed, so it never names a group that may have ended, and the desktop treats a missing file after launch as unconfirmed; a tool whose group cannot be recorded is stopped at once and reported as cancelled. Shell dryRun and upgrade check tools run under `LifecycleJobs.runner()`, so shutdown stops them too.
 - Writes: dump, restore and clone are `risky` for `dbops.decide` (a read-only connection refuses, Production and Development confirm). CLI: policy from `--profile` before any prompt or connection; plan and commands on stderr; dump asks `[y/N]`, restore and clone ask to type the target; non-TTY needs `--yes` (plus `--confirm-target TARGET` for restore and clone); `--preflight` prints the plan (exit 0 ready, 1 not); Ctrl+C cancels the job. Exit 0 completed, 1 a started job failed, was cancelled or was not verified, 2 an unsent refusal, decline, bad input or connection failure. Failed-job text names the reason once in the operation heading, omits duplicate or empty `not_checked operation` rows and repeated status words, and retains distinct verification and partial-state guidance; JSON evidence is unchanged. UI: `POST /api/lifecycle/start` (`operation`, `plan`, `typed_target`, `confirmed: true`, `connection`, and `donor` for clone) is in `ui._WRITE_PATHS`: `dbops.gate` first (refused envelope with `audit_id`), then saved passwords (`connection.profile_id`, `donor.profile_id`), then the job; `POST /api/lifecycle/status` and `/api/lifecycle/cancel` take `id` and `connection`. Every attempt has an `AuditTrail` record (`surface` cli or ui; refused, declined, `unknown` after a cancel, `ok` or `error`). `POST /api/lifecycle/jobs` (`connection`; `lifecycle-jobs-1.0`, `_lifecycle_jobs_response`) lists the jobs this workspace holds for the connection's endpoint (`dbops.identity_endpoint`, recorded by `_lifecycle_add` before the job starts and dropped when `LifecycleJobs` lets the job go; `_lifecycle_add` also prunes `_lifecycle_owners` entries whose job ID is no longer in `workspace.lifecycle.jobs`); it opens no connection and starts nothing (`test/test_lifecycle_cli.py`). Status and cancel check this same owner before looking up or cancelling a job and return “No such job.” for missing, expired or mismatched jobs. They open no connection and read no saved password. A change to type or read-only preserves access to the original job.
-- Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone. Tools are detected on open through `useOpenRead` (`lifecycle/tools` without `check_updates`; successful version probes use the shared identity-keyed cache without a time limit); the view's Refresh is labeled **Detect again** and shows only on **Tools**; **Check for updates** sends `check_updates: true`. **Used for this server** shows the role selections with program, version, origin and reason; **Change…** opens the same dialog as **Settings > Client tools…**. The table lists every copy with **From**, **Path** and **Used**, and selects rows by path so copies of one program keep distinct inspectors. The review uses the same `toolUseLine` as the dialog; the Dump tool choice names the selected program, version and origin, or the Shell version for Automatic. These are separate from the dialog's **Detect again**, which sends `refresh: true` to `/api/client/tools`. Start dump…, Start restore… and Start clone… run the preflight (it only reads) and open the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s). Failed checks show under the button with a Next step (Choose another folder…, Review fields, Remove <table> from the selection); passed ones fold into a details line. A preflight error clears the old plan; after a field changes, the old checks are labeled as the last preflight's and the planned commands are hidden. Dump's Output folder is suggested (`OpsShared.suggestDumpFolder`: `dumpFolderStem` of the database or connection plus the local date, in the backend reply's `default_dump_parent`, or the last dump's parent when this window already started a dump, `-2`, `-3` past names already listed or reserved this session; never over a typed path); Browse… picks the parent. The dump confirmation is primary-toned (policy, review token and audit unchanged), names its Contents and shows non-routine warnings first. A restore plan with `required_acknowledgement` needs its own checkbox; the workspace sends that exact string as `typed_acknowledgement` only when checked, and `lifecycle.restore_job` compares it with the fresh plan's; Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. A job card (`JobProgress`) shows a bar from `lifecycleProgress`: determinate on the tool's `progress`, else an estimated "≈N%" from `output.written_bytes` over `output.estimated_bytes` (capped at 99, with a title saying it is estimated from table sizes), else indeterminate (also once the written size passes the estimate: "X written, more than the Y estimate"). Under it one facts line: the `phase` while it runs, the bytes written (of about the estimate), a rate from two snapshots on the job's own clock (`elapsed_s`), and "Elapsed m:ss" ("Completed in m:ss" when done). The last log line shows only when it differs from the phase. While a job runs on the connection, the actions row shows `JobSummary` beside the disabled Start button ("Dump running · ≈46% · 120.0 MiB", Show progress); after Start (and after a lost reply is found in the job list) the view switches to the job's task and scrolls to and focuses its card (no smooth scroll under reduced motion). Every job stays mounted across task switches so completion is noticed. A completed dump (`state` done, `result.status` completed) has Open in Finder / Open in File Explorer / Open folder, which reveals `<result.directory>/myflames-manifest.json` through `files/local/reveal` (the dump folder opens with its manifest selected; nothing is run); a dump this mounted view started opens it once by itself (`autoRevealDump`: claimed before the request, never retried by rendering, never for adopted, failed or cancelled jobs, restore or clone, and never on Windows, where File Explorer's `/select,` argument splits a path at commas: security open lead 17). The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
+- Workspace UI (`Maintenance.tsx`, Server > Setup): Tools, Upgrade check (MySQL Shell, or the labeled partial check), Dump, Restore, Clone. Tools are detected on open through `useOpenRead` (`lifecycle/tools` without `check_updates`; successful version probes use the shared identity-keyed cache without a time limit); the view's Refresh is labeled **Detect again** and shows only on **Tools**; **Check for updates** sends `check_updates: true`. **Used for this server** shows the role selections with program, version, origin and reason; **Change…** opens the same dialog as **Settings > Client tools…**. The table lists every copy with **From**, **Path** and **Used**, and selects rows by path so copies of one program keep distinct inspectors. The review uses the same `toolUseLine` as the dialog; the Dump tool choice names the selected program, version and origin, or the Shell version for Automatic. These are separate from the dialog's **Detect again**, which sends `refresh: true` to `/api/client/tools`. Start dump…, Start restore… and Start clone… run the preflight (it only reads) and open the confirmation only when `ready` (target, exact commands, warnings, checks; restore and clone type the target; stale after `PREFLIGHT_TTL_MS`, 60 s). For SQL dump and restore tools (`mysqldump`, `mariadb-dump`, `mysql`, `mariadb`), `lifecycle.py` formats the displayed commands with `shlex.quote` and appends a warning noting POSIX shell syntax (on Windows, naming a POSIX shell such as WSL or Git Bash rather than Command Prompt), and `Maintenance.tsx` labels both **Planned commands** and **Exact commands** as POSIX shell commands (adding the WSL/Git Bash note when `WINDOWS` is true). Failed checks show under the button with a Next step (Choose another folder…, Review fields, Remove <table> from the selection); passed ones fold into a details line. A preflight error clears the old plan; after a field changes, the old checks are labeled as the last preflight's and the planned commands are hidden. Dump's Output folder is suggested (`OpsShared.suggestDumpFolder`: `dumpFolderStem` of the database or connection plus the local date, in the backend reply's `default_dump_parent`, or the last dump's parent when this window already started a dump, `-2`, `-3` past names already listed or reserved this session; never over a typed path); Browse… picks the parent. The dump confirmation is primary-toned (policy, review token and audit unchanged), names its Contents and shows non-routine warnings first. A restore plan with `required_acknowledgement` needs its own checkbox; the workspace sends that exact string as `typed_acknowledgement` only when checked, and `lifecycle.restore_job` compares it with the fresh plan's; Cancel and Escape call `audit/declined`. Frontend callers must send the original `connection` on every status and cancel request, and show both `plan.expect.donor.endpoint` and `plan.expect.recipient.endpoint` with their policy when confirming clone. Jobs are polled while they run and bound to their connection (greyed after a switch). On open, and after a Start whose reply failed, the view reads `lifecycle/jobs` and adopts what it finds, so a reload or a lost reply never sends Start twice. A job card (`JobProgress`) shows a bar from `lifecycleProgress`: determinate on the tool's `progress`, else an estimated "≈N%" from `output.written_bytes` over `output.estimated_bytes` (capped at 99, with a title saying it is estimated from table sizes), else indeterminate (also once the written size passes the estimate: "X written, more than the Y estimate"). Under it one facts line: the `phase` while it runs, the bytes written (of about the estimate), a rate from two snapshots on the job's own clock (`elapsed_s`), and "Elapsed m:ss" ("Completed in m:ss" when done). The last log line shows only when it differs from the phase. While a job runs on the connection, the actions row shows `JobSummary` beside the disabled Start button ("Dump running · ≈46% · 120.0 MiB", Show progress); after Start (and after a lost reply is found in the job list) the view switches to the job's task and scrolls to and focuses its card (no smooth scroll under reduced motion). Every job stays mounted across task switches so completion is noticed. A completed dump (`state` done, `result.status` completed) has Open in Finder / Open in File Explorer / Open folder, which reveals `<result.directory>/myflames-manifest.json` through `files/local/reveal` (the dump folder opens with its manifest selected; nothing is run); a dump this mounted view started opens it once by itself (`autoRevealDump`: claimed before the request, never retried by rendering, never for adopted, failed or cancelled jobs, restore or clone, and never on Windows, where File Explorer's `/select,` argument splits a path at commas: security open lead 17). The session keeps only `slow.maintenance_section`; the donor password stays in the page. Browser suite `apps/workspace/test/maintenance.mjs`.
 - Not wired to the CLI or UI yet: `prepare_physical_backup` / `physical_backup_job` (MariaDB `mariadb-backup --backup` then `--prepare`, only with a matching local socket and an explicit same-host confirmation); `clone` on MariaDB prints the `mariadb-backup` steps instead.
 
 ### Replication: status, skip, skip-loop

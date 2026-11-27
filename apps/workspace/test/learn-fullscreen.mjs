@@ -62,6 +62,45 @@ try {
   // Embedded, the lesson's own Full screen button gives way to the workspace's.
   assert.equal(await frame.$eval("#btn-fullscreen", (el) => getComputedStyle(el).display), "none");
   assert.equal(await frame.$eval("#btn-details", (el) => getComputedStyle(el).display), "none");
+  // Sandboxed lesson frame sanitizes manual selection copies synchronously.
+  const lessonClip = await frame.evaluate(() => {
+    const violations = [];
+    document.addEventListener("securitypolicyviolation", (ev) => violations.push(ev.violatedDirective));
+    const host = document.createElement("div");
+    const pre = document.createElement("pre");
+    pre.textContent = "SELECT\u001b[201~ 1\u20282\r\n3";
+    const field = document.createElement("input");
+    field.type = "text";
+    field.value = "a\u0007b";
+    const pw = document.createElement("input");
+    pw.type = "password";
+    pw.value = "p\u001bw";
+    host.append(pre, field, pw);
+    document.body.appendChild(host);
+    const runCopy = (el) => {
+      const dt = new DataTransfer();
+      const ev = new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: dt });
+      el.dispatchEvent(ev);
+      return { prevented: ev.defaultPrevented, plain: dt.getData("text/plain") };
+    };
+    const sel = window.getSelection();
+    sel.selectAllChildren(pre);
+    const textCopy = runCopy(pre);
+    sel.removeAllRanges();
+    field.focus({ preventScroll: true });
+    field.setSelectionRange(0, field.value.length);
+    const fieldCopy = runCopy(field);
+    pw.focus({ preventScroll: true });
+    pw.setSelectionRange(0, pw.value.length);
+    const pwCopy = runCopy(pw);
+    host.remove();
+    window.scrollTo(0, 0);
+    return { textCopy, fieldCopy, pwCopy, violations };
+  });
+  assert.deepEqual(lessonClip.textCopy, { prevented: true, plain: "SELECT [201~ 1 2\n3" });
+  assert.deepEqual(lessonClip.fieldCopy, { prevented: true, plain: "a b" });
+  assert.deepEqual(lessonClip.pwCopy, { prevented: false, plain: "" });
+  assert.deepEqual(lessonClip.violations, []);
 
   // Fit: the lesson fills the window under the toolbar exactly, and the stage
   // drawing is never taller than the frame; toolbar and drawing fit together.

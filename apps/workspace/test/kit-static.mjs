@@ -211,6 +211,28 @@ try {
     clip.sanitizeClipboardText('\x1b[201~DROP TABLE t;\x9b2J\u202e\x00\x07'),
     { text: ' [201~DROP TABLE t; 2J   ', removed: 5 },
   );
+  // L2: a non-ASCII control after -- was not ASCII whitespace in the UTF-8
+  // client. Replacing it with a space would newly hide the following text.
+  const highControls = [
+    ...Array.from({ length: 0x20 }, (_, i) => String.fromCodePoint(0x80 + i)),
+    '\u2028', '\u2029', ...bidiReplaced,
+  ];
+  for (const ch of highControls) {
+    const label = `L2 U+${ch.codePointAt(0).toString(16)}`;
+    assert.deepEqual(clip.sanitizeClipboardText(`SELECT 1 --${ch}\\! x`),
+      { text: 'SELECT 1 --_\\! x', removed: 1 }, `${label}: no new line comment`);
+    assert.deepEqual(clip.sanitizeClipboardText(`SELECT 1 -- ${ch}\\! x`),
+      { text: 'SELECT 1 --  \\! x', removed: 1 }, `${label}: existing line comment retained`);
+    assert.deepEqual(clip.sanitizeClipboardText(`a${ch}b`), { text: 'a b', removed: 1 }, `${label}: ordinary replacement is a space`);
+  }
+  assert.deepEqual(clip.sanitizeClipboardText('--\u0085\u2028\\! x'), { text: '--_ \\! x', removed: 2 },
+    'L2: only the replacement immediately after -- becomes an underscore');
+  for (const ch of ['\x00', '\x01', '\x1b', '\r', '\x7f']) {
+    assert.deepEqual(clip.sanitizeClipboardText(`--${ch}x`), { text: '-- x', removed: 1 },
+      `L2: ASCII control U+${ch.codePointAt(0).toString(16)} stays a space`);
+  }
+  assert.deepEqual(clip.sanitizeClipboardText('--\u00a0\\! x'), { text: '--\u00a0\\! x', removed: 0 },
+    'L2: non-control non-ASCII text remains intact');
   // CP1 abuse cases: comment boundaries stay intact (no new */, no new line
   // break, no "--" losing its separating space, no new "--" or "/*"), every
   // replacement counted, and sanitization is idempotent.
@@ -223,7 +245,7 @@ try {
     ['rlm_glue', 'SELECT SLEEP(30) /* *\u200f/ ; DROP DATABASE prod; -- */', 'SELECT SLEEP(30) /* * / ; DROP DATABASE prod; -- */', 1],
     ['dashdash_ctrl', 'SELECT 1 --\x01; DROP DATABASE prod;', 'SELECT 1 -- ; DROP DATABASE prod;', 1],
     ['dashdash_cr', 'SELECT 1 --\r; DROP DATABASE prod;', 'SELECT 1 -- ; DROP DATABASE prod;', 1],
-    ['dashdash_lrm', 'SELECT 1 --\u200e; DROP DATABASE prod;', 'SELECT 1 -- ; DROP DATABASE prod;', 1],
+    ['dashdash_lrm', 'SELECT 1 --\u200e; DROP DATABASE prod;', 'SELECT 1 --_; DROP DATABASE prod;', 1],
     ['dash_glue', 'SELECT 1 -\x01- x', 'SELECT 1 - - x', 1],
     ['slash_star_open_glue', 'SELECT 1 /\x01* x', 'SELECT 1 / * x', 1],
     ['ls_in_line_comment', 'SELECT 1 -- \u2028; DROP DATABASE prod;\u2028', 'SELECT 1 --  ; DROP DATABASE prod; ', 2],
@@ -238,7 +260,7 @@ try {
       assert.equal(res.text.indexOf('*/'), res.text.length - 2, `${label}: no premature */ created`);
     }
     if (input.includes('--')) {
-      assert.doesNotMatch(res.text, /--(?![ \n])/, `${label}: -- keeps separating space`);
+      assert.doesNotMatch(res.text, /--(?![ _\n])/, `${label}: -- preserves its whitespace or non-whitespace boundary`);
     }
     assert.deepEqual(clip.sanitizeClipboardText(res.text), { text: expected, removed: 0 }, `${label}: idempotent`);
   }
@@ -288,12 +310,28 @@ try {
       value: { clipboard: { writeText: async (value) => { written.push(value); } } },
     });
     const res1 = await clip.copyToClipboardResult('SELECT\t1\r\n-- \x1b[31mhi\u202e');
-    assert.deepEqual(res1, { ok: true, text: 'SELECT\t1\n--  [31mhi ', removed: 2 });
+    assert.deepEqual(res1, { ok: true, text: 'SELECT\t1\n--  [31mhi ', removed: 2, note: '' });
     assert.equal(written.at(-1), 'SELECT\t1\n--  [31mhi ');
     assert.equal(await clip.copyToClipboard('ok\x00\x9b'), true);
     assert.equal(written.at(-1), 'ok  ');
     assert.equal(await kit.copyToClipboard('via\x1bkit\u202e'), true);
     assert.equal(written.at(-1), 'via kit ');
+    // Every caller receives the command note with the result, even callers
+    // that do not precompute copyNote. Feedback adds an existing note once.
+    const commandResult = await clip.copyToClipboardResult('SELECT 1 --\u0085\\! touch /tmp/x');
+    assert.equal(commandResult.text, 'SELECT 1 --_\\! touch /tmp/x');
+    assert.equal(commandResult.removed, 1);
+    assert.match(commandResult.note, /mysql client command \(\\!\)/);
+    const universalFeedback = clip.copyFeedback('Copied query', commandResult.removed, commandResult.note);
+    assert.match(universalFeedback, /^Copied query\. Removed 1 control character\./);
+    assert.equal(universalFeedback.split('Note:').length - 1, 1, 'M1: unannotated caller gets one command warning');
+    const annotatedFeedback = clip.copyFeedback(`Copied query.${commandResult.note}`, commandResult.removed, commandResult.note);
+    assert.equal(annotatedFeedback.split('Note:').length - 1, 1, 'M1: preannotated caller never gets a duplicate note');
+    assert.match(annotatedFeedback, /Removed 1 control character/);
+    const namedResult = await clip.copyToClipboardResult('CREATE TABLE t (i INT);\nsource /tmp/payload.sql');
+    assert.match(namedResult.note, /mysql client command/);
+    assert.match(clip.copyFeedback('Copied', 0, namedResult.note), /Note:/,
+      'M1: warning appears even with zero character replacements');
     // Fallback textarea path also receives sanitized text only and restores focus.
     const fallbackValues = [];
     let focusRestored = null;
@@ -312,7 +350,8 @@ try {
       value: {
         activeElement: new FakeElement(),
         body: { appendChild(el) { fallbackValues.push(el.value); } },
-        createElement() {
+        createElement(tag) {
+          if (tag === 'div') throw new Error('status DOM unavailable');
           return { value: '', style: {}, setAttribute() {}, select() {}, remove() {} };
         },
         execCommand(cmd) { return cmd === 'copy'; },
@@ -320,9 +359,13 @@ try {
     });
     try {
       const res2 = await clip.copyToClipboardResult('a\r\nb\x1b[201~\x01');
-      assert.deepEqual(res2, { ok: true, text: 'a\nb [201~ ', removed: 2 });
+      assert.deepEqual(res2, { ok: true, text: 'a\nb [201~ ', removed: 2, note: '' });
       assert.equal(fallbackValues.at(-1), 'a\nb [201~ ');
       assert.deepEqual(focusRestored, { preventScroll: true });
+      const fallbackCommand = await clip.copyToClipboardResult('SELECT 1 \\G');
+      assert.equal(fallbackCommand.ok, true);
+      assert.match(fallbackCommand.note, /mysql client command \(\\G\)/,
+        'M1: fallback path retains the shared command note');
     } finally {
       if (htmlElementDescriptor) Object.defineProperty(globalThis, 'HTMLElement', htmlElementDescriptor);
       else delete globalThis.HTMLElement;
@@ -330,7 +373,7 @@ try {
     // No clipboard and no document fails cleanly without throwing.
     delete globalThis.document;
     const res3 = await clip.copyToClipboardResult('a\x00b');
-    assert.deepEqual(res3, { ok: false, text: 'a b', removed: 1 });
+    assert.deepEqual(res3, { ok: false, text: 'a b', removed: 1, note: '' });
     assert.equal(await clip.copyToClipboard('a\x00b'), false);
 
     // CP10: document-level selection copy listener sanitizes selections outside
@@ -392,13 +435,28 @@ try {
       assert.equal(onCopy(evClean), false);
       assert.equal(evClean.defaultPrevented, false);
       assert.equal(evClean.data.size, 0);
-      // CodeMirror selection is skipped (both target and anchorNode checks).
+      // CodeMirror-owned copy events remain untouched, so its editor handler
+      // can preserve its own selection/formatting rules.
       const cmEl = new FakeDomElement('cm-editor cm-content');
       currentSel = { isCollapsed: false, anchorNode: { parentElement: cmEl }, focusNode: { parentElement: cmEl }, toString: () => probePayload };
       const evCm = makeCopyEvent(cmEl);
       assert.equal(onCopy(evCm), false);
       assert.equal(evCm.defaultPrevented, false);
       assert.equal(evCm.data.size, 0);
+      // A document selection spanning into or out of the editor is still a
+      // manual page selection. Neither endpoint may disable sanitization.
+      for (const [anchor, focus] of [[preEl, cmEl], [cmEl, preEl]]) {
+        currentSel = { isCollapsed: false, anchorNode: { parentElement: anchor }, focusNode: { parentElement: focus }, toString: () => probePayload };
+        for (const target of [preEl, cmEl]) {
+          const evMixed = makeCopyEvent(target);
+          assert.equal(onCopy(evMixed), true, 'L1: cross-editor page selection is sanitized even when its target is CodeMirror');
+          assert.equal(evMixed.defaultPrevented, true);
+          assert.equal(evMixed.data.get('text/plain'), ev1.data.get('text/plain'));
+        }
+        const evMixedPrevented = makeCopyEvent(cmEl, true);
+        assert.equal(onCopy(evMixedPrevented), false, 'L1: an editor-owned prevented event remains untouched');
+        assert.equal(evMixedPrevented.data.size, 0);
+      }
       // Already prevented events are left untouched.
       currentSel = { isCollapsed: false, anchorNode: { parentElement: preEl }, focusNode: { parentElement: preEl }, toString: () => probePayload };
       const evPrevented = makeCopyEvent(preEl, true);
@@ -456,8 +514,175 @@ try {
       assert.equal(await brokenKit.copyToClipboard('SELECT 1'), false, 'CP5: copyToClipboard returns false on chunk failure');
       await new Promise((r) => setImmediate(r));
       assert.deepEqual(unhandled, [], 'CP5: no unhandled rejections when clipboard chunk fails to load');
+      // L1: a failed startup preload must not permanently skip listener
+      // installation. Once the import can succeed, loadClip owns installing it.
+      assert.equal((listeners.get('copy') || []).length, 0, 'L1: failed imports installed no listener');
+      await writeFile(missingClip, clipBundle.outputFiles[0].text);
+      const recoveredClip = await brokenKit.loadClip();
+      assert.ok(recoveredClip, 'L1: later successful import recovers after preload failure');
+      try {
+        assert.equal((listeners.get('copy') || []).length, 1, 'L1: first successful load installs the listener');
+        await Promise.all([brokenKit.loadClip(), brokenKit.loadClip(), brokenKit.loadClip()]);
+        assert.equal((listeners.get('copy') || []).length, 1, 'L1: repeated successful loads keep one listener');
+      } finally {
+        recoveredClip.installCopySanitizer()();
+      }
     } finally {
       process.off('unhandledRejection', onUnhandled);
+    }
+
+    // M1: shared command warnings reach callers of both clipboard helpers.
+    // This small DOM records visible status content, and fake timers keep the
+    // status lifetime deterministic without leaving any real timers running.
+    const statusDescriptors = new Map(['document', 'navigator', 'window', 'HTMLElement', 'HTMLTextAreaElement', 'setTimeout', 'clearTimeout']
+      .map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    const statusNodes = new Set();
+    const statusTimers = new Map();
+    let nextTimer = 0;
+    let selectionText = '';
+    let appendedNotices = 0;
+    class StatusElement {
+      constructor(tag) { this.tagName = tag; this.style = {}; this.attributes = new Map(); this.textContent = ''; }
+      setAttribute(key, value) { this.attributes.set(key, value); }
+      select() { this.selectionStart = 0; this.selectionEnd = this.value?.length ?? 0; }
+      remove() { statusNodes.delete(this); }
+    }
+    const statusDocument = {
+      activeElement: null,
+      body: { appendChild(node) { statusNodes.add(node); if (node.id === 'myflames-copy-notice') appendedNotices++; } },
+      createElement(tag) { return new StatusElement(tag); },
+      addEventListener() {},
+      removeEventListener() {},
+      execCommand() { return false; },
+    };
+    const successfulNavigator = { clipboard: { writeText: async () => {} } };
+    const defineStatusGlobal = (key, value) => Object.defineProperty(globalThis, key, { configurable: true, value });
+    const visibleNotices = () => [...statusNodes].filter((node) => node.id === 'myflames-copy-notice');
+    const expireNotices = () => {
+      for (const [id, { callback }] of statusTimers) {
+        statusTimers.delete(id);
+        callback();
+      }
+    };
+    defineStatusGlobal('document', statusDocument);
+    defineStatusGlobal('navigator', successfulNavigator);
+    defineStatusGlobal('HTMLElement', StatusElement);
+    defineStatusGlobal('HTMLTextAreaElement', StatusElement);
+    defineStatusGlobal('window', { getSelection: () => ({
+      isCollapsed: false, anchorNode: null, focusNode: null, toString: () => selectionText,
+    }) });
+    defineStatusGlobal('setTimeout', (callback, delay) => {
+      const id = ++nextTimer;
+      statusTimers.set(id, { callback, delay });
+      return id;
+    });
+    defineStatusGlobal('clearTimeout', (id) => statusTimers.delete(id));
+    try {
+      assert.equal((await clip.copyToClipboardResult('SELECT 1')).ok, true);
+      assert.equal(visibleNotices().length, 0, 'M1: ordinary successful copies create no command warning');
+      const direct = await clip.copyToClipboardResult('SELECT 1 --\u0085\\! touch /tmp/x');
+      assert.equal(direct.ok, true);
+      assert.equal(visibleNotices().length, 1, 'M1: direct result helper displays the command warning');
+      const directNotice = visibleNotices()[0];
+      assert.equal(directNotice.attributes.get('role'), 'status');
+      assert.equal(directNotice.attributes.get('aria-live'), 'polite');
+      assert.equal(directNotice.attributes.get('aria-atomic'), 'true');
+      assert.match(directNotice.textContent, /^Copied\. Removed 1 control character\./);
+      assert.match(directNotice.textContent, /mysql client command \(\\!\)/);
+      assert.equal(directNotice.textContent.split('Note:').length - 1, 1);
+      const legacyLocal = clip.copyFeedback(`Copied SQL.${direct.note}`, direct.removed);
+      assert.doesNotMatch(legacyLocal, /Note:/, 'M1: legacy caller feedback leaves the warning in the shared status');
+      assert.equal((legacyLocal + directNotice.textContent).split('Note:').length - 1, 1,
+        'M1: caller feedback plus shared status displays exactly one warning');
+
+      assert.equal(await clip.copyToClipboard('source /tmp/payload.sql'), true);
+      assert.equal(visibleNotices().length, 1, 'M1: boolean helper replaces the previous status');
+      assert.match(visibleNotices()[0].textContent, /mysql client command \(source\)/);
+      assert.equal(statusTimers.size, 1, 'M1: replacing a warning cancels its previous timer');
+      assert.equal([...statusTimers.values()][0].delay, 12000, 'M1: warning allows twelve seconds of reading time');
+      assert.equal(await clip.copyToClipboard('SELECT 2'), true);
+      assert.equal(visibleNotices().length, 0, 'M1: a clean copy dismisses the previous command warning');
+      assert.equal(statusTimers.size, 0, 'M1: dismissing the warning cancels its timer');
+      assert.equal(await clip.copyToClipboard('SELECT 1 \\G'), true);
+      assert.equal(visibleNotices().length, 1);
+      expireNotices();
+      assert.equal(visibleNotices().length, 0, 'M1: warning expires');
+
+      // The kit wrapper shares the same warning contract without requiring
+      // its caller to consume CopyResult or construct a note.
+      assert.equal(await kit.copyToClipboard('SELECT 1 \\G'), true);
+      assert.equal(visibleNotices().length, 1, 'M1: kit boolean helper displays the command warning');
+      assert.match(visibleNotices()[0].textContent, /mysql client command \(\\G\)/);
+      expireNotices();
+      assert.equal(await clip.copyToClipboard('SELECT 1 \\G'), true);
+      assert.equal(visibleNotices().length, 1);
+      defineStatusGlobal('navigator', { clipboard: { writeText: async () => { throw new Error('denied'); } } });
+      const failed = await clip.copyToClipboardResult('SELECT 1 \\G');
+      assert.equal(failed.ok, false);
+      assert.equal(visibleNotices().length, 0, 'M1: a failed copy never claims a command was copied');
+      assert.equal(statusTimers.size, 0, 'M1: a failed copy clears the previous warning and its timer');
+      defineStatusGlobal('navigator', successfulNavigator);
+
+      // Selection copies also report the count when sanitization changes
+      // their text, using the same single status surface.
+      selectionText = 'customer\u2028name';
+      const selectionData = new Map();
+      const selectionEvent = {
+        target: null, defaultPrevented: false,
+        clipboardData: { setData(type, value) { selectionData.set(type, value); } },
+        preventDefault() { this.defaultPrevented = true; },
+      };
+      assert.equal(clip.handleSelectionCopy(selectionEvent), true);
+      assert.equal(selectionData.get('text/plain'), 'customer name');
+      assert.equal(visibleNotices().length, 1);
+      assert.equal(visibleNotices()[0].textContent, 'Copied. Removed 1 control character.');
+      selectionText = 'customer name';
+      const cleanSelectionEvent = { ...selectionEvent, defaultPrevented: false };
+      assert.equal(clip.handleSelectionCopy(cleanSelectionEvent), false);
+      assert.equal(visibleNotices().length, 0, 'M1: a clean selection copy clears the previous replacement notice');
+      assert.equal(statusTimers.size, 0);
+
+      // execCommand emits a copy event synchronously. The already-sanitized
+      // fallback textarea must bypass the selection handler until transport
+      // success is known, or it could double-report or report a failed copy.
+      defineStatusGlobal('navigator', { clipboard: { writeText: async () => { throw new Error('denied'); } } });
+      for (const fallbackSucceeds of [true, false]) {
+        const noticesBeforeFallback = appendedNotices;
+        statusDocument.execCommand = () => {
+          const area = [...statusNodes].find((node) => node.tagName === 'textarea');
+          assert.ok(area, 'M1: fallback textarea is present while execCommand runs');
+          const fallbackData = new Map();
+          const fallbackEvent = {
+            target: area, defaultPrevented: false,
+            clipboardData: { setData(type, value) { fallbackData.set(type, value); } },
+            preventDefault() { this.defaultPrevented = true; },
+          };
+          assert.equal(clip.handleSelectionCopy(fallbackEvent), false, 'M1: fallback copy event is not intercepted');
+          assert.equal(fallbackEvent.defaultPrevented, false);
+          assert.equal(fallbackData.size, 0);
+          assert.equal(visibleNotices().length, 0, 'M1: fallback event never reports before execCommand completes');
+          assert.equal(statusTimers.size, 0);
+          return fallbackSucceeds;
+        };
+        const fallback = await clip.copyToClipboardResult('SELECT 1\u0085 \\G');
+        assert.equal(fallback.ok, fallbackSucceeds);
+        assert.equal(fallback.removed, 1);
+        assert.equal(visibleNotices().length, fallbackSucceeds ? 1 : 0);
+        assert.equal(appendedNotices - noticesBeforeFallback, fallbackSucceeds ? 1 : 0,
+          'M1: fallback reports exactly once after success and never after failure');
+        if (fallbackSucceeds) assert.match(visibleNotices()[0].textContent, /Removed 1 control character/);
+        expireNotices();
+      }
+      statusDocument.execCommand = () => false;
+      defineStatusGlobal('navigator', successfulNavigator);
+      expireNotices();
+      assert.equal(visibleNotices().length, 0);
+    } finally {
+      expireNotices();
+      for (const [key, descriptor] of statusDescriptors) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else delete globalThis[key];
+      }
     }
   } finally {
     if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);

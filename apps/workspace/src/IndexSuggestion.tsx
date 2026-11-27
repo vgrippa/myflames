@@ -68,7 +68,9 @@ export function IndexSuggestion({ row, connection, disabled, onOpenSql }: {
         onClick={read}>Read suggestion</button>
       : result && <>
         <p className="hint"><bdi>{result.reason}</bdi></p>
-        {result.ddl && <CopySql sql={result.ddl} label="Suggested index SQL" />}
+        {result.ddl && <CopySql sql={result.ddl} label="Suggested index SQL"
+          names={[result.schema, result.table, ...(result.columns || [])]
+            .filter((n): n is string => typeof n === "string")} />}
         {result.caveats && <p className="hint"><bdi>{result.caveats}</bdi></p>}
         {result.ddl && onOpenSql && <button type="button" className="button ghost" data-action="open-index-suggestion"
           onClick={() => onOpenSql(result.ddl!, { indexOrigin: suggestedIndexOrigin(row, connection) })}>Open in Query editor</button>}

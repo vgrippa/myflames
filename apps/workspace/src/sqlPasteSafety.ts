@@ -6,12 +6,9 @@
 //    ([^\x20-\x5b\x5d-\x7e]). Without a UTF-8 locale the client's line editor
 //    (libedit) reads bytes 0x80-0xFF as editing keys, and a backslash can
 //    start a client command.
-// 2. findMysqlClientCommand scans copied SQL for mysql client commands
-//    (\!, \., \G, ...) the way the client reads them (client/mysql.cc
-//    add_line): a backslash command is live anywhere outside a string or a
-//    quoted identifier, outside # and "-- " line comments, and outside plain
-//    /* */ comments. It stays live inside executable /*! ... */ and hint
-//    /*+ ... */ comments, which the client still scans.
+// 2. findMysqlClientCommand conservatively scans for mysql/MariaDB client
+//    commands. The destination's capabilities, SQL modes and client options
+//    are unknown, so this warning deliberately accepts false positives.
 
 /** Printable ASCII except backslash: the privileges._UNSAFE_GRANT_SQL rule. */
 const SAFE_NAME = /^[\x20-\x5b\x5d-\x7e]*$/;
@@ -27,37 +24,42 @@ export function unsafeNamesReason(names: string[]): string | null {
   return "A name in this statement is not printable ASCII or contains a backslash. Pasted into the mysql client, bytes like those can act as editing keys in the line editor and a backslash can start a client command such as \\! (which runs a shell command), so this copy is not offered.";
 }
 
-// Command characters from the COMMANDS table in client/mysql.cc: ? c r d e G
-// q g h n t P p R # . s ! T u C W w x. \N is NULL, never a command.
-const CLIENT_COMMAND_CHARS = "?!#.cCdeGghnPpqRrstTuWwx";
+// Union of the clients' COMMANDS tables, including MariaDB's costs and
+// sandbox shortcuts. \N is NULL, never a command.
+const CLIENT_COMMAND_CHARS = "?!#.cCdeGghnPpqQRrstTuWwx-";
+const CLIENT_COMMAND_NAMES = new Set([
+  "?", "charset", "clear", "connect", "costs", "delimiter", "edit", "ego",
+  "exit", "go", "help", "nopager", "notee", "nowarning", "pager", "print",
+  "prompt", "query_attributes", "quit", "rehash", "resetconnection",
+  "sandbox", "source", "ssl_session_data_print", "status", "system", "tee",
+  "use", "warnings",
+]);
 
-/** The first mysql client command (\!, \., \G, ...) the mysql client would
- * run from this text, like "\\!", or null when there is none outside strings,
- * quoted identifiers and non-executable comments. */
-export function findMysqlClientCommand(sql: string): string | null {
-  let quote = ""; // ' " ` or "$" (a dollar-quoted body)
-  let dollarTag = "";
+// The client tests an input byte, not JavaScript's Unicode whitespace class.
+const asciiSpace = (ch: string | undefined) => !!ch && /[ \t\n\r\v\f]/.test(ch);
+
+function findCommandInMode(sql: string, backslashEscapes: boolean, ansiQuotes: boolean): string | null {
+  let quote = "";
   let lineComment = false;
-  let blockComment = false; // a plain /* */ comment; /*! and /*+ stay live
+  let blockComment = false;
+  let hint = false;
+  let commandStart = true;
   const n = sql.length;
   for (let i = 0; i < n; i++) {
     const ch = sql[i];
-    if (lineComment) {
-      if (ch === "\n" || ch === "\r") lineComment = false;
+    if (ch === "\n" || ch === "\r") {
+      lineComment = false;
+      commandStart = true;
       continue;
     }
-    if (quote === "$") {
-      if (ch === "$" && sql.startsWith(dollarTag, i)) {
-        i += dollarTag.length - 1;
-        quote = "";
-        dollarTag = "";
-      }
+    if (lineComment) {
       continue;
     }
     if (quote) {
-      // A backslash escape inside a string is never a command. Identifiers
-      // quoted with backticks have no backslash escapes.
-      if (ch === "\\" && quote !== "`") {
+      commandStart = false;
+      // MariaDB ANSI_QUOTES changes double quotes independently of single
+      // quotes. Backticks close even after a backslash in either client.
+      if (ch === "\\" && backslashEscapes && quote !== "`" && !(ansiQuotes && quote === '"')) {
         i++;
         continue;
       }
@@ -77,51 +79,89 @@ export function findMysqlClientCommand(sql: string): string | null {
       }
       continue;
     }
-    if (ch === "#") {
-      lineComment = true;
-      continue;
-    }
-    // "-- " starts a line comment only when whitespace (or the end of the
-    // text) follows, as the client requires.
-    if (ch === "-" && sql[i + 1] === "-" && (i + 2 >= n || /\s/.test(sql[i + 2]))) {
-      lineComment = true;
-      continue;
-    }
-    if (ch === "/" && sql[i + 1] === "*") {
-      const kind = sql[i + 2];
-      if (kind !== "!" && kind !== "+") blockComment = true;
+    // Optimizer hints ignore quotes, line-comment markers and nested /*.
+    // Only */ ends the hint; backslash commands remain live throughout it.
+    if (hint && ch === "*" && sql[i + 1] === "/") {
+      hint = false;
       i++;
       continue;
     }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      quote = ch;
+    if (!hint && ch === "#") {
+      lineComment = true;
       continue;
     }
-    if (ch === "$") {
-      // Dollar-quoted body ($$...$$, $tag$...$tag$), as the client reads it;
-      // not after an identifier character (a$5 is one token).
-      const tag = /^\$[A-Za-z0-9_]*\$/.exec(sql.slice(i));
-      if (tag && (i === 0 || !/[A-Za-z0-9_]/.test(sql[i - 1]))) {
-        quote = "$";
-        dollarTag = tag[0];
-        i += tag[0].length - 1;
-        continue;
-      }
+    if (!hint && ch === "-" && sql[i + 1] === "-" && (i + 2 >= n || asciiSpace(sql[i + 2]))) {
+      lineComment = true;
+      continue;
+    }
+    if (!hint && ch === "/" && sql[i + 1] === "*") {
+      const kind = sql[i + 2];
+      if (kind === "+") hint = true;
+      else if (kind !== "!" && !(kind === "M" && sql[i + 3] === "!")) blockComment = true;
+      // In a plain comment the third character can already be the closing
+      // star of /**/. Consume only its opening pair, or later commands hide.
+      i += blockComment ? 1 : kind === "M" && sql[i + 3] === "!" ? 3 : 2;
+      continue;
+    }
+    if (asciiSpace(ch)) continue;
+    if (!hint && ch === ";") {
+      commandStart = true;
+      continue;
+    }
+    if (commandStart) {
+      // Named commands can run on a fresh line or after a statement. Warn
+      // even if client options or a buffered statement would suppress them.
+      // In particular, DELIMITER can make subsequent quotes into delimiters;
+      // warning about it avoids trying to predict the resulting parser state.
+      const word = /^(?:[a-z_]+|\?)(?=[ \t\n\r\v\f;]|$)/i.exec(sql.slice(i));
+      if (word && CLIENT_COMMAND_NAMES.has(word[0].toLowerCase())) return word[0].toLowerCase();
+    }
+    commandStart = false;
+    if (!hint && (ch === "'" || ch === '"' || ch === "`")) {
+      quote = ch;
+      continue;
     }
     if (ch === "\\") {
       const c = sql[i + 1];
       if (c && CLIENT_COMMAND_CHARS.includes(c)) return `\\${c}`;
+      // Unknown shortcuts and \N consume the following byte as well. Do not
+      // let that byte open a quote that the client itself would not open.
+      if (c !== "\n" && c !== "\r") i++;
     }
   }
   return null;
 }
 
-/** A plain-words note for copy feedback when the copied SQL contains a mysql
- * client command outside quotes; empty when there is none. */
+/** A possible client command, or null. Dollar quotes deliberately do not hide
+ * commands because their support depends on the destination server. Scan both
+ * backslash modes and MariaDB's independent ANSI_QUOTES mode. */
+export function findMysqlClientCommand(sql: string): string | null {
+  // Deliberately over-warn on the first word of every physical line, even
+  // when a quote/comment state or a nonempty client buffer might suppress a
+  // named command. The destination's client settings are not available here.
+  const firstWords = /(?:^|\n)[ \t\r\v\f]*([a-z_]+|\?)(?=[ \t\n\r\v\f;]|$)/gi;
+  let word: RegExpExecArray | null;
+  while ((word = firstWords.exec(sql))) {
+    const command = word[1].toLowerCase();
+    if (CLIENT_COMMAND_NAMES.has(command)) return command;
+  }
+  return findCommandInMode(sql, true, false)
+    || findCommandInMode(sql, false, false)
+    || findCommandInMode(sql, true, true);
+}
+
+/** A plain-words note about a possible client command; empty when none was
+ * found. This is a warning about possible client parsing, not a SQL verdict. */
 export function clientCommandNote(sql: string): string {
   const cmd = findMysqlClientCommand(sql);
   if (!cmd) return "";
-  return ` Note: this text contains a mysql client command (${cmd}) outside quotes. The mysql client reads those even inside /*! */ comments and would run ${cmd} itself instead of sending it to the server.`;
+  return ` Note: this text may contain a mysql client command (${cmd}). Depending on the client's settings and SQL mode, the mysql client can run it itself instead of sending it to the server, even inside /*! */ comments.`;
+}
+
+/** Drop the legacy caller-specific note before a shared clipboard notice is
+ * shown. Match only the generated suffix, leaving the caller's base intact. */
+export function withoutClientCommandNote(base: string): string {
+  return base.replace(/ Note: this text may contain a mysql client command \([^\n)]*\)\. Depending on the client's settings and SQL mode, the mysql client can run it itself instead of sending it to the server, even inside \/\*! \*\/ comments\.$/, "");
 }
 
 /** A copy feedback message with the client-command note appended when the

@@ -573,6 +573,46 @@ try {
   await page.waitForSelector('[aria-label="SQL editor"]');
   assert.equal(await page.$eval('[aria-label="SQL editor"]', editor => editor.value), `SHOW CREATE TABLE ${qTable};`);
 
+  // A safe schema.table does not clear a statement: the report names every
+  // identifier each statement embeds, and an unsafe index name in the ALTER
+  // refuses that copy while the surrogate statement (safe names) still copies.
+  await h.server();
+  await h.view("tables");
+  const mixed = {
+    ...fresh.missing_primary_keys[0],
+    schema: "shop", table: "orders", engine: "InnoDB", kind: "not_null_unique", status: "watch",
+    clustered_on: "idx_café",
+    unique_keys: [{ index: "idx_café", columns: "status", usable: true, why_not: null }],
+    checks: [],
+    fixes: [
+      { label: "Declare idx_café as the primary key",
+        sql: "ALTER TABLE `shop`.`orders` ADD PRIMARY KEY (`status`), DROP INDEX `idx_café`, ALGORITHM=INPLACE, LOCK=NONE;",
+        names: ["shop", "orders", "idx_café", "status"] },
+      { label: "Or add an invisible surrogate key (SELECT * and INSERT without a column list keep working)",
+        sql: "ALTER TABLE `shop`.`orders` ADD COLUMN `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY FIRST, ALGORITHM=INPLACE, LOCK=SHARED;",
+        names: ["shop", "orders", "id"] },
+    ],
+  };
+  state.queue.push({ status: 200, body: { ...fresh, tables: undefined,
+    missing_primary_keys: [mixed], fragmentation: [], generated_primary_keys: [] } });
+  await h.refresh(); await h.idle(view);
+  if (await page.$(".detail-back")) await page.click(".detail-back");
+  await page.click(`${view} .segmented button[data-value=missing]`);
+  await h.select(`${view} tr[data-table="shop.orders"]`);
+  await page.waitForFunction(() => document.querySelectorAll(".view-inspector .perf-sql button").length === 2);
+  const copyStates = await page.$$eval(".view-inspector .perf-sql button",
+    buttons => buttons.map(b => ({ aria: b.getAttribute("aria-disabled"), label: b.getAttribute("aria-label") })));
+  assert.equal(copyStates[0].aria, "true", "the fix whose index name is not printable ASCII is refused");
+  assert.equal(copyStates[1].aria, null, "the surrogate fix with safe names only stays copyable");
+  await page.$$eval(".view-inspector .perf-sql button", buttons => buttons[0].click());
+  await page.waitForSelector("[role=dialog].why-disabled");
+  assert.match(await h.text("[role=dialog].why-disabled"), /not printable ASCII or contains a backslash/);
+  await page.click(".why-disabled-close");
+  await page.waitForSelector("[role=dialog].why-disabled", { hidden: true });
+  await page.$$eval(".view-inspector .perf-sql button", buttons => buttons[1].click());
+  await page.waitForFunction(() => window.__tableCopies.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.__tableCopies), [mixed.fixes[1].sql], "only the all-safe statement reaches the clipboard");
+
   // The owner's example: 5.5 GiB on a 17 MiB table ranks before 1.3 GiB on
   // 25.8 GiB. Also include a higher percentage with fewer bytes so a sort on
   // percentage cannot accidentally satisfy the ordering assertion.

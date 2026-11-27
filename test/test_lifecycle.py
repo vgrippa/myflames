@@ -1184,6 +1184,33 @@ class LifecycleTests(unittest.TestCase):
                     # prepare_dump requires an empty destination on each review.
                     dump_file.rename(self.root / ('argv-%s-%s.json' % (engine, bool(tables))))
 
+    def test_sql_dump_and_restore_commands_are_labeled_as_posix_shell(self):
+        self.make_dump()
+        for platform_name, os_name, expect_windows in (('linux', 'posix', False), ('win32', 'nt', True)):
+            with self.subTest(platform=platform_name), \
+                    mock.patch.object(lc.os, 'name', os_name), \
+                    mock.patch.object(lc.sys, 'platform', platform_name):
+                dump_out = self.root / ('posix-label-' + platform_name)
+                dump_out.mkdir()
+                dump_plan = lc.prepare_dump(self.conn, CONNECTION, str(dump_out), schemas=['app'],
+                                            tools=self.native_tools())
+                restore_plan = lc.prepare_restore(self.target(), CONNECTION, self.output,
+                                                  tools=self.native_tools())
+                for op, plan in (('dump', dump_plan), ('restore', restore_plan)):
+                    joined = ' '.join(plan['warnings'])
+                    self.assertIn('POSIX shell syntax', joined, op)
+                    if expect_windows:
+                        self.assertIn('WSL or Git Bash', joined, op)
+                        self.assertIn('not Command Prompt', joined, op)
+                    else:
+                        self.assertNotIn('WSL or Git Bash', joined, op)
+        # MySQL Shell expressions are JavaScript calls, not POSIX shell commands.
+        shell_out = self.root / 'posix-label-shell'
+        shell_out.mkdir()
+        shell_dump = lc.prepare_dump(self.conn, CONNECTION, str(shell_out), schemas=['app'],
+                                     tools=self.tools)
+        self.assertNotIn('POSIX shell syntax', ' '.join(shell_dump['warnings']))
+
     def test_dump_creates_only_reviewed_default_parent_at_start(self):
         for documents_exist in (False, True):
             with self.subTest(documents=documents_exist), tempfile.TemporaryDirectory(dir=str(self.root)) as home, \

@@ -1717,7 +1717,12 @@ function columnName<T>(c: Column<T>) {
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 let clipMod: typeof import("./clipboard") | null = null;
-export const loadClip = () => (clipMod ? Promise.resolve(clipMod) : import("./clipboard").then((m) => (clipMod = m), () => null));
+export const loadClip = () => (clipMod ? Promise.resolve(clipMod) : import("./clipboard")).then((m) => {
+  // A failed warm-up must not prevent a later successful load from installing
+  // the selection listener. The installer itself is idempotent.
+  m.installCopySanitizer();
+  return (clipMod = m);
+}).catch(() => null);
 
 export async function copyToClipboard(text: string): Promise<boolean> {
   const m = await loadClip();

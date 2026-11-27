@@ -174,6 +174,10 @@ class TestLiveReplay(unittest.TestCase):
                 self.assertIn('ADD COLUMN `row_id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE PRIMARY KEY '
                               'FIRST, ALGORITHM=INPLACE, LOCK=SHARED;', missing['no_key']['fixes'][-1]['sql'])
                 self.assertIn('ADD COLUMN `id`', missing['odd$name']['fixes'][-1]['sql'])
+                # Every check and fix statement lists the names it embeds.
+                for m in result['missing_primary_keys']:
+                    for stmt in m['checks'] + m['fixes']:
+                        self.assertEqual(stmt['names'][:2], [m['schema'], m['table']], stmt['label'])
                 # Not InnoDB: no clustered index, no online clauses.
                 myisam = missing['myisam_nopk']
                 self.assertEqual((myisam['engine'], myisam['clustered_on']), ('MyISAM', None))
@@ -532,7 +536,32 @@ class TestRules(unittest.TestCase):
         m = by_table(schema_health.compute_tables(server(), raw(rows, columns=columns))['missing_primary_keys'])
         self.assertIn('ADD COLUMN `row_id`', m['a']['fixes'][-1]['sql'])
         self.assertIn('ADD COLUMN `pk_id`', m['b']['fixes'][-1]['sql'])
-        self.assertIn('ADD COLUMN `row_pk`', m['c']['fixes'][-1]['sql'])
+        self.assertEqual(m['c']['fixes'][-1]['names'], ['shop', 'c', 'row_pk'])
+
+    def test_statement_names_list_every_embedded_identifier(self):
+        """Each check/fix statement names every schema, table, column and index
+        name it embeds, so the workspace refuses the copy when one of them is
+        not safe to paste into the mysql client."""
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                rows = [table('promote'), table('nullable'), table('none')]
+                keys = [key('promote', 'uk_café', 1, 'col b'), key('promote', 'uk_café', 2, 'c'),
+                        key('nullable', 'uk_a', 1, 'naïve', nullable='YES')]
+                report = schema_health.compute_tables(server(engine), raw(rows, keys))
+                missing = by_table(report['missing_primary_keys'])
+                self.assertEqual(missing['promote']['fixes'][0]['names'],
+                                 ['shop', 'promote', 'uk_café', 'col b', 'c'])
+                self.assertEqual(missing['nullable']['checks'][0]['names'], ['shop', 'nullable', 'naïve'])
+                self.assertEqual(missing['nullable']['fixes'][0]['names'], ['shop', 'nullable', 'uk_a', 'naïve'])
+                # Templates embed no server column or index names; the
+                # surrogate fix names the column it adds.
+                for stmt in missing['none']['checks'] + missing['none']['fixes']:
+                    self.assertEqual(stmt['names'][:2], ['shop', 'none'])
+                self.assertEqual(missing['none']['fixes'][-1]['names'], ['shop', 'none', 'id'])
+                for entry in report['missing_primary_keys']:
+                    for stmt in entry['checks'] + entry['fixes']:
+                        for name in stmt['names']:
+                            self.assertIn('`%s`' % name.replace('`', '``'), stmt['sql'], stmt['label'])
 
     def test_notes_for_settings_and_empty_scope(self):
         report = schema_health.compute_tables(
