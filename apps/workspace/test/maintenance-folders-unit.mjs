@@ -102,9 +102,15 @@ try {
     assert.equal(found.length, names.length);
     return found.map(node => node.getText(ast)).join('\n');
   };
-  const helpers = await declarations('Maintenance.tsx', ['lifecycleProgress', 'lifecycleRate', 'lifecycleElapsed', 'autoRevealDump']);
+  const helpers = await declarations('Maintenance.tsx', [
+    'lifecycleProgress', 'lifecycleRate', 'lifecycleElapsed', 'autoRevealDump',
+    'isPosixShellCommandPlan', 'commandLabel', 'posixShellCommandNote',
+  ]);
   const formatter = await declarations('PerfShared.tsx', ['bytes']);
-  const { lifecycleProgress, lifecycleRate, lifecycleElapsed, autoRevealDump } = await import(moduleUrl(ts.transpileModule(
+  const {
+    lifecycleProgress, lifecycleRate, lifecycleElapsed, autoRevealDump,
+    isPosixShellCommandPlan, commandLabel, posixShellCommandNote,
+  } = await import(moduleUrl(ts.transpileModule(
     formatter + '\n' + helpers, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ES2020 } }).outputText));
   const { joinPath } = await import(filesUrl);
   assert.equal(joinPath('/backup/', 'myflames-manifest.json'), '/backup/myflames-manifest.json');
@@ -150,6 +156,22 @@ try {
   assert.equal(autoRevealDump({ id: 'j1', directory: '/Users/dba/app-2026-11-06' }, true, new Set(['j1']), false), false, 'once per job');
   assert.equal(autoRevealDump({ id: null, directory: '/Users/dba/x' }, true, new Set(), false), false);
   assert.equal(autoRevealDump({ id: 'j2' }, true, new Set(), false), false, 'no folder for failed dumps, restore or clone');
+  // L3: SQL dump/restore commands label POSIX shell syntax (and WSL/Git Bash on Windows).
+  const sqlDumpPlan = { operation: 'dump', tool: { name: 'mysqldump' } };
+  const sqlRestorePlan = { operation: 'restore', tool: { name: 'mysql' } };
+  const shellDumpPlan = { operation: 'dump', tool: { name: 'mysqlsh' } };
+  const clonePlan = { operation: 'clone', tool: { name: 'mysql' } };
+  assert.equal(isPosixShellCommandPlan(sqlDumpPlan), true);
+  assert.equal(isPosixShellCommandPlan(sqlRestorePlan), true);
+  assert.equal(isPosixShellCommandPlan(shellDumpPlan), false);
+  assert.equal(isPosixShellCommandPlan(clonePlan), false);
+  assert.equal(commandLabel(sqlDumpPlan, 'Exact commands'), 'Exact commands (POSIX shell)');
+  assert.equal(commandLabel(shellDumpPlan, 'Exact commands'), 'Exact commands');
+  assert.equal(posixShellCommandNote(sqlDumpPlan, false), 'POSIX shell command.');
+  assert.match(posixShellCommandNote(sqlDumpPlan, true), /POSIX shell.*WSL or Git Bash.*not Windows Command Prompt/);
+  assert.match(posixShellCommandNote(sqlRestorePlan, true), /POSIX shell syntax.*WSL or Git Bash/);
+  assert.equal(posixShellCommandNote(shellDumpPlan, true), '');
+  assert.equal(posixShellCommandNote(clonePlan, true), '');
   console.log('PASS maintenance reported and estimated progress, over-estimate and unknown output, snapshot rates and elapsed clocks');
   console.log('PASS maintenance folder names, local date, collisions, reserved paths, Windows roots and read-only suggestions');
   console.log('PASS maintenance acknowledgement request omission and exact reviewed-plan round trip');

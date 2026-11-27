@@ -724,7 +724,8 @@ def _indexes_findings(rep, attribution):
             "watch when an index has no use since startup, after at least %s of uptime" % _duration_text(SHORT_UPTIME_S),
             (UNUSED_CAVEAT if hideable else NO_INVISIBLE_CAVEAT) if count else None,
             ({"text": "Make a candidate invisible first, watch a full business cycle, then drop it.",
-              "sql": unused[0].get("test_sql")} if hideable else
+              "sql": unused[0].get("test_sql"),
+              "names": [unused[0]["schema"], unused[0]["table"], unused[0]["index"]]} if hideable else
              {"text": "This server has no invisible indexes: watch a full business cycle, then drop a candidate "
                       "(Indexes has the statement)."}) if count and unused else None,
             [_num("%s.%s" % (u["schema"], u["table"]), u["index"]) for u in unused[:5]], (),
@@ -769,7 +770,8 @@ def _indexes_findings(rep, attribution):
         redundant[0].get("why") if redundant else "Each extra index slows writes and uses buffer pool memory.",
         "watch when an index is a duplicate or a leftmost prefix of another index on the same table",
         redundant[0].get("caveat") if redundant else None,
-        ({"text": "Make it invisible first, then drop it.", "sql": redundant[0].get("test_sql")}
+        ({"text": "Make it invisible first, then drop it.", "sql": redundant[0].get("test_sql"),
+          "names": [redundant[0]["schema"], redundant[0]["table"], redundant[0]["index"]]}
          if redundant[0].get("test_sql") or not redundant[0].get("drop_sql") else
          {"text": "This server has no invisible indexes: drop it once you are sure (Indexes has the statement)."})
         if redundant else None,

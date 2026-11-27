@@ -23,7 +23,7 @@ async function lazyPlanRegressions(browser, launchUrl) {
   const sheet = 'dialog.notebook-sheet[open]';
   const chunkOf = (request) => new URL(request.url()).pathname
     .match(/^\/assets\/(PlanScreen|PlanChart|ContextPanel|ImportPlanDialog)-[^/]+\.js$/)?.[1];
-  async function scenario({ plan = true, fail = [], hold = [] }, check) {
+  async function scenario({ plan = true, fail = [], hold = [], stripChartData = false, renderHtml = "" }, check) {
     const page = await browser.newPage();
     const failed = new Set(fail), delayed = new Set(hold), requested = new Set();
     const held = [], errors = [], interceptionErrors = [];
@@ -51,6 +51,19 @@ async function lazyPlanRegressions(browser, launchUrl) {
       if (pathname === "/api/investigations/list") return json(request, {
         schema_version: "investigation-list-1.0", items: [], next_cursor: null,
       });
+      if (stripChartData && pathname === "/api/analyze") {
+        const real = await fetch(request.url(), {
+          method: request.method(),
+          headers: request.headers(),
+          body: request.postData(),
+        });
+        const analyzed = await real.json();
+        delete analyzed.chart_data;
+        return json(request, analyzed);
+      }
+      if (renderHtml && pathname === "/api/render") {
+        return json(request, { html: renderHtml });
+      }
       const chunk = chunkOf(request);
       if (chunk) {
         requested.add(chunk);
@@ -238,6 +251,45 @@ async function lazyPlanRegressions(browser, launchUrl) {
       assert.equal(analyses, 1, "mounting PlanScreen neither loses nor reimports the dropped file");
       page.off("request", analyzed);
     });
+
+  // 5. Sandboxed fallback chart frame (PlanChart FrameChart) sanitizes manual
+  // selection copies synchronously under safePreview's CSP.
+  await scenario({
+    stripChartData: true,
+    renderHtml: "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Fallback chart</title></head><body><pre id=\"probe\">SELECT 1 /* *\u0001/ ; \u202eDROP */\r\nend</pre><input id=\"search\" type=\"search\" value=\"q\u001bx\"><input id=\"pw\" type=\"password\" value=\"s\u001be\"></body></html>",
+  }, async ({ page }) => {
+    const iframe = await page.waitForSelector("iframe.chart-frame");
+    const chartFrame = await iframe.contentFrame();
+    await chartFrame.waitForSelector("#probe");
+    const clip = await chartFrame.evaluate(() => {
+      const violations = [];
+      document.addEventListener("securitypolicyviolation", (ev) => violations.push(ev.violatedDirective));
+      const runCopy = (el) => {
+        const dt = new DataTransfer();
+        const ev = new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: dt });
+        el.dispatchEvent(ev);
+        return { prevented: ev.defaultPrevented, plain: dt.getData("text/plain") };
+      };
+      const pre = document.getElementById("probe");
+      const sel = window.getSelection();
+      sel.selectAllChildren(pre);
+      const textCopy = runCopy(pre);
+      sel.removeAllRanges();
+      const search = document.getElementById("search");
+      search.focus();
+      search.setSelectionRange(0, search.value.length);
+      const searchCopy = runCopy(search);
+      const pw = document.getElementById("pw");
+      pw.focus();
+      pw.setSelectionRange(0, pw.value.length);
+      const pwCopy = runCopy(pw);
+      return { textCopy, searchCopy, pwCopy, violations };
+    });
+    assert.deepEqual(clip.textCopy, { prevented: true, plain: "SELECT 1 /* * / ;  DROP */\nend" });
+    assert.deepEqual(clip.searchCopy, { prevented: true, plain: "q x" });
+    assert.deepEqual(clip.pwCopy, { prevented: false, plain: "" });
+    assert.deepEqual(clip.violations, []);
+  });
   // Import opens only after its form is ready. Escape cancels a pending open,
   // and resolving the chunk later cannot steal focus or reopen the dialog.
   await scenario({ hold: ["ImportPlanDialog"] }, async ({ page, chunkRequested, release }) => {

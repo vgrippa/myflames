@@ -5,10 +5,11 @@ import {
 } from "./api";
 import { connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import {
   ActionButton, ActionStatus, ConfirmSheet, DataTable, Disclosure, EmptyState, ExportMenu, Fields, IDLE_ACTION, InfoPopover,
   InspectorContext, InspectorSection, Pill, SearchField, Select, SummaryLine, ViewLayout, ViewStatus,
-  copyToClipboard, errorText, storedInspectorWidth, useAction, useWindowStatus, type ActionState, type Column, type InspectorContent,
+  errorText, storedInspectorWidth, useAction, useWindowStatus, type ActionState, type Column, type InspectorContent,
   type InspectorShared,
 } from "./kit";
 import { CompactNumber, bytes, compact, count } from "./PerfShared";
@@ -182,7 +183,7 @@ function CodeBlock({ text, label }: { text: string; label: string }) {
   return <div className="qd-code">
     <pre tabIndex={0} aria-label={label}><code>{text}</code></pre>
     <button type="button" className="text-button" aria-label={`Copy ${label}`} onClick={() => {
-      void copyToClipboard(text).then((ok) => setFeedback(ok ? "Copied." : "Select the text to copy it."));
+      void copyToClipboardResult(text).then((res) => setFeedback(res.ok ? copyFeedback("Copied.", res.removed) : "Select the text to copy it."));
     }}>Copy</button>
     {feedback && <span className="muted" role="status">{feedback}</span>}
   </div>;
@@ -196,7 +197,7 @@ function DigestValue({ digest }: { digest: string }) {
   return <span className="qd-digest">
     <code title={digest}>{short}</code>
     <button type="button" className="text-button" onClick={() => {
-      void copyToClipboard(digest).then((ok) => setFeedback(ok ? "Copied." : "Select the text to copy it."));
+      void copyToClipboardResult(digest).then((res) => setFeedback(res.ok ? copyFeedback("Copied.", res.removed) : "Select the text to copy it."));
     }}>Copy</button>
     {feedback && <span className="muted" role="status">{feedback}</span>}
   </span>;

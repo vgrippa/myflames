@@ -478,7 +478,7 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
                 "schema": s, "table": t, "index": index["name"], "columns": _columns_text(index),
                 "unique": index["unique"], "visible": index["visible"], "dominant": other["name"],
                 "dominant_columns": _columns_text(other), "reason": why, "foreign_keys": fk,
-                "why": text, "test_sql": test, "drop_sql": drop,
+                "why": text, "test_sql": test, "drop_sql": drop, "names": [s, t, index["name"]],
                 "caveat": ("Check for FORCE INDEX or USE INDEX hints that name it. " + caveat),
             })
             if (s, t) in blocked:
@@ -613,6 +613,7 @@ def _usage(server, raw, tables, backing, source, available, check_partitioning=T
                     entry["why"] += (" It is already %s, so the optimizer ignores it; drop it when your test "
                                      "period is over." % ("ignored" if server.engine == "mariadb" else "invisible"))
                 entry["test_sql"], entry["drop_sql"] = test, drop
+                entry["names"] = [s, t, index["name"]]
                 entry["caveat"] = UNUSED_CAVEAT if visibility else NO_INVISIBLE_CAVEAT
             unused.append(entry)
         if source == "performance_schema":

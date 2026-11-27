@@ -392,6 +392,8 @@ try {
   assert.equal(await text(`${sheet} h2`), "Dump into the folder backup?");
   assert.equal(await text(`${sheet} .ops-target strong`), dumpPlan.target);
   assert.equal(await text(`${sheet} .ops-commands code`), dumpPlan.commands.join("\n"));
+  assert.equal(await page.$(`${sheet} .ops-plan-note`), null, "mysqlsh dump expression is not labeled as a POSIX shell command");
+  assert.equal(await page.$eval(`${sheet} .ops-commands pre`, e => e.getAttribute("aria-label")), "Exact commands");
   assert.equal(await page.$(`${sheet} input[type=text]`), null);
   assert.equal(await page.$eval(confirmButton, e => e.classList.contains('primary') && !e.classList.contains('danger-solid')), true);
   assert.match(await text(`${sheet} .inspector-fields`), /Contentsapp \(all tables\)/);
@@ -435,6 +437,9 @@ try {
   next.start.push({ job: job(running, "job-1") });
   await preflight();
   await page.waitForSelector(sheet);
+  assert.match(await text(`${sheet} .ops-plan-note`), /POSIX shell command/);
+  assert.equal(await page.$eval(`${sheet} .ops-commands pre`, e => e.getAttribute("aria-label")), "Exact commands (POSIX shell)");
+  assert.match(await text(`${view} .ops-details`), /POSIX shell command/);
   await page.click(confirmButton);
   await settle(START, 1);
   const started = calls(START)[0].body;

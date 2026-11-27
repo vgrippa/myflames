@@ -5,6 +5,7 @@ import {
 } from "./api";
 import { Icon } from "./components";
 import { ImportDialog } from "./ImportPlanDialog";
+import { copyFeedback, copyToClipboardResult, withFrameCopySanitizer } from "./clipboard";
 import {
   ActionButton, ActionStatus, ConfirmSheet, EmptyState, GroupedList, GroupedRow, Pill,
   SearchField, errorText, moveRowFocus, useAction, useSince,
@@ -180,11 +181,11 @@ export function Library({
       });
   }
   async function copyEvidenceText(ev: InvestigationEvidence) {
-    try {
-      await navigator.clipboard.writeText(ev.text);
-      setEvidenceNote({ error: false, text: `Copied “${ev.title}”.` });
-    } catch (e) {
-      setEvidenceNote({ error: true, text: `Could not copy to the clipboard: ${errorText(e)}` });
+    const res = await copyToClipboardResult(ev.text);
+    if (res.ok) {
+      setEvidenceNote({ error: false, text: copyFeedback(`Copied “${ev.title}”.`, res.removed) });
+    } else {
+      setEvidenceNote({ error: true, text: "Could not copy to the clipboard." });
     }
   }
   function downloadEvidenceText(ev: InvestigationEvidence) {
@@ -469,7 +470,7 @@ export function Library({
             {comparison && <section className="library-comparison" aria-label="Baseline comparison">
               <div className="library-comparison-head"><h3>{baseline?.name} compared to {target?.name}</h3>
                 <button className="text-button" onClick={() => setComparison(null)}>Close comparison</button></div>
-              <iframe title="Baseline comparison" sandbox="allow-scripts" srcDoc={safePreview(comparison.html)} />
+              <iframe title="Baseline comparison" sandbox="allow-scripts" srcDoc={safePreview(withFrameCopySanitizer(comparison.html))} />
             </section>}
           </> : !loading && anySaved === false && !error ? <EmptyState icon="investigation" title="No investigations yet"
             action={openPlanCount > 0 && onSaveInvestigation ? (

@@ -7,6 +7,7 @@ import { setUiPreference, useUiPreferences } from "./uiPreferences";
 // the jobs are polled in Transfers.tsx.
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import {
   ActionButton,
   Checkbox,
@@ -15,7 +16,7 @@ import {
   Notice,
   StatusDot,
   ToolbarButton,
-  copyToClipboard,
+  // clipboard helpers imported from ./clipboard
   useAction,
   useFocusScope,
   type Tone,
@@ -200,9 +201,9 @@ function Browser({ connection, onHostKeyUnknown, onEditConnection }: {
     offer("upload", paths, null);
   }
   async function copyPaths(paths: string[]) {
-    const ok = await copyToClipboard(paths.join("\n"));
-    if (!ok) showNote("error", "Could not copy to the clipboard.");
-    else showNote("note", paths.length === 1 ? `Path copied: ${paths[0]}` : `${paths.length} paths copied.`);
+    const res = await copyToClipboardResult(paths.join("\n"));
+    if (!res.ok) showNote("error", "Could not copy to the clipboard.");
+    else showNote("note", copyFeedback(paths.length === 1 ? `Path copied: ${res.text}` : `${paths.length} paths copied.`, res.removed));
   }
 
   // ---- New folder, rename, delete ---------------------------------------------

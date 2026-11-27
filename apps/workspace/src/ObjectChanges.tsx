@@ -2,7 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { readObjectAudit, type AuditObject, type AuditRecord, type Connection } from "./api";
 import { openAuditLog } from "./ActionReview";
 import { sshKey } from "./binding";
-import { copyToClipboard, Fields, InspectorSection, StatusPill, ViewStatus } from "./kit";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
+import { Fields, InspectorSection, StatusPill, ViewStatus } from "./kit";
 import "./objectChanges.css";
 
 /** A single-step inverse whose old value the variable audit target retains.
@@ -63,7 +64,7 @@ function StoredStatement({ statement }: { statement: string }) {
   return <div className="object-change-statement">
     <pre className="inspector-sql" tabIndex={0} aria-label="Statement as stored"><code><bdi>{statement}</bdi></code></pre>
     <button type="button" className="text-button" aria-label="Copy statement as stored" onClick={() => {
-      void copyToClipboard(statement).then(ok => setCopied(ok ? "Copied." : "Select the text to copy it."));
+      void copyToClipboardResult(statement).then(res => setCopied(res.ok ? copyFeedback("Copied.", res.removed) : "Select the text to copy it."));
     }}>Copy</button>
     <span className="hint" role="status">{copied}</span>
   </div>;

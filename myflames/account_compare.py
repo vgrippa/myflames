@@ -623,11 +623,60 @@ def compare_many(snapshots):
     return sorted(rows, key=lambda row: (order[row['status']], row['account']))
 
 
-def _grant_sql(line, item, engine):
-    """Rebuild SHOW GRANTS names with the existing SQL quoting builders.
+def _unsafe_name(value, wildcard_schema=False):
+    """True when a name cannot safely enter exported SQL.
+
+    Follows privileges._UNSAFE_GRANT_SQL (printable ASCII 0x20-0x7E without
+    backslash). SHOW GRANTS database-level patterns (`ON <schema>.*`) escape
+    literal `_` and `%` as `\\_` and `\\%` when partial_revokes is OFF, so
+    those two wildcard escapes are decoded before checking the allowlist.
+    """
+    if not isinstance(value, str):
+        return True
+    if wildcard_schema:
+        value = re.sub(r'\\([_%])', r'\1', value)
+    return bool(privileges._UNSAFE_GRANT_SQL.search(value))
+
+
+def _account_unsafe(item, engine):
+    if _unsafe_name(item.get('name')):
+        return True
+    if not (item.get('role') and engine == 'mariadb'):
+        if _unsafe_name(item.get('host')):
+            return True
+    return False
+
+
+def _role_unsafe(role, engine):
+    if _unsafe_name(role.get('name')):
+        return True
+    if engine != 'mariadb' and _unsafe_name(role.get('host', '')):
+        return True
+    return False
+
+
+def _safe_comment_text(value):
+    """Printable ASCII without backslash for SQL comments."""
+    return privileges._UNSAFE_GRANT_SQL.sub(lambda m: '<U+%04X>' % ord(m.group(0)), str(value))
+
+
+def _account_comment_label(name, host, engine, role=False):
+    if role and engine == 'mariadb' and str(name).upper() == 'PUBLIC':
+        return 'PUBLIC'
+    safe_name = _safe_comment_text(name).replace('`', '``')
+    if role and engine == 'mariadb':
+        return '`%s`' % safe_name
+    safe_host = _safe_comment_text(host).replace('`', '``')
+    return '`%s`@`%s`' % (safe_name, safe_host)
+
+
+def _grant_sql_checked(line, item, engine):
+    """Return ``(statement, unsafe_reason)`` for a SHOW GRANTS line.
 
     Authentication, TLS and resource clauses are intentionally absent from this
     grants-only export. The comparison keeps them in its raw grant projection.
+    Returns ``(None, reason)`` when the account or any object, column or proxy
+    name fails privileges._UNSAFE_GRANT_SQL.
     """
     safe = accounts._strip_account_credentials(line).strip().rstrip(';')
     model = privileges.parse_grants([safe], engine)
@@ -636,47 +685,80 @@ def _grant_sql(line, item, engine):
     parts = privileges.tokens(safe)
     upper = [t.upper() for t in parts]
     if not parts or upper[0] not in ('GRANT', 'REVOKE'):
-        return None
+        return None, None
     boundary_word = 'TO' if upper[0] == 'GRANT' else 'FROM'
     try:
         boundary = upper.index(boundary_word)
         on = upper.index('ON')
     except ValueError:
-        return None  # Roles and default roles are rebuilt from structured fields.
+        return None, None  # Roles and default roles are rebuilt from structured fields.
     if on > boundary:
-        return None
+        return None, None
     grantee = privileges.grant_source(safe)
     if (grantee['name'], grantee['host']) != (item['name'], item['host']):
-        return None  # MariaDB SHOW GRANTS FOR role also prints inherited lines.
+        return None, None  # MariaDB SHOW GRANTS FOR role also prints inherited lines.
+    if _account_unsafe(item, engine):
+        return None, 'account name or host contains characters outside printable ASCII or a backslash'
     prefix, depth = [upper[0]], 0
     for token in parts[1:on]:
         if token == '(':
             depth += 1
+            if depth > 1:
+                raise ValueError('A grant could not be safely exported; inspect its original text.')
             prefix.append(token)
         elif token == ')':
             depth -= 1
+            if depth < 0:
+                raise ValueError('A grant could not be safely exported; inspect its original text.')
             prefix.append(token)
         elif token == ',':
             prefix.append(token)
         elif depth:
-            prefix.append(privileges.quote_identifier(privileges.unquote(token)))
+            col = privileges.unquote(token)
+            if _unsafe_name(col):
+                return None, 'object name contains characters outside printable ASCII or a backslash'
+            prefix.append(privileges.quote_identifier(col))
         else:
+            if _unsafe_name(token):
+                return None, 'privilege name contains characters outside printable ASCII or a backslash'
+            if not re.fullmatch(r'[A-Z0-9_]+', token.upper()):
+                raise ValueError('A grant could not be safely exported; inspect its original text.')
             prefix.append(token.upper())
+    if depth:
+        raise ValueError('A grant could not be safely exported; inspect its original text.')
     prefix.append('ON')
     scope = list(parts[on + 1:boundary])
     if scope and scope[0].upper() in ('TABLE', 'PROCEDURE', 'FUNCTION', 'LIBRARY', 'PACKAGE'):
         prefix.append(scope.pop(0).upper())
         if prefix[-1] == 'PACKAGE' and scope and scope[0].upper() == 'BODY':
             prefix.append(scope.pop(0).upper())
-    for token in scope:
-        prefix.append(token if token in ('.', '*', '@') else privileges.quote_identifier(privileges.unquote(token)))
+    is_wildcard_schema = len(scope) == 3 and scope[1] == '.' and scope[2] == '*'
+    for idx, token in enumerate(scope):
+        if token in ('.', '*', '@'):
+            prefix.append(token)
+        else:
+            ident = privileges.unquote(token)
+            if _unsafe_name(ident, wildcard_schema=is_wildcard_schema and idx == 0):
+                return None, 'object name contains characters outside printable ASCII or a backslash'
+            prefix.append(privileges.quote_identifier(ident))
     # REQUIRE/IDENTIFIED/WITH MAX_* never reach the text. Retain GRANT OPTION.
     grantable = any(upper[i:i + 3] == ['WITH', 'GRANT', 'OPTION'] for i in range(boundary, len(parts) - 2))
     statement = ' '.join(prefix) + ' ' + boundary_word + ' ' + accounts._name(
         item['name'], item['host'], engine, item.get('role', False)) + (' WITH GRANT OPTION' if grantable else '')
     if engine == 'mariadb' and any(t.upper() == 'PACKAGE' for t in parts[on + 1:boundary]):
-        return accounts._with_package_mode(statement) + ';'
-    return statement + ';'
+        return accounts._with_package_mode(statement) + ';', None
+    return statement + ';', None
+
+
+def _grant_sql(line, item, engine):
+    """Rebuild SHOW GRANTS names with the existing SQL quoting builders.
+
+    Authentication, TLS and resource clauses are intentionally absent from this
+    grants-only export. The comparison keeps them in its raw grant projection.
+    Returns None when the account or any object name contains a character
+    outside printable ASCII or a backslash.
+    """
+    return _grant_sql_checked(line, item, engine)[0]
 
 
 def export_sql(side, chosen=None):
@@ -712,6 +794,11 @@ def export_sql(side, chosen=None):
         item = indexed.get(key)
         if item and item['system'] and key not in requested:
             raise ValueError('A required role is a system account; choose it explicitly before exporting.')
+        if item and _account_unsafe(item, engine):
+            # Capture can reject these names before reading account details.
+            # They still belong in the omission comments, not in executable SQL.
+            selected.add(key)
+            continue
         if not item or item.get('error') or item.get('attributes_checked') is False or item.get('defaults_checked') is False:
             raise ValueError('An account or required role could not be read; no SQL was exported.')
         selected.add(key)
@@ -721,40 +808,89 @@ def export_sql(side, chosen=None):
             raise ValueError('A default role was not directly granted; read this side again before exporting.')
     ordered = sorted(selected, key=lambda k: (not indexed[k].get('role'), k))
     quote = lambda item: accounts._name(item['name'], item['host'], engine, item.get('role', False))
+    label = lambda item: _account_comment_label(item['name'], item['host'], engine, item.get('role', False))
     lines = ['-- Review before running. This text was not sent to a server.',
              '-- Grants only. Authentication, TLS requirements and resource limits are not copied.']
     if omitted:
-        lines.append('-- Omitted system accounts: %s.' % ', '.join(quote(indexed[k]) for k in omitted))
+        lines.append('-- Omitted system accounts: %s.' % ', '.join(label(indexed[k]) for k in omitted))
+    unsafe_notes = []
+    safe_ordered = []
     for key in ordered:
+        item = indexed[key]
+        if _account_unsafe(item, engine):
+            kind_label = 'role ' if item.get('role') else ''
+            what = 'name' if item.get('role') and engine == 'mariadb' else 'account name or host'
+            unsafe_notes.append(
+                '-- Left out %s%s: %s contains characters outside printable ASCII or a backslash.' %
+                (kind_label, label(item), what))
+        else:
+            safe_ordered.append(key)
+    creates = []
+    for key in safe_ordered:
         item = indexed[key]
         if item.get('role'):
             if engine == 'mariadb' and item['name'].upper() == 'PUBLIC':
                 continue
-            lines.append('CREATE ROLE IF NOT EXISTS %s;' % quote(item))
+            creates.append('CREATE ROLE IF NOT EXISTS %s;' % quote(item))
         else:
-            lines.append('CREATE USER IF NOT EXISTS %s;' % quote(item))
-            lines.append('-- Set the password separately before allowing this account to log in.')
+            creates.append('CREATE USER IF NOT EXISTS %s;' % quote(item))
+            creates.append('-- Set the password separately before allowing this account to log in.')
     # All roles/users exist before any grant, so cycles do not change order.
     grants, revokes = [], []
-    for key in ordered:
+    for key in safe_ordered:
         item = indexed[key]
+        skipped_grants = 0
         for raw in item['grants']:
-            statement = _grant_sql(raw, item, engine)
-            if statement:
+            statement, unsafe_reason = _grant_sql_checked(raw, item, engine)
+            if unsafe_reason:
+                if privileges.tokens(raw)[0].upper() == 'REVOKE':
+                    # Refuse the whole export, including dependent roles: a
+                    # global grant without its partial revoke expands access.
+                    raise ValueError('A REVOKE for %s could not be safely exported; no SQL was exported '
+                                     'because omitting a restriction could grant extra privileges.' % label(item))
+                skipped_grants += 1
+            elif statement:
                 (revokes if statement.upper().startswith('REVOKE ') else grants).append(statement)
-    lines.extend(dict.fromkeys(grants))
-    lines.extend(dict.fromkeys(revokes))
-    for key in ordered:
+        if skipped_grants:
+            noun = 'grant' if skipped_grants == 1 else 'grants'
+            unsafe_notes.append(
+                '-- Left out %d %s for %s: object name contains characters outside printable ASCII or a backslash.' %
+                (skipped_grants, noun, label(item)))
+    role_grants = []
+    for key in safe_ordered:
         item = indexed[key]
         for role in _roles(item['roles']):
+            if _role_unsafe(role, engine):
+                role_label = _account_comment_label(role['name'], role.get('host', ''), engine, True)
+                unsafe_notes.append(
+                    '-- Left out role grant %s for %s: role name or host contains characters outside printable ASCII or a backslash.' %
+                    (role_label, label(item)))
+                continue
             role_name = accounts._name(role['name'], role.get('host', ''), engine, True)
-            lines.append('GRANT %s TO %s%s;' % (role_name, quote(item), ' WITH ADMIN OPTION' if role.get('admin_option') else ''))
-    for key in ordered:
+            role_grants.append('GRANT %s TO %s%s;' % (role_name, quote(item), ' WITH ADMIN OPTION' if role.get('admin_option') else ''))
+    default_role_lines = []
+    for key in safe_ordered:
         item = indexed[key]
         defaults = _roles(item['default_roles'])
         if defaults:
             if engine == 'mariadb' and len(defaults) != 1:
                 raise ValueError('MariaDB permits one default role per account.')
-            names = ', '.join(accounts._name(r['name'], r.get('host', ''), engine, True) for r in defaults)
-            lines.append('SET DEFAULT ROLE %s %s %s;' % (names, 'FOR' if engine == 'mariadb' else 'TO', quote(item)))
+            safe_defaults = []
+            for role in defaults:
+                if _role_unsafe(role, engine):
+                    role_label = _account_comment_label(role['name'], role.get('host', ''), engine, True)
+                    unsafe_notes.append(
+                        '-- Left out default role %s for %s: role name or host contains characters outside printable ASCII or a backslash.' %
+                        (role_label, label(item)))
+                else:
+                    safe_defaults.append(role)
+            if safe_defaults:
+                names = ', '.join(accounts._name(r['name'], r.get('host', ''), engine, True) for r in safe_defaults)
+                default_role_lines.append('SET DEFAULT ROLE %s %s %s;' % (names, 'FOR' if engine == 'mariadb' else 'TO', quote(item)))
+    lines.extend(unsafe_notes)
+    lines.extend(creates)
+    lines.extend(dict.fromkeys(grants))
+    lines.extend(dict.fromkeys(revokes))
+    lines.extend(role_grants)
+    lines.extend(default_role_lines)
     return '\n'.join(lines) + '\n'

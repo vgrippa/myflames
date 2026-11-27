@@ -1830,8 +1830,12 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         warnings.append('Shell briefly takes a global read lock; writers wait behind long statements. '
                         'It may need RELOAD/FLUSH_TABLES, BACKUP_ADMIN, REPLICATION CLIENT or LOCK TABLES.')
     else:
-        commands = [tool['name'] + ' --defaults-file=<0600 file> ' + ' '.join(_dump_args(request, tool)) +
-                    ' > ' + os.path.join(directory, 'dump.sql')]
+        # shlex.quote emits POSIX shell syntax; cmd.exe has no single-quote
+        # escaping and interprets '&' unless run in a POSIX shell (WSL/Git Bash).
+        args = [tool['name'], '--defaults-file=<0600 file>'] + _dump_args(request, tool)
+        commands = [' '.join(shlex.quote(arg) for arg in args) +
+                    ' > ' + shlex.quote(os.path.join(directory, 'dump.sql'))]
+        warnings.append(_posix_shell_command_note('dump'))
     try:
         running = Reader(conn, TAG).rows("SELECT ID,USER,HOST,TIME,STATE FROM information_schema.PROCESSLIST "
                                          "WHERE COMMAND <> 'Sleep' AND TIME >= 30 AND ID <> CONNECTION_ID() LIMIT 20")
@@ -1840,6 +1844,14 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         checks.append(_verification('long_statements', 'not_checked', 'PROCESS access unavailable.'))
     return _plan('dump', server, connection, request, tool, directory, commands, checks, warnings,
                  binding_extra={'create_dump_parent': missing_parent} if missing_parent else None)
+
+
+def _posix_shell_command_note(operation):
+    """Label shlex-quoted SQL dump/restore commands as POSIX shell syntax."""
+    if os.name == 'nt' or sys.platform == 'win32':
+        return ('The displayed SQL %s command uses POSIX shell syntax '
+                '(for a POSIX shell such as WSL or Git Bash, not Command Prompt).' % operation)
+    return 'The displayed SQL %s command uses POSIX shell syntax.' % operation
 
 
 def _lower_case_table_names(conn):
@@ -2785,6 +2797,8 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
                 [tool['name'] + ' --defaults-file=<0600 file> ' +
                  ' '.join(shlex.quote(arg) for arg in _sql_load_args(request)) +
                  ' < ' + shlex.quote(os.path.join(directory, 'dump.sql'))])
+    if not shell_dump:
+        warnings.append(_posix_shell_command_note('restore'))
     create_database = None
     if schema and not shell_dump:
         rows = Reader(conn, TAG).rows('SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ' + literal(schema))
