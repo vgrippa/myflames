@@ -114,6 +114,12 @@ const connectCalls = [];
 const topologyCalls = [];
 const readysetReads = [];
 const healthReads = [];
+const loopRegistry = new Map();
+const loopStatusReads = [];
+const loopStops = [];
+const loopEndpoint = (c) => `${c?.host}:${c?.port}:${c?.user}`;
+const loopRunning = await load("replication-loop-running.json");
+const loopStopped = await load("replication-loop-stopped.json");
 function navMember(over) {
   return {
     profile_id: "", profile_name: "", host: "", port: 3306,
@@ -224,14 +230,31 @@ const h = await open("/api/live/cluster", "topology-groups", {
     if (onGroupSuccess) onGroupSuccess(body);
     return { status: 200, body: { updated: ids, group: targetGroup } };
   },
+  // The group editor sheet (Edit group…): an unticked member leaves the group.
+  "/api/profiles/groups/save": (body) => {
+    const name = (body.name || "").trim();
+    const previous = (body.previous_name || "").trim() || name;
+    const ids = new Set(Array.isArray(body.profile_ids) ? body.profile_ids : []);
+    for (const p of profiles) {
+      if (ids.has(p.id)) p.group = name;
+      else if ((p.group || "") === previous) p.group = "";
+    }
+    return { status: 200, body: { group: name, name, profile_ids: [...ids], updated: [...ids] } };
+  },
   "/api/live/replication": (body) => {
     replicationReads.push(body);
     return { status: 200, body: replicationReport };
   },
-  "/api/live/replication/skip-loop/status": () => ({
-    status: 200,
-    body: { schema_version: "replication-skip-loop-1.0", loops: [] },
-  }),
+  "/api/live/replication/skip-loop/status": (body) => {
+    loopStatusReads.push(body);
+    return { status: 200, body: { schema_version: "replication-skip-loop-1.0", loops: loopRegistry.get(loopEndpoint(body.connection)) || [] } };
+  },
+  "/api/live/replication/skip-loop/stop": (body) => {
+    assert.equal(body.connection.password, "", "Skip loop stop never carries another member's typed password");
+    loopStops.push(body);
+    loopRegistry.set(loopEndpoint(body.connection), [structuredClone(loopStopped)]);
+    return { status: 200, body: structuredClone(loopStopped) };
+  },
   "/api/live/proxysql": (body) => {
     proxysqlReads.push(body);
     return { status: 200, body: proxysqlReport };
@@ -1091,6 +1114,10 @@ try {
   }
   assert.ok(readysetBadgeHtml.includes("nav-marker"), `the Readyset badge is the member's own: ${readysetBadgeHtml}`);
   assert.equal(await page.$eval('.connection-type-strip', (e) => e.dataset.connectionStrip), "read-only", "the strip shows the member's read-only flag");
+  // The Readyset report of its own member mutes nothing else: the ProxySQL
+  // and Cluster places read other members and stay plain sidebar items.
+  assert.equal(await page.$eval('.main-nav button[data-place="proxysql"]', (e) => e.dataset.muted || ""), "", "a Readyset member's report never mutes ProxySQL");
+  assert.equal(await page.$eval('.main-nav button[data-place="cluster"]', (e) => e.dataset.muted || ""), "", "a Readyset member's report never mutes Cluster");
   // The arrival note in the Readyset place, with the picker intact at 720 px.
   writtenShots.push(...await layoutMatrix(page, h.shots, "topo-arrive-readyset", { frame: ".window-toolbar" }));
   await page.setViewport({ width: 1440, height: 900 });
@@ -1138,6 +1165,10 @@ try {
     await pause(150);
   }
   assert.ok(proxyBadgeHtml.includes("nav-marker"), `the ProxySQL badge is the member's own: ${proxyBadgeHtml}`);
+  // The ProxySQL report of its own member mutes nothing else either: Readyset
+  // still reads nav-rs, and Cluster still reads nav-db-1.
+  assert.equal(await page.$eval('.main-nav button[data-place="readyset"]', (e) => e.dataset.muted || ""), "", "a ProxySQL member's report never mutes Readyset");
+  assert.equal(await page.$eval('.main-nav button[data-place="cluster"]', (e) => e.dataset.muted || ""), "", "a ProxySQL member's report never mutes Cluster");
 
   // Switching places through the sidebar keeps each place's own note: Readyset
   // still reads nav-rs, never nav-proxy.
@@ -1162,8 +1193,15 @@ try {
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
 
   // Keyboard Enter on a focused card navigates the same way, on a member not
-  // read yet: the wait is for that member's own read.
-  replicationReport = structuredClone(replicationBase);
+  // read yet: the wait is for that member's own read. nav-db-2 answers as a
+  // plain server (no channels), so the shared cluster report read on nav-db-1
+  // is the only source a leaked cluster kind could come from.
+  replicationReport = {
+    ...structuredClone(replicationBase),
+    replica: false,
+    channels: [],
+    message: "This server is not a replica: it has no replication channel.",
+  };
   const replReadsNav = replicationReads.length;
   await page.focus('.topology-map-node[data-node="p-nav-2"]');
   await page.keyboard.press("Enter");
@@ -1174,11 +1212,43 @@ try {
   assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "Using nav-db-2 from group mf-nav.");
   // Keyboard activation lands focus on the place's heading.
   await page.waitForFunction(() => document.activeElement?.id === "replication-title");
+  // The cluster report read on nav-db-1 never lends its kind to this member:
+  // nav-db-2's Not a replica state offers no Open Cluster action.
+  await page.waitForFunction(() => document.querySelector('.replication-place')?.textContent.includes("Not a replica"));
+  assert.equal(await page.evaluate(() =>
+    [...document.querySelectorAll('.replication-place button')].some((b) => b.textContent.trim() === "Open Cluster")),
+    false, "another member's cluster report never lends Open Cluster to this member");
+  // A skip loop running on this non-active member. The replica answer turns
+  // the loop status poll on; Server's banner must show it and stop it there.
+  loopRegistry.set("10.0.1.12:3306:dba", [structuredClone(loopRunning)]);
+  replicationReport = structuredClone(replicationBase);
+  const loopStatusBefore = loopStatusReads.length;
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  for (let i = 0; i < 100 && loopStatusReads.length === loopStatusBefore; i++) await pause(25);
+  assert.equal(loopStatusReads.at(-1).connection.profile_id, "p-nav-2", "loop status reads on the replication member");
   await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
   // Focus returns to the card that opened the place, driven by the Topology
   // place itself once its map shows the card (no settle pause).
   await page.waitForFunction(() => document.activeElement?.getAttribute("data-node") === "p-nav-2");
+
+  // Server's persistent banner shows the loop started on the non-active
+  // replication member, names the server it runs on, and stops it there.
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  assert.ok(await page.$$eval('.server-content > .ops-loop .ops-last',
+    (els) => els.some((e) => e.textContent.trim() === "on nav-db-2 · 10.0.1.12:3306 · SECONDARY")),
+    "the banner names the member the loop runs on");
+  await page.click('.server-content > .ops-loop button');
+  for (let i = 0; i < 100 && !loopStops.length; i++) await pause(25);
+  assert.equal(loopStops.length, 1, "Stop from the banner was sent");
+  assert.equal(loopStops.at(-1).connection.profile_id, "p-nav-2", "Stop goes to the member the loop runs on, not the member on screen");
+  assert.equal(loopStops.at(-1).connection.group_name, "mf-nav");
+  assert.equal(loopStops.at(-1).connection.host, "10.0.1.12");
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
 
   // Any other database member opens the Server place on that member, with the
   // member note in the view header. The place was visited above (it read the
@@ -1197,8 +1267,54 @@ try {
   await page.click('button.nav-back-chip[aria-label="Back to Topology"]');
   await page.waitForSelector('.main-nav button[data-place="topology"].active');
 
+  // Refresh all reads the reports of the members the Replication and Cluster
+  // places read, never overwriting them with the connection in use.
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  const clusterBadgeBefore = await page.$eval('.main-nav button[data-place="cluster"]', (e) => e.textContent);
+  const replReadsBeforeAll = replicationReads.length, clusterReadsBeforeAll = state.seen.length;
+  await page.click('.server-view[data-view="health"] button[aria-label="Refresh options"]');
+  await page.click('[data-action="refresh-all"]');
+  for (let i = 0; i < 200 && !(replicationReads.length > replReadsBeforeAll && state.seen.length > clusterReadsBeforeAll); i++) await pause(25);
+  assert.ok(replicationReads.length > replReadsBeforeAll && state.seen.length > clusterReadsBeforeAll, "Refresh all read both topology reports");
+  await page.waitForFunction(() => !document.querySelector(".refresh-all-stop"));
+  assert.equal(replicationReads.at(-1).connection.profile_id, "p-nav-2", "Refresh all keeps the member the Replication place reads");
+  assert.equal(replicationReads.at(-1).connection.group_name, "mf-nav", "the read re-checks group membership");
+  assert.equal(state.seen.at(-1).connection.profile_id, "p-nav-1", "Refresh all keeps the member the Cluster place reads");
+  assert.equal(await page.$eval('.main-nav button[data-place="cluster"]', (e) => e.textContent), clusterBadgeBefore, "the Cluster badge is the same report after Refresh all");
+  // The replication place still shows its own member's report, never a report
+  // the connection in use overwrote it with.
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  assert.equal(await page.$('.replication-place .gate.other-connection'), null, "Refresh all never overwrote the replication member's report");
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+
   assert.equal(topologyCalls.length, 1, "the map never re-read on navigation");
   assert.equal(connectCalls.length, connectsBefore, "no card ever opened a new connection");
+
+  // A group edit that removes a member a place was on: the notice names the
+  // removal and never hides another place's "Using <member>" note, and it
+  // clears on the next navigation.
+  await page.click('.main-nav button[data-place="readyset"]');
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  await page.click('.window-statusbar .statusbar-group-edit');
+  await page.waitForSelector('dialog.group-editor-sheet[open]', { visible: true });
+  await page.click('dialog.group-editor-sheet[open] .group-editor-item[data-profile-id="p-nav-proxy"] input[type="checkbox"]');
+  await page.click('dialog.group-editor-sheet[open] .sheet-buttons button.primary');
+  await page.waitForFunction(() => !document.querySelector('dialog.group-editor-sheet[open]'));
+  await page.waitForFunction(() => {
+    const text = document.querySelector('.nav-member-note')?.textContent || "";
+    return text.includes("nav-proxy is not in this group any more; its views moved to nav-db-1.") &&
+      text.includes("Using nav-rs from group mf-nav.");
+  });
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.getAttribute("title")), await page.$eval('.nav-member-note', (e) => e.textContent.trim()), "the joined note keeps its full text in the title");
+  await page.click('.main-nav button[data-place="cluster"]');
+  await page.waitForSelector('.main-nav button[data-place="cluster"].active');
+  assert.equal(await page.$('.nav-member-note'), null, "the removal notice clears on navigation");
+  await page.click('.main-nav button[data-place="readyset"]');
+  await page.waitForSelector('.main-nav button[data-place="readyset"].active');
+  assert.equal(await page.$eval('.nav-member-note', (e) => e.textContent.trim()), rsNote, "only the place's own note remains");
 
   assert.deepEqual(h.errors, [], "Group actions and replication branch changes produce no runtime exceptions");
 

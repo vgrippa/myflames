@@ -38,9 +38,10 @@ export function ReplicationPlace({
   connection: Connection;
   disabled?: boolean;
   onBack?: () => void;
-  /** The cluster the connection in use belongs to, once the Cluster place or
-   * Refresh all read it (a node that is not a replica points there). The
-   * sidebar's marker is drawn by the shell from the shared report. */
+  /** The cluster the member this place reads belongs to, once the Cluster
+   * place or Refresh all read it on that same member (a node that is not a
+   * replica points there). The sidebar's marker is drawn by the shell from
+   * the shared report. */
   clusterKind?: ClusterKind | null;
   onOpenCluster?: () => void;
   onOpenReadyset?: () => void;

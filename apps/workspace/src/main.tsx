@@ -718,10 +718,11 @@ function App() {
   // starts there.
   const [memberByPlace, setMemberByPlace] = useState<Record<string, string>>({});
   // A group edit removed a member a place was on: its views moved to the
-  // primary and this note says so until the next explicit choice. The "Using
-  // <member>" note is not stored: it is derived per place from the request
-  // the place reads (placeMemberNote below), so it can never name another
-  // member.
+  // primary and this note says so until the next navigation or explicit
+  // choice (go() and chooseMember clear it). The "Using <member>" note is not
+  // stored: it is derived per place from the request the place reads
+  // (placeMemberNote below), so it can never name another member, and the two
+  // notes show together when both apply.
   const [memberNote, setMemberNote] = useState("");
   /** The member's saved connection as a request connection (its profile id,
    * its own endpoint, the group's strictest safety), with the group name so
@@ -1966,15 +1967,18 @@ function App() {
   // (clusterRequest) once the place or Refresh all has read it: muted when it
   // is not part of a cluster (still focusable; the place explains), otherwise
   // the cluster's status. Before the first read it looks like any other place.
-  // Every badge, muted state and staleness check keys its report against the
-  // request its own place reads, never connectionKey(request).
-  const isProxyHere = proxyReport?.key === connectionKey(proxyRequest) && proxyReport.report.is_proxysql;
-  const isReadysetHere = readysetReport?.key === connectionKey(readysetRequest) && readysetReport.report.is_readyset;
-  const shownClusterReport = (isProxyHere || isReadysetHere) && clusterReport?.key !== connectionKey(clusterRequest) ? null : clusterReport;
+  // A ProxySQL or Readyset report proves the product of the one member it was
+  // read on: it mutes (or hides a stale report of) only a place whose own
+  // request is that member. A card that opened the ProxySQL or Readyset place
+  // on one member never greys the Cluster, Replication or the other place
+  // reading a different member, and never replaces its report.
+  const proxyHere = (req: Connection) => proxyReport?.key === connectionKey(req) && proxyReport.report.is_proxysql;
+  const readysetHere = (req: Connection) => readysetReport?.key === connectionKey(req) && readysetReport.report.is_readyset;
+  const shownClusterReport = (proxyHere(clusterRequest) || readysetHere(clusterRequest)) && clusterReport?.key !== connectionKey(clusterRequest) ? null : clusterReport;
   const clusterState = clusterNav(shownClusterReport, connectionKey(clusterRequest));
-  const clusterMuted = clusterState.state === "none" || isProxyHere || isReadysetHere;
+  const clusterMuted = clusterState.state === "none" || proxyHere(clusterRequest) || readysetHere(clusterRequest);
   const proxyNav = proxySqlNav(proxyReport, connectionKey(proxyRequest));
-  const proxyMuted = proxyNav === "none" || isReadysetHere;
+  const proxyMuted = proxyNav === "none" || readysetHere(proxyRequest);
   const proxyNow = proxyNav === "proxysql" && proxyReport && proxyReport.key === connectionKey(proxyRequest) ? proxyReport.report : null;
   const proxyIssues = proxyNow && (proxyNow.status === "problem" || proxyNow.status === "watch") ? proxyNow.status_why.length : 0;
   const proxyBadge = !proxyNow ? null
@@ -1990,7 +1994,7 @@ function App() {
     readysetReport.report.is_readyset &&
     (readysetReport.report.session_database || null) !== (readysetRequest.database || null);
   const readysetNavState = readysetDbStale ? "unread" : readysetNav(readysetReport, connectionKey(readysetRequest));
-  const readysetMuted = readysetNavState === "none" || isProxyHere;
+  const readysetMuted = readysetNavState === "none" || proxyHere(readysetRequest);
   const readysetNow = (readysetNavState === "ok" || readysetNavState === "watch" || readysetNavState === "problem" || readysetNavState === "unknown") && readysetReport && readysetReport.key === connectionKey(readysetRequest) ? readysetReport.report : null;
   const readysetIssues = readysetNow && (readysetNow.status === "problem" || readysetNow.status === "watch") ? readysetNow.status_why.length : 0;
   const readysetBadge = !readysetNow ? null
@@ -2008,7 +2012,7 @@ function App() {
   // Replication's own channels do not count), Unknown only when the status
   // could not be read.
   const replicationState = replicationNav(replicationReport, connectionKey(replicationRequest));
-  const replicationMuted = replicationState.state === "none" || isReadysetHere;
+  const replicationMuted = replicationState.state === "none" || readysetHere(replicationRequest);
   const replicationBadge = replicationState.state !== "replica" ? null
     : replicationState.failed > 0
       ? <NavMarker compact tone="problem" count={replicationState.failed} countTone="danger" text={replicationState.text} />
@@ -2088,6 +2092,12 @@ function App() {
     setNotice("");
     setRestored(null);
     setConfirmFresh(false);
+    // The removed-member notice is consumed when the place that rendered it
+    // (Server's view header, or the topbar of Readyset, ProxySQL, Cluster and
+    // Replication) is left. Places without a note never showed it, so leaving
+    // them keeps it until it is seen once.
+    if (mode === "server" || mode === "workload" || mode === "tuning" || mode === "diagram" ||
+        mode === "readyset" || mode === "proxysql" || mode === "cluster" || mode === "replication") setMemberNote("");
   }
   /** The Audit log (Settings): a screen of its own, not a place. */
   function openAuditLog() {
@@ -2562,10 +2572,10 @@ function App() {
           )}
           {/* The Server place shows the same note inside its view header. The
               "Using" note is the current place's own (derived from
-              placeRequest); the removed-member notice keeps showing until the
-              next explicit choice. */}
+              placeRequest); the removed-member notice shows beside it, never
+              instead of it, and clears on the next navigation. */}
           {(memberNote || placeMemberNote) && (mode === "readyset" || mode === "proxysql" || mode === "cluster" || mode === "replication") && (
-            <span className="group-server-note nav-member-note" role="status" title={memberNote || placeMemberNote}>{memberNote || placeMemberNote}</span>
+            <span className="group-server-note nav-member-note" role="status" title={[memberNote, placeMemberNote].filter(Boolean).join(" ")}>{[memberNote, placeMemberNote].filter(Boolean).join(" ")}</span>
           )}
           {ready && mode === "library" && (
             <Popover label="About Investigations" className="topbar-info">
@@ -2894,11 +2904,11 @@ function App() {
                 onToggleNavCollapsed={toggleServerNavCollapsed}
                 picker={null}
                 connection={serverRequest}
-                topologyConnection={request}
+                placeConnections={{ replication: replicationRequest, cluster: clusterRequest }}
                 groupServer={groupActive ? {
                   group: groupActive,
                   member: serverMemberId,
-                  note: memberNote || serverMemberNote,
+                  note: [memberNote, serverMemberNote].filter(Boolean).join(" "),
                   onChoose: (id: string) => chooseMember("server", id),
                 } : null}
                 disabled={labBusy}
@@ -2957,7 +2967,7 @@ function App() {
                   connection={replicationRequest}
                   restoredLoop={restoredLoop}
                   disabled={labBusy}
-                  clusterKind={clusterReport?.key === connectionKey(clusterRequest) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
+                  clusterKind={clusterReport?.key === connectionKey(replicationRequest) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
                   onOpenCluster={() => go("cluster")}
                   onOpenReadyset={() => go("readyset")}
                   onOpenProxySql={() => go("proxysql")}

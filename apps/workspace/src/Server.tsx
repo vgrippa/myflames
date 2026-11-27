@@ -287,7 +287,7 @@ export function Server({
   onNavigatePlace,
   picker,
   connection,
-  topologyConnection = connection,
+  placeConnections = null,
   disabled,
   settings,
   initial,
@@ -333,8 +333,11 @@ export function Server({
   onToggleNavCollapsed: () => void;
   picker: React.ReactNode;
   connection: Connection;
-  /** Shared Cluster and Replication reports belong to the window's connection. */
-  topologyConnection?: Connection;
+  /** The members the Replication and Cluster places read (their own choices
+   * on a Group connection): Refresh all reads their reports on those members,
+   * and a skip loop running on the replication member stays visible here.
+   * Absent, both places read this place's connection. */
+  placeConnections?: { replication: Connection; cluster: Connection } | null;
   /** A Group connection (one connection group as one connection): the
    * Server: control and the member's name, address and role, drawn in every
    * view's header (kit.tsx ViewServerContext). Choosing a member switches
@@ -426,14 +429,17 @@ export function Server({
   /** Maintenance's open task section, restored with the workspace. */
   const [maintenanceSection, setMaintenanceSection] = useState<MaintenanceSection>(initial?.maintenance_section || "tools");
   const activeKey = connectionKey(connection);
-  const topologyKey = connectionKey(topologyConnection);
+  const replicationPlaceConnection = placeConnections?.replication || connection;
+  const clusterPlaceConnection = placeConnections?.cluster || connection;
+  const replicationPlaceKey = connectionKey(replicationPlaceConnection);
   const [localReplicationLoops, setLocalReplicationLoops] = useState<Bound<SkipLoop[]> | null>(null);
   const effectiveLoops = propReplicationLoops !== undefined ? propReplicationLoops : localReplicationLoops;
   // A skip loop runs on the connection the Replication place holds; on a
-  // Group connection that is the group connection (its active member), while
-  // the Server: control may show another member. The loop stays visible,
-  // named by the server it runs on, whichever member the place shows.
-  const loopsBound = effectiveLoops && (effectiveLoops.key === activeKey || effectiveLoops.key === topologyKey)
+  // Group connection that is the member the place reads (the primary or
+  // source, or another member a card opened), while the Server: control may
+  // show another member. The loop stays visible, named by the server it runs
+  // on, whichever member the place shows.
+  const loopsBound = effectiveLoops && (effectiveLoops.key === activeKey || effectiveLoops.key === replicationPlaceKey)
     ? effectiveLoops : null;
   const loopsHere = loopsBound?.report || [];
   const loopActiveNow = loopsHere.some(loopActive);
@@ -475,8 +481,8 @@ export function Server({
   reportRef.current = onStateChange;
   const latestConnection = useRef(connection);
   latestConnection.current = connection;
-  const latestTopologyConnection = useRef(topologyConnection);
-  latestTopologyConnection.current = topologyConnection;
+  const latestPlaceConnections = useRef({ replication: replicationPlaceConnection, cluster: clusterPlaceConnection });
+  latestPlaceConnections.current = { replication: replicationPlaceConnection, cluster: clusterPlaceConnection };
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
   useEffect(() => {
@@ -961,7 +967,7 @@ export function Server({
     const live = <T,>(b: Bound<T> | null) => (b && b.key === key ? b.report : null);
     const tasks: RefreshTask[] = [];
     const add = (view: ServerKind, params: string, path: string, body: (c: Connection) => object, accept: (b: Bound<never>) => void | boolean) => {
-      const via = view === "cluster" || view === "replication" ? latestTopologyConnection.current : latestConnection.current;
+      const via = view === "cluster" ? latestPlaceConnections.current.cluster : view === "replication" ? latestPlaceConnections.current.replication : latestConnection.current;
       const readKey = connectionKey(via);
       // The view's own read still on its way is joined, never replaced.
       const own = lastViewRead(view, readKey);
@@ -1119,8 +1125,11 @@ export function Server({
         const generation = nextGeneration(task.view);
         const current = task;
         const readKey = connectionKey(current.connection);
-        const currentConnection = () => current.view === "cluster" || current.view === "replication"
-          ? latestTopologyConnection.current : latestConnection.current;
+        const currentConnection = () => current.view === "cluster"
+          ? latestPlaceConnections.current.cluster
+          : current.view === "replication"
+            ? latestPlaceConnections.current.replication
+            : latestConnection.current;
         try {
           const result = await sharedRead(readKey, current.params, (signal) => current.request(current.connection, signal), { signal: controller.signal });
           if (controller.signal.aborted) throw new DOMException("Stopped", "AbortError");
@@ -1463,12 +1472,12 @@ export function Server({
     const bound = effectiveLoops;
     if (!id || !bound || loopStoppingRef.current.has(id)) return;
     // Stop goes to the connection the loop runs on (its bound key): the
-    // member on screen, or the group connection while the Server: control
-    // shows another member.
+    // member on screen, or the member the Replication place reads while the
+    // Server: control shows another member.
     const c = bound.key === connectionKey(latestConnection.current)
       ? latestConnection.current
-      : bound.key === connectionKey(latestTopologyConnection.current)
-        ? latestTopologyConnection.current
+      : bound.key === connectionKey(latestPlaceConnections.current.replication)
+        ? latestPlaceConnections.current.replication
         : null;
     if (!c) return;
     loopStoppingRef.current.add(id);
