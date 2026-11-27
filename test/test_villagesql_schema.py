@@ -394,20 +394,23 @@ class TestVillageSQLSystemSchema(unittest.TestCase):
 
 
 class TestUnchangedIndexFixtures(unittest.TestCase):
-    # Canonical full-report SHA-256 values recorded immediately before the L6
-    # implementation. Only taken_at is excluded because it is wall-clock time.
+    # Canonical full-report SHA-256 values computed with master's code at 0e0a8979
+    # (the base this branch merged) on the same replay. Only taken_at is excluded
+    # because it is wall-clock time. percona-8.4-psoff differs from master in one
+    # note only: "Full-scan shares from Percona Server user statistics" names the
+    # product as the note before it does (master: "Percona user statistics").
     BASELINES = {
-        "mariadb-11.4": "d76709adfb05ad7d1fdb6a347719801d7cc833eb52020252306348d43a51bcb9",
-        "mariadb-11.4-userstat": "4c1b5b348e9e97cbf55db491d68a5fea5411f541a02942b742c04312ecbf1a29",
-        "mariadb-13.0": "e854178db75754d53d1f9360fb09dbbc28114b072b80c7ca25093005eb5e0079",
-        "mariadb-13.0-default": "319cd6b6f3674474c74162ce73fdc2c17e43185484d6a29d098b3c2704d42f23",
-        "mysql-26.7": "1dd233c6a310f2e5f304d7fc208293fed9226e3bf3e928a4773606dfc16c6dab",
-        "mysql-5.7": "9d0f29688125102adc745016529aab9bdb14b57cc16bb37ce976a4fbbd9b60f8",
-        "mysql-8.4": "f6d9c5849014eabf7c8df985f108e3c1ac0546ed7084ef0cb0548ca5365f30e6",
-        "mysql-9.7": "cbd8fee06be25ea123af4e5704e3ac82964995c87ee8459f6e5bd8f2ca373204",
-        "percona-8.4": "6b16c7c3e246919df72fa3d47398cd54c8a1d3606805af04d35bf0f491fa69d9",
-        "percona-8.4-partitioned": "c1a2ee9458c34521e599b3486dd30e7e8366ff2c9d7ac651caaea934892a519e",
-        "percona-8.4-psoff": "f0c1e67a0a057638fb94a8d3b7e56316fb7d34876f33dae637845ecfc6e62086",
+        "mariadb-11.4": "aa94ba238f199fdc9a66b87e981a85b38b6ef305e2abdecce1e739baad153997",
+        "mariadb-11.4-userstat": "0bafdab5030854fd68e9b129bad6abdb1eeba0859ffec48fa8fbbd3b4500f116",
+        "mariadb-13.0": "05aa50418844ad29f13e4920805b8bfe77a65d7642e0240b0700d11bdab2cf56",
+        "mariadb-13.0-default": "e60df795d56b258303a49045ea1bad88a811f128e78640bcfeffeced8d84e797",
+        "mysql-26.7": "9b940b50e2d2d8d6266c20f90c5783abfbbbad669b65ce4571f24212b0c6f155",
+        "mysql-5.7": "272bbdca574b2c5d59e00ed4021beec7bd8d295b19a8c06e00cab0a3072ecc8b",
+        "mysql-8.4": "428b8df7f2ad9d251a677ced1f234f72d21c8c55ec9b4ec2e53caa68f41df8f3",
+        "mysql-9.7": "d7ae58bef51426866e6d8de9076c36258a8abeb304bbc2f6aad46f7f05b8c134",
+        "percona-8.4": "f43cdef9fece60a5b36bbefed3136e4007c54dd4b492b223f3b58faffcba4863",
+        "percona-8.4-partitioned": "d737beb2bcae9ee2f1ae534518534e64430122a6c11bcba4dbc8aa709ffc4d4e",
+        "percona-8.4-psoff": "f30183c9ec34fa3de3d430cb25abdd6b0dcc9e687db2b64cb8e5c0b157692cfe",
     }
 
     def test_mysql_percona_mariadb_reports_match_prechange_results(self):
