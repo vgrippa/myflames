@@ -33,7 +33,14 @@ import { Commands } from "./Commands";
 import { Icon } from "./components";
 import { POPOVER_EVENT, registerFocusScope } from "./kit";
 import { useViewOnScreen } from "./viewOnScreen";
+import {
+  closeWhyDisabled,
+  openWhyDisabled,
+  registerWhyHost,
+  type WhyDisabledRequest,
+} from "./whyDisabledBus";
 import "./catalog-actions.css";
+export { closeWhyDisabled, openWhyDisabled, type WhyDisabledRequest };
 
 /** @types/react 18.3.12 has no popover typings: the attribute goes through a
  * typed record, never an `any` prop. */
@@ -41,10 +48,27 @@ const POPOVER_ATTR: Record<string, string> = { popover: "auto" };
 const FALLBACK_FOCUSABLE = 'button, [href], input, select, textarea, summary, [tabindex]';
 const STICKY_TOPBAR_SELECTOR =
   ".topbar-stack, .view-toolbar, .place-toolbar, .editor-toolbar, .teach-toolbar, .connection-group-bar";
+const ANCESTOR_ATTRS = ["hidden", "inert", "aria-hidden", "open", "style", "class"];
+const CANCEL_LABEL = /^(cancel|close)$/i;
+
+function restoreAttr(el: HTMLElement, attr: string, expected: string | null, prev: string | null) {
+  if (expected !== null && el.getAttribute(attr) === expected) {
+    if (prev === null) el.removeAttribute(attr);
+    else el.setAttribute(attr, prev);
+  }
+}
+
+function observeAncestors(el: HTMLElement, onChange: () => void): MutationObserver {
+  const observer = new MutationObserver(onChange);
+  for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+    observer.observe(parent, { attributes: true, attributeFilter: ANCESTOR_ATTRS });
+  }
+  return observer;
+}
 
 function isElementVisible(el: HTMLElement | null): el is HTMLElement {
   if (!el || !el.isConnected) return false;
-  if (el.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+  if (el.closest('[hidden], [inert], [aria-hidden="true"], dialog:not([open])')) return false;
   if (el.getClientRects().length === 0) return false;
   if (getComputedStyle(el).visibility === "hidden") return false;
   return true;
@@ -54,7 +78,29 @@ function isFocusableVisible(el: HTMLElement | null): el is HTMLElement {
   return isElementVisible(el) && !el.matches(":disabled");
 }
 
-function findVisibleFallback(containers: HTMLElement[], exclude: HTMLElement | null): HTMLElement | null {
+function isAnchorDisabled(el: HTMLElement | null): boolean {
+  return !!el && el.isConnected && (el.getAttribute("aria-disabled") === "true" || el.matches(":disabled"));
+}
+
+function isExcludedNode(node: HTMLElement, exclude: (HTMLElement | null)[]): boolean {
+  return exclude.some((ex) => ex && (ex === node || ex.contains(node)));
+}
+
+function findDialogFallback(dialog: HTMLDialogElement, exclude: (HTMLElement | null)[]): HTMLElement | null {
+  const candidates = [
+    ...dialog.querySelectorAll<HTMLElement>(".sheet-actions button, .dialog-actions button"),
+    ...dialog.querySelectorAll<HTMLElement>("button"),
+  ];
+  for (const cand of candidates) {
+    if (isExcludedNode(cand, exclude) || !isFocusableVisible(cand)) continue;
+    const text = (cand.textContent || "").replace(/\s+/g, " ").trim();
+    const label = (cand.getAttribute("aria-label") || "").trim();
+    if (CANCEL_LABEL.test(text) || CANCEL_LABEL.test(label)) return cand;
+  }
+  return isElementVisible(dialog) ? dialog : null;
+}
+
+function findVisibleFallback(containers: HTMLElement[], exclude: (HTMLElement | null)[]): HTMLElement | null {
   const candidates: (HTMLElement | null)[] = [
     ...containers,
     document.querySelector<HTMLElement>(".server-view:not([hidden])"),
@@ -65,17 +111,17 @@ function findVisibleFallback(containers: HTMLElement[], exclude: HTMLElement | n
   for (const container of candidates) {
     if (!container || seen.has(container) || !isElementVisible(container)) continue;
     seen.add(container);
-    if (container.matches(FALLBACK_FOCUSABLE) && container.tabIndex >= 0 && isFocusableVisible(container) && !exclude?.contains(container)) {
+    if (container.matches(FALLBACK_FOCUSABLE) && container.tabIndex >= 0 && isFocusableVisible(container) && !isExcludedNode(container, exclude)) {
       return container;
     }
     const preferred = container.querySelector<HTMLElement>(".detail-back, .inspector-close, .view-switcher");
-    if (preferred && isFocusableVisible(preferred) && !exclude?.contains(preferred)) return preferred;
+    if (preferred && isFocusableVisible(preferred) && !isExcludedNode(preferred, exclude)) return preferred;
     for (const node of container.querySelectorAll<HTMLElement>(FALLBACK_FOCUSABLE)) {
-      if (node.tabIndex < 0 || exclude?.contains(node)) continue;
+      if (node.tabIndex < 0 || isExcludedNode(node, exclude)) continue;
       if (isFocusableVisible(node)) return node;
     }
     const heading = container.querySelector<HTMLElement>('h2[tabindex="-1"]');
-    if (heading && isFocusableVisible(heading) && !exclude?.contains(heading)) return heading;
+    if (heading && isFocusableVisible(heading) && !isExcludedNode(heading, exclude)) return heading;
   }
   return null;
 }
@@ -223,35 +269,70 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
   const onScreenRef = useRef(onScreen);
   onScreenRef.current = onScreen;
 
-  // Focus restoration tracking for unmount/close while focus is inside (W3).
+  // Focus restoration tracking for unmount/close while focus is inside (W3, S-F1).
   const focusInsideRef = useRef(false);
   const outsidePointerRef = useRef(false);
   const explicitCloseRef = useRef(false);
+  const hidingRef = useRef(false);
   const fallbackContainersRef = useRef<HTMLElement[]>([]);
+  const appliedExpandedRef = useRef<{ button: HTMLElement; value: string } | null>(null);
 
   // Resolved at effect/event time: a ref's .current is empty during the first
   // render and set by the time effects and handlers run.
   const resolve = () => (anchor && "current" in anchor ? anchor.current : anchor);
 
+  const hidePopover = (el: HTMLElement | null) => {
+    if (!el) return;
+    hidingRef.current = true;
+    try {
+      if (el.matches(":popover-open")) el.hidePopover();
+    } catch { /* Already closed or detached. */ } finally {
+      hidingRef.current = false;
+    }
+  };
+
+  // S-F1: return focus to the anchor ONLY while it is still disabled. If the
+  // gate opened (enabled), focus the open dialog's Cancel button (or dialog)
+  // or a visible non-anchor fallback so a pending Enter/Space never confirms.
+  const restoreFocus = (el: HTMLElement | null, button: HTMLElement | null) => {
+    if (onScreenRef.current && isAnchorDisabled(button) && isFocusableVisible(button)) {
+      button.focus({ preventScroll: true });
+      return;
+    }
+    const dialog =
+      (button?.isConnected ? button.closest<HTMLDialogElement>("dialog[open]") : null) ||
+      (el?.isConnected ? el.closest<HTMLDialogElement>("dialog[open]") : null) ||
+      fallbackContainersRef.current.find(
+        (c): c is HTMLDialogElement => c.matches("dialog[open]") && isElementVisible(c),
+      ) ||
+      null;
+    if (dialog && isElementVisible(dialog)) {
+      findDialogFallback(dialog, [el, button])?.focus({ preventScroll: true });
+      return;
+    }
+    findVisibleFallback(fallbackContainersRef.current, [el, button])?.focus({ preventScroll: true });
+  };
+
   const closeToAnchor = () => {
     explicitCloseRef.current = true;
     const el = pop.current;
     const button = resolve();
-    try { if (el?.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed or detached. */ }
-    if (onScreenRef.current && isFocusableVisible(button)) {
-      button.focus({ preventScroll: true });
-    } else {
-      findVisibleFallback(fallbackContainersRef.current, el)?.focus({ preventScroll: true });
-    }
+    hidePopover(el);
+    restoreFocus(el, button);
     onCloseRef.current();
   };
 
   // Anchor naming and invoker relationship: the button carries the anchor name
-  // and popovertarget while clicks may open the message.
+  // and popovertarget while clicks may open the message. Snapshot any prior
+  // aria-haspopup/aria-expanded values React set and restore them on cleanup (V8).
   useEffect(() => {
     const button = resolve();
     const el = pop.current;
     if (!button || !el) return;
+    const prevAnchorName = button.style.getPropertyValue("anchor-name");
+    const prevPopoverTarget = button.getAttribute("popovertarget");
+    const prevHasPopup = button.getAttribute("aria-haspopup");
+    const prevExpanded = button.getAttribute("aria-expanded");
     button.style.setProperty("anchor-name", anchorName);
     el.style.setProperty("position-anchor", anchorName);
     const toggle = (event: MouseEvent) => {
@@ -260,7 +341,7 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       event.preventDefault();
       if (!attachClick) return;
       if (openRef.current || el.matches(":popover-open")) {
-        try { if (el.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed. */ }
+        hidePopover(el);
         onCloseRef.current();
       } else {
         onOpenRef.current();
@@ -269,30 +350,40 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
     if (mayOpen) {
       button.setAttribute("popovertarget", popId);
       button.setAttribute("aria-haspopup", "dialog");
+      const expanded = String(openRef.current);
+      button.setAttribute("aria-expanded", expanded);
+      appliedExpandedRef.current = { button, value: expanded };
       button.addEventListener("click", toggle);
     }
     return () => {
-      button.style.removeProperty("anchor-name");
-      button.removeAttribute("popovertarget");
-      button.removeAttribute("aria-haspopup");
-      button.removeAttribute("aria-expanded");
-      button.removeEventListener("click", toggle);
+      if (prevAnchorName) button.style.setProperty("anchor-name", prevAnchorName);
+      else button.style.removeProperty("anchor-name");
+      if (mayOpen) {
+        restoreAttr(button, "popovertarget", popId, prevPopoverTarget);
+        restoreAttr(button, "aria-haspopup", "dialog", prevHasPopup);
+        const appliedExpanded = appliedExpandedRef.current;
+        if (appliedExpanded?.button === button) {
+          restoreAttr(button, "aria-expanded", appliedExpanded.value, prevExpanded);
+          appliedExpandedRef.current = null;
+        }
+        button.removeEventListener("click", toggle);
+      }
     };
   }, [anchor, anchorName, popId, mayOpen, attachClick]);
 
   // Keep aria-expanded in sync with open state without re-binding click handlers.
   useEffect(() => {
     const button = resolve();
-    if (!button) return;
-    if (mayOpen) button.setAttribute("aria-expanded", String(open));
-    else button.removeAttribute("aria-expanded");
+    if (!button || !mayOpen) return;
+    const expanded = String(open);
+    button.setAttribute("aria-expanded", expanded);
+    appliedExpandedRef.current = { button, value: expanded };
   }, [anchor, mayOpen, open]);
 
   // Close immediately when the enclosing view/place leaves the screen (W1).
   useEffect(() => {
     if (!onScreen && open) {
-      const el = pop.current;
-      try { if (el?.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed. */ }
+      hidePopover(pop.current);
       onCloseRef.current();
     }
   }, [onScreen, open]);
@@ -312,21 +403,24 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
 
   // Show/hide the top-layer popover and keep it inside the safe viewport
   // (never covering the fixed status bar or a sticky toolbar, W6), closing
-  // automatically if the anchor becomes hidden (W1).
+  // automatically if the anchor becomes hidden (W1, V2).
   useLayoutEffect(() => {
     const el = pop.current;
     const button = resolve();
     if (!el) return;
     if (!open) {
       if (el.matches(":popover-open")) {
-        try { el.hidePopover(); } catch { /* Already closed. */ }
+        const hadFocus = el.contains(document.activeElement);
+        if (hadFocus) focusInsideRef.current = true;
+        hidePopover(el);
+        if (hadFocus && button && document.activeElement === button && !isAnchorDisabled(button)) {
+          restoreFocus(el, button);
+        }
       }
       return;
     }
     if (!button || !onScreenRef.current || !isElementVisible(button)) {
-      if (el.matches(":popover-open")) {
-        try { el.hidePopover(); } catch { /* Already closed. */ }
-      }
+      hidePopover(el);
       onCloseRef.current();
       return;
     }
@@ -335,20 +429,14 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
     }
     const update = () => {
       if (!onScreenRef.current || !isElementVisible(button)) {
-        try { if (el.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed. */ }
+        hidePopover(el);
         onCloseRef.current();
         return;
       }
       if (el.matches(":popover-open")) placePopover(button, el);
     };
     update();
-    const ancestorObserver = new MutationObserver(update);
-    for (let parent = button.parentElement; parent; parent = parent.parentElement) {
-      ancestorObserver.observe(parent, {
-        attributes: true,
-        attributeFilter: ["hidden", "inert", "aria-hidden", "style", "class"],
-      });
-    }
+    const ancestorObserver = observeAncestors(button, update);
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       resizeObserver = new ResizeObserver(update);
@@ -362,12 +450,16 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       resizeObserver?.disconnect();
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
+      if (el.contains(document.activeElement)) {
+        focusInsideRef.current = true;
+      }
+      hidePopover(el);
     };
   }, [open, anchor]);
 
   // Shared popover coordination (myflames-popover), focus-scope ordering
   // (registerFocusScope), scoped Escape handling (W1, W2), and focus
-  // restoration when unmounting or closing with focus inside (W3).
+  // restoration when unmounting or closing with focus inside (W3, S-F1).
   useEffect(() => {
     if (!open) return;
     const el = pop.current;
@@ -375,10 +467,10 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
     if (!el || !button) return;
 
     fallbackContainersRef.current = [
+      button.closest<HTMLElement>("dialog[open]"),
+      button.closest<HTMLElement>(".view-inspector"),
       button.closest<HTMLElement>(".review-actions"),
       button.closest<HTMLElement>(".readyset-allowlist-chips"),
-      button.closest<HTMLElement>(".view-inspector"),
-      button.closest<HTMLElement>("dialog[open]"),
       button.closest<HTMLElement>(".server-view"),
       button.closest<HTMLElement>("main"),
     ].filter((n): n is HTMLElement => !!n);
@@ -396,7 +488,7 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       const opened = typeof detail === "string" && detail ? document.getElementById(detail) : null;
       if (opened && el.contains(opened)) return;
       outsidePointerRef.current = true;
-      try { if (el.matches(":popover-open")) el.hidePopover(); } catch { /* Already closed. */ }
+      hidePopover(el);
       onCloseRef.current();
     };
     window.addEventListener(POPOVER_EVENT, onOtherPopover);
@@ -427,6 +519,7 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       outsidePointerRef.current = false;
     };
     const onFocusOut = (event: FocusEvent) => {
+      if (hidingRef.current) return;
       const next = event.relatedTarget as Node | null;
       if (next && el.contains(next)) return;
       if (next) focusInsideRef.current = false;
@@ -456,18 +549,15 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       const dismissedByOutside = outsidePointerRef.current;
       outsidePointerRef.current = false;
 
-      try { if (el.matches(":popover-open")) el.hidePopover(); } catch { /* Detached. */ }
+      hidePopover(el);
 
       if (wasExplicit || !hadFocus || dismissedByOutside) return;
       const active = document.activeElement;
+      const focusOnEnabledAnchor = active === button && !isAnchorDisabled(button);
       const focusLost = !active || active === document.body || active === document.documentElement ||
-        !active.isConnected || el.contains(active);
+        !active.isConnected || el.contains(active) || focusOnEnabledAnchor;
       if (!focusLost) return;
-      if (onScreenRef.current && isFocusableVisible(button)) {
-        button.focus({ preventScroll: true });
-        return;
-      }
-      findVisibleFallback(fallbackContainersRef.current, el)?.focus({ preventScroll: true });
+      restoreFocus(el, button);
     };
   }, [open, anchor, popId]);
 
@@ -503,31 +593,8 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
 
 // ---- App-level host for privilege-disabled buttons ------------------------------------
 
-export type WhyDisabledRequest = {
-  anchor: HTMLElement;
-  reason: string;
-  /** Backend-supplied advisory GRANT statement, or null when inapplicable. */
-  grantSql?: string | null;
-  /** Optional label for the dialog and GRANT Commands block. */
-  label?: string;
-};
-
 type ActiveWhy = WhyDisabledRequest & { id: number };
-type HostApi = { open: (request: WhyDisabledRequest) => void; close: () => void };
-
-let registeredHost: HostApi | null = null;
 let nextWhyId = 0;
-
-/** Open (or toggle closed, when called again for the same button) the single
- * app-level WhyDisabled message anchored to the clicked disabled button. */
-export function openWhyDisabled(request: WhyDisabledRequest): void {
-  registeredHost?.open(request);
-}
-
-/** Close the app-level WhyDisabled message if open. */
-export function closeWhyDisabled(): void {
-  registeredHost?.close();
-}
 
 function anchorStillDisabled(anchor: HTMLElement): boolean {
   if (!isElementVisible(anchor)) return false;
@@ -548,7 +615,7 @@ export function WhyDisabledHost({ resetKey, children }: PropsWithChildren<{
   activeRef.current = active;
 
   const open = useCallback((request: WhyDisabledRequest) => {
-    if (!request.reason || !request.anchor.isConnected) return;
+    if (!request.reason || !anchorStillDisabled(request.anchor)) return;
     if (activeRef.current?.anchor === request.anchor) {
       setActive(null);
       return;
@@ -560,48 +627,60 @@ export function WhyDisabledHost({ resetKey, children }: PropsWithChildren<{
     setActive(null);
   }, []);
 
-  useEffect(() => {
-    const api: HostApi = { open, close };
-    registeredHost = api;
-    return () => {
-      if (registeredHost === api) registeredHost = null;
-    };
-  }, [open, close]);
+  useEffect(() => registerWhyHost({ open, close }), [open, close]);
 
   // Close when the active place, view or connection changes.
+  const prevReset = useRef(resetKey);
   useEffect(() => {
-    setActive(null);
+    if (prevReset.current !== resetKey) {
+      prevReset.current = resetKey;
+      setActive(null);
+    }
   }, [resetKey]);
 
   // Close if the anchored button becomes enabled, disabled natively, busy,
-  // hidden (e.g. a retained view switched off-screen), or removed from the DOM.
+  // hidden (e.g. a retained view switched off-screen or a dialog closed), or
+  // removed from the DOM; update reason and GRANT live while it stays disabled (V1, V2).
+  const activeId = active?.id ?? 0;
+  const activeAnchor = active?.anchor ?? null;
   useEffect(() => {
-    if (!active) return;
-    const anchor = active.anchor;
-    const activeId = active.id;
-    const dismissIfStale = () => {
+    if (!activeId || !activeAnchor) return;
+    const anchor = activeAnchor;
+    const tracksData = anchor.hasAttribute("data-why-reason");
+    const syncOrDismiss = () => {
       if (!anchorStillDisabled(anchor)) {
+        setActive((cur) => (cur?.id === activeId ? null : cur));
+        return;
+      }
+      if (anchor.hasAttribute("data-why-reason")) {
+        const nextReason = anchor.getAttribute("data-why-reason") || "";
+        const nextGrant = anchor.getAttribute("data-why-grant");
+        if (!nextReason) {
+          setActive((cur) => (cur?.id === activeId ? null : cur));
+          return;
+        }
+        setActive((cur) => {
+          if (!cur || cur.id !== activeId) return cur;
+          if (cur.reason === nextReason && (cur.grantSql ?? null) === (nextGrant ?? null)) return cur;
+          return { ...cur, reason: nextReason, grantSql: nextGrant };
+        });
+      } else if (tracksData) {
         setActive((cur) => (cur?.id === activeId ? null : cur));
       }
     };
-    const attrObserver = new MutationObserver(dismissIfStale);
+    const attrObserver = new MutationObserver(syncOrDismiss);
     attrObserver.observe(anchor, {
       attributes: true,
-      attributeFilter: ["aria-disabled", "disabled", "aria-busy", "data-privilege-state"],
+      attributeFilter: ["aria-disabled", "disabled", "aria-busy", "data-privilege-state", "data-why-reason", "data-why-grant"],
     });
-    const ancestorObserver = new MutationObserver(dismissIfStale);
-    for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
-      ancestorObserver.observe(parent, {
-        attributes: true,
-        attributeFilter: ["hidden", "inert", "aria-hidden", "style", "class"],
-      });
-    }
+    const ancestorObserver = observeAncestors(anchor, syncOrDismiss);
     const removalRoot = anchor.closest("dialog, .view-inspector, .server-view, main") || document.body;
-    const removalObserver = new MutationObserver(dismissIfStale);
-    removalObserver.observe(removalRoot, { childList: true, subtree: true });
+    const removalTarget = removalRoot === document.body ? document.body : removalRoot.parentElement || document.body;
+    const removalObserver = new MutationObserver(syncOrDismiss);
+    removalObserver.observe(removalTarget, { childList: true, subtree: true });
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
-      resizeObserver = new ResizeObserver(dismissIfStale);
+      resizeObserver = new ResizeObserver(syncOrDismiss);
       resizeObserver.observe(anchor);
     }
     return () => {
@@ -610,7 +689,7 @@ export function WhyDisabledHost({ resetKey, children }: PropsWithChildren<{
       removalObserver.disconnect();
       resizeObserver?.disconnect();
     };
-  }, [active]);
+  }, [activeId, activeAnchor]);
 
   const modal = active?.anchor.isConnected ? (active.anchor.closest("dialog[open]") as HTMLDialogElement | null) : null;
   const grantSql = active && typeof active.grantSql === "string" && active.grantSql.length > 0 ? active.grantSql : null;

@@ -1,11 +1,11 @@
 // A .ts module deliberately uses createElement so consumers need no JSX
 // wrapper. Server answers own privilege semantics; no grants are parsed here.
-import { Fragment, createContext, createElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
+import { Fragment, Suspense, createContext, createElement, lazy, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
 import { api, type Connection } from "./api";
 import { connectionKey, sharedRead } from "./binding";
 import { useWritePolicy } from "./Connections";
 import type { ActionPrivilege, PrivilegesReport, PrivilegeState } from "./accountsApi";
-import { WhyDisabledHost, openWhyDisabled } from "./WhyDisabled";
+import { closeWhyDisabled, onWhyDemand, openWhyDisabled } from "./whyDisabledBus";
 
 // The same read as accountsApi.readPrivileges, spelled out here: gating
 // write actions is shell code, so this one endpoint stays in the entry chunk
@@ -247,14 +247,18 @@ export function targetPrivilege(generic: PrivilegeGateResult, hint?: {
 } | null): PrivilegeGateResult {
   if (!hint) return generic;
   const allowed = hint.checked === false && hint.allowed !== true ? null : hint.allowed;
-  const need = hint.need || generic.missing.join(" or ");
+  const hintNeed = (hint.need || "").trim();
+  const genericNeed = generic.missing.join(" or ");
+  const genericPrimary = generic.missing[0] || "";
+  const need = hintNeed || genericNeed;
   // Prefer an explicit backend grant_sql on the hint; otherwise reuse the
-  // backend grant_sql from the generic denial only when it covers the same need.
+  // backend grant_sql from the generic denial only when it grants exactly
+  // the hint's need (generic.grantSql always grants generic.missing[0]).
   const grant_sql = allowed === false
     ? hint.grant_sql !== undefined
       ? hint.grant_sql
-      : generic.state === "denied" && generic.grantSql &&
-          (!hint.need || hint.need === generic.missing.join(" or ") || generic.missing.includes(hint.need))
+      : generic.state === "denied" && generic.grantSql && hintNeed &&
+          (hintNeed === genericNeed || hintNeed === genericPrimary)
         ? generic.grantSql
         : null
     : null;
@@ -263,10 +267,54 @@ export function targetPrivilege(generic: PrivilegeGateResult, hint?: {
     reason: hint.note || (allowed === false && !need ? "The server report denies this action." : ""), grey_out: true, grant_sql });
 }
 
+const LazyWhyDisabledHost = lazy(() => import("./WhyDisabled").then((m) => ({ default: m.WhyDisabledHost })));
+
 /** App-level WhyDisabled host so privilege-disabled buttons show their reason
- * and backend-supplied advisory GRANT on click. */
+ * and backend-supplied advisory GRANT on click. Loads WhyDisabled on first use
+ * so the entry chunk stays small. */
 export function PrivilegeWhyHost({ resetKey, children }: PropsWithChildren<{ resetKey?: string }>) {
-  return createElement(WhyDisabledHost, { resetKey }, children);
+  const [needed, setNeeded] = useState(false);
+  const prevReset = useRef(resetKey);
+  useEffect(() => onWhyDemand(() => setNeeded(true)), []);
+  useEffect(() => {
+    if (prevReset.current !== resetKey) {
+      prevReset.current = resetKey;
+      closeWhyDisabled();
+    }
+  }, [resetKey]);
+  return createElement(Fragment, null, children,
+    needed ? createElement(Suspense, { fallback: null }, createElement(LazyWhyDisabledHost, { resetKey })) : null);
+}
+
+const CONFIRM_MANAGED_ATTRS = [
+  "aria-disabled",
+  "aria-describedby",
+  "title",
+  "data-privilege-state",
+  "data-why-reason",
+  "data-why-grant",
+] as const;
+type ConfirmManagedAttr = (typeof CONFIRM_MANAGED_ATTRS)[number];
+type SavedConfirmButton = {
+  button: HTMLButtonElement;
+  hadClass: boolean;
+  prev: Partial<Record<ConfirmManagedAttr, string | null>>;
+  applied: Partial<Record<ConfirmManagedAttr, string | null>>;
+};
+
+function restoreConfirmAttr(saved: SavedConfirmButton, attr: ConfirmManagedAttr) {
+  const expected = saved.applied[attr] ?? null;
+  if (expected !== null && saved.button.getAttribute(attr) === expected) {
+    const prior = saved.prev[attr] ?? null;
+    if (prior === null) saved.button.removeAttribute(attr);
+    else saved.button.setAttribute(attr, prior);
+  }
+  saved.applied[attr] = null;
+}
+
+function restoreConfirmButton(saved: SavedConfirmButton) {
+  for (const attr of CONFIRM_MANAGED_ATTRS) restoreConfirmAttr(saved, attr);
+  if (!saved.hadClass) saved.button.classList.remove("privilege-action");
 }
 
 /** ConfirmSheet currently accepts a label but no button attributes. Attach
@@ -281,16 +329,47 @@ export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: Pro
   const label = useRef<HTMLSpanElement>(null);
   const gateRef = useRef(gate);
   gateRef.current = gate;
+  const savedRef = useRef<SavedConfirmButton | null>(null);
   const id = useId();
   useLayoutEffect(() => {
-    const button = label.current?.closest("button");
+    const button = label.current?.closest("button") as HTMLButtonElement | null;
+    if (savedRef.current && savedRef.current.button !== button) {
+      restoreConfirmButton(savedRef.current);
+      savedRef.current = null;
+    }
     if (!button) return;
+    if (!savedRef.current) {
+      const prev: SavedConfirmButton["prev"] = {};
+      for (const attr of CONFIRM_MANAGED_ATTRS) prev[attr] = button.getAttribute(attr);
+      savedRef.current = { button, hadClass: button.classList.contains("privilege-action"), prev, applied: {} };
+    }
+    const saved = savedRef.current;
+    const reason = gate.disabledReason;
+    const privilegeDenial = gate.state === "denied" && !!reason && reason === gate.reason;
+    const desired: Record<ConfirmManagedAttr, string | null> = {
+      "aria-disabled": String(!!reason || button.disabled || button.getAttribute("aria-busy") === "true"),
+      "aria-describedby": id,
+      title: reason || gate.reason || null,
+      "data-privilege-state": gate.state,
+      "data-why-reason": reason || null,
+      "data-why-grant": privilegeDenial && gate.grantSql ? gate.grantSql : null,
+    };
     button.classList.add("privilege-action");
-    button.setAttribute("aria-disabled", String(!!gate.disabledReason || button.disabled));
-    button.setAttribute("aria-describedby", id);
-    button.title = gate.disabledReason || gate.reason;
-    button.dataset.privilegeState = gate.state;
+    for (const attr of CONFIRM_MANAGED_ATTRS) {
+      const next = desired[attr];
+      if (next === null) restoreConfirmAttr(saved, attr);
+      else {
+        if (button.getAttribute(attr) !== next) button.setAttribute(attr, next);
+        saved.applied[attr] = next;
+      }
+    }
   });
+  useLayoutEffect(() => () => {
+    if (savedRef.current) {
+      restoreConfirmButton(savedRef.current);
+      savedRef.current = null;
+    }
+  }, []);
   useEffect(() => {
     const button = label.current?.closest("button");
     if (!button) return;
@@ -320,9 +399,10 @@ export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: Pro
  * stop propagation, while opening the app-level WhyDisabled message anchored
  * to the button. Spread these props LAST. The server's write preflight remains
  * the enforcement boundary. */
-export function privilegeButtonProps(gate: PrivilegeGateResult, onClick: ButtonHTMLAttributes<HTMLButtonElement>["onClick"], blocked = "", describedBy?: string): ButtonHTMLAttributes<HTMLButtonElement> {
+export function privilegeButtonProps(gate: PrivilegeGateResult, onClick: ButtonHTMLAttributes<HTMLButtonElement>["onClick"], blocked = "", describedBy?: string): ButtonHTMLAttributes<HTMLButtonElement> & { "data-why-reason"?: string; "data-why-grant"?: string } {
   const reason = blocked || gate.disabledReason;
   const privilegeDenial = !blocked && gate.state === "denied" && !!gate.disabledReason && gate.disabledReason === gate.reason;
+  const grantSql = privilegeDenial && gate.grantSql ? gate.grantSql : undefined;
   const handler: NonNullable<ButtonHTMLAttributes<HTMLButtonElement>["onClick"]> & { whyDisabled?: boolean } = e => {
     if (reason) {
       e.preventDefault();
@@ -342,6 +422,8 @@ export function privilegeButtonProps(gate: PrivilegeGateResult, onClick: ButtonH
   // why a row cannot run); otherwise the reason stays in aria-describedby.
   return { type: "button", "aria-disabled": !!reason, ...(reason ? { title: reason } : {}),
     "aria-describedby": describedBy,
+    "data-why-reason": reason || undefined,
+    "data-why-grant": grantSql,
     onClick: handler };
 }
 

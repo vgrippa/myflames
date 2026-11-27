@@ -669,8 +669,9 @@ try {
   await page.waitForFunction(() => !document.querySelector(".view-inspector"));
   assert.equal(await page.$(memberWhy), null, "inspector closes on one Escape when focus is outside the message");
 
-  // W3: focus inside the message (Copy) returns to the action button (never
-  // drops to body) when a refresh enables the action and unmounts the message.
+  // W3 + S-F1: focus inside the message (Copy) never drops to body when a
+  // refresh enables the action and unmounts the message, and never lands on
+  // the newly enabled action button (lands on a safe visible fallback instead).
   await h.select(`${view} tr[data-row-key="${grantMember.key}"]`);
   await clickMemberAction("Stop Group Replication…");
   await page.waitForSelector(`${memberWhy} .ops-commands button`, { visible: true });
@@ -683,8 +684,15 @@ try {
   enabledStop.grant_sql = null;
   await refreshTo(enabledReport, { preservePopover: true });
   assert.equal(await page.$(memberWhy), null, "enabling the action closes and unmounts the message");
-  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Stop Group Replication…",
-    "W3: focus returns to the newly enabled action button instead of body");
+  const enabledFocus = await page.evaluate(() => ({
+    text: document.activeElement?.textContent?.trim() || "",
+    isBody: !document.activeElement || document.activeElement === document.body,
+    visible: !!document.activeElement && document.activeElement.getClientRects().length > 0,
+  }));
+  assert.equal(enabledFocus.isBody, false, "W3: focus never drops to body when enabling the action unmounts the message");
+  assert.equal(enabledFocus.visible, true, "W3: focus lands on a visible fallback element");
+  assert.notEqual(enabledFocus.text, "Stop Group Replication…",
+    "S-F1: focus never moves onto the newly enabled action button");
 
   // W11: fix and grant_sql containing markup plus U+200B and U+202E add no
   // elements, run no script, and Copy returns grant_sql verbatim.

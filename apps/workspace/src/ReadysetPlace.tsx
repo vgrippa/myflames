@@ -674,6 +674,12 @@ function ReadysetView({
     setOpenChipWhy(null);
   }, [otherDatabase]);
 
+  useEffect(() => {
+    // Switching Readyset tabs clears any open disabled-chip message so it
+    // never reopens unexpectedly on return to Parameters.
+    setOpenChipWhy(null);
+  }, [tab]);
+
   async function load(force = false) {
     if (disabled) return;
     setExportError("");

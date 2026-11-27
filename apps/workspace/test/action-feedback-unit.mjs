@@ -17,10 +17,10 @@ const bundle = await build({
     contents: `
   import React, { useRef, useState } from "react";
   import { createRoot } from "react-dom/client";
-  import { ActionButton, ActionStatus, useAction } from "./kit";
+  import { ActionButton, ActionStatus, ConfirmSheet, useAction } from "./kit";
   import { Commands } from "./Commands";
   import { KillResultNote, type KillNote } from "./Locks";
-  import { privilegeButtonProps, privilegeResult } from "./privileges";
+  import { PrivilegeConfirmLabel, privilegeButtonProps, privilegeResult } from "./privileges";
   import { WhyDisabledHost } from "./WhyDisabled";
   function Act({ id, done, failed, fail }: { id: string; done?: (n: number) => string; failed?: (e: unknown) => string; fail?: boolean }) {
     const action = useAction();
@@ -81,8 +81,64 @@ const bundle = await build({
       <button id="cmd-set-b" type="button" onClick={() => setText("GRANT UPDATE ON *.* TO 'b'@'%';")}>Set B</button>
     </div>;
   }
+  function Round2Probe({ onResetKey }: { onResetKey: () => void }) {
+    const [variant, setVariant] = useState<"a" | "b" | "allowed">("a");
+    const [showInspector, setShowInspector] = useState(true);
+    const [showDialog, setShowDialog] = useState(false);
+    const [dialogMode, setDialogMode] = useState<"denied" | "pending" | "allowed" | "plain">("denied");
+    const [confirms, setConfirms] = useState(0);
+    const nativeDialogRef = useRef<HTMLDialogElement>(null);
+    const gate = variant === "a"
+      ? privilegeResult({ state: "denied", missing: [["CONNECTION_ADMIN"]], reason: "Needs CONNECTION_ADMIN.", grey_out: true, grant_sql: "GRANT CONNECTION_ADMIN ON *.* TO 'dba'@'%';" })
+      : variant === "b"
+        ? privilegeResult({ state: "denied", missing: [["SYSTEM_USER"]], reason: "Needs SYSTEM_USER.", grey_out: true, grant_sql: "GRANT SYSTEM_USER ON *.* TO 'dba'@'%';" })
+        : privilegeResult({ state: "allowed", missing: [], reason: "Allowed." });
+    const confirmGate = dialogMode === "denied"
+      ? privilegeResult({ state: "denied", missing: [["SYSTEM_USER"]], reason: "Needs SYSTEM_USER.", grey_out: true, grant_sql: "GRANT SYSTEM_USER ON *.* TO 'dba'@'%';" })
+      : dialogMode === "pending"
+        ? { ...privilegeResult({ state: "allowed", missing: [], reason: "Allowed." }), disabledReason: "Preparing the action for review." }
+        : privilegeResult({ state: "allowed", missing: [], reason: "Allowed." });
+    return <div id="round2-probe">
+      <button id="r2-set-a" type="button" onClick={() => setVariant("a")}>Set variant A</button>
+      <button id="r2-set-b" type="button" onClick={() => setVariant("b")}>Set variant B</button>
+      <button id="r2-set-allowed" type="button" onClick={() => setVariant("allowed")}>Set allowed</button>
+      <button id="r2-reset-key" type="button" onClick={onResetKey}>Bump resetKey</button>
+      <button id="r2-toggle-inspector" type="button" onClick={() => setShowInspector((v) => !v)}>Toggle inspector</button>
+      <button id="r2-open-sheet" type="button" onClick={() => { setDialogMode("denied"); setShowDialog(true); }}>Open sheet</button>
+      <button id="r2-sheet-pending" type="button" onClick={() => setDialogMode("pending")}>Sheet pending</button>
+      <button id="r2-sheet-allowed" type="button" onClick={() => setDialogMode("allowed")}>Sheet allowed</button>
+      <button id="r2-sheet-plain" type="button" onClick={() => setDialogMode("plain")}>Sheet plain</button>
+      <button id="r2-open-native" type="button" onClick={() => nativeDialogRef.current?.showModal()}>Open native</button>
+      <button id="r2-close-native" type="button" onClick={() => nativeDialogRef.current?.close()}>Close native</button>
+      <output id="r2-confirms">{confirms}</output>
+      <button id="r2-aria-btn" type="button" aria-haspopup="menu" aria-expanded={false}
+        {...privilegeButtonProps(gate, () => {})}>Menu gated</button>
+      {showInspector && (
+        <div className="view-inspector" id="r2-inspector">
+          <button id="r2-inspector-btn" type="button" {...privilegeButtonProps(gate, () => {})}>Inspector gated</button>
+        </div>
+      )}
+      <dialog id="r2-native-dialog" ref={nativeDialogRef}>
+        <button id="r2-native-btn" type="button" {...privilegeButtonProps(gate, () => {})}>Native dialog gated</button>
+      </dialog>
+      {showDialog && (
+        <ConfirmSheet
+          className="r2-sheet"
+          title="Confirm probe?"
+          confirmLabel={dialogMode === "plain"
+            ? "Plain confirm"
+            : <PrivilegeConfirmLabel gate={confirmGate} showStatus={false}>Run confirm</PrivilegeConfirmLabel>}
+          onCancel={() => setShowDialog(false)}
+          onConfirm={() => { if (dialogMode === "allowed" || dialogMode === "plain") setConfirms((n) => n + 1); }}
+        >
+          <p>Probe sheet body.</p>
+        </ConfirmSheet>
+      )}
+    </div>;
+  }
   function Demo() {
-    return <WhyDisabledHost>
+    const [resetKey, setResetKey] = useState(0);
+    return <WhyDisabledHost resetKey={String(resetKey)}>
       <Act id="throws-done" done={() => { throw new Error("formatter bug"); }} />
       <Act id="throws-failed" fail failed={() => { throw new Error("formatter bug"); }} />
       <Act id="plain" done={(n) => n + " rows."} />
@@ -92,6 +148,7 @@ const bundle = await build({
       <Note id="note-unknown" n={note({})} />
       <WhyProbe />
       <CommandsProbe />
+      <Round2Probe onResetKey={() => setResetKey((n) => n + 1)} />
     </WhyDisabledHost>;
   }
   createRoot(document.getElementById("root")!).render(<Demo />);
@@ -259,8 +316,122 @@ try {
   await page.waitForFunction(() => document.querySelector("#commands-probe [role=status]")?.textContent === "Copied.");
   assert.equal(await page.evaluate(() => window.__clipCalls[2].text), "GRANT UPDATE ON *.* TO 'b'@'%';");
 
+  // 7. Round-2 fixes: V8 (restore React's aria-haspopup & aria-expanded),
+  // V1 (live reason/GRANT update while disabled + resetKey closes host),
+  // V2 (parent removal observer + dialog open attribute), V6 (PrivilegeConfirmLabel
+  // unmount/gate cleanup), S-F1 + V9 (focus moves to Cancel, never enabled confirm;
+  // Copy inside modal dialog; ConfirmSheet bursts).
+  assert.deepEqual(
+    await page.$eval("#r2-aria-btn", (b) => ({ hp: b.getAttribute("aria-haspopup"), exp: b.getAttribute("aria-expanded") })),
+    { hp: "menu", exp: "false" },
+    "V8: button starts with React's aria-haspopup and aria-expanded",
+  );
+  await page.click("#r2-aria-btn");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  // V1: live update reason + GRANT while disabled.
+  await page.evaluate(() => document.getElementById("r2-set-b").click());
+  await page.waitForFunction(() => document.querySelector(".why-disabled:popover-open .ops-pre code")?.textContent === "GRANT SYSTEM_USER ON *.* TO 'dba'@'%';");
+  assert.match(await page.$eval(".why-disabled:popover-open", (e) => e.textContent || ""), /Needs SYSTEM_USER\./);
+  // Close via Escape -> V8 restores React's aria-haspopup="menu" and aria-expanded="false".
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.deepEqual(
+    await page.$eval("#r2-aria-btn", (b) => ({ hp: b.getAttribute("aria-haspopup"), exp: b.getAttribute("aria-expanded") })),
+    { hp: "menu", exp: "false" },
+    "V8: closing WhyDisabled restores React's aria-haspopup and aria-expanded instead of removing them",
+  );
+  // V1: resetKey change closes an open host message (even without outside pointerdown).
+  await page.click("#r2-aria-btn");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.evaluate(() => document.getElementById("r2-reset-key").click());
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  // V2a: removing removalRoot (.view-inspector itself) from its parent closes the host message.
+  await page.click("#r2-inspector-btn");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.evaluate(() => document.getElementById("r2-toggle-inspector").click());
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await page.evaluate(() => document.getElementById("r2-toggle-inspector").click());
+  // V2b: closing a <dialog> (removing its open attribute) closes the host message.
+  await page.evaluate(() => document.getElementById("r2-open-native").click());
+  await page.waitForSelector("#r2-native-dialog[open]", { visible: true });
+  await page.click("#r2-native-btn");
+  await page.waitForSelector("#r2-native-dialog .why-disabled:popover-open", { visible: true });
+  await page.evaluate(() => document.getElementById("r2-close-native").click());
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  // V6 + S-F1 + V9 on ConfirmSheet with PrivilegeConfirmLabel:
+  await page.evaluate(() => {
+    window.__r2Copied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: (t) => { window.__r2Copied.push(t); return Promise.resolve(); } },
+    });
+  });
+  await page.click("#r2-open-sheet");
+  await page.waitForSelector("dialog.r2-sheet[open]", { visible: true });
+  const r2Confirm = "dialog.r2-sheet .sheet-actions button:last-of-type";
+  await page.focus(r2Confirm);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.r2-sheet .why-disabled:popover-open", { visible: true });
+  await page.click("dialog.r2-sheet .why-disabled:popover-open .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector("dialog.r2-sheet .why-disabled:popover-open .ops-commands [role=status]")?.textContent || ""));
+  assert.equal(await page.evaluate(() => window.__r2Copied.at(-1)), "GRANT SYSTEM_USER ON *.* TO 'dba'@'%';", "V9: Copy works inside ConfirmSheet modal");
+  // S1: focus on GRANT text, gate flips to allowed -> focus lands on Cancel, Enter sends 0 confirms.
+  await page.focus("dialog.r2-sheet .why-disabled:popover-open .ops-pre");
+  await page.evaluate(() => document.getElementById("r2-sheet-allowed").click());
+  await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet .why-disabled:popover-open"));
+  assert.equal(await page.evaluate((s) => document.activeElement?.matches(s), r2Confirm), false, "S-F1 S1: focus never lands on enabled confirm");
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Cancel", "S-F1 S1: focus moves to Cancel");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet[open]"));
+  assert.equal(await page.$eval("#r2-confirms", (e) => e.textContent), "0", "S-F1 S1: Enter after gate opened sends 0 confirms");
+  // S2: focus on Close while review pending, review arrives -> focus lands on Cancel, Space sends 0 confirms.
+  await page.click("#r2-open-sheet");
+  await page.waitForSelector("dialog.r2-sheet[open]", { visible: true });
+  await page.evaluate(() => document.getElementById("r2-sheet-pending").click());
+  await page.focus(r2Confirm);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.r2-sheet .why-disabled:popover-open", { visible: true });
+  await page.focus("dialog.r2-sheet .why-disabled:popover-open .why-disabled-close");
+  await page.evaluate(() => document.getElementById("r2-sheet-allowed").click());
+  await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet .why-disabled:popover-open"));
+  assert.equal(await page.evaluate((s) => document.activeElement?.matches(s), r2Confirm), false, "S-F1 S2: focus never lands on enabled confirm");
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Cancel", "S-F1 S2: focus moves to Cancel");
+  await page.keyboard.press("Space");
+  await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet[open]"));
+  assert.equal(await page.$eval("#r2-confirms", (e) => e.textContent), "0", "S-F1 S2: Space after review arrives sends 0 confirms");
+  // V6: unmounting PrivilegeConfirmLabel restores all attributes it set on the confirm button.
+  await page.click("#r2-open-sheet");
+  await page.waitForSelector("dialog.r2-sheet[open]", { visible: true });
+  assert.equal(await page.$eval(r2Confirm, (b) => b.getAttribute("aria-disabled")), "true");
+  assert.equal(await page.$eval(r2Confirm, (b) => b.getAttribute("data-privilege-state")), "denied");
+  await page.evaluate(() => document.getElementById("r2-sheet-plain").click());
+  await page.waitForFunction((s) => document.querySelector(s)?.textContent?.trim() === "Plain confirm", {}, r2Confirm);
+  assert.deepEqual(
+    await page.$eval(r2Confirm, (b) => ({
+      ariaDisabled: b.getAttribute("aria-disabled"),
+      privilegeState: b.getAttribute("data-privilege-state"),
+      title: b.getAttribute("title"),
+      describedBy: b.getAttribute("aria-describedby"),
+      whyReason: b.getAttribute("data-why-reason"),
+      whyGrant: b.getAttribute("data-why-grant"),
+      hasClass: b.classList.contains("privilege-action"),
+    })),
+    {
+      ariaDisabled: null,
+      privilegeState: null,
+      title: null,
+      describedBy: null,
+      whyReason: null,
+      whyGrant: null,
+      hasClass: false,
+    },
+    "V6: unmounting PrivilegeConfirmLabel restores all button attributes",
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet[open]"));
+
   assert.deepEqual(errors, [], "no page errors");
-  console.log("action-feedback-unit: 6 checks passed");
+  console.log("action-feedback-unit: 7 checks passed");
 } finally {
   await browser.close();
 }

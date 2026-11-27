@@ -1518,6 +1518,15 @@ try {
   await page.keyboard.press("Space");
   await page.waitForFunction((sel) => !document.querySelector(sel), {}, chipWhyPop);
   assert.equal(plans.length, plansBeforeChipOff, "keyboard activation on disabled Remove chip plans nothing");
+  // V7: switching Readyset tabs clears openChipWhy so returning to Parameters
+  // never reopens the previous chip message.
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(chipWhyPop, { visible: true });
+  await tab("Caches");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, chipWhyPop);
+  await tab("Parameters");
+  await pause(100);
+  assert.equal(await page.$(chipWhyPop), null, "V7: openChipWhy is cleared on a Readyset tab switch");
 
   // R3: a per-item drop entry disables only that item's Remove chip, with its
   // own reason tied by aria-describedby before any click; activating it opens

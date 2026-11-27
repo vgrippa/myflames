@@ -502,6 +502,7 @@ function GrantMatrix({ detail, connection, accounts, draft, setDraft, pending, b
     {level !== "global" && <>
       <button type="button" className="button privilege-action" aria-disabled={!!addScopeReason}
         aria-describedby={addScopeReason ? addScopeReasonId : undefined} title={addScopeReason || undefined}
+        data-why-reason={addScopeReason || undefined}
         aria-expanded={newScope} onClick={e => {
           if (addScopeReason) { e.preventDefault(); e.stopPropagation(); openWhyDisabled({ anchor: e.currentTarget, reason: addScopeReason }); }
           else update({ newScope: !newScope });

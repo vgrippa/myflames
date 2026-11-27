@@ -1953,7 +1953,7 @@ function App() {
     // A session restored on Plans or Compare gets its chunks now (all three
     // together), not when the idle queue reaches them.
     if (mode === "inspect" || mode === "compare") void PlanScreen.preload().catch(() => {});
-    if (ready) preloadWhenIdle([CommandPalette, Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
+    if (ready) preloadWhenIdle([CommandPalette, Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => import("./WhyDisabled") }, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -2402,7 +2402,7 @@ function App() {
   return (
     <ConnectionInUseProvider connection={placeRequest} connected={placeConnected}>
     <PrivilegesProvider connection={placeRequest} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={placeConnected}>
-    <PrivilegeWhyHost resetKey={`${mode}:${serverViewNow || ""}:${navKey}`}>
+    <PrivilegeWhyHost resetKey={`${mode}:${serverViewNow || ""}:${mode === "query" ? labState.tab_id : ""}:${connectionKey(placeRequest)}:${connectRevision}:${resetKey}:${passwordRevision}`}>
     <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <a href="#main" className="skip">
         Skip to content
