@@ -217,7 +217,7 @@ import re
 from .connection_groups import grouped_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import PREFLIGHT_VARIABLES, Reader, Server, _LOST_SQL, _number, denied, now, preflight, reason
-from .server_info import product_name, server_label
+from .server_info import galera_enabled, galera_provider_loaded, product_name, server_label
 
 SCHEMA_VERSION = "cluster-1.0"
 CLUSTER_TAG = "/*myflames:cluster*/ "
@@ -585,16 +585,12 @@ def is_galera_node(variables):
     ``SELECT @@global.wsrep_on`` fails with error 1238); there the provider
     path in ``wsrep_provider`` (``none`` when not loaded) decides.
     """
-    wsrep_on = _on(variables.get("wsrep_on"))
-    if wsrep_on is not None:
-        return wsrep_on
-    return provider_loaded(variables)
+    return galera_enabled(variables)
 
 
 def provider_loaded(variables):
     """wsrep_provider names a provider library (not empty, not 'none')."""
-    provider = (variables.get("wsrep_provider") or "").strip()
-    return bool(provider) and provider.lower() != "none"
+    return galera_provider_loaded(variables)
 
 
 def flow_percent(value):

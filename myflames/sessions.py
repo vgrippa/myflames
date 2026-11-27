@@ -73,7 +73,8 @@ from .connector import ConnectorError
 from .discover import _processlist_source
 from .health import CONNECTIONS_USED_PCT, _grade
 from .perf_common import _count_text, _duration_text, _number, _round
-from .locks import transaction_scope, is_mdl_wait_state, is_group_replication_command, GROUP_REPLICATION_KILL_REASON
+from .locks import (transaction_scope, is_mdl_wait_state, is_group_replication_command,
+                    GROUP_REPLICATION_KILL_REASON, _identity_projection, _identity_row)
 from .perf_common import Reader, Server, base_report, denied, reason, show_variables
 
 SCHEMA_VERSION = "sessions-1.0"
@@ -652,14 +653,16 @@ def sessions_report(conn, active_only=True, user=None, host=None, db=None, min_s
         raise ValueError("Could not read the server variables: " + reason(exc))
     server = Server(variables, status)
     # Capture the same identity kill_session rechecks, while reading this report.
-    keys = ("server_id", "hostname", "version", "port") if server.engine == "mariadb" else ("server_uuid",)
     server_identity = {}
     if identity:  # the workspace's Kill sheet; the report and CLI do not need it
+        keys, projection = _identity_projection(server.engine)
         try:
-            identity_rows = reader.rows("SELECT " + ", ".join("@@" + key for key in keys))
-            if identity_rows and len(identity_rows[0]) == len(keys) and all(identity_rows[0]):
-                server_identity = dict(zip(keys, identity_rows[0]))
+            identity_rows = reader.rows("SELECT " + projection)
+            if identity_rows:
+                server_identity = _identity_row(keys, identity_rows[0])
         except ConnectorError:
+            pass
+        if not server_identity:
             notes.append("Could not read the server identity; refresh before using Kill.")
     ps_show_pl = None
     if source_mode in ("show", "show_processlist", "processlist"):

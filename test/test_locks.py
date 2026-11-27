@@ -81,7 +81,8 @@ class FakeConn(object):
             raw = next((value for key, value in self.responses if key == pattern), '')
             if callable(raw):
                 raw = raw(sql)
-            keys = (('server_id', 'hostname', 'version', 'port', 'wsrep_on', 'wsrep_gcomm_uuid', 'wsrep_node_name')
+            keys = (('server_id', 'hostname', 'version', 'port', 'wsrep_on', 'wsrep_gcomm_uuid', 'wsrep_node_name',
+                     'wsrep_provider', 'wsrep_connected', 'wsrep_cluster_size')
                     if maria else ('server_uuid', 'wsrep_on', 'wsrep_gcomm_uuid'))
             values = dict(zip(keys, raw.strip().split('\t')))
             values.update(getattr(self, 'evidence_values', {}))
@@ -184,7 +185,8 @@ def fake(version, ps_on=True, **answers):
         answers.setdefault(key, value)
     responses = [(VERSION_SQL, batch([[version, 1 if ps_on else 0]])),
                  ('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555', 'OFF', None]])),
-                 ('SELECT @@global.server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None]]))]
+                 ('SELECT @@global.server_id, @@hostname, @@version, @@port',
+                  batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None, 'none', 'OFF', '0']]))]
     for key, pattern in PATTERNS:
         if key in answers:
             value = answers.pop(key)
@@ -2282,6 +2284,134 @@ class KillScenario(object):
     def kills(self):
         from _reviewed_replay import recorded_body
         return [recorded_body(sql) for sql, _ in self.conn.calls if KILL_TAG in sql]
+
+
+def mariadb_provider_scenario(**overrides):
+    """Explicit same-SELECT evidence for the disconnected official 13.0 image.
+
+    These are synthetic server answers. They never substitute the production
+    identity binder, write classifier or guard builder.
+    """
+    values = {'server_id': '1', 'hostname': 'server-one', 'version': '13.0.2-MariaDB',
+              'port': '3306', 'wsrep_on': 'OFF', 'wsrep_gcomm_uuid': None,
+              'wsrep_node_name': None, 'wsrep_provider': '/usr/lib/galera/libgalera_smm.so',
+              'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}
+    values.update(overrides)
+    keys = ('server_id', 'hostname', 'version', 'port', 'wsrep_on', 'wsrep_gcomm_uuid',
+            'wsrep_node_name', 'wsrep_provider', 'wsrep_connected', 'wsrep_cluster_size')
+    scenario = KillScenario()
+    scenario.conn.version = values['version']
+    scenario.conn.responses[0] = (VERSION_SQL, batch([[values['version'], 1]]))
+    pattern = 'SELECT @@global.server_id, @@hostname, @@version, @@port'
+    scenario.conn.responses = [(key, batch([[values[name] for name in keys]]) if key == pattern else answer)
+                               for key, answer in scenario.conn.responses]
+    scenario.conn.evidence_values = {key: value for key, value in values.items() if value is not None}
+    return scenario
+
+
+def disconnected_provider_identity():
+    return {'server_id': '1', 'hostname': 'server-one', 'version': '13.0.2-MariaDB',
+            'port': '3306', 'wsrep_on': 'OFF', 'wsrep_disconnected_provider': True}
+
+
+class TestKillGaleraIdentity(LockCase):
+    def expect(self, scenario):
+        return dict(bound_kill_expect(scenario.conn), server_identity=disconnected_provider_identity())
+
+    def assert_disconnected_guard(self, guard):
+        self.assertIn('OR NOT (@@global.wsrep_on <=> 0)', guard)
+        self.assertIn("WHERE VARIABLE_NAME = 'wsrep_connected') <=> 'OFF')", guard)
+        self.assertIn("WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0')", guard)
+        self.assertNotIn("VARIABLE_NAME = 'wsrep_gcomm_uuid'", guard)
+
+    def test_mariadb_disconnected_provider_binds_target_and_kill_in_same_packet(self):
+        from myflames import dbops
+        from _reviewed_replay import guarded_packets
+        scenario = mariadb_provider_scenario()
+        target, own = dbops.target_evidence(locks.read_target)(scenario.conn, 'mariadb', True, 41,
+                                                            server_identity=True)
+        self.assertEqual(own, 99)
+        self.assertEqual(target['server_identity'], disconnected_provider_identity())
+        target_query = next(sql for sql, _ in scenario.conn.calls if 'PROCESSLIST_ID = 41' in sql)
+        for name in ('wsrep_provider', 'wsrep_connected', 'wsrep_cluster_size'):
+            self.assertIn("VARIABLE_NAME = '%s'" % name, target_query)
+        result = locks.kill_session(scenario.conn, 41, expect=self.expect(scenario),
+                                    confirmed=True, settle_s=0)
+        self.assertEqual((result['status'], result['sent']), ('killed', ['KILL CONNECTION 41']))
+        self.assertEqual(result['target']['server_identity'], disconnected_provider_identity())
+        script = next(sql for sql, _ in scenario.conn.calls if KILL_TAG in sql)
+        packets = guarded_packets(script)
+        self.assertEqual(len(packets), 1)
+        self.assert_disconnected_guard(packets[0][0])
+        self.assertEqual(packets[0][1], KILL_TAG + 'KILL CONNECTION 41')
+
+    def test_mariadb_connected_or_incomplete_provider_evidence_never_waives(self):
+        for changed in ({'wsrep_connected': 'ON'}, {'wsrep_cluster_size': '1'},
+                        {'wsrep_connected': None}, {'wsrep_cluster_size': None},
+                        {'wsrep_on': 'ON'}, {'wsrep_on': None}):
+            with self.subTest(changed=changed):
+                scenario = mariadb_provider_scenario(**changed)
+                _server, identity = locks._kill_context(scenario.conn)
+                self.assertEqual(identity, {}, 'a hidden UUID cannot bind this provider')
+                result = locks.kill_session(scenario.conn, 41, expect=self.expect(scenario),
+                                            confirmed=True, settle_s=0)
+                self.assertEqual(result['status'], 'refused')
+                self.assertEqual(scenario.kills(), [])
+
+    def test_mariadb_provider_with_visible_uuid_still_binds_node(self):
+        from myflames import dbops
+        node = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        scenario = mariadb_provider_scenario(wsrep_gcomm_uuid=node)
+        _server, identity = locks._kill_context(scenario.conn)
+        self.assertEqual(identity.get('wsrep_gcomm_uuid'), node)
+        self.assertEqual(identity.get('wsrep_on'), 'OFF')
+        self.assertNotIn('wsrep_disconnected_provider', identity)
+        guard = dbops.target_session_guard('mariadb', identity)[0]
+        self.assertIn("WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') <=> '%s'" % node, guard)
+        self.assertNotIn("WHERE VARIABLE_NAME = 'wsrep_connected'", guard)
+
+    def test_mariadb_provider_connecting_before_kill_is_refused_without_execution(self):
+        from _reviewed_replay import guarded_packets
+        for changed in ({'wsrep_on': 'ON'}, {'wsrep_connected': 'ON'}, {'wsrep_cluster_size': '1'},
+                        {'wsrep_connected': None}, {'wsrep_cluster_size': None}):
+            with self.subTest(changed=changed):
+                scenario = mariadb_provider_scenario()
+                live = {'wsrep_on': 'OFF', 'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}
+                attempted = []
+                original = scenario.conn.run_write
+
+                def send(sql, **kwargs):
+                    guard, _statement, line = guarded_packets(sql)[0]
+                    attempted.append(sql)
+                    self.assert_disconnected_guard(guard)
+                    # The fake server refuses before the private acknowledgement,
+                    # exactly where the NULL-safe predicate runs in the packet.
+                    if live != {'wsrep_on': 'OFF', 'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}:
+                        raise ConnectorError('ERROR 1242 (21000) at line %d: Subquery returns more than 1 row' % line)
+                    return original(sql, **kwargs)
+
+                scenario.conn.run_write = send
+                result = locks.kill_session(scenario.conn, 41, expect=self.expect(scenario),
+                                            confirmed=True, settle_s=0,
+                                            before_send=lambda: live.update(changed))
+                self.assertEqual(len(attempted), 1, 'the refusal must come from the guarded send')
+                self.assertEqual((result['status'], result['outcome'], result['sent']),
+                                 ('refused', 'identity_mismatch', []))
+                self.assertEqual(scenario.kills(), [])
+                self.assertFalse(scenario.killed)
+
+    def test_mysql_and_pxc_projections_never_waive_missing_node_uuid(self):
+        for engine in ('mysql', 'pxc'):
+            with self.subTest(engine=engine):
+                keys, projection = locks._identity_projection(engine)
+                self.assertIn("VARIABLE_NAME = 'wsrep_provider'", projection)
+                # MySQL/PXC's projected ON represents a configured provider,
+                # including one whose global wsrep_on is OFF.
+                identity = locks._identity_row(keys, ['11111111-2222-3333-4444-555555555555', 'ON', None])
+                self.assertEqual(identity, {})
+                identity = locks._identity_row(keys, ['11111111-2222-3333-4444-555555555555', 'ON',
+                                                     'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'])
+                self.assertNotIn('wsrep_disconnected_provider', identity)
 
 
 class TestKillSession(LockCase):

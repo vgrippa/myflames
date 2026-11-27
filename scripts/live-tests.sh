@@ -6,7 +6,7 @@
 # durations, non-zero on any failure.
 #
 # Usage:
-#   scripts/live-tests.sh [ic|galera|proxysql|shell|writes|topology|ga|all] [--record]
+#   scripts/live-tests.sh [ic|galera|pxc|proxysql|shell|writes|topology|ga|all] [--record]
 #
 # Brings up only the labs the chosen suites need (idempotent
 # cluster-matrix.sh up, then check) and leaves them running for the next run.
@@ -52,7 +52,7 @@ selection="all"
 record=0
 for arg in "$@"; do
   case "$arg" in
-    ic|galera|proxysql|shell|writes|topology|ga|all) selection="$arg" ;;
+    ic|galera|pxc|proxysql|shell|writes|topology|ga|all) selection="$arg" ;;
     --record) record=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
@@ -77,33 +77,45 @@ ga_up() {
     awk '$3 == "running" && $1 ~ /^(mysql-5.7|mysql-8.0|mysql-8.4|mysql-9.7|percona-8.0|percona-8.4|mariadb-10.11|mariadb-11.4|mariadb-11.8)$/ { found=1 } END { exit !found }'
 }
 
-# Labs and lanes per selection. The ic lane also carries the suites that share
+# Labs and lanes per selection, with the labs each lane may rely on (the lane's
+# profile smoke checks are restricted to them through MYFLAMES_LIVE_LABS_ONLY).
+# The ic lane also carries the suites that share
 # the InnoDB Cluster (MySQL Shell rejoin, Query editor through ProxySQL);
-# the galera lane mutates only mf-galera-*. Lanes run in parallel, suites in
-# a lane in order. The writes suite (reviewed writes on one member of each
-# cluster) runs only after every lane is done, so it never runs while another
-# suite changes the same cluster's membership. The ga lane (reviewed writes
-# on the GA matrix servers) brings up nothing: ga-matrix.sh manages those
-# servers, so `all` includes it only when the matrix is already up.
+# the galera lane mutates only mf-galera-*, the pxc lane only mf-pxc-*. Lanes
+# run in parallel, suites in a lane in order. The writes suite (reviewed writes
+# on one member of each cluster) runs only after every lane is done, so it
+# never runs while another suite changes the same cluster's membership. The
+# ga lane (reviewed writes on the GA matrix servers) brings up nothing:
+# ga-matrix.sh manages those servers, so `all` includes it only when the
+# matrix is already up.
 labs=""
 ic_lane=""
 galera_lane=""
+pxc_lane=""
 writes_lane=""
 ga_lane=""
+ic_labs=""
+galera_labs=""
+pxc_labs=""
+writes_labs=""
 case "$selection" in
-  ic)       labs="ic";                  ic_lane="live_ic_group_routing live_topology_ic" ;;
-  galera)   labs="galera";              galera_lane="live_galera live_topology_galera" ;;
-  proxysql) labs="ic galera proxysql";  ic_lane="live_editor_proxysql" ;;
-  shell)    labs="ic";                  ic_lane="live_shell" ;;
-  writes)   labs="ic galera";           writes_lane="live_writes" ;;
-  topology) labs="ic galera proxysql"
-            ic_lane="live_topology_ic"
-            galera_lane="live_topology_galera" ;;
+  ic)       labs="ic";                  ic_lane="live_ic_group_routing live_topology_ic"; ic_labs="ic" ;;
+  galera)   labs="galera";              galera_lane="live_galera live_topology_galera"; galera_labs="galera" ;;
+  pxc)      labs="pxc";                 pxc_lane="live_pxc live_topology_pxc"; pxc_labs="pxc" ;;
+  proxysql) labs="ic galera proxysql";  ic_lane="live_editor_proxysql"; ic_labs="ic proxysql" ;;
+  shell)    labs="ic";                  ic_lane="live_shell"; ic_labs="ic" ;;
+  writes)   labs="ic galera";           writes_lane="live_writes"; writes_labs="ic galera" ;;
+  topology) labs="ic galera pxc proxysql"
+            ic_lane="live_topology_ic"; ic_labs="ic"
+            galera_lane="live_topology_galera"; galera_labs="galera"
+            pxc_lane="live_topology_pxc"; pxc_labs="pxc" ;;
   ga)       labs="";                    ga_lane="live_writes_ga" ;;
-  all)      labs="ic galera proxysql"
+  all)      labs="ic galera pxc proxysql"
             ic_lane="live_ic_group_routing live_topology_ic live_shell live_editor_proxysql"
-            galera_lane="live_galera live_topology_galera"
-            writes_lane="live_writes"
+            ic_labs="ic proxysql"
+            galera_lane="live_galera live_topology_galera"; galera_labs="galera"
+            pxc_lane="live_pxc live_topology_pxc"; pxc_labs="pxc"
+            writes_lane="live_writes"; writes_labs="ic galera"
             ga_up && ga_lane="live_writes_ga" ;;
 esac
 
@@ -133,41 +145,55 @@ trap 'rm -r "$tmp" 2>/dev/null || true' EXIT
 
 # The evidence record is the only file a run writes under the repository.
 # cluster-matrix.sh profiles smokes each saved connection into
-# $CLUSTER_LAB/state/smoke, so the lanes and the evidence env read work
-# against a shadow lab dir in the throwaway tmp whose only content is a
-# symlink to the real credentials; the labs themselves live in docker, so
-# check and the suites read the same servers through the shadow. The ga
-# selection has no cluster lab, so no shadow.
+# $CLUSTER_LAB/state/smoke, so each lane and the evidence env read work against
+# its own shadow lab dir in the throwaway tmp whose only content is a symlink
+# to the real credentials; the labs themselves live in docker, so check and
+# the suites read the same servers through the shadow. Per-lane shadows keep
+# one lane's smoke results from being rewritten by another lane running
+# profiles at the same time. The ga selection has no cluster lab, so no shadow.
 shadow="$tmp/cluster-lab"
+make_shadow() {  # NAME: a shadow lab dir whose only content is the credentials symlink
+  mkdir -p "$tmp/cluster-lab-$1"
+  ln -s "$CREDS" "$tmp/cluster-lab-$1/credentials.env"
+}
 if [ -n "$labs" ]; then
   mkdir -p "$shadow"
   ln -s "$CREDS" "$shadow/credentials.env"
   export CLUSTER_LAB="$shadow"
 fi
 
-run_lane() {  # NAME MODULES...
-  local name="$1"; shift
+run_lane() {  # NAME LABS MODULES...
+  local name="$1" lane_labs="$2"; shift 2
   local lane_rc=0
-  MYFLAMES_LIVE_HOME="$tmp/home-$name" \
-    python3 test/live/_runner.py --json-out "$tmp/$name.json" "$@" \
-    > "$tmp/$name.log" 2>&1 || lane_rc=$?
+  [ -z "$lane_labs" ] || make_shadow "$name"
+  (
+    # The lane gets its own shadow state dir and the labs it may rely on, so a
+    # sick lab outside the selection never fails this lane's profile smoke.
+    if [ -n "$lane_labs" ]; then
+      export CLUSTER_LAB="$tmp/cluster-lab-$name" MYFLAMES_LIVE_LABS_ONLY="$lane_labs"
+    fi
+    MYFLAMES_LIVE_HOME="$tmp/home-$name" \
+      python3 test/live/_runner.py --json-out "$tmp/$name.json" "$@"
+  ) > "$tmp/$name.log" 2>&1 || lane_rc=$?
   echo "$lane_rc" > "$tmp/$name.rc"
 }
 
 pids=""
-[ -n "$ic_lane" ]     && { run_lane ic $ic_lane &         pids="$pids $!"; }
-[ -n "$galera_lane" ] && { run_lane galera $galera_lane & pids="$pids $!"; }
+[ -n "$ic_lane" ]     && { run_lane ic "$ic_labs" $ic_lane &         pids="$pids $!"; }
+[ -n "$galera_lane" ] && { run_lane galera "$galera_labs" $galera_lane & pids="$pids $!"; }
+# The pxc lane touches only mf-pxc-*, so it runs in parallel with the others.
+[ -n "$pxc_lane" ]    && { run_lane pxc "$pxc_labs" $pxc_lane &       pids="$pids $!"; }
 # The ga lane writes only to GA matrix servers, which no cluster suite
 # touches, so it can run in parallel with the cluster lanes.
-[ -n "$ga_lane" ]     && { run_lane ga $ga_lane &         pids="$pids $!"; }
+[ -n "$ga_lane" ]     && { run_lane ga "" $ga_lane &                  pids="$pids $!"; }
 rc=0
 for pid in $pids; do wait "$pid" || rc=1; done
 
 # Writes to one member of each cluster run only once the membership-changing
 # suites on both clusters are done.
-[ -n "$writes_lane" ] && run_lane writes $writes_lane
+[ -n "$writes_lane" ] && run_lane writes "$writes_labs" $writes_lane
 
-for lane in ic galera writes ga; do
+for lane in ic galera pxc writes ga; do
   [ -f "$tmp/$lane.log" ] || continue
   grep -E '^(PASS|FAIL|ERROR|SKIP) ' "$tmp/$lane.log" || true
   [ "$(cat "$tmp/$lane.rc" 2>/dev/null || echo 1)" = "0" ] || {
@@ -179,23 +205,33 @@ done
 
 # The recorded read-only reports (mtr's .result idea). Record after the lanes
 # so the clusters are back at rest; compare likewise, once both lanes are done.
-# The ga selection has no cluster labs, so it never runs this lane: the
-# recorded reports need them (an empty record list would record the defaults).
+# Only ic, galera and proxysql have recorded reports. A selection without any
+# of them (ga, pxc) never runs this lane: the recorded reports need those labs
+# (an empty record list would record the defaults). The lane gets its own
+# shadow state dir and only compares the reports of the selected labs
+# (MYFLAMES_LIVE_LABS_ONLY): a run that selected galera alone never checks the
+# ic or proxysql reports.
 record_labs=""
 for lab in $labs; do
   case "$lab" in ic|galera|proxysql) record_labs="$record_labs $lab" ;; esac
 done
-if [ -z "$labs" ]; then
+record_labs="${record_labs# }"
+if [ -z "$record_labs" ]; then
   :
-elif [ "$record" = 1 ]; then
-  MYFLAMES_LIVE_HOME="$tmp/home-expected" \
-    python3 test/live/_expected.py record $record_labs || rc=1
-elif ls test/live/expected/*.json > /dev/null 2>&1; then
-  MYFLAMES_LIVE_HOME="$tmp/home-expected" \
-    python3 test/live/_runner.py --json-out "$tmp/expected.json" \
-    live_expected > "$tmp/expected.log" 2>&1 || rc=1
-  grep -E '^(PASS|FAIL|ERROR|SKIP) ' "$tmp/expected.log" || true
-  [ -f "$tmp/expected.log" ] && [ "$rc" != 0 ] && { echo "--- expected output ---"; cat "$tmp/expected.log"; }
+else
+  make_shadow expected
+  if [ "$record" = 1 ]; then
+    CLUSTER_LAB="$tmp/cluster-lab-expected" MYFLAMES_LIVE_LABS_ONLY="$record_labs" \
+      MYFLAMES_LIVE_HOME="$tmp/home-expected" \
+      python3 test/live/_expected.py record $record_labs || rc=1
+  elif ls test/live/expected/*.json > /dev/null 2>&1; then
+    CLUSTER_LAB="$tmp/cluster-lab-expected" MYFLAMES_LIVE_LABS_ONLY="$record_labs" \
+      MYFLAMES_LIVE_HOME="$tmp/home-expected" \
+      python3 test/live/_runner.py --json-out "$tmp/expected.json" \
+      live_expected > "$tmp/expected.log" 2>&1 || rc=1
+    grep -E '^(PASS|FAIL|ERROR|SKIP) ' "$tmp/expected.log" || true
+    [ -f "$tmp/expected.log" ] && [ "$rc" != 0 ] && { echo "--- expected output ---"; cat "$tmp/expected.log"; }
+  fi
 fi
 
 # Evidence record for the release verification.

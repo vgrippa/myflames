@@ -537,7 +537,8 @@ class TestReadConsent(GroupCase):
         for workspace in (None, types.SimpleNamespace(store=None)):
             conn = ReplayConn(fixture('replication', 'mysql-8.4-gtid-error')['calls'])
             original = conn.run
-            from _reviewed_replay import evidence_options, answer_evidence
+            from _reviewed_replay import evidence_options
+            from test_topology_links import answer_evidence
             @evidence_options
             def run(sql, extra_flags=None, timeout=None):
                 evidence = answer_evidence(sql, extra_flags, timeout, run, conn.evidence_values)
@@ -772,21 +773,75 @@ class TestPeerIdentityRecording(GroupCase):
             self.assertNotIn('topology_identity', self.store._profile(profile['id']))
         self.assertEqual(len(tl._probe_attempts), 0)
 
-    def test_galera_and_pxc_record_only_the_own_gcomm_uuid(self):
+    def test_galera_and_pxc_record_bound_server_and_own_gcomm_identity(self):
         for kind in ('galera', 'pxc'):
             with self.subTest(kind=kind):
                 tl._reset_cache_for_tests()
                 peer = self.peers[self.profiles[1]['host']]
                 peer.cfg.update(wsrep=True, gcomm_uuid=CF.SERVER_UUIDS[1],
+                                version='8.4.11-11.1' if kind == 'pxc' else '11.4.13-MariaDB',
                                 version_comment='Percona XtraDB Cluster' if kind == 'pxc' else 'MariaDB Server',
                                 wsrep_members=[[CF.SERVER_UUIDS[2], 'other node', 'other:3306']])
                 with mock.patch.object(peer, 'run', wraps=peer.run) as run:
                     self.read()
                 identity = self.store._profile('db-2')['topology_identity']
                 self.assertEqual(identity['wsrep_node_uuid'], CF.SERVER_UUIDS[1])
-                self.assertNotIn('server_uuid', identity)
+                if kind == 'pxc':
+                    self.assertEqual(identity['server_uuid'], CF.SERVER_UUIDS[1])
+                else:
+                    self.assertNotIn('server_uuid', identity)
                 self.assertEqual(sum(tl._WSREP_STATUS_SQL in call[0][0] for call in run.call_args_list), 1)
                 self.assertEqual(len(tl._probe_attempts), 2)
+
+    def test_pxc_failover_clears_old_server_evidence_and_primary_route(self):
+        old_uuid = CF.SERVER_UUIDS[1]
+        server_uuid = 'dddddddd-0000-4000-8000-000000000004'
+        node_uuid = 'eeeeeeee-0000-4000-8000-000000000005'
+        self.store.record_topology_identity('db-2', {
+            'server_uuid': old_uuid, 'cluster_id': 'old-cluster',
+            'gr_group_name': 'old-group', 'source_uuids': ['old-upstream']})
+        self.store.record_topology_identity('db-3', {'source_uuids': [old_uuid]})
+        self.assertEqual(cg.group_primary(self.store.list('profile'))['id'], 'db-2')
+        peer = self.peers[self.profiles[1]['host']]
+        peer.cfg.update(uuid=server_uuid, wsrep=True, gcomm_uuid=node_uuid,
+                        version='8.4.11-11.1', version_comment='Percona XtraDB Cluster',
+                        gr_group='', wsrep_members=[[node_uuid, 'db-2', 'db-2:3306']])
+
+        self.read()
+
+        identity = self.store._profile('db-2')['topology_identity']
+        self.assertEqual(identity['server_uuid'], server_uuid)
+        self.assertEqual(identity['wsrep_node_uuid'], node_uuid)
+        for field in ('cluster_id', 'gr_group_name', 'source_uuids'):
+            self.assertNotIn(field, identity, 'old server evidence survived failover: ' + field)
+        self.assertIsNone(cg.group_primary(self.store.list('profile')),
+                          'the failed-over endpoint must not still route as the old source')
+
+    def test_round_robin_probe_never_records_a_composite_node_identity(self):
+        class RoundRobin(FakeProbeConn):
+            def __init__(self):
+                super(RoundRobin, self).__init__(
+                    'database', wsrep=True, version='8.4.11-11.1',
+                    version_comment='Percona XtraDB Cluster')
+                self.invocations = 0
+
+            def run(self, sql, *args, **kwargs):
+                # One client invocation reaches one complete server. A router
+                # switches nodes on the next invocation, including optional reads.
+                index = 1 + self.invocations % 2
+                self.invocations += 1
+                self.cfg.update(uuid=CF.SERVER_UUIDS[index], gcomm_uuid=CF.SERVER_UUIDS[index],
+                                hostname='db-%d' % (index + 1))
+                return super(RoundRobin, self).run(sql, *args, **kwargs)
+
+        self.peers[self.profiles[1]['host']] = RoundRobin()
+        report = self.read()
+
+        self.assertNotIn('topology_identity', self.store._profile('db-2'))
+        row = next(row for row in report['connection_group']['read'] if row['id'] == 'db-2')
+        self.assertEqual(row['outcome'], 'failed')
+        self.assertIn('db-2', row['message'])
+        self.assertEqual(self.store._profile('db-3')['topology_identity']['server_uuid'], CF.SERVER_UUIDS[2])
 
     def test_endpoint_edit_or_group_removal_after_probe_prevents_persistence(self):
         for change in ('endpoint', 'group', 'active_group'):
@@ -1049,7 +1104,10 @@ class TestReviewRegressions(GroupCase):
                 opener = scope.opener(rp.profile_opener(self.store, current['id'], current))
                 fake = FakeProbeConn('database', version=version, version_comment=comment)
                 def invoke(argv, **kwargs):
-                    answer = fake.run(argv[argv.index('-e') + 1])
+                    # Evidence prefixes use the client's selected output format
+                    # too; preserve XML mode when simulating that invocation.
+                    answer = fake.run(argv[argv.index('-e') + 1],
+                                      extra_flags=['--xml'] if '--xml' in argv else [])
                     return types.SimpleNamespace(returncode=0, stdout=answer.encode(), stderr=b'')
                 with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
                         mock.patch.object(connector, '_run_bounded', side_effect=invoke) as client:

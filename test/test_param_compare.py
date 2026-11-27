@@ -234,6 +234,12 @@ class NormalizeTest(unittest.TestCase):
                 next(row for row in changed['b']['items'] if row['name'] == name)['value'] = value
                 rows = {r['name']: r for r in P.compare_many(changed, active_clusters=active)}
                 self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+        for flag in ('redacted', 'truncated'):
+            with self.subTest(flag=flag):
+                changed = copy.deepcopy(sides)
+                next(row for row in changed['b']['items'] if row['name'] == 'wsrep_on')[flag] = True
+                rows = {r['name']: r for r in P.compare_many(changed, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], 'different')
 
     def test_standalone_mariadb_default_control_does_not_hide_offset_drift(self):
         control = item('wsrep_auto_increment_control', 'ON', 'boolean')
@@ -242,6 +248,25 @@ class NormalizeTest(unittest.TestCase):
             'b': snapshot([control, item('auto_increment_offset', '2')], engine='mariadb'),
         }
         rows = {r['name']: r for r in P.compare_many(sides)}
+        self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+
+    def test_pxc_session_only_wsrep_on_folds_generated_offsets(self):
+        settings = [item('wsrep_provider', '/usr/lib64/galera4/libgalera_smm.so', 'string'),
+                    item('wsrep_auto_increment_control', 'ON', 'boolean')]
+        sides = {pid: snapshot(copy.deepcopy(settings) + [item('auto_increment_offset', offset),
+                                                         item('auto_increment_increment', '3')])
+                 for pid, offset in (('a', '1'), ('b', '2'))}
+        active = {'a': 'galera', 'b': 'galera'}
+        rows = {row['name']: row for row in P.compare_many(sides, active_clusters=active)}
+        self.assertEqual(rows['auto_increment_offset']['status'], 'per_server')
+        self.assertEqual(rows['auto_increment_increment']['status'], 'same')
+        for name, value in (('wsrep_provider', 'none'), ('wsrep_auto_increment_control', 'OFF')):
+            with self.subTest(name=name):
+                changed = copy.deepcopy(sides)
+                next(row for row in changed['b']['items'] if row['name'] == name)['value'] = value
+                rows = {row['name']: row for row in P.compare_many(changed, active_clusters=active)}
+                self.assertEqual(rows['auto_increment_offset']['status'], 'different')
+        rows = {row['name']: row for row in P.compare_many(sides)}
         self.assertEqual(rows['auto_increment_offset']['status'], 'different')
 
     def test_gr_offsets_need_active_multi_primary_members(self):

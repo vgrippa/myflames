@@ -2242,19 +2242,31 @@ def _evidence_error_text(exc, password=None):
 
 
 def target_has_galera(variables, engine=None):
-    """Provider existence is independent of this session's wsrep_on.
+    """Require a node UUID for a provider that can still be connected.
 
     MariaDB sql/wsrep_var.cc:107-108 checks a nonempty provider != 'none'.
-    Keep wsrep_on as additional evidence for older/incomplete snapshots.
+    A MariaDB server with global wsrep_on OFF hides provider status, including
+    its node UUID. Only a successful read of both server-level connection
+    status fields can establish that this is a disconnected standalone server.
+    Keep incomplete snapshots and MySQL/PXC providers fail closed.
     """
     variables = variables or {}
-    provider = str(variables.get("wsrep_provider") or "").lower()
+    provider = str(variables.get("wsrep_provider") or "").strip().lower()
+    if (engine == "mariadb" and str(variables.get("wsrep_on", "")).upper() in ("OFF", "0")
+            and not variables.get("wsrep_gcomm_uuid")
+            and all(key in variables for key in _GALERA_CONNECTION_STATUS)):
+        connected = variables.get("wsrep_connected")
+        size = variables.get("wsrep_cluster_size")
+        if str(connected).upper() == "OFF" and str(size) == "0":
+            return False
     return (engine == "pxc" or provider not in ("", "none") or
             str(variables.get("wsrep_on", "")).upper() in ("ON", "1"))
 
 
 _EVIDENCE_VARIABLES = ("server_uuid", "server_id", "hostname", "port", "version", "version_comment",
                        "wsrep_on", "wsrep_provider", "wsrep_node_name")
+_GALERA_CONNECTION_STATUS = ("wsrep_connected", "wsrep_cluster_size")
+_EVIDENCE_STATUS = ("wsrep_gcomm_uuid",) + _GALERA_CONNECTION_STATUS
 
 
 class _TargetIdentityError(ValueError):
@@ -2354,7 +2366,7 @@ class TargetEvidenceConnection(object):
             leading = re.match(r"\s*(/\*myflames:[^\r\n]*?\*/)", units[0]["text"])
             tag = (leading.group(1) if leading else "/*myflames:target-evidence*/") + " "
             body = tag + "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s);\n" % ", ".join("'%s'" % key for key in _EVIDENCE_VARIABLES)
-            body += tag + "SHOW GLOBAL STATUS WHERE Variable_name = 'wsrep_gcomm_uuid';\n"
+            body += tag + "SHOW GLOBAL STATUS WHERE Variable_name IN (%s);\n" % ", ".join("'%s'" % key for key in _EVIDENCE_STATUS)
             body += tag + "SELECT '%s';\n" % marker
             body += "\n;\n".join(bodies) + "\n"
             delimiter = next((value for value in _TARGET_DELIMITERS if value not in body), None)
@@ -2415,16 +2427,24 @@ class TargetEvidenceConnection(object):
                     if key.lower() in values:
                         raise ValueError("duplicate server identity field")
                     values[key.lower()] = unescape_mysql(value)
-            if any(key not in _EVIDENCE_VARIABLES + ("wsrep_gcomm_uuid",) for key in values):
+            if any(key not in _EVIDENCE_VARIABLES + _EVIDENCE_STATUS for key in values):
                 raise ValueError("unexpected server identity field")
             required = ("server_uuid",) if "server_uuid" in values else ("server_id", "hostname", "port", "version")
             if not all(values.get(key) for key in required):
                 raise ValueError("missing server identity")
             engine = "mysql" if "server_uuid" in values else "mariadb"
             identity = {key: values[key] for key in required}
-            target_session_guard(engine, target_galera_identity(None, engine, identity, values))
-            if self.variables is not None and self.variables != values:
-                raise ValueError("the server identity changed between evidence packets")
+            identity = target_galera_identity(None, engine, identity, values)
+            target_session_guard(engine, identity)
+            if self.variables is not None:
+                # Connection state can change on the same identified node.
+                # Only a validated node UUID permits ignoring those fields;
+                # a disconnected-provider waiver keeps its complete proof.
+                volatile = _GALERA_CONNECTION_STATUS if identity.get("wsrep_gcomm_uuid") else ()
+                previous = {key: value for key, value in self.variables.items() if key not in volatile}
+                current = {key: value for key, value in values.items() if key not in volatile}
+                if previous != current:
+                    raise ValueError("the server identity changed between evidence packets")
             self.variables = values
         except BaseException as exc:
             from .connection_groups import ProfileReadError
@@ -2478,6 +2498,8 @@ def target_evidence(function):
 def target_galera_identity(conn, engine, identity, variables, tag=""):
     """Use only node evidence captured in the same packet as the read state."""
     out = dict(identity or {})
+    # A prior identity cannot carry a waiver into different packet evidence.
+    out.pop("wsrep_disconnected_provider", None)
     if isinstance(conn, TargetEvidenceConnection):
         conn.check()
         if conn.variables is None:
@@ -2491,6 +2513,14 @@ def target_galera_identity(conn, engine, identity, variables, tag=""):
             conn.problem = "The identity check could not run: the reviewed state and server identity disagree. Nothing was sent. Refresh and review again."
             conn.check()
     if not target_has_galera(evidence, engine):
+        if (engine == "mariadb" and
+                str(evidence.get("wsrep_provider") or "").strip().lower() not in ("", "none")):
+            # Only this same-packet proof grants the waiver. Other callers,
+            # including the editor, also record wsrep_on OFF without one.
+            out["wsrep_on"] = "OFF"
+            out["wsrep_disconnected_provider"] = True
+            out.pop("wsrep_provider", None)
+            out.pop("wsrep_gcomm_uuid", None)
         return out
     out.update(wsrep_on=evidence.get("wsrep_on", "OFF"),
                wsrep_gcomm_uuid=evidence.get("wsrep_gcomm_uuid"))
@@ -2510,6 +2540,11 @@ def target_session_guard(engine, identity):
     """
     from .collectors import _sql_string
     identity = identity if isinstance(identity, dict) else {}
+    if "wsrep_disconnected_provider" in identity and identity["wsrep_disconnected_provider"] is not True:
+        # Client JSON can contain 1, which compares equal to True in a
+        # reviewed identity but would omit the waiver checks below.
+        raise ValueError("The reviewed disconnected-provider waiver marker is invalid. Nothing was sent. "
+                         "Refresh and review again.")
     if engine in ("mysql", "percona", "percona_server", "pxc"):
         uuid = identity.get("server_uuid")
         if not isinstance(uuid, str) or not _TARGET_UUID.fullmatch(uuid):
@@ -2552,6 +2587,16 @@ def target_session_guard(engine, identity):
         table = "information_schema.GLOBAL_STATUS" if engine == "mariadb" else "performance_schema.global_status"
         different += (" OR NOT ((SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') <=> %s)"
                       % (table, _sql_string(uuid)))
+    elif engine == "mariadb" and identity.get("wsrep_disconnected_provider") is True:
+        # A disconnected-provider waiver must still hold in the write packet.
+        # MariaDB sql/sys_vars.cc defines global/session wsrep_on; GLOBAL_STATUS
+        # uses VARIABLE_NAME/VARIABLE_VALUE (sql/sql_show.cc). NULL-safe checks
+        # refuse absent status rows as well as a newly enabled/connected node.
+        different += (" OR NOT (@@global.wsrep_on <=> 0)"
+                      " OR NOT ((SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS"
+                      " WHERE VARIABLE_NAME = 'wsrep_connected') <=> 'OFF')"
+                      " OR NOT ((SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS"
+                      " WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0')")
     return ["SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE %s);" % different]
 
 

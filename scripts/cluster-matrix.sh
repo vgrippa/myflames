@@ -13,7 +13,7 @@
 #   scripts/cluster-matrix.sh down [galera|pxc|ic|proxysql|all]  remove containers, data volumes and networks
 #   scripts/cluster-matrix.sh status                     one line per node with its cluster state
 #   scripts/cluster-matrix.sh check [CLUSTER...]         health gate per cluster (exit 1 when unhealthy)
-#   scripts/cluster-matrix.sh profiles [--home DIR]      saved connections with passwords in DIR
+#   scripts/cluster-matrix.sh profiles [--home DIR] [LAB...]  saved connections with passwords in DIR
 #   scripts/cluster-matrix.sh env                        print the matrix as JSON
 #   scripts/cluster-matrix.sh fail NAME                  docker stop one node (galera-2, ic-1, proxysql, ...)
 #   scripts/cluster-matrix.sh recover NAME               start the node again and rejoin it
@@ -92,7 +92,12 @@
 # home or ~/.myflames, then smokes each one with
 # `myflames health --profile NAME --interval 1` (proxysql-admin: the read the
 # workspace's ProxySQL place makes, /api/live/proxysql, since ProxySQL Admin
-# answers neither the server views nor `myflames sql`).
+# answers neither the server views nor `myflames sql`). An optional lab
+# selection (positional LAB..., or MYFLAMES_LIVE_LABS_ONLY, which
+# scripts/live-tests.sh exports per lane; comma- or space-separated) restricts
+# the saved profiles and the smokes to those labs, and then any selected smoke
+# that does not complete with a pass fails the command; with no selection
+# every lab is saved and smoked as before.
 # Use them with:
 #   HOME=DIR MYFLAMES_SECRET_BACKEND=vault python3 -m myflames health --profile cluster-ic-1
 #
@@ -109,6 +114,7 @@
 #   CREDS_FILE      default $CLUSTER_LAB/credentials.env
 #   MYFLAMES_HOME   isolated HOME for profiles (default $CLUSTER_LAB/home; --home wins)
 #   MYFLAMES_SRC    myflames checkout used for profiles and the smoke (default this checkout)
+#   MYFLAMES_LIVE_LABS_ONLY   lab selection for profiles (comma- or space-separated)
 #
 # Requirements: Docker, openssl, python3. Memory: about 6 GB for all three
 # clusters (ProxySQL adds about 100 MB).
@@ -1301,6 +1307,21 @@ profile_rows() {   # profile node port
   echo "cluster-ic-router-rw ic-router 34306"
 }
 
+# PROFILES_ONLY: the lab selection for profiles (empty: every lab), set by
+# cmd_profiles from its positional arguments or MYFLAMES_LIVE_LABS_ONLY.
+PROFILES_ONLY=""
+selected_lab() {   # selected_lab CLUSTER: no selection, or CLUSTER is in it
+  [ -z "$PROFILES_ONLY" ] && return 0
+  case " $PROFILES_ONLY " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+selected_profile_rows() {   # the profile_rows of the selected labs
+  local p n port
+  while read -r p n port; do
+    if selected_lab "$(cluster_of "$n")"; then echo "$p $n $port"; fi
+  done < <(profile_rows)
+}
+
 mf() { ( cd "$MYFLAMES_SRC" && HOME="$MYFLAMES_HOME" MYFLAMES_SECRET_BACKEND=vault python3 -m myflames "$@" ); }
 
 # physical_path PATH: PATH with symlinks, "." and ".." resolved by the kernel
@@ -1397,7 +1418,21 @@ PY
 }
 
 cmd_profiles() {
-  parse_home "$@"
+  # Optional lab selection: positional LAB..., else MYFLAMES_LIVE_LABS_ONLY
+  # (scripts/live-tests.sh exports it per lane), comma- or space-separated.
+  # Only the selected labs' profiles are saved and smoked; no selection keeps
+  # every lab.
+  local labs=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --home) [ "$#" -ge 2 ] || die "--home needs a directory"; MYFLAMES_HOME="$2"; shift 2 ;;
+      -*) die "unknown argument $1" ;;
+      *) labs="$labs $1"; shift ;;
+    esac
+  done
+  if [ -n "$labs" ]; then PROFILES_ONLY="$(echo $labs | tr ',' ' ')"
+  else PROFILES_ONLY="$(echo ${MYFLAMES_LIVE_LABS_ONLY:-} | tr ',' ' ')"; fi
+  local c; for c in $PROFILES_ONLY; do valid_cluster "$c"; done
   check_myflames_home
   load_creds; mkdir -p "$MYFLAMES_HOME" "$STATE"; chmod 700 "$MYFLAMES_HOME"
   local p n port save_fails=0 proxy=0
@@ -1405,9 +1440,9 @@ cmd_profiles() {
     if ( export PW="$MF_ADMIN_PASSWORD"; save_profile "$p" "$port" mf_admin ); then
       log "profile $p saved (127.0.0.1:$port, mf_admin, password remembered)"
     else log "profile $p NOT saved"; save_fails=$((save_fails + 1)); fi
-  done < <(profile_rows)
+  done < <(selected_profile_rows)
   # ProxySQL Admin, while mf-proxysql runs.
-  if is_up proxysql; then
+  if selected_lab proxysql && is_up proxysql; then
     if [ -z "${PROXYSQL_ADMIN_PASSWORD:-}" ]; then
       log "profile proxysql-admin NOT saved: no PROXYSQL_ADMIN_PASSWORD in $CREDS_FILE (run: $0 up proxysql)"
       save_fails=$((save_fails + 1))
@@ -1418,7 +1453,7 @@ cmd_profiles() {
   # Smoke: a read-only command per profile, in parallel.
   mkdir -p "$STATE/smoke"
   rm -f "$STATE"/smoke/*
-  profile_rows | {
+  selected_profile_rows | {
     while read -r p n port; do
       is_up "$n" || { echo "skipped (node down)" > "$STATE/smoke/$p.result"; continue; }
       ( mf health --profile "$p" --interval 1 --json -q -o "$STATE/smoke/$p.json" > "$STATE/smoke/$p.out" 2>&1 \
@@ -1440,6 +1475,28 @@ cmd_profiles() {
     log "smoke $(basename "$r" .result): $(cat "$r")"
     case "$(cat "$r")" in fail*) fails=$((fails + 1)) ;; esac
   done
+  if [ -n "$PROFILES_ONLY" ]; then
+    # A selected smoke that did not run to a pass (missing, skipped) fails:
+    # the lane that selected these labs relies on every one of them. fail* is
+    # already counted above.
+    local outcome
+    while read -r p n port; do
+      outcome="missing (profiles wrote no result)"
+      [ -f "$STATE/smoke/$p.result" ] && outcome="$(cat "$STATE/smoke/$p.result")"
+      case "$outcome" in
+        pass|fail*) ;;
+        *) log "smoke $p did not complete: $outcome"; fails=$((fails + 1)) ;;
+      esac
+    done < <(selected_profile_rows)
+    if selected_lab proxysql; then
+      outcome="missing (profiles wrote no result)"
+      [ -f "$STATE/smoke/proxysql-admin.result" ] && outcome="$(cat "$STATE/smoke/proxysql-admin.result")"
+      case "$outcome" in
+        pass|fail*) ;;
+        *) log "smoke proxysql-admin did not complete: $outcome"; fails=$((fails + 1)) ;;
+      esac
+    fi
+  fi
   [ "$save_fails" -eq 0 ] || log "$save_fails profile(s) not saved"
   [ "$fails" -eq 0 ] && [ "$save_fails" -eq 0 ]
 }

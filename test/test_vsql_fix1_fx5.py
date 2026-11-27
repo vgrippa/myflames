@@ -228,7 +228,7 @@ class IdentityEnvelopes(unittest.TestCase):
     def test_readiness_changes_only_the_optional_name_in_its_existing_batch(self):
         original = ("/*myflames:readiness*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN "
                     "('version','version_comment','read_only','super_read_only','performance_schema',"
-                    "'partial_revokes','wsrep_on','group_replication_group_name');\n"
+                    "'partial_revokes','wsrep_on','wsrep_provider','group_replication_group_name');\n"
                     "/*myflames:readiness*/ SHOW GLOBAL STATUS WHERE Variable_name IN "
                     "('wsrep_cluster_status','wsrep_cluster_size');\n/*myflames:readiness*/ SHOW GRANTS;\n")
         expected = original.replace("'group_replication_group_name')",

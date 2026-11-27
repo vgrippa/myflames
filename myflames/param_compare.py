@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from . import dbops
 from .connector import ConnectorError
 from .perf_common import now
+from .server_info import galera_enabled
 
 SNAPSHOT_SCHEMA = 'parameter-snapshot-1.0'
 COMPARE_SCHEMA = 'parameter-compare-1.0'
@@ -332,7 +333,10 @@ def _group_auto_increment(indexed, active_clusters):
                          ('boolean', False) and bool(value('group_replication_group_name')))
         provider = str(value('wsrep_provider') or '').strip().lower()
         wsrep_control = (active_clusters.get(pid) == 'galera' and provider and provider != 'none' and
-                         normalize(value('wsrep_on'), 'boolean') == ('boolean', True) and
+                         # Absent on PXC 8.4; a present but unreadable item is
+                         # still insufficient evidence to fold drift away.
+                         ('wsrep_on' not in items or value('wsrep_on') is not None) and
+                         galera_enabled({'wsrep_on': value('wsrep_on'), 'wsrep_provider': provider}) and
                          normalize(value('wsrep_auto_increment_control'), 'boolean') == ('boolean', True))
         if not (multi_primary or wsrep_control):
             return False

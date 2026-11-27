@@ -2976,8 +2976,9 @@ def _identity_projection(engine):
     status = "information_schema.GLOBAL_STATUS" if engine == "mariadb" else "performance_schema.global_status"
     on = "(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_on')" % variables
     provider = "(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_provider')" % variables
-    # This slot means node identity is required, even if wsrep_on is OFF.
-    # MariaDB sql/wsrep_var.cc:107-108: a provider other than none exists.
+    # MySQL/PXC keeps requiring node identity for any configured provider.
+    # MariaDB reads the raw fields below so dbops can decide whether the
+    # same SELECT proves that its provider is disconnected.
     enabled = "CASE WHEN %s IN ('ON', '1') OR LOWER(COALESCE(%s, 'none')) NOT IN ('', 'none') THEN 'ON' ELSE 'OFF' END" % (on, provider)
     node = ("CASE WHEN %s IN ('ON', '1') THEN (SELECT VARIABLE_VALUE FROM %s "
             "WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid') ELSE NULL END" % (enabled, status))
@@ -2985,26 +2986,34 @@ def _identity_projection(engine):
     # Compare the same global identity used by the guarded write, never a
     # proxy backend session's possibly overridden server_id.
     expressions = [("@@global." if key == "server_id" else "@@") + key for key in keys]
-    expressions += ["COALESCE(%s, 'OFF')" % enabled, node]
+    expressions += ([on, "(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = 'wsrep_gcomm_uuid')" % status]
+                    if engine == "mariadb" else ["COALESCE(%s, 'OFF')" % enabled, node])
     keys += ("wsrep_on", "wsrep_gcomm_uuid")
     if engine == "mariadb":
-        keys += ("wsrep_node_name",)
+        keys += ("wsrep_node_name", "wsrep_provider", "wsrep_connected", "wsrep_cluster_size")
         expressions.append("(SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_VARIABLES "
                            "WHERE VARIABLE_NAME = 'wsrep_node_name')")
+        expressions.append(provider)
+        expressions.extend("(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = '%s')" % (status, key)
+                           for key in ("wsrep_connected", "wsrep_cluster_size"))
     return keys, ", ".join(expressions)
 
 
 def _identity_row(keys, row):
     if len(row) != len(keys):
         return {}
-    identity = dict(zip(keys, row))
-    if str(identity.get("wsrep_on", "")).upper() not in ("ON", "1"):
-        for key in ("wsrep_on", "wsrep_gcomm_uuid", "wsrep_node_name"):
-            identity.pop(key, None)
-    elif not identity.get("wsrep_node_name"):
-        identity.pop("wsrep_node_name", None)
-    required = ("server_id", "hostname", "version", "port") if "server_id" in identity else ("server_uuid",)
-    if str(identity.get("wsrep_on", "")).upper() in ("ON", "1"):
+    evidence = dict(zip(keys, row))
+    engine = "mariadb" if "server_id" in evidence else "mysql"
+    required = ("server_id", "hostname", "version", "port") if engine == "mariadb" else ("server_uuid",)
+    identity = {key: evidence.get(key) for key in required}
+    has_galera = dbops.target_has_galera(evidence, engine)
+    if has_galera and evidence.get("wsrep_node_name"):
+        identity["wsrep_node_name"] = evidence["wsrep_node_name"]
+    # The helper grants the same waiver as reviewed writes, retaining only
+    # ordinary identity and its marker. Connection status stays out of the
+    # identity comparisons; the write packet rechecks it with NULL-safe clauses.
+    identity = dbops.target_galera_identity(None, engine, identity, evidence)
+    if has_galera:
         required += ("wsrep_gcomm_uuid",)
     return identity if all(identity.get(key) for key in required) else {}
 

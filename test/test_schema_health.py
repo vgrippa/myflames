@@ -631,7 +631,7 @@ class TestRules(unittest.TestCase):
 
 
 class TestSampling(unittest.TestCase):
-    def conn(self, engine='mysql', show_gipk='ON', expiry='86400', denied=False):
+    def conn(self, engine='mysql', show_gipk='ON', expiry='86400', denied=False, extra_variables=None):
         """A scripted connection: answers by statement shape."""
         version = '8.4.11' if engine == 'mysql' else '11.4.13-MariaDB'
         variables = [['version', version], ['performance_schema', 'ON']]
@@ -639,12 +639,13 @@ class TestSampling(unittest.TestCase):
             variables += [['show_gipk_in_create_table_and_information_schema', show_gipk]]
             if expiry is not None:
                 variables += [['information_schema_stats_expiry', expiry]]
+        variables += list((extra_variables or {}).items())
 
         class Conn(ReplayConn):
             def run(self, sql, extra_flags=None, timeout=None):
                 self.calls.append((sql, list(extra_flags or [])))
                 if 'SHOW GLOBAL VARIABLES' in sql:
-                    return batch(variables)
+                    return batch([row for row in variables if "'%s'" % row[0] in sql])
                 if 'SHOW GLOBAL STATUS' in sql:
                     return batch([['Uptime', '100']])
                 if 'COUNT(*)' in sql:
@@ -658,6 +659,21 @@ class TestSampling(unittest.TestCase):
                     return batch([['shop/t', 'Single']])
                 return ''
         return Conn([])
+
+    def test_pxc_session_only_wsrep_on_reads_provider_and_prioritizes_primary_keys(self):
+        conn = self.conn(extra_variables={'version_comment': 'Percona XtraDB Cluster (GPL)',
+                                         'wsrep_provider': '/usr/lib64/galera4/libgalera_smm.so'})
+        report = schema_health.table_report(conn, ['shop'])
+        note = next((note for note in report['notes'] if 'Galera node' in note), '')
+        self.assertIn('tables without a primary key', note)
+        self.assertNotIn('wsrep_on=ON', note)
+        self.assertIn("'wsrep_provider'", next(sql for sql, _ in conn.calls if 'SHOW GLOBAL VARIABLES' in sql))
+
+    def test_mariadb_wsrep_off_with_provider_has_no_galera_primary_key_note(self):
+        conn = self.conn(engine='mariadb', extra_variables={
+            'wsrep_on': 'OFF', 'wsrep_provider': '/usr/lib/galera/libgalera_smm.so'})
+        report = schema_health.table_report(conn, ['shop'])
+        self.assertFalse(any('Galera node' in note for note in report['notes']))
 
     def test_fresh_and_gipk_session_settings(self):
         conn = self.conn()

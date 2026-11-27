@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 from _perf_replay import FakeFactory, PASSWORD, ReplayConn, batch, fixture, run_cli, run_main
-from myflames import sessions, ui
+from myflames import locks, sessions, ui
 from myflames.connector import ConnectorError
 from myflames import ddl_progress
 from myflames.sessions import sessions_report, split_host, thread_kind
@@ -27,12 +27,13 @@ SERVERS = ('mysql-8.4', 'mysql-9.7', 'mysql-26.7', 'mariadb-11.4', 'mariadb-13.0
 def replay(server, edit=None):
     calls = list(fixture('sessions', server)['calls'])
     # Identity answers are synthetic additions to the older live recordings.
-    identity_sql = ('SELECT @@server_id, @@hostname, @@version, @@port' if server.startswith('mariadb')
-                    else 'SELECT @@server_uuid')
-    identity = [['1', 'server-one', '11.4.13-MariaDB', '3306']] if server.startswith('mariadb') else [['11111111-2222-3333-4444-555555555555']]
+    engine = 'mariadb' if server.startswith('mariadb') else 'mysql'
+    _, projection = locks._identity_projection(engine)
+    identity_sql = 'SELECT ' + projection
+    identity = ([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None, 'none', 'OFF', '0']]
+                if engine == 'mariadb' else [['11111111-2222-3333-4444-555555555555', 'OFF', None]])
     calls.append([sessions.SESSIONS_TAG + identity_sql, batch(identity)])
     # Explicit synthetic supplement: old live recordings predate the DDL read.
-    engine = 'mariadb' if server.startswith('mariadb') else 'mysql'
     calls.append([sessions.SESSIONS_TAG + ddl_progress.progress_sql(engine), batch([
         ['consumer', None, name, 'NO' if name == 'events_stages_current' else 'YES']
         for name in ddl_progress.CONSUMERS] + [
@@ -157,7 +158,74 @@ class TestLiveReplay(unittest.TestCase):
                 conn = replay(server)
                 report = sessions_report(conn, identity=True)
                 self.assertEqual(report['server_identity'], expected)
-                self.assertEqual(sum('SELECT @@server_' in sql for sql, _ in conn.calls), 1)
+                _, projection = locks._identity_projection(report['engine'])
+                self.assertEqual(sum(sql == sessions.SESSIONS_TAG + 'SELECT ' + projection
+                                     for sql, _ in conn.calls), 1)
+
+    def test_kill_sheet_matches_locks_for_galera_disconnected_and_plain_servers(self):
+        uuid = '11111111-2222-3333-4444-555555555555'
+        node_uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        provider = '/usr/lib/galera/libgalera_smm.so'
+        for server in ('mysql-8.4', 'mariadb-11.4', 'mariadb-12.3', 'mariadb-13.0'):
+            engine = 'mariadb' if server.startswith('mariadb') else 'mysql'
+            version = server[len('mariadb-'):] + '.0-MariaDB' if engine == 'mariadb' else '8.4.11'
+            ordinary = ({'server_id': '1', 'hostname': 'server-one', 'version': version, 'port': '3306'}
+                        if engine == 'mariadb' else {'server_uuid': uuid})
+            cases = [('plain', {'wsrep_on': 'OFF', 'wsrep_provider': 'none'}, ordinary),
+                     ('galera', {'wsrep_on': 'ON', 'wsrep_provider': provider,
+                                 'wsrep_gcomm_uuid': node_uuid, 'wsrep_node_name': 'node-one',
+                                 'wsrep_connected': 'ON', 'wsrep_cluster_size': '3'},
+                      dict(ordinary, wsrep_on='ON', wsrep_gcomm_uuid=node_uuid,
+                           **({'wsrep_node_name': 'node-one', 'wsrep_provider': provider}
+                              if engine == 'mariadb' else {})))]
+            if engine == 'mariadb':
+                cases.append(('disconnected', {'wsrep_on': 'OFF', 'wsrep_provider': provider,
+                                               'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'},
+                              dict(ordinary, wsrep_on='OFF', wsrep_disconnected_provider=True)))
+            for shape, evidence, expected in cases:
+                with self.subTest(server=server, shape=shape):
+                    keys, projection = locks._identity_projection(engine)
+                    values = dict(ordinary, **evidence)
+                    row = [values.get(key) for key in keys]
+                    conn = synthetic([], version=version)
+                    original = conn.run
+                    def answer(sql, **kwargs):
+                        if sql == sessions.SESSIONS_TAG + 'SELECT ' + projection:
+                            conn.calls.append(sql)
+                            return batch([row])
+                        return original(sql, **kwargs)
+                    conn.run = answer
+                    report = sessions_report(conn, identity=True)
+                    lock_conn = ReplayConn([
+                        ['/*myflames:discover*/ SELECT @@version, @@performance_schema', batch([[version, '1']])],
+                        [locks.LOCKS_TAG + 'SELECT ' + projection, batch([row])]])
+                    _, lock_identity = locks._kill_context(lock_conn)
+                    self.assertEqual(report['server_identity'], expected)
+                    self.assertEqual(report['server_identity'], lock_identity)
+                    self.assertEqual(conn.calls.count(sessions.SESSIONS_TAG + 'SELECT ' + projection), 1)
+                    self.assertFalse(any('refresh before using Kill' in note for note in report['notes']))
+
+    def test_connected_provider_with_hidden_uuid_cannot_supply_a_kill_identity(self):
+        conn = replay('mysql-8.4')
+        _, projection = locks._identity_projection('mysql')
+        conn.answers[sessions.SESSIONS_TAG + 'SELECT ' + projection] = [
+            batch([['11111111-2222-3333-4444-555555555555', 'ON', None]])]
+        report = sessions_report(conn, identity=True)
+        self.assertEqual(report['server_identity'], {})
+        self.assertIn('Could not read the server identity; refresh before using Kill.', report['notes'])
+        for wsrep_on in ('OFF', 'ON'):
+            for connected, size in (('ON', '3'), ('ON', '0'), ('OFF', '3'), (None, '0'), ('OFF', None)):
+                with self.subTest(wsrep_on=wsrep_on, connected=connected, size=size):
+                    keys, projection = locks._identity_projection('mariadb')
+                    row = ['1', 'server-one', '13.0.2-MariaDB', '3306', wsrep_on, None,
+                           'node-one', '/usr/lib/galera/libgalera_smm.so', connected, size]
+                    conn = replay('mariadb-13.0')
+                    conn.answers[sessions.SESSIONS_TAG + 'SELECT ' + projection] = [batch([row])]
+                    report = sessions_report(conn, identity=True)
+                    self.assertEqual(report['server_identity'], {})
+                    self.assertEqual(report['server_identity'], locks._identity_row(keys, row))
+                    self.assertTrue(report['sessions'])
+                    self.assertIn('Could not read the server identity; refresh before using Kill.', report['notes'])
 
     def test_missing_or_denied_identity_keeps_the_report_readable(self):
         for answer in ('', batch([[None]]), batch([['one', 'extra']]), ConnectorError('ERROR 1227: denied')):
@@ -172,6 +240,7 @@ class TestLiveReplay(unittest.TestCase):
                 report = sessions_report(conn, identity=True)
                 self.assertEqual(report['server_identity'], {})
                 self.assertTrue(report['sessions'])
+                self.assertIn('Could not read the server identity; refresh before using Kill.', report['notes'])
 
     def test_every_server_flags_the_scenario(self):
         for server in SERVERS:
@@ -310,8 +379,9 @@ def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12'
     status = status or [['Max_used_connections', '9'], ['Threads_connected', '8'], ['Threads_running', '3'],
                         ['Uptime', '1000']]
     pl_rows = pl_rows if pl_rows is not None else rows
-    answers = [('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555']])),
-               ('SELECT @@server_id, @@hostname, @@version, @@port', batch([['1', 'server-one', version, '3306']])),
+    answers = [('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555', 'OFF', None]])),
+               ('SELECT @@global.server_id, @@hostname, @@version, @@port',
+                batch([['1', 'server-one', version, '3306', 'OFF', None, None, 'none', 'OFF', '0']])),
                ('events_statements_current', events),
                ('performance_schema_show_processlist', batch([['performance_schema_show_processlist', ps_show_processlist]])),
                ('SHOW GLOBAL VARIABLES', batch([['max_connections', '10'], ['performance_schema', ps],
