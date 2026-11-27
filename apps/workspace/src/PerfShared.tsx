@@ -163,6 +163,8 @@ export function CopySql({ sql, label, names }: { sql: string; label: string; nam
         aria-disabled={nameReason ? true : undefined}
         onClick={(e) => {
           if (nameReason) {
+            e.preventDefault();
+            e.stopPropagation();
             openWhyDisabled({ anchor: e.currentTarget, reason: nameReason });
             return;
           }

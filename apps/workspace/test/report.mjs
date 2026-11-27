@@ -1025,6 +1025,7 @@ try {
   await until(() => state.seen.length === copyRun + 1, "the copy-safety report was requested");
   await h.idle(view);
   let accepted = 0;
+  let refused = 0;
   for (const { finding, safe } of copyCases) {
     await h.select(`${view} .report-look li[data-finding="${finding.id}"]`);
     await inspectorTitle(finding.title);
@@ -1042,11 +1043,33 @@ try {
       await page.waitForFunction(n => window.__reportCopies.length === n + 1, {}, before);
       assert.equal(await page.evaluate(() => window.__reportCopies.at(-1)), finding.action.sql, finding.id);
     } else {
-      await page.waitForSelector('[role=dialog].why-disabled');
-      assert.match(await text('[role=dialog].why-disabled'), /not printable ASCII or contains a backslash/, finding.id);
+      refused++;
+      const whyDialog = '[role=dialog].why-disabled:popover-open';
+      await page.waitForSelector(`${whyDialog} .why-disabled-close`, { visible: true });
+      assert.match(await text(whyDialog), /not printable ASCII or contains a backslash/, finding.id);
       assert.equal(await page.evaluate(() => window.__reportCopies.length), before, finding.id);
-      await page.$eval('[role=dialog].why-disabled .why-disabled-close', e => e.click());
-      await page.waitForSelector('[role=dialog].why-disabled', { hidden: true });
+      // Confirm the message stays open past the click's queued toggle task
+      // (regression: mounting WhyDisabled synchronously inside a click must not
+      // let native popovertarget activation close the just-opened popover).
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0))));
+      assert.ok(await page.$(`${whyDialog} .why-disabled-close`), `${finding.id}: disabled reason stays open after click`);
+      if (refused === 2) {
+        // Once WhyDisabledHost is mounted, clicking the same disabled button
+        // again toggles the message closed and restores popovertarget attrs.
+        assert.equal(await page.$eval(button, e => e.getAttribute("popovertargetaction")), "show", finding.id);
+        await page.click(button);
+        await page.waitForFunction(() => !document.querySelector('[role=dialog].why-disabled'));
+        assert.deepEqual(
+          await page.$eval(button, e => ({ pt: e.getAttribute("popovertarget"), pta: e.getAttribute("popovertargetaction") })),
+          { pt: null, pta: null },
+          `${finding.id}: closing restores popovertarget attributes`,
+        );
+        assert.equal(await page.evaluate(() => window.__reportCopies.length), before, finding.id);
+        await page.click(button);
+        await page.waitForSelector(`${whyDialog} .why-disabled-close`, { visible: true });
+      }
+      await page.click(`${whyDialog} .why-disabled-close`);
+      await page.waitForFunction(() => !document.querySelector('[role=dialog].why-disabled'));
     }
   }
   assert.equal(await page.evaluate(() => window.__reportCopies.length), accepted);
