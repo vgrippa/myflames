@@ -90,14 +90,26 @@ export function jobWord(job: LifecycleJob): [Tone, string] {
   if (status === "needs_verification") return ["watch", "Needs verification"];
   return ["unknown", status ? status.replace(/_/g, " ") : "Done"];
 }
+/** Ownership can follow a saved connection edit; the execution target cannot.
+ * A bound key still identifies the request owner, so use the snapshot's
+ * immutable address when that owner now points somewhere else. */
+export function lifecycleJobLabel(job: LifecycleJob, key: string, label: string): string {
+  if (!job.started_on) return label;
+  let edited = job.owner_match === "saved_connection";
+  try {
+    const parts: unknown = JSON.parse(key);
+    if (Array.isArray(parts)) edited = edited || parts[1] !== job.started_on.host || parts[2] !== job.started_on.port;
+  } catch { /* An unreadable key cannot supply execution metadata. */ }
+  return edited ? `started on ${job.started_on.host}:${job.started_on.port}` : label;
+}
 /** Merge the jobs the server lists for *key* into memory: known ids take the
- * listed state and this connection (a policy change keeps the endpoint), new
- * ones are added, and finished ones beyond KEEP_FINISHED drop out. */
+ * listed state and request owner, while their label keeps the starting target.
+ * New ones are added, and finished ones beyond KEEP_FINISHED drop out. */
 export function adoptJobs(memory: MaintenanceMemory, key: string, label: string, jobs: LifecycleJob[]): MaintenanceMemory {
   const listed = jobs.filter((job) => job.id);
   const ids = new Set(listed.map((job) => job.id));
   const kept = memory.jobs.filter((b) => !ids.has(b.report.id));
-  const merged = [...kept, ...listed.map((job) => ({ key, label, report: job }))];
+  const merged = [...kept, ...listed.map((job) => ({ key, label: lifecycleJobLabel(job, key, label), report: job }))];
   const finished = merged.filter((b) => !jobActive(b.report));
   const drop = new Set(finished.slice(0, Math.max(0, finished.length - KEEP_FINISHED)));
   return { ...memory, jobs: merged.filter((b) => !drop.has(b)) };
@@ -227,10 +239,11 @@ function showJob(id: string) {
 
 /** Job status is an outcome, not proof of verification: a tool that exited 0
  * can still leave checks not checked. */
-function JobProgress({ bound, currentKey, cancelling, onCancel, shown, started, revealed }: {
+function JobProgress({ bound, currentKey, cancelling, onCancel, shown, started, revealed, cancelError }: {
   bound: Bound<LifecycleJob>; currentKey: string; cancelling: string;
   onCancel: (bound: Bound<LifecycleJob>) => void;
   shown: boolean; started: boolean; revealed: Set<string>;
+  cancelError?: string;
 }) {
   const job = bound.report;
   const other = bound.key !== currentKey;
@@ -266,10 +279,11 @@ function JobProgress({ bound, currentKey, cancelling, onCancel, shown, started, 
   const output = active ? progress.output : progress.written !== null ? `${bytes(progress.written)} written` : "";
   const facts = [active ? job.phase : "", output, active && rate !== null ? `${bytes(rate)}/s` : ""].filter(Boolean);
   // Keep following jobs from this mounted view across Maintenance sections.
-  if (!shown) return null;
+  if (!shown) return cancelError ? <p role="alert" className="error">{SECTION_LABEL[job.operation]} · {bound.label}: {cancelError}</p> : null;
   return <section className={`ops-job${other ? " is-other-connection" : ""}`} aria-label={`${SECTION_LABEL[job.operation]} on ${bound.label}`} data-job={job.id || undefined} data-state={job.state} data-other-connection={other || undefined} tabIndex={-1}>
     <div className="ops-job-head"><strong>{SECTION_LABEL[job.operation]} · {bound.label}</strong><StatusPill tone={tone} label={word} />{active && <ActionButton busy={cancelling === job.id} busyLabel="Cancelling…" disabled={other || !job.id} title={other ? "Switch back to this connection to cancel it." : undefined} onClick={() => onCancel(bound)}>Cancel</ActionButton>}</div>
     <ActionStatus state={{ phase: cancelling === job.id ? "pending" : "idle", message: "Waiting for the cancellation reply. The job may still be running.", startedAt: cancelSince }} />
+    {cancelError && <p role="alert" className="error">{cancelError}</p>}
     {other && <p className="hint">From {bound.label}. Switch back to that connection to manage this job.</p>}
     {active && <div className="ops-progress" role="status" title={progress.approximate ? ESTIMATE_HINT : undefined}><progress aria-label={`${SECTION_LABEL[job.operation]} progress`} max={100} value={progress.value ?? undefined} />{progress.percent && <span>{progress.percent}</span>}</div>}
     {(facts.length > 0 || elapsed) && <p className="ops-job-facts">{facts.map((fact, i) => <span key={i}>{fact}</span>)}{elapsed && <span>{completed ? "Completed in" : "Elapsed"} <abbr title={durationText(job.elapsed_s)}>{elapsed}</abbr></span>}</p>}
@@ -296,7 +310,7 @@ function JobSummary({ job, onShow }: { job: LifecycleJob; onShow: () => void }) 
   </div>;
 }
 
-export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [] }: {
+export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [], jobCancelErrors = {}, onJobCancelled }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   section: MaintenanceSection; onSection: (section: MaintenanceSection) => void;
   /** Server owns memory; never serialize this object into the workspace. */
@@ -306,6 +320,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   targetVersions?: string[]; missingPrivileges?: MissingPrivileges;
   /** Saved connections (no passwords): Clone's donor can be filled from one. */
   profiles?: Profile[];
+  /** Banner Cancel failures survive opening this view while its reply is pending. */
+  jobCancelErrors?: Record<string, string>;
+  /** A successful retry clears the banner's failure for this job, across views. */
+  onJobCancelled?: (id: string) => void;
 }) {
   const reads = useConnectionReads(connection);
   const captureScope = useOpsScope(connection);
@@ -835,7 +853,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       let found: LifecycleJob | undefined;
       try {
         const answer = await listLifecycleJobs(from);
-        found = answer.jobs.find((job) => job.id && !known.has(job.id) && job.operation === p.report.operation);
+        found = answer.jobs.find((job) => job.owner_match === "endpoint" && job.id && !known.has(job.id) && job.operation === p.report.operation);
         if (found) {
           if (p.report.operation === "dump" && found.state !== "refused") {
             lastDumpParent = parentPath(p.report.target);
@@ -872,6 +890,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       const c = jobConnections.current.get(id);
       const target = c && endpointKey(connectionKey(c)) === endpointKey(bound.key) ? c : connection;
       const job = await cancelLifecycleJob(target, id);
+      onJobCancelled?.(id);
       if (live()) {
         onMemory((m) => ({ ...m, jobs: m.jobs.map((b) => b.key === bound.key && b.report.id === id ? { ...b, report: job } : b) }));
         setPollRetry((n) => n + 1);
@@ -1000,7 +1019,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           <strong>{SECTION_LABEL[sheet.report.operation]} · {sheet.label}</strong>
           <ActionStatus state={{ phase: "pending", message: "Waiting for the Start reply. Whether it started is unknown; do not start it again.", startedAt: startSince }} />
         </section>}
-        {memory.jobs.map((bound, i) => <JobProgress key={bound.report.id || `${bound.key}:${i}`} bound={bound} shown={bound.report.operation === section} started={startedJobs.current.has(bound.report.id || "")} revealed={revealedJobs.current} currentKey={key} cancelling={cancelling} onCancel={(b) => { void cancel(b); }} />)}</>}>
+        {memory.jobs.map((bound, i) => <JobProgress key={bound.report.id || `${bound.key}:${i}`} bound={bound} shown={bound.report.operation === section} started={startedJobs.current.has(bound.report.id || "")} revealed={revealedJobs.current} currentKey={key} cancelling={cancelling} cancelError={jobCancelErrors[bound.report.id || ""]} onCancel={(b) => { void cancel(b); }} />)}</>}>
       {summary && (
         <SummaryLine tone={section === "upgrade" ? upgradeTone : undefined} toneLabel={section === "upgrade" ? upgradeToneLabel : undefined} notes={upgradeNotes}
           extra={section === "upgrade" && upgrade ? <ToolbarButton onClick={() => download(JSON.stringify(upgrade, null, 2), "myflames-upgrade-check.json", "application/json")}>Export JSON</ToolbarButton> : undefined}>
