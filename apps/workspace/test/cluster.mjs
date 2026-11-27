@@ -14,7 +14,9 @@
 // sidebar back to normal), Refresh, Refresh all feeding the place, keyboard,
 // and the 720 px window.
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
 
@@ -56,6 +58,10 @@ async function toggleFinding(pattern) {
 }
 const visible = (selector) => page.$$eval(selector, (els) => els.filter((e) => e.offsetParent || e.getClientRects().length).map((e) => e.textContent.replace(/\s+/g, " ").trim()));
 const shot = (file) => page.screenshot({ path: path.join(h.shots, file), fullPage: false });
+// The open disabled-action message, kept under local/why-shots for review.
+const whyShots = fileURLToPath(new URL("../../../local/why-shots/", import.meta.url));
+await fs.mkdir(whyShots, { recursive: true });
+const whyShot = (file) => page.screenshot({ path: path.join(whyShots, file), fullPage: false });
 async function answer(report) {
   state.fallback = { status: 200, body: report };
 }
@@ -165,26 +171,59 @@ try {
   assert.deepEqual(overview.map((a) => a.label), R["ic-8.4-healthy"].actions.map((a) => a.label));
   assert.ok(overview.every((a) => a.disabled === "true"), "every mode switch and bare ClusterSet placeholder is disabled here");
   assert.ok(overview.every((a) => a.tab === 0), "a disabled action stays in the tab order");
-  // Each reason is visible text under the group and the button's accessible description.
+  // Each reason is the button's accessible description, in the DOM but not
+  // visible: never a caption under the group before a click.
   const reasons = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
     label: e.textContent.trim(),
-    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
+    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim(),
+    reasonHidden: document.getElementById(e.getAttribute("aria-describedby") || "")?.classList.contains("visually-hidden") || false })));
   for (const [i, a] of R["ic-8.4-healthy"].actions.entries()) {
     assert.equal(reasons[i].label, a.label);
-    assert.ok(reasons[i].reason.includes(a.why_not), `${a.id}: its reason is visible and described: ${reasons[i].reason}`);
-    assert.ok(reasons[i].reason.includes(a.fix), `${a.id}: its fix is visible: ${reasons[i].reason}`);
+    assert.ok(reasons[i].reason.includes(a.why_not), `${a.id}: its reason is described: ${reasons[i].reason}`);
+    assert.ok(reasons[i].reason.includes(a.fix), `${a.id}: its fix is described: ${reasons[i].reason}`);
+    assert.equal(reasons[i].reasonHidden, true, `${a.id}: the description is visually hidden, not a caption`);
   }
-  // Clicking or pressing Enter on a disabled action opens nothing; the reason stays in view.
+  assert.equal(await page.$$eval(`${view} .cluster-actions .cluster-action-why`, (els) =>
+    els.filter((e) => e.getClientRects().length).length), 0, "no reason text is visible under the buttons before a click");
+  // Click, Enter or Space on a disabled action opens the message anchored to
+  // the button with the reason; it plans and sends nothing.
   const plansBeforeDisabled = plans.length;
+  const firstWhy = R["ic-8.4-healthy"].actions[0];
+  const openWhy = `${view} .cluster-actions .cluster-action-why:popover-open`;
   await page.focus(`${view} .cluster-actions .review-actions > button`);
   await page.keyboard.press("Enter");
-  await pause(300);
-  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)][1].click(), view);
+  await page.waitForFunction((sel, text) => {
+    const open = document.querySelector(sel);
+    return !!open && open.textContent.includes(text);
+  }, {}, openWhy, firstWhy.why_not);
+  let whyText = await page.$eval(openWhy, (e) => e.textContent);
+  assert.ok(whyText.includes(firstWhy.why_not) && whyText.includes(firstWhy.fix), `Enter opens the reason message: ${whyText}`);
+  // Escape closes it and focus is back on the button.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-describedby")), overview[0].why,
+    "after Escape the focus is back on the disabled action");
+  // Space opens it too; clicking a second action's button closes the first
+  // message and opens the second; clicking the same button again closes it.
+  const thirdWhy = R["ic-8.4-healthy"].actions[2];
+  await page.keyboard.press("Space");
+  await page.waitForFunction((sel, text) => {
+    const open = document.querySelector(sel);
+    return !!open && open.textContent.includes(text);
+  }, {}, openWhy, firstWhy.why_not);
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)][2].click(), view);
+  await page.waitForFunction((sel, text) => {
+    const open = document.querySelector(sel);
+    return !!open && open.textContent.includes(text);
+  }, {}, openWhy, thirdWhy.why_not);
+  whyText = await page.$eval(openWhy, (e) => e.textContent);
+  assert.ok(whyText.includes(thirdWhy.why_not), `the other action's message replaces the first: ${whyText}`);
+  assert.equal(await page.$$eval(".cluster-action-why:popover-open", (els) => els.length), 1, "one message at a time");
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)][2].click(), view);
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, openWhy);
   await pause(300);
   assert.equal(plans.length, plansBeforeDisabled, "a disabled action plans nothing");
   assert.equal(await page.$("dialog.action-review[open]"), null, "a disabled action opens no review sheet");
-  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-describedby")), overview[0].why,
-    "focus stays on the disabled action, its reason in view");
 
   // Keyboard: arrows move between member cards and select; Enter opens the inspector; Escape returns.
   await page.focus(`${view} .cluster-members .cluster-card`);
@@ -259,7 +298,7 @@ try {
   assert.ok(memberButtons.includes("Make primary…"), memberButtons.join());
   // The member page lists every member action the backend offers, always: on
   // this secondary connection Make primary is enabled, Start Group Replication
-  // stays visible, focusable and disabled with its reason as visible text.
+  // stays visible, focusable and disabled with its reason as its description.
   const onSecondary = await page.$$eval(".view-inspector .review-actions > button", (els) => els.map((e) => ({
     label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true", tab: e.tabIndex,
     reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
@@ -272,9 +311,13 @@ try {
   const plansBeforeMember = plans.length;
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
     .find((b) => b.textContent.trim() === "Start Group Replication…").click());
-  await pause(300);
+  await page.waitForSelector(".view-inspector .cluster-action-why:popover-open", { visible: true });
   assert.equal(plans.length, plansBeforeMember, "a disabled member action plans nothing");
   assert.equal(await page.$("dialog.action-review[open]"), null, "a disabled member action opens no review sheet");
+  // Clicking the same action again closes its message (the inspector stays).
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Start Group Replication…").click());
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions button")].find((b) => b.textContent.trim() === "Make primary…").click());
   await page.waitForSelector("dialog.action-review[open]", { visible: true });
   assert.deepEqual({ action: plans[0].action, member: plans[0].member_key }, { action: "switchover", member: secondary.key });
@@ -318,9 +361,10 @@ try {
   await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .action-result .text-button`)].find((b) => b.textContent.trim() === "Close").click(), view);
   await backToList();
 
-  // A disabled action that needs a privilege shows the copyable GRANT (the
-  // existing copy pattern) with "Run it as an administrator, then Refresh.",
-  // and the unreadable-privileges line when the server cannot be asked.
+  // A disabled action that needs a privilege opens its message on click: the
+  // reason, the copyable GRANT (the existing copy pattern) with "Run it as an
+  // administrator, then Refresh.", and the unreadable-privileges line on the
+  // action whose privileges the server cannot be asked.
   const grantReport = JSON.parse(JSON.stringify(R["ic-8.4-healthy"]));
   const grantMember = grantReport.members.find((m) => m.local);
   const stopAction = grantMember.actions.find((a) => a.id === "stop_member");
@@ -335,16 +379,30 @@ try {
   await page.evaluate(() => { window.__grants = []; navigator.clipboard.writeText = (t) => (window.__grants.push(t), Promise.resolve()); });
   await refreshTo(grantReport);
   await h.select(`${view} tr[data-row-key="${grantMember.key}"]`);
-  const grantInspector = await h.inspector();
+  const clickMemberAction = (label) => page.evaluate((l) => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === l).click(), label);
+  const memberWhy = ".view-inspector .cluster-action-why:popover-open";
+  // Before any click the inspector shows no caption: the reasons are hidden descriptions.
+  assert.equal(await page.$$eval(".view-inspector .cluster-action-why", (els) => els.filter((e) => e.getClientRects().length).length),
+    0, "no reason text is visible under the member actions before a click");
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForFunction((sel) => !!document.querySelector(sel)?.textContent.includes("GROUP_REPLICATION_ADMIN"), {}, memberWhy);
+  let grantInspector = await h.inspector();
   assert.match(grantInspector, /This account lacks GROUP_REPLICATION_ADMIN\. Grant it on this server\./);
   assert.match(grantInspector, /Run it as an administrator, then Refresh\./);
-  assert.match(grantInspector, /Privileges could not be read; the server refuses the change if one is missing\./);
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
+  await clickMemberAction("Start Group Replication…");
+  await page.waitForFunction((sel) => !!document.querySelector(sel)?.textContent.includes("Privileges could not be read"), {}, memberWhy);
+  assert.match(await h.inspector(), /Privileges could not be read; the server refuses the change if one is missing\./);
+  await clickMemberAction("Stop Group Replication…");
+  await page.waitForSelector(`${memberWhy} .ops-pre`, { visible: true });
   // A long GRANT scrolls inside its box instead of stretching the page, in both themes.
   for (const theme of ["light", "dark"]) {
     await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
     await pause(150);
     const box = await page.evaluate(() => {
-      const e = document.querySelector(".view-inspector .cluster-action-why .ops-pre");
+      const e = document.querySelector(".view-inspector .cluster-action-why:popover-open .ops-pre");
       return {
         found: !!e,
         maxH: e ? getComputedStyle(e).maxHeight : "",
@@ -354,15 +412,22 @@ try {
     });
     assert.ok(box.pre > 0, `a long GRANT scrolls inside its box (${theme}): ${JSON.stringify(box)}`);
     assert.ok(box.page <= 0, `no horizontal page scroll with the GRANT open (${theme}): ${box.page}`);
+    await whyShot(`cluster-why-grant-1440-${theme}.png`);
   }
   await page.evaluate(() => { delete document.documentElement.dataset.theme; });
   await shot("cluster-grant.png");
-  await page.click(".view-inspector .cluster-action-why .ops-commands button");
-  await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why .ops-commands [role=status]")?.textContent || ""));
+  await page.click(".view-inspector .cluster-action-why:popover-open .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why:popover-open .ops-commands [role=status]")?.textContent || ""));
   assert.equal(await page.evaluate(() => window.__grants[0]), stopAction.grant_sql, "Copy puts the GRANT on the clipboard");
+  // The Close button in the message closes it and returns focus to the action.
+  await page.click(`${memberWhy} .why-disabled-close`);
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Stop Group Replication…",
+    "the message's Close button returns focus to its action");
   const plansBeforeGrant = plans.length;
   await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
     .find((b) => b.textContent.trim() === "Stop Group Replication…").click());
+  await page.waitForSelector(memberWhy, { visible: true });
   await pause(300);
   assert.equal(plans.length, plansBeforeGrant, "the action with the missing privilege still plans nothing");
   await backToList();
@@ -600,15 +665,22 @@ try {
     cut: [...w.querySelectorAll("td")].filter((td) => td.scrollWidth > td.clientWidth + 1).map((td) => td.textContent) }));
   assert.ok(fit.scroll <= fit.client, JSON.stringify(fit));
   assert.deepEqual(fit.cut, []);
-  // A node action that must run on that node shows its reason and fix, with
-  // the saved connection for that node's address (Use cluster-galera-2).
+  // A node action that must run on that node opens its message on click: the
+  // reason and fix, with the saved connection for that node's address (Use
+  // cluster-galera-2), which switches the connection.
   const galera2 = R["galera-11.8-healthy"].members.find((m) => m.name === "galera-2");
   await h.select(`${view} tr[data-row-key="${galera2.key}"]`);
   const nodeInspector = await h.inspector();
   assert.match(nodeInspector, /Desync runs on the node it changes, galera-2; this connection is to galera-1\./);
   assert.match(nodeInspector, /Connect to galera-2 to desync it\./);
-  const useFix = await page.$$eval(".view-inspector .cluster-action-why .cluster-use-node", (els) => els.map((e) => e.textContent));
-  assert.ok(useFix.includes("Use cluster-galera-2"), `the fix carries the saved connection: ${useFix}`);
+  await page.evaluate(() => [...document.querySelectorAll(".view-inspector .review-actions > button")]
+    .find((b) => b.textContent.trim() === "Desync this node…").click());
+  await page.waitForSelector(".view-inspector .cluster-action-why:popover-open .cluster-use-node", { visible: true });
+  const useFix = await page.$$eval(".view-inspector .cluster-action-why:popover-open .cluster-use-node", (els) => els.map((e) => e.textContent));
+  assert.deepEqual(useFix, ["Use cluster-galera-2"], `the message carries the saved connection: ${useFix}`);
+  await page.click(".view-inspector .cluster-action-why:popover-open .cluster-use-node");
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("cluster-galera-2"));
+  assert.equal(await page.$(".view-inspector .cluster-action-why:popover-open"), null, "the message does not carry over to another connection");
   await backToList();
   await tab("Topology");
   await refreshTo(R["galera-11.8-donor"]);
@@ -736,15 +808,21 @@ try {
   assert.deepEqual(stale.chips, ["Read here"]);
   assert.equal(await page.$(`${nav} .status-dot`), null, "no marker from another connection");
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
-  // Another connection's report offers no change.
+  // Another connection's report offers no change: one blocked line under the
+  // group, and a click opens the message leading with that line.
   const galeraLocal = R["galera-11.8-healthy"].members.find((m) => m.local);
   await page.click(`${view} .cluster-card[data-row-key="${galeraLocal.key}"]`);
   await page.waitForSelector(".view-inspector .review-actions button");
   assert.equal(await page.$eval(".view-inspector .review-actions button", (b) => b.getAttribute("aria-disabled")), "true");
   const plansBefore = plans.length;
   await page.click(".view-inspector .review-actions button");
-  await pause(300);
+  await page.waitForFunction((sel) => !!document.querySelector(sel)?.textContent.includes("This report was read on"), {},
+    ".view-inspector .cluster-action-why:popover-open");
+  const blockedMsg = await page.$eval(".view-inspector .cluster-action-why:popover-open", (e) => e.textContent);
+  assert.match(blockedMsg, /^This report was read on/, `the blocked line leads the message: ${blockedMsg}`);
   assert.equal(plans.length, plansBefore, "nothing is planned on another connection's report");
+  await page.click(".view-inspector .review-actions button");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector .cluster-action-why:popover-open"));
   await backToList();
   await page.keyboard.press("Escape");
   await pause(300);
@@ -884,20 +962,39 @@ try {
   assert.equal(narrow.tabs, 3);
   assert.equal(narrow.frame, 0, "the cards wrap instead of running off the right edge");
   assert.ok(narrow.top < narrow.fold - 24, `the topology starts above the fold: ${JSON.stringify(narrow)}`);
-  // The action band and its reasons wrap at 720 px in both themes.
+  // The action band wraps at 720 px, and a disabled action's open message
+  // stays inside the viewport without horizontal page scroll, in both themes.
+  await page.evaluate((sel) => document.querySelector(`${sel} .cluster-actions`)?.scrollIntoView({ block: "end" }), view);
+  await pause(150);
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+    .find((b) => b.getAttribute("aria-disabled") === "true").click(), view);
+  await page.waitForFunction((sel) => {
+    const open = document.querySelector(sel);
+    return !!open && open.getClientRects().length > 0 && (open.textContent || "").length > 0;
+  }, {}, `${view} .cluster-actions .cluster-action-why:popover-open`);
   for (const theme of ["light", "dark"]) {
     await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
     await pause(200);
-    const wrap = await page.evaluate((sel) => ({
-      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      reasons: [...document.querySelectorAll(`${sel} .cluster-action-why`)].map((e) => e.scrollWidth - e.clientWidth),
-      band: document.querySelector(`${sel} .cluster-actions`) ? 1 : 0 }), view);
+    const wrap = await page.evaluate((sel) => {
+      const msg = document.querySelector(`${sel} .cluster-actions .cluster-action-why:popover-open`);
+      const r = msg ? msg.getBoundingClientRect() : null;
+      return {
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        band: document.querySelector(`${sel} .cluster-actions`) ? 1 : 0,
+        message: r ? { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: window.innerWidth, vh: window.innerHeight } : null };
+    }, view);
     assert.equal(wrap.band, 1, "the overview action band is present at 720 px");
     assert.ok(wrap.overflow <= 0, `horizontal page scroll at 720 px (${theme}): ${wrap.overflow}`);
-    assert.ok(wrap.reasons.length > 0 && wrap.reasons.every((d) => d <= 0), `reasons wrap at 720 px (${theme}): ${wrap.reasons}`);
+    assert.ok(wrap.message, `the disabled action's message is open at 720 px (${theme})`);
+    assert.ok(wrap.message.left >= 0 && wrap.message.top >= 0 && wrap.message.right <= wrap.message.vw && wrap.message.bottom <= wrap.message.vh,
+      `the open message is inside the viewport at 720 px (${theme}): ${JSON.stringify(wrap.message)}`);
     await shot(`cluster-720-${theme}.png`);
+    await whyShot(`cluster-why-720-${theme}.png`);
   }
   await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+    .find((b) => b.getAttribute("aria-disabled") === "true").click(), view);
+  await page.waitForFunction((sel) => !document.querySelector(`${sel} .cluster-action-why:popover-open`), {}, view);
   await shot("cluster-720.png");
   await tab("Members");
   await pause(200);

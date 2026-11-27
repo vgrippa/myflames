@@ -1377,7 +1377,8 @@ try {
 
   // P2b.1: each allowlist kind renders its whole catalog through the shared
   // ActionGroup, so an empty list still shows the Remove… entry, aria-disabled,
-  // with its why_not and fix as visible text (never hidden or title-only).
+  // its why_not and fix as its (hidden) accessible description, shown as the
+  // anchored message on click (never title-only).
   const emptyAllow = structuredClone(R.lab);
   emptyAllow.shallow_allowlists.schemas = [];
   emptyAllow.allowlist_actions.schemas = emptyAllow.allowlist_actions.schemas.map((a) =>
@@ -1388,18 +1389,23 @@ try {
   await refreshTo(emptyAllow);
   const schemaRow = await page.$eval(`${view} .readyset-allowlist-row:last-child`, (row) => {
     const btn = [...row.querySelectorAll(".review-actions > button")].find((b) => b.textContent.trim() === "Remove…");
+    const description = document.getElementById(btn?.getAttribute("aria-describedby") || "");
     return {
       labels: [...row.querySelectorAll(".review-actions > button")].map((b) => b.textContent.trim()),
       off: btn?.getAttribute("aria-disabled") || null,
-      text: (row.textContent || "").replace(/\s+/g, " "),
+      descriptionHidden: description?.classList.contains("visually-hidden") || false,
+      descriptionText: (description?.textContent || "").replace(/\s+/g, " ").trim(),
+      caption: row.querySelectorAll(".cluster-action-why:not(.why-disabled), .cluster-action-why:popover-open").length,
       chips: row.querySelectorAll(".readyset-allow-chip").length,
     };
   });
   assert.equal(schemaRow.chips, 0, "no chips on an empty allowlist");
   assert.deepEqual(schemaRow.labels, ["Allow…", "Remove…"], "the kind's whole catalog is listed, always");
   assert.equal(schemaRow.off, "true", "Remove… stays listed, aria-disabled, on an empty allowlist");
-  assert.match(schemaRow.text, /There are no allowed schemas to remove\./, "the disabled Remove shows its why_not as visible text");
-  assert.match(schemaRow.text, /Add an allowed schema first\./, "the disabled Remove shows its fix as visible text");
+  assert.equal(schemaRow.caption, 0, "the disabled Remove shows no caption under the buttons");
+  assert.equal(schemaRow.descriptionHidden, true, "the reason is the button's hidden description");
+  assert.match(schemaRow.descriptionText, /There are no allowed schemas to remove\./, "the disabled Remove describes its why_not");
+  assert.match(schemaRow.descriptionText, /Add an allowed schema first\./, "the disabled Remove describes its fix");
   const plansBeforeEmptyAllow = plans.length;
   await page.evaluate((sel) => {
     const row = [...document.querySelectorAll(`${sel} .readyset-allowlist-row`)].find((r) =>
@@ -1407,8 +1413,22 @@ try {
     );
     [...(row?.querySelectorAll(".review-actions > button") || [])].find((b) => b.textContent.trim() === "Remove…")?.click();
   }, view);
+  await page.waitForFunction((sel) => {
+    const open = document.querySelector(sel);
+    return !!open && (open.textContent || "").includes("There are no allowed schemas to remove.");
+  }, {}, `${view} .readyset-allowlist-row:last-child .cluster-action-why:popover-open`);
+  const emptyWhyText = await page.$eval(`${view} .readyset-allowlist-row:last-child .cluster-action-why:popover-open`, (e) => e.textContent);
+  assert.match(emptyWhyText, /There are no allowed schemas to remove\./, "the message shows the why_not on click");
+  assert.match(emptyWhyText, /Add an allowed schema first\./, "the message shows the fix on click");
   await pause(200);
   assert.equal(plans.length, plansBeforeEmptyAllow, "a disabled Remove… plans nothing");
+  await page.evaluate((sel) => {
+    const row = [...document.querySelectorAll(`${sel} .readyset-allowlist-row`)].find((r) =>
+      /Allowed schemas/.test(r.textContent || ""),
+    );
+    [...(row?.querySelectorAll(".review-actions > button") || [])].find((b) => b.textContent.trim() === "Remove…")?.click();
+  }, view);
+  await page.waitForFunction((sel) => !document.querySelector(`${sel} .cluster-action-why:popover-open`), {}, view);
 
   // Q2.1a: an enabled Remove… never plans a value-less drop (the chips carry
   // the item): clicking it moves focus to the first item chip and shows the
@@ -1436,7 +1456,7 @@ try {
   assert.equal(plans.length, plansBeforeHint, "an enabled Remove… plans nothing on its own");
 
   // Q2.1b: with the drop entry disabled, each Remove chip's aria-describedby
-  // names the kind's visible reason block, never only a title.
+  // names the kind's reason description, never only a title.
   const dropDisabled = structuredClone(R.lab);
   dropDisabled.allowlist_actions.functions = dropDisabled.allowlist_actions.functions.map((a) =>
     a.id === "drop_shallow_allowed"
@@ -1458,7 +1478,7 @@ try {
   for (const c of chipWhy) {
     assert.equal(c.off, "true", "a disabled drop entry disables every Remove chip");
     assert.ok(c.id, "a disabled Remove chip has aria-describedby, not only a title");
-    assert.match(c.text, /Cache DDL is blocked on this port\./, "the chip's description is the visible why_not");
+    assert.match(c.text, /Cache DDL is blocked on this port\./, "the chip's description is the drop entry's why_not");
     assert.match(c.text, /Open the SQL port \(3307\)/, "the chip's description carries the fix");
   }
   const plansBeforeChipOff = plans.length;
@@ -1472,7 +1492,7 @@ try {
   assert.equal(plans.length, plansBeforeChipOff, "a disabled Remove chip plans nothing");
 
   // R3: a per-item drop entry disables only that item's Remove chip, with its
-  // own reason visible and tied by aria-describedby before any click; the
+  // own reason tied by aria-describedby before any click; the
   // other items' chips stay enabled.
   const badItem = "bad\u202ename";
   const mixed = structuredClone(R.lab);
@@ -1514,7 +1534,7 @@ try {
   assert.equal(perItem.count, 3, "the functions allowlist renders the bad item beside the normal ones");
   assert.ok(perItem.bad, "the control-character item renders a chip");
   assert.equal(perItem.bad.off, "true", "the unusable item's Remove chip is aria-disabled before any click");
-  assert.match(perItem.bad.reason, /control or format characters/, "the chip's description is its own visible why_not");
+  assert.match(perItem.bad.reason, /control or format characters/, "the chip's description is its own why_not");
   assert.match(perItem.bad.reason, /by hand/, "the chip's description carries its fix");
   assert.ok(perItem.good, "a normal item keeps its chip");
   assert.equal(perItem.good.off, null, "the normal item's Remove chip stays enabled (no aria-disabled)");

@@ -569,13 +569,15 @@ try {
   await chooseConnection(page, "p-ic-1");
   await until(() => !document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection"));
 
-  // cluster-actions: the overview action band, a disabled action's reason and
-  // its GRANT to copy.
+  // cluster-actions: the overview action band, a disabled action's message
+  // with its reason and its GRANT to copy.
   h.state.fallback = ok(clusterGrant);
   await view("cluster-actions", async () => {
     await page.click('.main-nav button[data-place="cluster"]');
     await page.waitForSelector(`${clusterView} .cluster-actions .review-actions > button`, { visible: true });
-    await page.waitForSelector(`${clusterView} .cluster-actions .cluster-action-why .ops-pre`, { visible: true });
+    await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+      .find((b) => b.textContent.trim() === "Switch to single-primary…")?.click(), clusterView);
+    await page.waitForSelector(`${clusterView} .cluster-actions .cluster-action-why:popover-open .ops-pre`, { visible: true });
   });
 
   // cluster-member-actions: a member inspector's actions.

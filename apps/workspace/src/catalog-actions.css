@@ -1,7 +1,11 @@
-/* The shared ActionGroup (CatalogActions.tsx): a disabled action's reason
-   and fix, under the buttons, full width; a long GRANT scrolls inside its
-   box instead of stretching the page. The class name stays
-   .cluster-action-why: Cluster and Readyset share it. */
+/* The shared ActionGroup (CatalogActions.tsx): an enabled action's note is
+   visible text under the buttons, full width; a disabled action's reason and
+   fix are not a caption but a message anchored to the button (WhyDisabled.tsx),
+   opened on click, Enter or Space: the HTML Popover API keeps it in the top
+   layer (no scroll container clips it) and CSS anchor positioning places it
+   under its button, flipping instead of leaving the viewport. A long GRANT
+   scrolls inside its box instead of stretching the message. The class name
+   stays .cluster-action-why: Cluster and Readyset share it. */
 .cluster-action-why {
   flex-basis: 100%;
   min-width: 0;
@@ -23,4 +27,39 @@
 .cluster-action-why .ops-pre,
 .is-detail .cluster-action-why .ops-pre {
   max-height: 9em;
+}
+
+/* The message itself: the popover chrome. inset/margin reset the popover UA
+   centering so position-area rules; the Close button sits over the padding. */
+.why-disabled {
+  inset: auto;
+  margin: 0;
+  padding: var(--space-2) 28px var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-popover);
+  max-width: min(28rem, calc(100vw - 32px));
+  max-height: min(60vh, calc(100vh - 32px));
+  overflow: auto;
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline;
+}
+
+.why-disabled::backdrop {
+  background: transparent;
+}
+
+.why-disabled p:last-of-type {
+  margin-bottom: 0;
+}
+
+.why-disabled .ops-commands {
+  margin-block: var(--space-1);
+}
+
+.why-disabled-close {
+  position: absolute;
+  inset-block-start: var(--space-1);
+  inset-inline-end: var(--space-1);
 }
