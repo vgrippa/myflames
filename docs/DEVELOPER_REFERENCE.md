@@ -2201,8 +2201,11 @@ only, not column or index names interpolated inside missing-PK statements), and
 SQL` / `Copy DROP PRIMARY KEY SQL` on `[schema, table, index]`) and unused-index
 `CopySql` calls (`[schema, table, index]`). Row-menu items disable via
 `disabled` + `hint`; `PerfShared.tsx` `CopySql` sets `aria-disabled` and opens
-`WhyDisabled` on click. Other `CopySql` callers (including `IndexSuggestion.tsx`
-and `ContextPanel.tsx` `ANALYZE TABLE` statements), `TableStructure.tsx`,
+`WhyDisabled` on click. Account SQL suggested in the report and Config is built
+with `privileges.quote_account`, and its copies check the raw user and host
+names passed through `action.names` to `CopySql`. Other `CopySql` callers
+(including `IndexSuggestion.tsx` and `ContextPanel.tsx` `ANALYZE TABLE`
+statements), `TableStructure.tsx`,
 `SchemaVersions.tsx`, `Locks.tsx` and `ServerCompare.tsx` do not run
 `unsafeNamesReason`.
 
@@ -2228,25 +2231,37 @@ The scan runs in passes and warns when any pass flags. A first-word pass
 flags a line whose first word names a client command (the union of the MySQL
 and MariaDB COMMANDS tables: `source`, `system`, `delimiter`, `use` and the
 rest), even when a quote, a comment or a nonempty client buffer might
-suppress it. Three lexical passes then look for a backslash command (`\` plus
-one character of `?!#.cCdeGghnPpqQRrstTuWwx-`, excluding `\N`) or a named
-command at a statement start: one with backslash escapes (the default of both
-client families), one without (`NO_BACKSLASH_ESCAPES`), and one with
-MariaDB's ANSI_QUOTES mode, which changes double quotes independently of
-single quotes. Each pass treats `#` and `--` followed by ASCII whitespace or
-end of line as line comments and plain `/* ... */` as hidden, and keeps
-scanning inside `/*! ... */` and `/*M! ... */` executable comments; inside
-`/*+ ... */` optimizer hints only `*/` ends the hint, so quotes and comment
-markers there cannot hide a command. Dollar-quoted text deliberately does not
-hide commands, because support depends on the destination server.
+suppress it. Separate lexical passes for each client family then look for a
+backslash command (`\` plus one character of `?!#.cCdeGghnPpqQRrstTuWwx-`,
+excluding `\N`) or a named command at a line or statement start outside
+quotes in that pass. Both client families run with and without backslash
+escapes (`NO_BACKSLASH_ESCAPES`). MySQL runs with dollar quoting on and off
+for each backslash mode, giving four passes. MariaDB runs with `ANSI_QUOTES`
+off for both backslash modes and with `ANSI_QUOTES` on when backslash escapes
+are on, giving three passes: when backslash escapes are off, `ANSI_QUOTES`
+has no additional effect on this scanner's quote handling. The first match
+in any pass produces the note; quotes hiding a command in another pass do
+not suppress it.
+
+The passes retain their own client's comment rules: MySQL clears executable
+comment and hint state at a newline, while MariaDB retains it; MariaDB also
+accepts `--` without following whitespace when the SQL buffer is empty.
+Plain `/* ... */` comments hide commands, while `/*! ... */` bodies are
+scanned, as are `/*M! ... */` bodies in MariaDB passes. Optimizer hints
+(`/*+ ... */`) ignore quotes and line-comment markers, but a nested `/*!`
+switches to conditional-comment parsing. MySQL dollar-quote passes recognize
+an opening tag at an identifier boundary and require the exact closing tag;
+the passes without dollar quoting still warn about commands inside such text.
 
 `findMysqlClientCommand` is a lexical **warning heuristic, not a guarantee**,
-with two accepted limits: a `sql_mode` change inside the copied script itself
+with three accepted limits: a `sql_mode` change inside the copied script itself
 (`SET sql_mode='NO_BACKSLASH_ESCAPES'` before a backslash-quoted string) can
 hide a later command, because each pass scans one mode and never combines
-modes mid-script; and the client's DELIMITER prefix rule (the client accepts
-`delimiter;` as `delimiter` with argument `;`) is not recognized, so only the
-spaced form warns. `CopySql` also runs the scan on option-file (`my.cnf`)
+modes mid-script; the client's DELIMITER prefix rule (such as `delimiterX`)
+is not recognized, although `delimiter;` and a spaced `DELIMITER` command
+already warn; and a delimiter set in the destination client before the paste
+is unknown, so it can change quote and statement boundaries that these passes
+assume. `CopySql` also runs the scan on option-file (`my.cnf`)
 snippets where Windows backslash paths can trigger a false warning.
 Contracts: `apps/workspace/test/sql-paste-safety-unit.mjs`.
 
