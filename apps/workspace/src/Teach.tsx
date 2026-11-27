@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, download, safePreview } from "./api";
 import { Icon } from "./components";
 import { bindFrameAppearance, themeFrame } from "./charts/core/appearance";
+import { withFrameCopySanitizer } from "./clipboard";
 import {
   EmptyState,
   GroupedList,
@@ -371,7 +372,7 @@ export function Teach({
                 allow="fullscreen"
                 tabIndex={0}
                 onLoad={() => tellLesson(focusNow.current !== "")}
-                srcDoc={safePreview(themeFrame(markEmbedded(html)))}
+                srcDoc={safePreview(withFrameCopySanitizer(themeFrame(markEmbedded(html))))}
               />
               {focused && (
                 // Tab past the lesson's last control wraps to Exit; Shift+Tab

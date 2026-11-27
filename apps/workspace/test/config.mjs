@@ -1615,6 +1615,46 @@ try {
   const saved = await h.savedSlow(s => s.kind === "config");
   assert.equal(JSON.stringify(saved.state).includes("config-1.0"), false, "reports are not saved");
   assert.equal(JSON.stringify(saved.state).includes("variable-plan"), false, "plans are not saved");
+
+  // Recommendations forward raw name metadata to both SQL and option-file
+  // copies. Keep the snippets ASCII here so only the metadata can gate them.
+  await page.evaluate(() => {
+    window.__parameterRecommendationCopies = [];
+    navigator.clipboard.writeText = text => { window.__parameterRecommendationCopies.push(text); return Promise.resolve(); };
+  });
+  let acceptedRecommendations = 0;
+  for (const names of [undefined, ["slow_query_log"], ["\\' /*M! \" */; system touch MARK; #"], ["caf\u00e9"], ["name\nline"]]) {
+    const guarded = structuredClone(mysql);
+    const recommendation = guarded.checks.find(c => c.key === "slow_log");
+    if (names) recommendation.action.names = names;
+    await refresh(guarded);
+    await search("");
+    await h.select(row("slow_query_log"));
+    const buttons = '.view-inspector .parameter-finding .perf-sql button';
+    const expected = [recommendation.action.sql, recommendation.action.config].filter(Boolean);
+    assert.equal(await page.$$eval(buttons, es => es.length), expected.length);
+    const safe = !names || names[0] === "slow_query_log";
+    for (let i = 0; i < expected.length; i++) {
+      const button = (await page.$$(buttons))[i];
+      assert.equal(await button.evaluate(e => e.getAttribute("aria-disabled")), safe ? null : "true");
+      const before = await page.evaluate(() => window.__parameterRecommendationCopies.length);
+      await button.click();
+      if (safe) {
+        acceptedRecommendations++;
+        await page.waitForFunction(n => window.__parameterRecommendationCopies.length === n + 1, {}, before);
+        assert.equal(await page.evaluate(() => window.__parameterRecommendationCopies.at(-1)), expected[i]);
+      } else {
+        await page.waitForSelector('[role=dialog].why-disabled');
+        assert.match(await text('[role=dialog].why-disabled'), /not printable ASCII or contains a backslash/);
+        assert.equal(await page.evaluate(() => window.__parameterRecommendationCopies.length), before);
+        await page.$eval('[role=dialog].why-disabled .why-disabled-close', e => e.click());
+        await page.waitForSelector('[role=dialog].why-disabled', { hidden: true });
+      }
+    }
+  }
+  assert.equal(await page.evaluate(() => window.__parameterRecommendationCopies.length), acceptedRecommendations);
+  console.log("Config copy safety: SQL and option-file recommendations refuse unsafe names with the reason");
+
   assert.deepEqual(h.errors, []);
   console.log(`parameters view: ok; screenshots in ${h.shots}`);
 } finally { await h.close(); }

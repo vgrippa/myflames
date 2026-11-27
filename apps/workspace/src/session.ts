@@ -166,6 +166,10 @@ export type SlowState = {
   /** Legacy single member id (kept as the first id of replication_loop_members
    * for older snapshots and callers). */
   replication_loop_member?: string;
+  /** Saved-connection ids of the members with running maintenance jobs (dump,
+   * restore or clone) when the workspace was saved (deduped, capped), so a
+   * reload lists every running job's member again. */
+  lifecycle_job_members?: string[];
   /** Column layout of the workspace tables (Server's views and the Cluster
    * place) by table id (TABLE_IDS): widths and hidden columns. Versioned
    * key: a new layout format gets a new key. */
@@ -265,9 +269,10 @@ export function schemaList(v: unknown): string[] {
       out.push(name);
   return out;
 }
-/** Restored saved-connection ids of active skip loops: non-empty strings
- * cut to 200 chars, deduplicated and capped at 64. Merges legacy
- * replication_loop_member so older snapshots still restore cleanly. */
+/** Restored saved-connection ids of members with running work (active skip
+ * loops, maintenance jobs): non-empty strings cut to 200 chars, deduplicated
+ * and capped at 64. Merges legacy replication_loop_member so older snapshots
+ * still restore cleanly. */
 export function loopMemberIds(rawList: unknown, legacy?: unknown): string[] {
   const out: string[] = [];
   const push = (v: unknown) => {
@@ -517,6 +522,7 @@ export function normalizeLab(raw: unknown): LabState {
   const loopMembers = s.replication_loop_active === true
     ? loopMemberIds(s.replication_loop_members, s.replication_loop_member)
     : [];
+  const jobMembers = loopMemberIds(s.lifecycle_job_members);
   return {
     profile_id: text(raw.profile_id, "", 200),
     connection,
@@ -554,6 +560,7 @@ export function normalizeLab(raw: unknown): LabState {
       ...(loopMembers.length
         ? { replication_loop_members: loopMembers, replication_loop_member: loopMembers[0] }
         : {}),
+      ...(jobMembers.length ? { lifecycle_job_members: jobMembers } : {}),
       ...(s.report_run === true ? { report_run: true } : {}),
       ...(Object.keys(columnLayouts(s.columns_v1)).length ? { columns_v1: columnLayouts(s.columns_v1) } : {}),
     },

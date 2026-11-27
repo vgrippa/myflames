@@ -9,8 +9,9 @@ import { useOpenRead } from "./viewOnScreen";
 import { Icon } from "./components";
 import { engineName } from "./OpsShared";
 import { bytes, CompactNumber, count, engineLabel } from "./PerfShared";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import {
-  Checkbox, copyToClipboard, DataTable, Disclosure, EmptyState, FactStrip, Fields, InspectorSection,
+  Checkbox, DataTable, Disclosure, EmptyState, FactStrip, Fields, InspectorSection,
   Popover, SearchField, Segmented, StatusPill, SummaryLine, ToolbarSelect, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Segment, type Selection, type Tone,
 } from "./kit";
@@ -413,7 +414,7 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
             <p className="hint errorlog-how-to-text">{how.content}</p>
             <div className="errorlog-how-to-actions">
               <button type="button" className="button small" onClick={() => {
-                void copyToClipboard(how.commands).then(ok => setCopyStatus(ok ? "Copied" : "Could not copy; select the text to copy it."));
+                void copyToClipboardResult(how.commands).then(res => setCopyStatus(res.ok ? copyFeedback("Copied", res.removed) : "Could not copy; select the text to copy it."));
               }}>Copy</button>
               {copyStatus && <span className="hint" role="status">{copyStatus}</span>}
             </div>

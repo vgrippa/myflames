@@ -1,5 +1,6 @@
 import "./indexes.css";
 import { bt, dropIndexSql, indexVisibilitySql, showIndexSql, tableMaintenanceSql } from "./sqlIdent";
+import { copyNote, unsafeNamesReason } from "./sqlPasteSafety";
 // Server > Indexes: unused and redundant indexes and tables read mostly by
 // full scans (indexes-1.0 from myflames/indexes.py). One read per click: the
 // Performance Schema tables behind it cost time on servers with many tables,
@@ -43,7 +44,6 @@ import {
   type Column,
   type InspectorContent,
   type Selection,
-  copyToClipboard,
 } from "./kit";
 
 import { PaginatedReportTable } from "./PaginatedReportTable";
@@ -216,13 +216,13 @@ function FixStatements({ item }: { item: UnusedIndex | RedundantIndex }) {
       {item.test_sql && (
         <>
           <p className="hint">Test first: the optimizer stops using it, writes still maintain it.</p>
-          <CopySql sql={item.test_sql} label={`Test without ${item.index}`} />
+          <CopySql sql={item.test_sql} label={`Test without ${item.index}`} names={[item.schema, item.table, item.index]} />
         </>
       )}
       {item.drop_sql && (
         <>
           <p className="hint">Then, when nothing slowed down:</p>
-          <CopySql sql={item.drop_sql} label={`Drop ${item.index}`} />
+          <CopySql sql={item.drop_sql} label={`Drop ${item.index}`} names={[item.schema, item.table, item.index]} />
         </>
       )}
       {item.caveat && <p className="hint perf-caveat">{item.caveat}</p>}
@@ -278,7 +278,7 @@ export function IndexesView({
   const [list, setList] = useState<List>("all");
   const reviewedSqlRef = useRef<ReturnType<typeof useReviewedSql>>(null);
 
-  const getIndexRowContextMenu = (schema: string, table: string, index: string, visible?: boolean, actionBlockedReason?: string) => {
+  const getIndexRowContextMenu = (schema: string, table: string, index: string, visible: boolean | undefined, actionBlockedReason: string | undefined, copy: (text: string, msg?: string) => Promise<void>) => {
     const runner = reviewedSqlRef.current;
     const isMaria = (report?.engine || "").toLowerCase() === "mariadb";
     const canInvisible = supportsInvisibleIndexes(report?.engine || "", report?.server_version);
@@ -291,6 +291,10 @@ export function IndexesView({
       : (isCurrentlyVisible ? "Set invisible" : "Set visible");
 
     const dropSql = dropIndexSql(schema, table, index);
+    // Copies built from server names are refused (reason on click) when a
+    // name is not safe to paste into the mysql client.
+    const nameReason = unsafeNamesReason([schema, table, index]) || undefined;
+    const indexNameReason = unsafeNamesReason([index]) || undefined;
 
     return [
       ...(!actionBlockedReason && !isPrimary && canInvisible
@@ -357,12 +361,22 @@ export function IndexesView({
       {
         label: `Copy index name (\`${index}\`)`,
         icon: "copy",
-        onClick: () => void copyToClipboard(bt(index)),
+        disabled: !!indexNameReason,
+        hint: indexNameReason,
+        onClick: () => {
+          const text = bt(index);
+          void copy(text, copyNote("Copied index name", text));
+        },
       },
       ...(!actionBlockedReason ? [{
         label: isPrimary ? "Copy DROP PRIMARY KEY SQL" : "Copy DROP INDEX SQL",
         icon: "copy",
-        onClick: () => void copyToClipboard(dropSql + ";"),
+        disabled: !!nameReason,
+        hint: nameReason,
+        onClick: () => {
+          const sql = dropSql + ";";
+          void copy(sql, copyNote(isPrimary ? "Copied DROP PRIMARY KEY SQL" : "Copied DROP INDEX SQL", sql));
+        },
       },
       { divider: true as const },
       {
@@ -919,7 +933,7 @@ export function IndexesView({
                       filters={listFilters}
                       rowKey={r=>`index:${r.schema}.${r.table}.${r.index}`} selection={selection} defaultSort={{key:"table",dir:"asc"}}
                       rowAttrs={r=>({"data-index":`${r.table}.${r.index}`})} exportContext={exportContext} resetKey={resetKey}
-                      rowContextMenu={r => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible, r.action_blocked_reason)}
+                      rowContextMenu={(r, { copy }) => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible, r.action_blocked_reason, copy)}
                       exportColumns={[{label:"Database",value:r=>r.schema},{label:"Table",value:r=>r.table},{label:"Index",value:r=>r.index},{label:"Columns",value:r=>r.columns},{label:"Type",value:r=>r.type},{label:"Unique",value:r=>r.unique?"Yes":"No"},{label:"Optimizer",value:r=>r.visible?"Visible":report.engine==="mariadb"?"Ignored":"Invisible"}]}
                       empty="No indexes match these filters." />
                   )}
@@ -936,7 +950,7 @@ export function IndexesView({
                       rowAction={indexRowAction}
                       selection={selection}
                       rowAttrs={(u) => ({ "data-index": `${u.table}.${u.index}` })}
-                      rowContextMenu={u => getIndexRowContextMenu(u.schema, u.table, u.index, u.visible, u.action_blocked_reason)}
+                      rowContextMenu={(u, { copy }) => getIndexRowContextMenu(u.schema, u.table, u.index, u.visible, u.action_blocked_reason, copy)}
                       empty={`No unused indexes in ${scope}.`}
                     />
                   )}
@@ -953,7 +967,7 @@ export function IndexesView({
                       rowAction={indexRowAction}
                       selection={selection}
                       rowAttrs={(r) => ({ "data-index": `${r.table}.${r.index}` })}
-                      rowContextMenu={r => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible, r.action_blocked_reason)}
+                      rowContextMenu={(r, { copy }) => getIndexRowContextMenu(r.schema, r.table, r.index, r.visible, r.action_blocked_reason, copy)}
                       empty={`No redundant indexes in ${scope}.`}
                     />
                   )}

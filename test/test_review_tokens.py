@@ -114,14 +114,20 @@ class TestReviewedWrites(unittest.TestCase):
             ui._review_identity(self.connection, self.workspace), ui._kill_review_details(payload))
         self.assertEqual(scenario.kills(), [])
 
-    def test_replication_review_from_read_is_consumed_before_send(self):
+    def test_replication_review_from_endpoint_is_consumed_before_send(self):
         conn, _ = replay('replication', 'mysql-8.4-gtid-error')
         with mock.patch('myflames.connector.MySQLConnection', FakeFactory(conn)), \
                 mock.patch('myflames.replication.receiver_guard_plan', return_value={}):
             report = ui.api_response('/api/live/replication', {'connection': self.connection}, self.workspace)
         plan = report['channels'][0]['skip_plan']
+        self.assertNotIn('review_token', plan)
         payload = {'connection': self.connection, 'channel': plan['channel'], 'expect': plan['identity'],
-                   'statements': plan['statements'], 'confirmed': True, 'review_token': plan['review_token']}
+                   'statements': plan['statements'], 'confirmed': True}
+        review_conn, _ = replay('replication', 'mysql-8.4-gtid-error')
+        with mock.patch('myflames.connector.MySQLConnection', FakeFactory(review_conn)):
+            review = ui.api_response('/api/live/replication/skip/review', payload, self.workspace)
+        self.assertEqual(sent_scripts(review_conn), [])
+        payload['review_token'] = review['review_token']
         conn, _ = replay('replication', 'mysql-8.4-gtid-skip')
         with mock.patch('myflames.connector.MySQLConnection', FakeFactory(conn)), mock.patch('myflames.replication.time.sleep'), \
                 mock.patch.object(privileges, 'read_privileges', return_value=privileges.parse_grants([], checked=False)):

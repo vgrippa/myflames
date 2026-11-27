@@ -919,13 +919,19 @@ def read_digests(conn, order=None, limit=None, hostgroup=None, schema=None, user
            "orders": [{"id": o[0], "label": o[1], "available": True, "why": None} for o in ORDERS],
            "limits": list(LIMITS), "digests": [], "more": False, "scanned": None, "facets": None, "totals": None,
            "window": None, "rules": [], "rule_hits": {}, "routing": None, "notes": [], "statements": []}
-    ok, detail = proxysql.identify(conn)
+    reads = proxysql._Reads(conn)
+    reads.bind_identity()
+    ok, detail = proxysql.identify(conn, reads)
     if not ok:
         out["message"] = ("This connection is not a ProxySQL Admin interface: %s. ProxySQL Admin listens on port "
                           "6032 unless admin-mysql_ifaces says otherwise." % detail)
         return out
     out.update(available=True, is_proxysql=True, version=detail)
-    reads = proxysql._Reads(conn)
+    unverified = reads.uuid is None
+    if unverified:
+        out["message"] = ("Unverified read-only report: a valid ProxySQL instance UUID could not be read, "
+                          "so these separate reads may have reached different instances.")
+        out["notes"].append(out["message"])
     routing, _ = read_routing(reads)
     hits = reads.table("SELECT * FROM stats_mysql_query_rules", "stats_mysql_query_rules")
     out["rule_hits"] = dict((str(_int(r.get("rule_id"))), _int(r.get("hits"))) for r in hits or ()) \
@@ -935,9 +941,16 @@ def read_digests(conn, order=None, limit=None, hostgroup=None, schema=None, user
     if (routing.variables.get("mysql-query_digests") or "").lower() == "false":
         out["notes"].append("mysql-query_digests is false: ProxySQL records no new digests.")
     out["facets"], out["totals"], out["window"] = _facets(reads.table(FACET_SQL, "stats_mysql_query_digest (groups)"))
+    if reads.identity_problem:
+        # A failed evidence batch must never masquerade as an empty report or
+        # as an invalid rule filter in the workspace.
+        raise proxysql._IdentityReadError(reads.identity_problem)
     if out["facets"] is not None and not out["facets"]["complete"]:
         out["notes"].append("The filters list the %d busiest hostgroup, schema and user combinations." % FACET_LIMIT)
     by_rule = filters["rule_id"] is not None
+    if by_rule and unverified:
+        raise ValueError("The ProxySQL instance identity is unverified, so digests cannot be filtered by rule. "
+                         "Read a valid UUID in disk.global_settings and refresh.")
     if by_rule and not out["routing"]["evaluated"]:
         raise ValueError(out["routing"]["note"] or "Routing is not evaluated, so digests cannot be listed by rule.")
     if by_rule and filters["rule_id"] not in [r.rule_id for r in routing.rules]:
@@ -946,7 +959,7 @@ def read_digests(conn, order=None, limit=None, hostgroup=None, schema=None, user
     # One more row than shown says whether more digests match.
     sql = digest_sql(filters, want + (0 if by_rule else 1))
     try:
-        rows = proxysql.select(conn, sql)
+        rows = reads.required(sql)
     except ConnectorError as exc:
         needs = next(o[3] for o in ORDERS if o[0] == filters["order"])
         if needs and _NO_SUCH_COLUMN in str(exc):
@@ -957,14 +970,24 @@ def read_digests(conn, order=None, limit=None, hostgroup=None, schema=None, user
             raise ValueError("This ProxySQL has no %s column (ProxySQL 2.0.7 added it), so digests cannot be "
                              "ordered by rows sent." % needs)
         raise
-    out["statements"] = reads.statements + [sql]
+    out["statements"] = reads.statements
     for label, why in reads.missing:
         out["notes"].append("Not read: %s (%s)." % (label, why))
     shown = []
     items = [digest_row(row) for row in rows]
-    routing.prepare([item["digest_text"] for item in items])
+    if not unverified:
+        routing.prepare([item["digest_text"] for item in items])
+    else:
+        out["routing"].update(evaluated=False, note=out["message"])
     for item in items:
-        item["routing"] = routing.evaluate(item)
+        if unverified:
+            # Do not infer a routing match or mismatch from unbound logins.
+            item["routing"] = {"observed": item.get("hostgroup"), "expected": None, "source": None,
+                               "rules": [], "decisive": None, "approximate": False, "possible": [],
+                               "unknown_rules": [], "default_hostgroup": None, "verdict": "unknown",
+                               "text": out["message"], "why": [out["message"]]}
+        else:
+            item["routing"] = routing.evaluate(item)
         if by_rule and filters["rule_id"] not in item["routing"]["rules"]:
             continue
         shown.append(item)
@@ -974,6 +997,10 @@ def read_digests(conn, order=None, limit=None, hostgroup=None, schema=None, user
     else:
         out["more"] = len(shown) > filters["limit"]
     out["digests"] = shown[:filters["limit"]]
+    if not unverified:
+        # Publish only the UUID that bracketed every evidence batch, including
+        # the final digest query, so other reports can verify the same instance.
+        out["server_identity"] = {"uuid": reads.uuid}
     return out
 
 

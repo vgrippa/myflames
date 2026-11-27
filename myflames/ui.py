@@ -996,7 +996,8 @@ def _lifecycle_start(payload, workspace):
                 donor['_login_guard']()
             job.policy_check = consent
         job.review_consumer = consume
-        return _lifecycle_add(workspace, job, str(plan.get("target")), connection)
+        owner_profile_id = safety.get("profile_id") if safety.get("endpoint_matches") else None
+        return _lifecycle_add(workspace, job, str(plan.get("target")), connection, profile_id=owner_profile_id)
     except Exception as exc:
         mismatch = isinstance(exc, lc.RestoreTargetMismatch)
         audit.outcome(lc._safe(statements, passwords), "refused",
@@ -1007,19 +1008,93 @@ def _lifecycle_start(payload, workspace):
 
 
 _LIFECYCLE_OWNERS_LOCK = threading.Lock()
+_UNSET = object()
 
 
-def _lifecycle_owner(connection):
-    """The endpoint a lifecycle job belongs to: dbops.identity_endpoint of the
-    request's connection identity (saved connection id, host, port, user and
-    TLS settings, without the type and read-only flag), so a policy change
-    never cuts a job off from the page that started it."""
+def _lifecycle_profile_id(connection, store):
+    """The saved-connection id verified against the store, or None.
+
+    A draft endpoint carrying a saved id does not own that profile's jobs.
+    Use the same endpoint check as Start, without loading saved credentials.
+    """
     from . import dbops
-    return dbops.identity_endpoint(dbops.connection_identity(connection if isinstance(connection, dict) else {}))
+    try:
+        safety = dbops.connection_safety(_request_profile(connection, store), connection, store=store)
+    except ValueError:
+        return None
+    return safety.get("profile_id") if safety.get("endpoint_matches") else None
+
+
+def _lifecycle_owner(connection, profile_id=None):
+    """The owner of a lifecycle job: ``(endpoint, profile_id)``.
+
+    *endpoint* is ``dbops.identity_endpoint`` of the request's connection
+    identity (saved connection id, host, port, user, TLS and SSH target,
+    without type, read-only or group name), so a policy or group-name change
+    never cuts a job off. *profile_id* is the owning saved-connection id (or
+    None for an unsaved connection), verified against the store by the caller,
+    so editing that saved connection's
+    endpoint keeps Jobs, Status and Cancel working for the owner while
+    refusing every other connection.
+    """
+    from . import dbops
+    endpoint = dbops.identity_endpoint(dbops.connection_identity(connection if isinstance(connection, dict) else {}))
+    if isinstance(profile_id, str) and profile_id and len(profile_id) <= 200:
+        owner_id = profile_id
+    else:
+        owner_id = None
+    return (endpoint, owner_id)
+
+
+def _registry_group_allowed(connection, store):
+    """Verify a claimed group against the current store before registry access.
+
+    Even an endpoint match cannot authorize a stale group route. Registry
+    access reads only public profile fields, never credentials or a server.
+    Plain connections keep their endpoint and saved-owner access.
+    """
+    if not isinstance(connection, dict):
+        return False
+    if connection.get('group_name') is not None:
+        from .connection_groups import validate_group
+        try:
+            group = validate_group(connection['group_name'])
+            profile = _request_profile(connection, store)
+        except ValueError:
+            return False
+        if not group or not profile or profile.get('group') != group:
+            return False
+    return True
+
+
+def _lifecycle_caller(connection, store):
+    """The job owner only when the current store permits its group route."""
+    if not _registry_group_allowed(connection, store):
+        return None
+    return _lifecycle_owner(connection, _lifecycle_profile_id(connection, store))
+
+
+def _lifecycle_owner_match(owner, caller):
+    """How *caller* owns the job: endpoint, saved_connection, or None.
+
+    Accepts ``(endpoint, profile_id)`` tuples from :func:`_lifecycle_owner`
+    (and plain endpoint strings). Matches when the endpoint matches, or when
+    the job belongs to a saved connection and *caller* has verified that same
+    saved-connection id against the store. The endpoint match takes precedence.
+    """
+    if owner is None or caller is None:
+        return None
+    owner_endpoint, owner_profile_id = owner if isinstance(owner, tuple) else (owner, None)
+    caller_endpoint, caller_profile_id = caller if isinstance(caller, tuple) else (caller, None)
+    if caller_endpoint == owner_endpoint:
+        return "endpoint"
+    if owner_profile_id is not None and caller_profile_id == owner_profile_id:
+        return "saved_connection"
+    return None
 
 
 def _lifecycle_owners(workspace):
-    """job id -> owner endpoint, for the jobs this workspace started (memory only)."""
+    """job id -> owner ``(endpoint, profile_id)``, for jobs this workspace started (memory only)."""
     with _LIFECYCLE_OWNERS_LOCK:
         owners = getattr(workspace, "lifecycle_owners", None)
         if owners is None:
@@ -1027,12 +1102,15 @@ def _lifecycle_owners(workspace):
         return owners
 
 
-def _lifecycle_add(workspace, job, target, connection):
+def _lifecycle_add(workspace, job, target, connection, profile_id=_UNSET):
     """Register a confirmed job with its owner before it starts, so a page whose
     Start reply was lost finds it through /api/lifecycle/jobs."""
     owners = _lifecycle_owners(workspace)
+    if profile_id is _UNSET:
+        profile_id = _lifecycle_profile_id(connection, workspace.store)
+    owner = _lifecycle_owner(connection, profile_id=profile_id)
     with _LIFECYCLE_OWNERS_LOCK:
-        owners[job.id] = _lifecycle_owner(connection)
+        owners[job.id] = owner
         try:
             result = workspace.lifecycle.add(job, target)
         except Exception:
@@ -1050,25 +1128,32 @@ def _lifecycle_add(workspace, job, target, connection):
 
 def _lifecycle_jobs_response(payload, workspace):
     """lifecycle-jobs-1.0: the dump, restore and clone jobs this workspace holds
-    for the connection's endpoint, oldest first (running and finished; finished
-    ones expire with LifecycleJobs). It opens no database connection and starts
-    nothing: a page that reloaded, or whose Start reply was lost, finds and
-    manages its jobs here instead of starting them again."""
+    for the connection's owner (its endpoint or saved-connection id), oldest
+    first (running and finished; finished ones expire with LifecycleJobs). It
+    opens no database connection and starts nothing: a page that reloaded, or
+    whose Start reply was lost, finds and manages its jobs here instead of
+    starting them again."""
     connection = payload.get("connection")
     if not isinstance(connection, dict):
         raise ValueError("Send the connection whose jobs to list.")
-    owner = _lifecycle_owner(connection)
+    caller = _lifecycle_caller(connection, workspace.store)
     owners = _lifecycle_owners(workspace)
     with _LIFECYCLE_OWNERS_LOCK:
-        mine = [job_id for job_id, key in owners.items() if key == owner]
+        mine = []
+        for job_id, owner in owners.items():
+            owner_match = _lifecycle_owner_match(owner, caller)
+            if owner_match is not None:
+                mine.append((job_id, owner_match))
     jobs = []
-    for job_id in mine:
+    for job_id, owner_match in mine:
         try:
-            jobs.append(workspace.lifecycle.get(job_id).snapshot())
+            jobs.append(dict(workspace.lifecycle.get(job_id).snapshot(), owner_match=owner_match))
         except ValueError:
             with _LIFECYCLE_OWNERS_LOCK:
                 owners.pop(job_id, None)
-    return {"schema_version": "lifecycle-jobs-1.0", "jobs": jobs}
+    # A revoked group route is not evidence that the owner's registry is empty.
+    # Restoring clients must retain the member until access can be rechecked.
+    return {"schema_version": "lifecycle-jobs-1.0", "jobs": jobs, "scope_denied": caller is None}
 
 
 def _dump_tool_capabilities(report):
@@ -1088,19 +1173,22 @@ def _lifecycle_response(path, payload, workspace):
         return _lifecycle_jobs_response(payload, workspace)
     if path in ("/api/lifecycle/status", "/api/lifecycle/cancel"):
         connection, job_id = payload.get("connection"), payload.get("id")
+        caller = _lifecycle_caller(connection, workspace.store)
         owners = _lifecycle_owners(workspace)
         with _LIFECYCLE_OWNERS_LOCK:
-            matches = (isinstance(connection, dict) and isinstance(job_id, str) and
-                       owners.get(job_id) == _lifecycle_owner(connection))
-        if not matches:
+            owner_match = (_lifecycle_owner_match(owners.get(job_id), caller)
+                           if isinstance(job_id, str) else None)
+        if owner_match is None:
             raise ValueError("No such job.")
         try:
             job = workspace.lifecycle.get(job_id)
         except ValueError:
+            with _LIFECYCLE_OWNERS_LOCK:
+                owners.pop(job_id, None)
             raise ValueError("No such job.") from None
         if path == "/api/lifecycle/cancel":
             job.cancel()
-        return job.snapshot()
+        return dict(job.snapshot(), owner_match=owner_match)
     if path == "/api/lifecycle/start":
         return _lifecycle_start(payload, workspace)
     if path == "/api/lifecycle/choose-directory":
@@ -1223,7 +1311,12 @@ def _replication_preflight_error(audit, state, exc, target, statements=()):
     if audit.pending:
         audit.fail(exc, statements)
     else:
-        text = str(exc) or "Cancelled before sending."
+        from .dbops import redact
+        from .proxysql import _without_controls
+        # Server error text can include terminal escapes, formatting controls
+        # and secrets split by those characters. Redact both representations.
+        text = _without_controls(redact(str(exc), state["password"]))
+        text = redact(text, _without_controls(state["password"])) or "Cancelled before sending."
         audit.outcome(list(statements), "refused", outcome="unsent", error=text,
                       message="Nothing was sent: %s" % text, target=target)
 
@@ -1243,6 +1336,8 @@ def _replication_open(payload, workspace, state):
 def _replication_skip_response(payload, workspace, safety=None):
     """Skip the one failed transaction the person confirmed (replication.skip_one)."""
     from . import dbops, replication as rp
+    if getattr(workspace, "store", None) is None:
+        raise ValueError("The workspace policy and audit store is unavailable. Nothing was sent.")
     connection = payload.get("connection")
     safety = safety or dbops.connection_safety(None, connection)
     decision = dbops.decide("risky", safety["type"], safety["read_only"], safety["profile_name"])
@@ -1294,9 +1389,106 @@ def _replication_skip_response(payload, workspace, safety=None):
         _reraise_redacted(exc, state["password"])
 
 
+def _replication_loop_options(payload):
+    """Canonical policy fields, shared by loop review and start."""
+    from . import replication as rp
+    minutes = payload.get("max_minutes")
+    if minutes is not None and (isinstance(minutes, bool) or not isinstance(minutes, int)
+                               or not 1 <= minutes <= 1440):
+        raise ValueError("Choose a maximum duration from 1 to 1440 minutes.")
+    guard = payload.get("receiver_guard")
+    if guard not in (None, "on", "off"):
+        raise ValueError("receiver_guard must be on or off from the loop confirmation.")
+    return {"codes": sorted(rp.check_codes(payload.get("codes"))),
+            "max_skips": rp.check_max_skips(payload.get("max_skips")), "max_minutes": minutes,
+            "poll_s": rp.check_poll(payload.get("poll_s", rp.LOOP_DEFAULT_POLL_S)), "receiver_guard": guard}
+
+
+def _replication_review_details(payload, loop=False):
+    """Validate exactly what the confirmation showed, never client SQL alone."""
+    from . import replication as rp
+    channel, statements = payload.get("channel"), payload.get("statements")
+    if not isinstance(channel, str) or len(channel) > 256:
+        raise ValueError("Name the channel to watch.")
+    if not isinstance(statements, list) or not statements or len(statements) > 20 or \
+            any(not isinstance(s, str) or not s.strip() or len(s) > 2000 for s in statements):
+        raise ValueError("statements must be the list of statements the confirmation showed.")
+    failure = rp.check_expect(payload.get("first_failure" if loop else "expect"))
+    if failure["channel"] != channel:
+        raise ValueError("The reviewed failure belongs to another channel. Nothing was sent.")
+    details = {"channel": channel, "statements": list(statements)}
+    if loop:
+        details.update(_replication_loop_options(payload))
+        if details["receiver_guard"] not in ("on", "off"):
+            raise ValueError("Send receiver_guard from the loop confirmation.")
+        details.update(expect=rp.check_loop_expect(payload.get("expect")), first_failure=failure)
+        if details["expect"]["server_identity"] != failure["server_identity"]:
+            raise ValueError("The reviewed failure belongs to another server. Nothing was sent.")
+    else:
+        details["expect"] = failure
+    return details
+
+
+def _replication_review_response(payload, workspace, loop=False):
+    """Check a confirmed action on demand; audit refusals, never passive reads."""
+    from . import dbops, replication as rp
+    if getattr(workspace, "store", None) is None:
+        raise ValueError("The workspace policy and audit store is unavailable. Nothing was sent.")
+    connection = payload.get("connection")
+    operation = rp.OPERATION_LOOP if loop else rp.OPERATION_SKIP
+    safety = dbops.connection_safety(None, connection)
+    decision = dbops.decide("risky", safety["type"], safety["read_only"], safety["profile_name"])
+    factory, state = _replication_audit(workspace, operation, connection, safety, decision)
+    audit = factory()
+    target, tagged = {"channel": payload.get("channel")}, []
+    try:
+        details = _replication_review_details(payload, loop)
+        target = details if loop else details["expect"]
+        tagged = [rp.SKIP_TAG + statement for statement in details["statements"]]
+        profile = _request_profile(connection, workspace.store)
+        if isinstance(connection, dict) and connection.get("profile_id") and profile is None:
+            raise ValueError("This saved connection no longer exists. Choose a connection again.")
+        safety = dbops.connection_safety(profile, connection, store=workspace.store)
+        decision = dbops.decide(dbops.classify(";\n".join(details["statements"])),
+                                safety["type"], safety["read_only"], safety["profile_name"])
+        factory, state = _replication_audit(workspace, operation, connection, safety, decision)
+        audit = factory()
+        blocked = dbops.gate(decision, True)
+        if blocked:
+            raise ValueError(blocked[1])
+        identity = _review_identity(connection, workspace)
+        with _replication_open(payload, workspace, state) as raw:
+            audit.password, audit.connection = state["password"], state["connection"]
+            conn = dbops.TargetEvidenceConnection(raw)
+            report = rp.read_status(conn)
+            audit.server(report.get("engine"), report.get("server_version"))
+            conn.check()
+            problem = rp.loop_target_problem(report, details["expect"]) if loop else None
+            problem = problem or rp.loop_failure_problem(report, details["channel"],
+                details["first_failure"] if loop else details["expect"], details["statements"])
+            if problem:
+                raise ValueError(problem)
+            if loop and details["receiver_guard"] == "on":
+                guard = rp.receiver_guard_plan(conn, report)
+                if guard["receiver_guard"] != "on":
+                    raise ValueError(guard["receiver_guard_reason"] or "Receiver reconnection monitoring is unavailable.")
+            conn.check()
+            if _review_identity(connection, workspace) != identity:
+                raise ValueError("The connection's write policy changed. Nothing was sent; review again.")
+        return {"review_token": _review_tokens(workspace).issue(operation, identity, details)}
+    except read_cancel.CancelledRead as exc:
+        _replication_preflight_error(audit, state, exc, target, tagged)
+        raise
+    except (Exception, KeyboardInterrupt) as exc:
+        _replication_preflight_error(audit, state, exc, target, tagged)
+        _reraise_redacted(exc, state["password"])
+
+
 def _replication_loop_start(payload, workspace, safety=None, identity=None):
     """Start one skip loop (replication.SkipLoop) after its own confirmation."""
     from . import dbops, replication as rp
+    if getattr(workspace, "store", None) is None:
+        raise ValueError("The workspace policy and audit store is unavailable. Nothing was sent.")
     connection = payload.get("connection")
     safety = safety or dbops.connection_safety(None, connection)
     decision = dbops.decide(dbops.classify("START REPLICA SQL_THREAD"), safety["type"], safety["read_only"],
@@ -1317,16 +1509,9 @@ def _replication_loop_start(payload, workspace, safety=None, identity=None):
         channel = payload.get("channel")
         if not isinstance(channel, str) or len(channel) > 256:
             raise ValueError("Name the channel to watch.")
-        codes = rp.check_codes(payload.get("codes"))
-        max_skips = rp.check_max_skips(payload.get("max_skips"))
-        minutes = payload.get("max_minutes")
-        if minutes is not None and (isinstance(minutes, bool) or not isinstance(minutes, int)
-                                   or not 1 <= minutes <= 1440):
-            raise ValueError("Choose a maximum duration from 1 to 1440 minutes.")
-        poll_s = rp.check_poll(payload.get("poll_s", rp.LOOP_DEFAULT_POLL_S))
-        receiver_guard = payload.get("receiver_guard")
-        if receiver_guard not in (None, "on", "off"):
-            raise ValueError("receiver_guard must be on or off from the loop confirmation.")
+        options = _replication_loop_options(payload)
+        codes, max_skips, minutes = options["codes"], options["max_skips"], options["max_minutes"]
+        poll_s, receiver_guard = options["poll_s"], options["receiver_guard"]
         decision = dbops.decide(dbops.classify("START REPLICA SQL_THREAD"), safety["type"], safety["read_only"],
                                 safety["profile_name"])
         factory, state = _replication_audit(workspace, rp.OPERATION_LOOP, connection, safety, decision)
@@ -1339,18 +1524,44 @@ def _replication_loop_start(payload, workspace, safety=None, identity=None):
                                      message=blocked[1], target=target)
             return {"schema_version": rp.LOOP_SCHEMA_VERSION, "job_id": None, "state": status, "channel": channel,
                     "message": blocked[1], "audit_id": audit_id}
+        details = _replication_review_details(payload, loop=True)
+        expect = details["expect"]
+        target["expect"] = expect
+        consume = _review_tokens(workspace).consumer(payload.get("review_token"), "replication_skip_loop",
+                    identity, details)
         conn = dbops.TargetEvidenceConnection(_replication_open(payload, workspace, state))
         report = rp.read_status(conn)
         audit.server(report.get("engine"), report.get("server_version"))
+        conn.check()
+        problem = rp.loop_target_problem(report, expect)
+        if problem:
+            raise ValueError(problem)
         if not report.get("available") or not report.get("replica"):
             raise ValueError(report.get("message") or "This server is not a replica.")
         found = rp.find_channel(report, channel)
         if found is None or found.get("kind") == "group_replication":
             raise ValueError("This server has no asynchronous replication channel named %r." % (channel,))
+        problem = rp.loop_failure_problem(report, channel, details["first_failure"], details["statements"])
+        if problem:
+            raise ValueError(problem)
         loop = rp.SkipLoop(conn, channel, codes, max_skips, max_duration_s=minutes * 60 if minutes else None,
                            poll_s=poll_s, decision=decision, audit_factory=factory, close_conn=True,
-                           decision_reader=state["decision_reader"], receiver_required=receiver_guard == "on")
-        return _replication_loops(workspace).start(identity, loop)
+                           decision_reader=state["decision_reader"], receiver_required=receiver_guard == "on",
+                           expect=expect, first_failure=details["first_failure"], statements=details["statements"])
+
+        def before_start():
+            # Preflight reads can block while the saved policy changes. Check
+            # again inside duplicate exclusion, immediately before consumption.
+            conn.check()
+            current = state["decision_reader"]()
+            if rp._policy_key(current) != rp._policy_key(decision) or dbops.gate(current, True) or \
+                    _review_identity(connection, workspace) != identity:
+                raise ValueError("The connection's write policy changed. Nothing was sent; review the loop again.")
+            # The registry commits this only once a worker exists, while
+            # duplicate exclusion and the worker's IO barrier are still held.
+            return consume
+
+        return _replication_loops(workspace).start(identity, loop, before_start=before_start)
     except (Exception, KeyboardInterrupt) as exc:
         _replication_preflight_error(audit, state, exc, target)
         if conn is not None:
@@ -1398,33 +1609,25 @@ def _replication_response(path, payload, workspace):
                         if channel.get("skip_plan"):
                             plan = channel["skip_plan"]
                             plan.update(guard)
-                            if plan.get("available"):
-                                try:
-                                    if store is None:
-                                        raise ValueError('Workspace store unavailable.')
-                                    review_identity = _review_identity(payload.get("connection"), workspace)
-                                except (AttributeError, ValueError, OSError, sqlite3.Error):
-                                    # The status remains readable when optional local
-                                    # storage fails. No write token bypass is allowed.
-                                    plan.update(available=False, message="The connection's write policy could not be read. "
-                                                "Refresh before reviewing a change.")
-                                else:
-                                    plan["review_token"] = _review_tokens(workspace).issue("replication_skip",
-                                        review_identity,
-                                        {"channel": plan["channel"], "expect": plan["identity"], "statements": plan["statements"]})
                 return report
         except (ValueError, ConnectorError) as exc:
             _reraise_redacted(exc, options.get("password"))
+    if path in ("/api/live/replication/skip/review", "/api/live/replication/skip-loop/review"):
+        return _replication_review_response(payload, workspace, loop=path.endswith("skip-loop/review"))
     if path == "/api/live/replication/skip":
         return _replication_skip_response(payload, workspace)
     if path == "/api/live/replication/skip-loop/start":
         return _replication_loop_start(payload, workspace)
     connection = payload.get("connection")
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
-    identity = dbops.connection_identity(connection if isinstance(connection, dict) else {}, safety)
     job_id = payload.get("job_id")
     if job_id is not None and (not isinstance(job_id, str) or len(job_id) > 64):
         raise ValueError("Invalid job_id.")
+    if not _registry_group_allowed(connection, workspace.store):
+        if path == "/api/live/replication/skip-loop/status" and job_id is None:
+            return {"schema_version": rp.LOOP_SCHEMA_VERSION, "loops": []}
+        raise ValueError("No skip loop with this id (loops never survive a myflames restart).")
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    identity = dbops.connection_identity(connection if isinstance(connection, dict) else {}, safety)
     registry = _replication_loops(workspace)
     if path == "/api/live/replication/skip-loop/status":
         return registry.status(identity, job_id)
@@ -1481,7 +1684,8 @@ _CONNECTION_PATHS = _CONNECTION_PATHS + _LIFECYCLE_READ_PATHS + _LIFECYCLE_WRITE
 #: true), then the saved password is filled, and every attempt is audited. Loop
 #: status and stop open no connection: they act on loops this process holds,
 #: keyed by connection identity (dbops.connection_identity).
-_REPLICATION_READ_PATHS = ("/api/live/replication",)
+_REPLICATION_REVIEW_PATHS = ("/api/live/replication/skip/review", "/api/live/replication/skip-loop/review")
+_REPLICATION_READ_PATHS = ("/api/live/replication",) + _REPLICATION_REVIEW_PATHS
 _REPLICATION_WRITE_PATHS = ("/api/live/replication/skip", "/api/live/replication/skip-loop/start")
 _REPLICATION_PATHS = _REPLICATION_READ_PATHS + _REPLICATION_WRITE_PATHS + (
     "/api/live/replication/skip-loop/status", "/api/live/replication/skip-loop/stop")
@@ -1593,6 +1797,18 @@ _TEST_DATABASES_LIMIT = 1000
 
 
 def _connection_test_report(conn, options, password):
+    """Shared failure boundary for connection tests and opening a group."""
+    try:
+        return _connection_test_details(conn, options, password)
+    except ConnectorError as exc:
+        from .proxysql import client_compatibility_message
+        message = client_compatibility_message(conn, exc)
+        if message:
+            raise ConnectorError(message) from None
+        raise
+
+
+def _connection_test_details(conn, options, password):
     """Server identity plus a bounded database list for one open connection."""
     from .dbops import redact
     from .server_info import product_identity
@@ -2874,7 +3090,8 @@ def api_response(path, payload, workspace=None):
             if operation == "delete": return workspace.store.delete(kind, payload.get("id"))
         if path == "/api/live/start" and "session_tab" in payload:
             return _session_capture_response(payload, workspace)
-        if path in _CONNECTION_PATHS and path not in _WRITE_PATHS and path not in _ACTION_PATHS:
+        if path in _CONNECTION_PATHS and path not in _WRITE_PATHS and path not in _ACTION_PATHS \
+                and path not in _REPLICATION_REVIEW_PATHS:
             payload = _with_saved_password(payload, workspace)
         if path == "/api/live/start":
             from .accounts_api import _group_login_guard

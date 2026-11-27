@@ -8,7 +8,7 @@ import { Duration } from "./PerfShared";
 import { useViewOnScreen } from "./viewOnScreen";
 import type { ActionPrivilege } from "./accountsApi";
 import { privilegeResult, usePrivilege } from "./privileges";
-import { recordDeclined, type Connection } from "./api";
+import { api, recordDeclined, type Connection } from "./api";
 import { connectionKey, connectionLabel, endpointKey, useConnectionReads, type Bound } from "./binding";
 import { ConnectionTypeBand, useWritePolicy } from "./Connections";
 import { InstrumentsLink } from "./Instruments";
@@ -349,9 +349,19 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         setNotice("The failed transaction was read again and the plan was refreshed. Review it and confirm again. Nothing was sent.");
         return;
       }
+      // Mint one review only after the options are chosen and the displayed
+      // failure is checked. Passive refreshes must not evict open reviews.
+      const review = await api<{ review_token: string }>(`live/replication/${c.kind === "one" ? "skip" : "skip-loop"}/review`, {
+        connection: checked, channel: c.plan.channel, statements: c.plan.statements,
+        ...(c.kind === "one" ? { expect: c.plan.identity } : {
+          ...c.options, receiver_guard: c.plan.receiver_guard, first_failure: c.plan.identity,
+          expect: { engine: c.plan.engine, server_identity: c.plan.identity.server_identity },
+        }),
+      });
+      if (!live()) return;
       if (c.kind === "one") {
         sent = true;
-        const result = await skipTransaction(checked, c.plan);
+        const result = await skipTransaction(checked, c.plan, review.review_token);
         setOutcome({ key: c.key, label: c.label, report: result });
         setConfirmation(null);
         focusResult(".ops-result");
@@ -361,7 +371,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         // Keep the mode the person reviewed, even if coverage changed during
         // the fresh read. Python requires an acknowledged active guard.
         sent = true;
-        const result = await startSkipLoop(checked, c.plan.channel, { ...c.options, receiver_guard: c.plan.receiver_guard });
+        const result = await startSkipLoop(checked, c.plan, c.options, review.review_token);
         setConfirmation(null);
         setLoopResult({ key: c.key, label: c.label, report: result });
         if (!live()) { focusResult(".replication-write-result"); return; }

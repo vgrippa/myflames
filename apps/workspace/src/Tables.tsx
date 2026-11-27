@@ -1,4 +1,5 @@
 import { qualifiedTable, tableMaintenanceSql } from "./sqlIdent";
+import { copyNote, unsafeNamesReason } from "./sqlPasteSafety";
 // Server > Tables: tables without a primary key or a usable unique key, and
 // InnoDB fragmentation (schema-2.0 from myflames/schema_health.py). One read per
 // click over the chosen databases (all user databases by default). Rebuild
@@ -6,7 +7,7 @@ import { qualifiedTable, tableMaintenanceSql } from "./sqlIdent";
 // time; the why, the checks and the fix statements are in the inspector.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
-import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport, type TableInventoryRow } from "./api";
+import { api, type Connection, type FreeSpaceRow, type MissingPrimaryKey, type TablesReport, type TableInventoryRow, type TableStatement } from "./api";
 import { CompactNumber, CopySql, RowActionMenu, SchemaPicker, bytes, count, engineLabel, useSchemaCatalog, type RowMenuItem } from "./PerfShared";
 import { uptime } from "./Health";
 import { useConnectionReads, type Bound } from "./binding";
@@ -33,7 +34,6 @@ import {
   type InspectorContent,
   type Selection,
   type Tone,
-  copyToClipboard,
 } from "./kit";
 import "./tables.css";
 import { PaginatedReportTable } from "./PaginatedReportTable";
@@ -64,7 +64,7 @@ function Status({ status }: { status: string }) {
   );
 }
 
-function Statements({ items, hint }: { items: { label: string; sql: string; template?: boolean }[]; hint: string }) {
+function Statements({ items, hint, names }: { items: TableStatement[]; hint: string; names?: string[] }) {
   if (!items.length) return null;
   return (
     <>
@@ -72,7 +72,9 @@ function Statements({ items, hint }: { items: { label: string; sql: string; temp
       {items.map((x) => (
         <div key={x.sql}>
           <p className="tables-statement-label">{x.label}</p>
-          <CopySql sql={x.sql} label={x.label} />
+          {/* The report names every identifier the statement embeds (index and
+              column names included); without them, fall back to schema.table. */}
+          <CopySql sql={x.sql} label={x.label} names={x.names ?? names} />
         </div>
       ))}
     </>
@@ -105,14 +107,14 @@ function Rebuild({ row, report, onOpenSql, disabled }: {
   const exceptions = report.notes.filter(note => /innodb_(defragment|optimize_fulltext_only) is ON/.test(note));
   return <InspectorSection title="Rebuild">
     {statements.map(statement => <div key={statement.label}>
-      <CopySql sql={statement.sql} label={`${statement.label}: ${row.schema}.${row.table}`} />
+      <CopySql sql={statement.sql} label={`${statement.label}: ${row.schema}.${row.table}`} names={[row.schema, row.table]} />
       {onOpenSql && <button type="button" className="text-button" disabled={disabled}
         aria-label={`Open in Query editor: ${statement.label}`}
         onClick={() => onOpenSql(statement.sql)}>Open in Query editor</button>}
     </div>)}
     {row.online_sql && <>
       <p className="hint">The same rebuild, refused instead of blocking writes when it cannot run online:</p>
-      <CopySql sql={row.online_sql} label={`Rebuild ${row.schema}.${row.table} online`} />
+      <CopySql sql={row.online_sql} label={`Rebuild ${row.schema}.${row.table} online`} names={[row.schema, row.table]} />
     </>}
     <ul className="hint tables-rebuild-notes">
       <li>On InnoDB, <code>OPTIMIZE TABLE</code> does recreate + analyze; <code>ALTER TABLE ... ENGINE=InnoDB</code> rebuilds without the separate <code>ANALYZE TABLE</code> step (InnoDB still recalculates persistent statistics when the rebuild commits).</li>
@@ -267,9 +269,12 @@ export function TablesView({
   const importGate = useImportCsvGate("existing");
   const otherList = "This list is from another connection. Refresh to use the connection in use.";
 
-  const getTableRowContextMenu = (schema: string, table: string) => {
+  const getTableRowContextMenu = (schema: string, table: string, copy: (text: string, msg?: string) => Promise<void>) => {
     const runner = reviewedSqlRef.current;
     const qTable = qualifiedTable(schema, table);
+    // Copies built from server names are refused (reason on click) when a
+    // name is not safe to paste into the mysql client.
+    const nameReason = unsafeNamesReason([schema, table]) || undefined;
     return [
       {
         label: "Table structure",
@@ -365,17 +370,29 @@ export function TablesView({
       {
         label: `Copy table name (${qTable})`,
         icon: "copy",
-        onClick: () => void copyToClipboard(qTable),
+        disabled: !!nameReason,
+        hint: nameReason,
+        onClick: () => void copy(qTable, copyNote("Copied table name", qTable)),
       },
       {
         label: "Copy SELECT query",
         icon: "copy",
-        onClick: () => void copyToClipboard(`SELECT * FROM ${qTable} LIMIT 100;`),
+        disabled: !!nameReason,
+        hint: nameReason,
+        onClick: () => {
+          const sql = `SELECT * FROM ${qTable} LIMIT 100;`;
+          void copy(sql, copyNote("Copied SELECT query", sql));
+        },
       },
       {
         label: "Copy SELECT COUNT(*)",
         icon: "copy",
-        onClick: () => void copyToClipboard(`SELECT COUNT(*) AS total_rows FROM ${qTable};`),
+        disabled: !!nameReason,
+        hint: nameReason,
+        onClick: () => {
+          const sql = `SELECT COUNT(*) AS total_rows FROM ${qTable};`;
+          void copy(sql, copyNote("Copied SELECT COUNT(*)", sql));
+        },
       },
       { divider: true as const },
       {
@@ -707,8 +724,8 @@ export function TablesView({
               </InspectorSection>
             )}
             <InspectorSection title="What to do">
-              <Statements items={m.checks} hint="Check first (each is a read; on a large table run it on a replica or at a quiet time):" />
-              <Statements items={m.fixes} hint="Then, if the check passes:" />
+              <Statements items={m.checks} names={[m.schema, m.table]} hint="Check first (each is a read; on a large table run it on a replica or at a quiet time):" />
+              <Statements items={m.fixes} names={[m.schema, m.table]} hint="Then, if the check passes:" />
               <p className="hint perf-caveat">{m.caveat}</p>
             </InspectorSection>
           </>
@@ -944,7 +961,7 @@ export function TablesView({
                   filters={listFilters}
                   rowAction={tableRowAction} rowKey={r => `table:${r.schema}.${r.table}`} selection={selection} defaultSort={{key:"table",dir:"asc"}}
                   rowAttrs={r => ({"data-table": `${r.schema}.${r.table}`})} empty="No tables match these filters."
-                  rowContextMenu={r => getTableRowContextMenu(r.schema, r.table)}
+                  rowContextMenu={(r, { copy }) => getTableRowContextMenu(r.schema, r.table, copy)}
                   exportContext={exportContext} resetKey={resetKey} exportColumns={[
                     {label:"Database",value:r=>r.schema},{label:"Table",value:r=>r.table},{label:"Engine",value:r=>r.engine},
                     {label:"Rows (estimated)",value:r=>r.rows},{label:"Data bytes",value:r=>r.data_bytes},{label:"Index bytes",value:r=>r.index_bytes},
@@ -964,7 +981,7 @@ export function TablesView({
                     selection={selection}
                     defaultSort={{ key: "status", dir: "asc" }}
                     rowAttrs={(m) => ({ "data-table": `${m.schema}.${m.table}` })}
-                    rowContextMenu={m => getTableRowContextMenu(m.schema, m.table)}
+                    rowContextMenu={(m, { copy }) => getTableRowContextMenu(m.schema, m.table, copy)}
                     empty={
                       report.missing_primary_keys.length
                         ? "No table matches these filters."
@@ -1002,7 +1019,7 @@ export function TablesView({
                     selection={selection}
                     defaultSort={{ key: "free", dir: "desc" }}
                     rowAttrs={(f) => ({ "data-table": `${f.schema}.${f.table}` })}
-                    rowContextMenu={f => getTableRowContextMenu(f.schema, f.table)}
+                    rowContextMenu={(f, { copy }) => getTableRowContextMenu(f.schema, f.table, copy)}
                     empty={freeStatus === "info" ? "No fragmented tables reported from DATA_FREE." : "No table matches these filters."}
                   />
                 {report.more.fragmentation > 0 && <p className="hint table-more">{report.more.fragmentation} more not shown.</p>}

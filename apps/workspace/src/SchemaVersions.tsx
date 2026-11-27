@@ -15,11 +15,13 @@ import type { Connection, Profile } from "./api";
 import { deletedConnectionLabel } from "./savedConnections";
 import { connectionKey, connectionLabel } from "./binding";
 import { Icon } from "./components";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
+import { clientCommandNote } from "./sqlPasteSafety";
 import { ComparisonBadge, ComparisonSetup } from "./compareShared";
 import {
   ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, Disclosure, EmptyState, ExportMenu, Fields, FormGrid, FormRow,
   InspectorContext, InspectorSection, Pill, Segmented, Select, SummaryLine, ToolbarButton, ToolbarSelect, ViewLayout, ViewStatus,
-  copyToClipboard, storedInspectorWidth, useAction, useInspector, useWindowStatus,
+  storedInspectorWidth, useAction, useInspector, useWindowStatus,
   type Column, type InspectorContent, type InspectorShared, type Selection,
 } from "./kit";
 import { useSchemaCatalog } from "./PerfShared";
@@ -810,10 +812,12 @@ function ObjectBrowser({ objects, notes }: { objects: VersionWithSnapshot["snaps
 
 function CodeBlock({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState("");
+  // A new definition must not inherit the previous one's Copied feedback.
+  useEffect(() => setCopied(""), [text]);
   return <div className="schema-code">
     <pre tabIndex={0} aria-label={label}><code>{text}</code></pre>
     <button type="button" className="text-button" onClick={() => {
-      void copyToClipboard(text).then((ok) => setCopied(ok ? "Copied." : "Select the text to copy it."));
+      void copyToClipboardResult(text).then((res) => setCopied(res.ok ? copyFeedback("Copied." + clientCommandNote(text), res.removed) : "Select the text to copy it."));
     }}>Copy</button>
     {copied && <span className="muted" role="status">{copied}</span>}
   </div>;
@@ -1002,6 +1006,8 @@ function marked(text: string, other: string): ReactNode {
 function SplitDiff({ lines, source, target, label }: { lines: DiffLine[]; source: string; target: string; label: string }) {
   const rows = splitRows(lines, target ? target.split("\n").length : 0);
   const [copied, setCopied] = useState("");
+  // Selecting another object must not inherit this one's Copied feedback.
+  useEffect(() => setCopied(""), [source, target]);
   return <div className="schema-split-wrap">
     <table className="schema-split" aria-label={label}>
       <colgroup><col className="schema-split-num" /><col /><col className="schema-split-num" /><col /></colgroup>
@@ -1023,8 +1029,8 @@ function SplitDiff({ lines, source, target, label }: { lines: DiffLine[]; source
         </tr>)}</tbody>
     </table>
     <div className="schema-split-actions">
-      <button type="button" className="text-button" onClick={() => void copyToClipboard(source).then((ok) => setCopied(ok ? "Copied the source's definition." : "Select the text to copy it."))}>Copy source</button>
-      <button type="button" className="text-button" onClick={() => void copyToClipboard(target).then((ok) => setCopied(ok ? "Copied the target's definition." : "Select the text to copy it."))}>Copy target</button>
+      <button type="button" className="text-button" onClick={() => void copyToClipboardResult(source).then((res) => setCopied(res.ok ? copyFeedback("Copied the source's definition." + clientCommandNote(source), res.removed) : "Select the text to copy it."))}>Copy source</button>
+      <button type="button" className="text-button" onClick={() => void copyToClipboardResult(target).then((res) => setCopied(res.ok ? copyFeedback("Copied the target's definition." + clientCommandNote(target), res.removed) : "Select the text to copy it."))}>Copy target</button>
       {copied && <span className="muted" role="status">{copied}</span>}
     </div>
   </div>;
@@ -1083,7 +1089,7 @@ function SyncPanel({ report, openable, onOpenSql, current }: {
         {m.summary.drops_data ? <> · <strong>{plural(m.summary.drops_data, "drops data", "drop data")}</strong></> : null}
         {m.summary.skipped ? <> · {m.summary.skipped.toLocaleString()} not generated</> : null}. myflames never runs them.</p>
       <div className="schema-migration-actions">
-        <ToolbarButton icon="copy" disabled={!current} onClick={() => { if (current) void copyToClipboard(m.script).then((ok) => setCopied(ok ? "Copied." : "Select the text to copy it.")); }}>Copy script</ToolbarButton>
+        <ToolbarButton icon="copy" disabled={!current} onClick={() => { if (current) void copyToClipboardResult(m.script).then((res) => setCopied(res.ok ? copyFeedback("Copied." + clientCommandNote(m.script), res.removed) : "Select the text to copy it.")); }}>Copy script</ToolbarButton>
         <ToolbarButton icon="export" disabled={!current} onClick={() => { if (current) download(`schema-sync-${fileStem(report)}.sql`, m.script, "application/sql"); }}>Download .sql</ToolbarButton>
         <ToolbarButton primary icon="query" disabled={!current || !openable?.ok} title={!current ? "Wait for the sync script to update" : openable?.ok ? "Open the script in a new Query editor tab; nothing runs until you run it there" : openable?.reason}
           onClick={() => { if (current && openable?.ok) onOpenSql(m.script); }}>Open in Query editor</ToolbarButton>

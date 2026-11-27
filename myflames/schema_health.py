@@ -4,7 +4,10 @@ InnoDB fragmentation and rebuild candidates, for chosen schemas or every user sc
 :func:`table_report` returns the ``schema-2.0`` envelope shared by ``myflames
 tables`` and the workspace's Server > Tables tab. It is read-only: it reads
 information_schema once per run, and every statement it suggests is text for
-the user to run (OPTIMIZE TABLE and ALTER TABLE are never sent).
+the user to run (OPTIMIZE TABLE and ALTER TABLE are never sent). Each check
+and fix statement carries ``names``: every schema, table, column and index
+name the statement embeds, so a copy can be refused when a name is not safe
+to paste into the mysql client.
 
 Sources:
 
@@ -759,7 +762,9 @@ def _missing_entry(server, t, indexes, columns):
                             "explicit." % (t["engine"] or "This engine", best["index"], best["columns"]))
         fixes.append({"label": "Declare %s as the primary key" % best["index"],
                       "sql": "ALTER TABLE %s ADD PRIMARY KEY (%s), DROP INDEX %s%s;"
-                             % (target, cols, ident(best["index"]), online)})
+                             % (target, cols, ident(best["index"]), online),
+                      "names": [t["schema"], t["table"], best["index"]]
+                               + [p["column"] for p in best["_parts"]]})
     else:
         entry["clustered_on"] = "hidden row ID" if innodb else None
         plain = [u for u in uniques if u["why_not"] and u["why_not"].endswith(("allows NULL", "allow NULL"))]
@@ -779,31 +784,37 @@ def _missing_entry(server, t, indexes, columns):
             nullable = [p["column"] for p in best["_parts"] if p["nullable"]]
             checks.append({"label": "Must return 0 (rows with NULL in %s)" % ", ".join(nullable),
                            "sql": "SELECT COUNT(*) FROM %s WHERE %s;" % (
-                               target, " OR ".join("%s IS NULL" % ident(c) for c in nullable))})
+                               target, " OR ".join("%s IS NULL" % ident(c) for c in nullable)),
+                           "names": [t["schema"], t["table"]] + nullable})
             fixes.append({"label": "Make %s the primary key (its columns become NOT NULL)" % best["index"],
                           "sql": "ALTER TABLE %s ADD PRIMARY KEY (%s), DROP INDEX %s%s;"
                                  % (target, ", ".join(ident(p["column"]) for p in best["_parts"]),
-                                    ident(best["index"]), online)})
+                                    ident(best["index"]), online),
+                          "names": [t["schema"], t["table"], best["index"]]
+                                   + [p["column"] for p in best["_parts"]]})
         else:
             checks.append({"label": "Template: must return no rows for the columns you choose",
                            "sql": "SELECT col1, col2, COUNT(*) FROM %s GROUP BY col1, col2 HAVING COUNT(*) > 1 "
-                                  "LIMIT 10;" % target, "template": True})
+                                  "LIMIT 10;" % target, "template": True,
+                           "names": [t["schema"], t["table"]]})
             fixes.append({"label": "Template: a primary key on columns that identify a row",
                           "sql": "ALTER TABLE %s ADD PRIMARY KEY (col1, col2)%s;" % (target, online),
-                          "template": True})
+                          "template": True, "names": [t["schema"], t["table"]]})
         name = next((n for n in SURROGATE_NAMES if n not in columns), "row_pk")
         lock = ", ALGORITHM=INPLACE, LOCK=SHARED" if innodb else ""
         if _invisible_columns(server):
             fixes.append({"label": "Or add an invisible surrogate key (SELECT * and INSERT without a column list "
                                    "keep working)",
                           "sql": "ALTER TABLE %s ADD COLUMN %s BIGINT UNSIGNED NOT NULL AUTO_INCREMENT INVISIBLE "
-                                 "PRIMARY KEY FIRST%s;" % (target, ident(name), lock)})
+                                 "PRIMARY KEY FIRST%s;" % (target, ident(name), lock),
+                          "names": [t["schema"], t["table"], name]})
         else:
             # Invisible columns arrived in MySQL 8.0.23 (sql_yacc.yy column_attribute: visibility).
             fixes.append({"label": "Or add a surrogate key (this server has no invisible columns: SELECT * then "
                                    "returns it, and an INSERT without a column list must give it a value)",
                           "sql": "ALTER TABLE %s ADD COLUMN %s BIGINT UNSIGNED NOT NULL AUTO_INCREMENT "
-                                 "PRIMARY KEY FIRST%s;" % (target, ident(name), lock)})
+                                 "PRIMARY KEY FIRST%s;" % (target, ident(name), lock),
+                          "names": [t["schema"], t["table"], name]})
     entry["checks"] = checks
     entry["fixes"] = fixes
     caveat = ("Adding a primary key rebuilds the table: it takes time and free disk space for a new copy of the "

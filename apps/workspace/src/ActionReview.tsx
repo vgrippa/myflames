@@ -1,8 +1,14 @@
-// Reviewed changes that the backend plans from a fresh read (the ProxySQL
-// and Cluster places; myflames/reviewed_writes.py, db-operations skill
-// section 6). Planning reads only. The sheet shows the statements exactly as
-// they will be sent, the target, the connection and its write policy, the
-// facts and warnings, the undo, and a typed name for destructive changes.
+// Reviewed changes that the backend plans from a fresh read (the ProxySQL,
+// Cluster and Readyset places; myflames/reviewed_writes.py, db-operations
+// skill section 6). Planning reads only. The sheet shows any identity check
+// (`session_guard`) and the statements, the target, the connection and its
+// write policy, the facts and warnings, the undo, and a typed name for
+// destructive changes. How the check is sent decides the label: ProxySQL
+// Admin and MySQL Shell send it as their own first statement in the same
+// login, so the shown text is exactly as sent; for MySQL and MariaDB the
+// backend frames the check into the same packet as each statement
+// (dbops.target_guarded_script), so the shown text is labelled as the
+// reviewed statements for reading, not a script to paste.
 // Cancel and Escape record a declined attempt in the Audit log. Confirm reads
 // the saved connections again (useWritePolicy) and sends the reviewed plan
 // with its token; the backend reads the target again and sends nothing when
@@ -44,6 +50,7 @@ export type ReviewedPlan = {
   description: string;
   target_text: string;
   statements: string[];
+  session_guard?: string[];
   facts: [string, string][];
   warnings: string[];
   typed_guard: string | null;
@@ -75,6 +82,7 @@ export type ReviewedResult = {
   audit_id: string | null;
   /** Each statement's final state, in order. */
   states?: StatementState[];
+  session_guard?: string[];
   /** What changed: what, before, now (read again after the write). */
   effect?: [string, string, string][] | null;
   checks?: string[];
@@ -437,6 +445,24 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
       : plan.statements.map(() => "waiting");
   const [tone, word] = r ? RESULT_TONE[r.status] || RESULT_TONE.unknown : ["unknown", ""];
   const checks = r?.checks?.length ? r.checks : plan.checks || [];
+  const guard = (plan.session_guard || []).filter((line): line is string => typeof line === "string" && line.trim().length > 0);
+  const sentLines = guard.length > 0 ? [...guard, ...plan.statements] : plan.statements;
+  // Mirror the framing in reviewed_writes.execute: a MySQL or MariaDB guard
+  // goes through dbops.target_guarded_script, which DELIMITER-frames the
+  // check into the same packet as each statement, so the joined text below
+  // does not reproduce the send and must not read "exactly as sent".
+  // ProxySQL Admin and MySQL Shell send the check as their own first
+  // statement in the same login, so the joined text is what goes out.
+  const expectEngine = plan.expect && typeof plan.expect === "object"
+    ? String((plan.expect as { engine?: unknown }).engine || "") : "";
+  const packetGuard = guard.length > 0 && plan.via !== "mysqlsh" &&
+    ["mysql", "percona", "percona_server", "pxc", "mariadb"].includes(expectEngine);
+  const guardLines = `first ${guard.length === 1 ? "line" : `${guard.length.toLocaleString()} lines`} below`;
+  const commandsLabel = guard.length > 0
+    ? packetGuard
+      ? "Reviewed statements with the identity check first, for reading; the check travels in the same packet as each statement, so this is not a script to paste"
+      : "Identity check sent first, before the statements, and statements to send, exactly as sent"
+    : "Statements to send, exactly as sent";
   return (
     <ConfirmSheet className="ops-confirm action-review"
       band={<ConnectionTypeBand connection={p.connection} label={p.label} type={type} readOnly={readOnly} />}
@@ -477,7 +503,14 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
           </p>
         )}
       </> : <>
-        <Commands label="Statements to send, exactly as sent" text={plan.statements.join("\n")} />
+        {guard.length > 0 && (
+          <p className="hint ops-plan-note action-guard-note">
+            {packetGuard
+              ? `Identity check (${guardLines}): the backend sends it in the same packet as each statement, so the text below is the reviewed statements for reading, not a script to paste.`
+              : `Identity check sent first (${guardLines}), before the ${plan.statements.length === 1 ? "statement" : "statements"}.`}
+          </p>
+        )}
+        <Commands label={commandsLabel} text={sentLines.join("\n")} />
         <Fields rows={[
           ["Connection", p.label.includes(endpoint) ? p.label : `${p.label} (${endpoint})`],
           ["Type", `${TYPE_LABEL[type]}${readOnly ? ", read-only" : ""}`],

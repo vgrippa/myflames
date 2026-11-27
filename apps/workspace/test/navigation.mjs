@@ -769,6 +769,45 @@ try {
   await button("Compare to baseline", ".library-actions ");
   await page.waitForSelector('iframe[title="Baseline comparison"]');
   assert.equal(await page.$eval('iframe[title="Baseline comparison"]', (e) => e.getAttribute("sandbox")), "allow-scripts");
+  {
+    const compFrame = await (await page.$('iframe[title="Baseline comparison"]')).contentFrame();
+    await compFrame.waitForSelector("h1");
+    const clipResult = await compFrame.evaluate(() => {
+      const violations = [];
+      document.addEventListener("securitypolicyviolation", (ev) => violations.push(ev.violatedDirective));
+      const host = document.createElement("div");
+      const dirty = document.createElement("pre");
+      dirty.textContent = "SELECT 1 /* *\u0001/ ; \u202eDROP */\r\nnext";
+      const clean = document.createElement("pre");
+      clean.textContent = "SELECT 1;\nSELECT 2;";
+      const pw = document.createElement("input");
+      pw.type = "password";
+      pw.value = "sec\u001bret";
+      host.append(dirty, clean, pw);
+      document.body.appendChild(host);
+      const runCopy = (el) => {
+        const dt = new DataTransfer();
+        const ev = new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: dt });
+        el.dispatchEvent(ev);
+        return { prevented: ev.defaultPrevented, plain: dt.getData("text/plain") };
+      };
+      const sel = window.getSelection();
+      sel.selectAllChildren(dirty);
+      const dirtyCopy = runCopy(dirty);
+      sel.selectAllChildren(clean);
+      const cleanCopy = runCopy(clean);
+      sel.removeAllRanges();
+      pw.focus();
+      pw.setSelectionRange(0, pw.value.length);
+      const pwCopy = runCopy(pw);
+      host.remove();
+      return { dirtyCopy, cleanCopy, pwCopy, violations };
+    });
+    assert.deepEqual(clipResult.dirtyCopy, { prevented: true, plain: "SELECT 1 /* * / ;  DROP */\nnext" });
+    assert.deepEqual(clipResult.cleanCopy, { prevented: false, plain: "" });
+    assert.deepEqual(clipResult.pwCopy, { prevented: false, plain: "" });
+    assert.deepEqual(clipResult.violations, []);
+  }
   await button("Close comparison", ".library-comparison ");
   assert.equal(await page.$('iframe[title="Baseline comparison"]'), null);
   await page.locator('[aria-label="Search investigations"]').fill("no results");

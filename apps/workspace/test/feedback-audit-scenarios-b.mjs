@@ -153,7 +153,9 @@ export const SCENARIOS_B = [
   },
   {
     name: "replication-skip-confirm", label: "Skip transaction (confirm)", owner: "Replication.tsx", place: "replication", sheet: true,
-    paths: ["/api/live/replication/skip"], mocks: { "/api/live/replication": () => replication, "/api/live/replication/skip": () => FIX.replicationSkip },
+    paths: ["/api/live/replication/skip"], mocks: { "/api/live/replication": () => replication,
+      "/api/live/replication/skip/review": () => ({ review_token: "audit-skip-review" }),
+      "/api/live/replication/skip": () => FIX.replicationSkip },
     setup: async ({ page }) => {
       await goPlace(page, "replication"); await pause(1200);
       await click(page, "Channels"); await pause(400);

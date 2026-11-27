@@ -42,7 +42,8 @@
  },
  "verified": [
   "ProxySQL Admin identity (admin-version)",
-  "configuration row mf-ic-2:3306 unchanged since review"
+  "configuration row mf-ic-2:3306 unchanged since review",
+  "ProxySQL instance UUID"
  ],
  "timeout_s": 60,
  "eyebrow": "UPDATE",
@@ -56,6 +57,9 @@
  ],
  "expect": {
   "proxysql_version": "3.0.11-797-g7c91137",
+  "server_identity": {
+   "uuid": "11111111-2222-3333-4444-555555555555"
+  },
   "fingerprints": {
    "servers_memory": "422a2600d6dae80e0c02c0e174b6887b68de0edb9d4742d999ac61f4fd07bc65"
   },
@@ -79,6 +83,9 @@
   "Refresh this place. Servers shows mf-ic-2:3306 as ProxySQL runs it, and its inspector shows the configuration row in memory.",
   "If memory changed and runtime did not, the UPDATE ran and LOAD MYSQL SERVERS TO RUNTIME did not: the Configuration line then says a change is not loaded to runtime. Load servers to runtime, or undo.",
   "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
+ ],
+ "session_guard": [
+  "INSERT INTO main.global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE (SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '11111111-2222-3333-4444-555555555555';"
  ],
  "policy": {
   "action": "confirm",

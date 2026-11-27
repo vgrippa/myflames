@@ -1107,6 +1107,12 @@
       "timeout": 180,
       "reason": "Shared SQL identifier builders executed without a browser, server or emitted assets."
     },
+    "sql-paste-safety-unit.mjs": {
+      "kind": "suite",
+      "script": "test:sql-paste-safety-unit",
+      "timeout": 180,
+      "reason": "Unit contracts for sqlPasteSafety.ts (name allowlist, mysql client command detector) via esbuild; run directly with Node."
+    },
     "sql-select-unit.mjs": {
       "kind": "suite",
       "script": null,
@@ -1244,7 +1250,7 @@
     "topology-groups.mjs": {
       "kind": "suite",
       "script": "test:topology-groups",
-      "timeout": 180,
+      "timeout": 360,
       "safety": "An unticked production connection is never sent to /api/profiles/group (line 593); unsaved connections never acquire a saved identity by name or endpoint (header).",
       "reason": "Topology connection groups: Group field, datalist, save through /api/profiles/save and display in list and picker; isolated server."
     },

@@ -90,14 +90,26 @@ export function jobWord(job: LifecycleJob): [Tone, string] {
   if (status === "needs_verification") return ["watch", "Needs verification"];
   return ["unknown", status ? status.replace(/_/g, " ") : "Done"];
 }
+/** Ownership can follow a saved connection edit; the execution target cannot.
+ * A bound key still identifies the request owner, so use the snapshot's
+ * immutable address when that owner now points somewhere else. */
+export function lifecycleJobLabel(job: LifecycleJob, key: string, label: string): string {
+  if (!job.started_on) return label;
+  let edited = job.owner_match === "saved_connection";
+  try {
+    const parts: unknown = JSON.parse(key);
+    if (Array.isArray(parts)) edited = edited || parts[1] !== job.started_on.host || parts[2] !== job.started_on.port;
+  } catch { /* An unreadable key cannot supply execution metadata. */ }
+  return edited ? `started on ${job.started_on.host}:${job.started_on.port}` : label;
+}
 /** Merge the jobs the server lists for *key* into memory: known ids take the
- * listed state and this connection (a policy change keeps the endpoint), new
- * ones are added, and finished ones beyond KEEP_FINISHED drop out. */
+ * listed state and request owner, while their label keeps the starting target.
+ * New ones are added, and finished ones beyond KEEP_FINISHED drop out. */
 export function adoptJobs(memory: MaintenanceMemory, key: string, label: string, jobs: LifecycleJob[]): MaintenanceMemory {
   const listed = jobs.filter((job) => job.id);
   const ids = new Set(listed.map((job) => job.id));
   const kept = memory.jobs.filter((b) => !ids.has(b.report.id));
-  const merged = [...kept, ...listed.map((job) => ({ key, label, report: job }))];
+  const merged = [...kept, ...listed.map((job) => ({ key, label: lifecycleJobLabel(job, key, label), report: job }))];
   const finished = merged.filter((b) => !jobActive(b.report));
   const drop = new Set(finished.slice(0, Math.max(0, finished.length - KEEP_FINISHED)));
   return { ...memory, jobs: merged.filter((b) => !drop.has(b)) };
@@ -115,12 +127,26 @@ function dumpContents(plan: LifecyclePlan) {
       : `${schemas.join(", ")} (all tables)`;
   return contents + ((plan.request.options as DumpOptionValues | undefined)?.structure_only ? ", structure only (no rows)" : "");
 }
+export function isPosixShellCommandPlan(plan: Pick<LifecyclePlan, "operation" | "tool">) {
+  return plan.tool.name !== "mysqlsh" && plan.operation !== "clone";
+}
+export function commandLabel(plan: Pick<LifecyclePlan, "operation" | "tool">, base: string) {
+  return isPosixShellCommandPlan(plan) ? `${base} (POSIX shell)` : base;
+}
+export function posixShellCommandNote(plan: Pick<LifecyclePlan, "operation" | "tool">, windows: boolean) {
+  if (!isPosixShellCommandPlan(plan)) return "";
+  const subject = plan.operation === "dump" ? "POSIX shell command" : "Shell load command uses POSIX shell syntax";
+  return windows
+    ? `${subject} (for a POSIX shell such as WSL or Git Bash, not Windows Command Prompt).`
+    : `${subject}.`;
+}
 function planMessages(plan: LifecyclePlan) {
   // Legacy plans have one warnings list. Recognize only the two routine
   // caveats; unknown warnings always stay prominent. Never mutate the plan.
   const routine = (line: string) => plan.operation === "dump" &&
     (line.startsWith("A consistent snapshot protects InnoDB data only.") || line.startsWith("The reviewed tool options determine"));
-  const warnings = plan.warnings.filter(line => !routine(line));
+  const shellNote = (line: string) => line.startsWith("The displayed SQL ");
+  const warnings = plan.warnings.filter(line => !routine(line) && !shellNote(line));
   const versionWarning = warnings.findIndex(line => line.startsWith("MySQL Shell ") && line.includes("older than the server"));
   if (versionWarning > 0) warnings.unshift(...warnings.splice(versionWarning, 1));
   return { warnings, notes: plan.warnings.filter(routine) };
@@ -213,10 +239,11 @@ function showJob(id: string) {
 
 /** Job status is an outcome, not proof of verification: a tool that exited 0
  * can still leave checks not checked. */
-function JobProgress({ bound, currentKey, cancelling, onCancel, shown, started, revealed }: {
+function JobProgress({ bound, currentKey, cancelling, onCancel, shown, started, revealed, cancelError }: {
   bound: Bound<LifecycleJob>; currentKey: string; cancelling: string;
   onCancel: (bound: Bound<LifecycleJob>) => void;
   shown: boolean; started: boolean; revealed: Set<string>;
+  cancelError?: string;
 }) {
   const job = bound.report;
   const other = bound.key !== currentKey;
@@ -252,10 +279,11 @@ function JobProgress({ bound, currentKey, cancelling, onCancel, shown, started, 
   const output = active ? progress.output : progress.written !== null ? `${bytes(progress.written)} written` : "";
   const facts = [active ? job.phase : "", output, active && rate !== null ? `${bytes(rate)}/s` : ""].filter(Boolean);
   // Keep following jobs from this mounted view across Maintenance sections.
-  if (!shown) return null;
+  if (!shown) return cancelError ? <p role="alert" className="error">{SECTION_LABEL[job.operation]} · {bound.label}: {cancelError}</p> : null;
   return <section className={`ops-job${other ? " is-other-connection" : ""}`} aria-label={`${SECTION_LABEL[job.operation]} on ${bound.label}`} data-job={job.id || undefined} data-state={job.state} data-other-connection={other || undefined} tabIndex={-1}>
     <div className="ops-job-head"><strong>{SECTION_LABEL[job.operation]} · {bound.label}</strong><StatusPill tone={tone} label={word} />{active && <ActionButton busy={cancelling === job.id} busyLabel="Cancelling…" disabled={other || !job.id} title={other ? "Switch back to this connection to cancel it." : undefined} onClick={() => onCancel(bound)}>Cancel</ActionButton>}</div>
     <ActionStatus state={{ phase: cancelling === job.id ? "pending" : "idle", message: "Waiting for the cancellation reply. The job may still be running.", startedAt: cancelSince }} />
+    {cancelError && <p role="alert" className="error">{cancelError}</p>}
     {other && <p className="hint">From {bound.label}. Switch back to that connection to manage this job.</p>}
     {active && <div className="ops-progress" role="status" title={progress.approximate ? ESTIMATE_HINT : undefined}><progress aria-label={`${SECTION_LABEL[job.operation]} progress`} max={100} value={progress.value ?? undefined} />{progress.percent && <span>{progress.percent}</span>}</div>}
     {(facts.length > 0 || elapsed) && <p className="ops-job-facts">{facts.map((fact, i) => <span key={i}>{fact}</span>)}{elapsed && <span>{completed ? "Completed in" : "Elapsed"} <abbr title={durationText(job.elapsed_s)}>{elapsed}</abbr></span>}</p>}
@@ -282,7 +310,7 @@ function JobSummary({ job, onShow }: { job: LifecycleJob; onShow: () => void }) 
   </div>;
 }
 
-export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [] }: {
+export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [], jobCancelErrors = {}, onJobCancelled }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   section: MaintenanceSection; onSection: (section: MaintenanceSection) => void;
   /** Server owns memory; never serialize this object into the workspace. */
@@ -292,6 +320,10 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   targetVersions?: string[]; missingPrivileges?: MissingPrivileges;
   /** Saved connections (no passwords): Clone's donor can be filled from one. */
   profiles?: Profile[];
+  /** Banner Cancel failures survive opening this view while its reply is pending. */
+  jobCancelErrors?: Record<string, string>;
+  /** A successful retry clears the banner's failure for this job, across views. */
+  onJobCancelled?: (id: string) => void;
 }) {
   const reads = useConnectionReads(connection);
   const captureScope = useOpsScope(connection);
@@ -822,7 +854,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       let found: LifecycleJob | undefined;
       try {
         const answer = await listLifecycleJobs(from);
-        found = answer.jobs.find((job) => job.id && !known.has(job.id) && job.operation === p.report.operation);
+        found = answer.jobs.find((job) => job.owner_match === "endpoint" && job.id && !known.has(job.id) && job.operation === p.report.operation);
         if (found) {
           if (p.report.operation === "dump" && found.state !== "refused") {
             lastDumpParent = parentPath(p.report.target);
@@ -859,6 +891,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       const c = jobConnections.current.get(id);
       const target = c && endpointKey(connectionKey(c)) === endpointKey(bound.key) ? c : connection;
       const job = await cancelLifecycleJob(target, id);
+      onJobCancelled?.(id);
       if (live()) {
         onMemory((m) => ({ ...m, jobs: m.jobs.map((b) => b.key === bound.key && b.report.id === id ? { ...b, report: job } : b) }));
         setPollRetry((n) => n + 1);
@@ -989,7 +1022,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           <strong>{SECTION_LABEL[sheet.report.operation]} · {sheet.label}</strong>
           <ActionStatus state={{ phase: "pending", message: "Waiting for the Start reply. Whether it started is unknown; do not start it again.", startedAt: startSince }} />
         </section>}
-        {memory.jobs.map((bound, i) => <JobProgress key={bound.report.id || `${bound.key}:${i}`} bound={bound} shown={bound.report.operation === section} started={startedJobs.current.has(bound.report.id || "")} revealed={revealedJobs.current} currentKey={key} cancelling={cancelling} onCancel={(b) => { void cancel(b); }} />)}</>}>
+        {memory.jobs.map((bound, i) => <JobProgress key={bound.report.id || `${bound.key}:${i}`} bound={bound} shown={bound.report.operation === section} started={startedJobs.current.has(bound.report.id || "")} revealed={revealedJobs.current} currentKey={key} cancelling={cancelling} cancelError={jobCancelErrors[bound.report.id || ""]} onCancel={(b) => { void cancel(b); }} />)}</>}>
       {summary && (
         <SummaryLine tone={section === "upgrade" ? upgradeTone : undefined} toneLabel={section === "upgrade" ? upgradeToneLabel : undefined} notes={upgradeNotes}
           extra={section === "upgrade" && upgrade ? <ToolbarButton onClick={() => download(JSON.stringify(upgrade, null, 2), "myflames-upgrade-check.json", "application/json")}>Export JSON</ToolbarButton> : undefined}>
@@ -1146,7 +1179,11 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
           <Checks checks={shownPlan.report.checks} selection={selection} fix={fixCheck} />
         </>}
       </section>
-      {shownPlan && planMatches && <details className="ops-details"><summary>Planned commands and warnings</summary><Commands label="Planned commands" text={shownPlan.report.commands.join("\n")} />{shownPlan.report.warnings.map((line, i) => <p key={i}>{line}</p>)}</details>}
+      {shownPlan && planMatches && (() => {
+        const shellNote = posixShellCommandNote(shownPlan.report, WINDOWS);
+        const otherWarnings = shownPlan.report.warnings.filter(line => !line.startsWith("The displayed SQL "));
+        return <details className="ops-details"><summary>Planned commands and warnings</summary>{shellNote && <p className="hint ops-plan-note">{shellNote}</p>}<Commands label={commandLabel(shownPlan.report, "Planned commands")} text={shownPlan.report.commands.join("\n")} />{otherWarnings.map((line, i) => <p key={i}>{line}</p>)}</details>;
+      })()}
 
     </ViewLayout>
     {sheet && !startLeft && <ConfirmSheet className="ops-confirm"
@@ -1183,7 +1220,13 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       {sheet.report.policy?.text && <p>{sheet.report.policy.text}</p>}
       {sheet.report.operation !== "dump" && sheet.report.warnings.map((line, i) => <p className="ops-warning" key={i}>{line}</p>)}
       {!!planMessages(sheet.report).notes.length && <ul className="hint">{planMessages(sheet.report).notes.map((line, i) => <li key={i}>{line}</li>)}</ul>}
-      <Commands label="Exact commands" text={sheet.report.commands.join("\n")} />
+      {(() => {
+        const shellNote = posixShellCommandNote(sheet.report, WINDOWS);
+        return <>
+          {shellNote && <p className="hint ops-plan-note">{shellNote}</p>}
+          <Commands label={commandLabel(sheet.report, "Exact commands")} text={sheet.report.commands.join("\n")} />
+        </>;
+      })()}
       <details><summary>Preflight checks</summary><ul className="ops-verification">{sheet.report.checks.map((check, i) => <li key={i}><StatusPill tone={checkTone(check)} label={checkWord(check)} /><strong>{check.check}</strong><span>{check.reason}</span></li>)}</ul></details>
       {sheet.report.operation !== "dump" && <FormField label={`Type ${sheet.report.target} to confirm`} value={typed} onChange={setTyped} disabled={busy} />}
       {sheet.report.required_acknowledgement && <div className="ops-system-ack">

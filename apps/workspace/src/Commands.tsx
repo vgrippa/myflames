@@ -4,9 +4,11 @@
 // module so entry-chunk consumers do not pull in OpsShared, PerfShared,
 // opsApi or filesApi.
 import { useEffect, useRef, useState } from "react";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 
 /** The exact statements or commands a confirmation will send or an
- * administrator can run. Copy says only that the text was copied. */
+ * administrator can run. Copy says only that the text was copied (and whether
+ * control characters were removed). */
 export function Commands({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState<{ text: string; message: string }>({ text: "", message: "" });
   const currentText = useRef(text);
@@ -42,18 +44,14 @@ export function Commands({ text, label }: { text: string; label: string }) {
         onClick={() => {
           const seq = ++copySeq.current;
           const target = text;
-          void navigator.clipboard.writeText(target).then(
-            () => {
-              if (mounted.current && copySeq.current === seq && currentText.current === target) {
-                setCopied({ text: target, message: "Copied." });
-              }
-            },
-            () => {
-              if (mounted.current && copySeq.current === seq && currentText.current === target) {
-                setCopied({ text: target, message: "Select the text to copy it." });
-              }
-            },
-          );
+          void copyToClipboardResult(target).then((res) => {
+            if (mounted.current && copySeq.current === seq && currentText.current === target) {
+              setCopied({
+                text: target,
+                message: res.ok ? copyFeedback("Copied.", res.removed) : "Select the text to copy it.",
+              });
+            }
+          });
         }}
       >
         Copy

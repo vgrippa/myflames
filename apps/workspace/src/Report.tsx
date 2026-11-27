@@ -324,7 +324,8 @@ export function buildReportInspector({
 
   function findingInspector(f: AnalysisFinding): InspectorContent {
     const lesson = f.learn && LESSONS[f.learn] && onOpenLesson ? f.learn : "";
-    const action = f.action;
+    // Additive names metadata is absent from older report-1.0 payloads.
+    const action: (NonNullable<AnalysisFinding["action"]> & { names?: string[] }) | null = f.action;
     return {
       key: selectionKey,
       title: f.title,
@@ -394,8 +395,8 @@ export function buildReportInspector({
           {action && (action.text || action.sql || action.config) && (
             <InspectorSection title="What to do">
               {action.text && <p>{action.text}</p>}
-              {action.sql && <CopySql sql={action.sql} label={`${f.title}: statement`} />}
-              {action.config && <CopySql sql={action.config} label={`${f.title}: my.cnf line`} />}
+              {action.sql && <CopySql sql={action.sql} names={action.names} label={`${f.title}: statement`} />}
+              {action.config && <CopySql sql={action.config} names={action.names} label={`${f.title}: my.cnf line`} />}
               {(action.sql || action.config) && <p className="hint">Suggested only: myflames never runs or applies it.</p>}
               {f.caveat && <p className="hint perf-caveat">Caveat: {f.caveat}</p>}
             </InspectorSection>

@@ -2011,7 +2011,9 @@ export type SchemaCatalog = PerfBase & {
   system: string[];
 };
 /** schema-2.0: complete inventory, primary keys and nullable InnoDB free-space ratios. */
-export type TableStatement = { label: string; sql: string; template?: boolean };
+export type TableStatement = { label: string; sql: string; template?: boolean;
+  /** Every schema, table, column and index name the statement embeds; the copy is refused when one is not paste-safe. */
+  names?: string[] };
 export type MissingPrimaryKey = {
   schema: string;
   table: string;

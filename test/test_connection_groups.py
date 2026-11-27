@@ -528,9 +528,12 @@ class TestReadConsent(GroupCase):
         factory.assert_not_called()
         self.assertEqual(report['connection_group']['read'][0]['outcome'], 'not_reached')
 
-    def test_replica_status_survives_missing_policy_store_without_a_write_token(self):
+    def test_missing_policy_store_keeps_status_readable_but_cannot_authorize_replication(self):
         from test_replication import fixture
         from _reviewed_replay import ReplayConn
+        saved = self.save('current', 'G', type='production', read_only=True)
+        connections = ({'host': '127.0.0.1', 'port': 3306, 'user': 'app'},
+                       dict(self.request(saved), group_name='G'))
         for workspace in (None, types.SimpleNamespace(store=None)):
             conn = ReplayConn(fixture('replication', 'mysql-8.4-gtid-error')['calls'])
             original = conn.run
@@ -552,8 +555,64 @@ class TestReadConsent(GroupCase):
             plans = [ch['skip_plan'] for ch in report['channels'] if ch.get('skip_plan')]
             self.assertTrue(plans)
             for plan in plans:
-                self.assertFalse(plan['available'])
+                self.assertTrue(plan['available'])
                 self.assertNotIn('review_token', plan)
+                self.assertNotIn('loop_review_token', plan)
+                # A caller cannot turn a passive plan into write authority by
+                # supplying confirmation, a token, or a weaker client policy.
+                for original_connection in connections:
+                    connection = dict(original_connection, type='development', read_only=False,
+                                      password='typed-password')
+                    single = {'connection': connection, 'channel': plan['channel'],
+                              'expect': plan['identity'], 'statements': plan['statements'],
+                              'confirmed': True, 'review_token': 'forged-review'}
+                    loop = dict(single, expect={'engine': plan['engine'],
+                                               'server_identity': plan['identity']['server_identity']},
+                                first_failure=plan['identity'], codes=[1062], max_skips=2,
+                                max_minutes=10, poll_s=2, receiver_guard='off')
+                    for path, body in (('/api/live/replication/skip/review', single),
+                                       ('/api/live/replication/skip', single),
+                                       ('/api/live/replication/skip-loop/review', loop),
+                                       ('/api/live/replication/skip-loop/start', loop)):
+                        with self.subTest(workspace=workspace, path=path, connection=connection), \
+                                mock.patch('myflames.connector.MySQLConnection',
+                                           side_effect=AssertionError('missing store allowed a login')) as connect:
+                            with self.assertRaises(ValueError):
+                                ui.api_response(path, body, workspace)
+                            connect.assert_not_called()
+                        registry = getattr(workspace, 'review_tokens', None)
+                        if registry is not None:
+                            self.assertEqual(len(registry.entries), 0)
+
+    def test_losing_policy_store_refuses_existing_replication_reviews_before_login(self):
+        from test_replication import replay, sent_scripts
+        status_conn, _ = replay('replication', 'mysql-8.4-gtid-error')
+        report = rp.read_status(status_conn)
+        plan = report['channels'][0]['skip_plan']
+        workspace = types.SimpleNamespace(store=self.store)
+        connection = {'host': '127.0.0.1', 'port': 3306, 'user': 'app', 'password': 'typed-password'}
+        single = {'connection': connection, 'channel': plan['channel'],
+                  'expect': plan['identity'], 'statements': plan['statements'], 'confirmed': True}
+        loop = dict(single, expect={'engine': plan['engine'],
+                                   'server_identity': plan['identity']['server_identity']},
+                    first_failure=plan['identity'], codes=[1062], max_skips=2,
+                    max_minutes=10, poll_s=2, receiver_guard='off')
+        for prefix, endpoint, body in (('skip', 'skip', single), ('skip-loop', 'skip-loop/start', loop)):
+            with self.subTest(endpoint=endpoint):
+                review_conn, _ = replay('replication', 'mysql-8.4-gtid-error')
+                with mock.patch('myflames.connector.MySQLConnection', return_value=review_conn):
+                    review = ui.api_response('/api/live/replication/' + prefix + '/review', body, workspace)
+                self.assertEqual(sent_scripts(review_conn), [])
+                workspace.store = None
+                try:
+                    with mock.patch('myflames.connector.MySQLConnection',
+                                    side_effect=AssertionError('missing store allowed a login')) as connect:
+                        with self.assertRaises(ValueError):
+                            ui.api_response('/api/live/replication/' + endpoint,
+                                            dict(body, review_token=review['review_token']), workspace)
+                        connect.assert_not_called()
+                finally:
+                    workspace.store = self.store
 
     def test_replication_identity_sink_and_strict_report_schemas(self):
         identity = {}

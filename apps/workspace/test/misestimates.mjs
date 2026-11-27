@@ -57,6 +57,18 @@ await fs.writeFile(zeroSelf, JSON.stringify({
     { operation: "Table scan on t", access_type: "table", table_name: "t",
       estimated_rows: 2000, actual_rows: 2000, actual_loops: 1, actual_last_row_ms: 1 }] }));
 
+// A stale-statistics capture whose schema name is not printable ASCII: the
+// ANALYZE TABLE statement is built from it, so the copy must be refused.
+const unsafeStats = path.join(directory, "unsafe-stats.capture.json");
+await fs.writeFile(unsafeStats, JSON.stringify({
+  schema_version: "capture-1.0", mode: "analyze", engine: "mysql",
+  query: "SELECT * FROM orders",
+  raw: JSON.stringify({
+    operation: "Table scan on orders", access_type: "table", table_name: "orders", schema_name: "café",
+    estimated_rows: 10, actual_rows: 1000, actual_loops: 1, actual_last_row_ms: 1 }),
+  stats_freshness: { "café.orders": { last_update: "2026-11-20 10:00:00", n_rows: 10, histograms: [] } }
+}));
+
 const server = spawn(process.env.PYTHON || "python3", ["-c",
   "from myflames.ui import WorkspaceServer; import sys; s=WorkspaceServer(store_path=sys.argv[1]); print(s.launch_url, file=sys.stderr, flush=True); s.serve_forever()",
   path.join(directory, "workspace.sqlite3")],
@@ -314,10 +326,28 @@ try {
       assert.match(fields.text, /19,907/);
     }
   }
+
+  // The ANALYZE TABLE statement built from a schema whose name is not
+  // printable ASCII stays visible but its copy is refused, with the reason.
+  await importPlan(unsafeStats);
+  await page.click(".misestimate-chip");
+  await page.waitForFunction(() => document.querySelector(".plan-inspector .inspector-title h3")?.textContent.includes("orders"), deadline(10000));
+  const unsafeBlock = await page.$eval(".plan-inspector", (panel) => {
+    const block = Array.from(panel.querySelectorAll(".inspector-block")).find((b) => b.querySelector("h4")?.textContent.startsWith("Row estimate"));
+    return { sql: block.querySelector(".perf-sql pre")?.textContent,
+      aria: block.querySelector('.perf-sql button')?.getAttribute("aria-disabled") };
+  });
+  assert.equal(unsafeBlock.sql, "ANALYZE TABLE `café`.`orders`;");
+  assert.equal(unsafeBlock.aria, "true", "a non-ASCII schema name refuses the ANALYZE TABLE copy");
+  await page.click('.plan-inspector button[aria-label="Copy: ANALYZE TABLE statement"]');
+  await page.waitForSelector("[role=dialog].why-disabled", deadline(5000));
+  assert.match(await page.$eval("[role=dialog].why-disabled", (el) => el.textContent), /not printable ASCII or contains a backslash/);
+  await page.click(".why-disabled-close");
+  await page.waitForSelector("[role=dialog].why-disabled", { hidden: true });
   assert.deepEqual([...new Set(refused)].filter((where) => where !== "/api/live/privileges"), [],
     "the only server read is the app's own startup privileges read, refused here");
   assert.deepEqual(errors, []);
-  console.log("Misestimates: chip cycle and reveal, zero-self-time recovery, MySQL and MariaDB evidence, alias collision without borrowed statistics or SQL, 720 px and dark contrast passed");
+  console.log("Misestimates: chip cycle and reveal, zero-self-time recovery, MySQL and MariaDB evidence, alias collision without borrowed statistics or SQL, copy refusal for a name that is not printable ASCII, 720 px and dark contrast passed");
 } finally {
   if (browser) await browser.close();
   server.kill();
