@@ -309,6 +309,13 @@ class TestWriteHTTP(unittest.TestCase):
             payload['review_token'] = ui._review_tokens(self.server).issue('replication_skip',
                 ui._review_identity(payload['connection'], self.server),
                 {k: payload.get(k) for k in ('channel', 'expect', 'statements')})
+        elif path == '/api/live/variable/apply':
+            identity = ui._review_identity(payload['connection'], self.server)
+            payload['expect']['connection_identity'] = identity
+            details = {'name': payload['name'], 'mode': payload['mode'],
+                       'requested': None if payload['mode'] == 'reset_persist' else payload['value'],
+                       'expect': dict(payload['expect'])}
+            payload['expect']['review_token'] = ui._review_tokens(self.server).issue('variable', identity, details)
         elif path == '/api/lifecycle/start':
             payload['plan']['review_token'] = ui._review_tokens(self.server).issue('lifecycle',
                 ui._review_identity(payload['connection'], self.server), ui._lifecycle_review_details(payload['plan']))

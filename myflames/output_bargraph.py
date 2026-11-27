@@ -8,7 +8,7 @@ operator (``details["misestimate"]``, parser) carries the row-estimate chip
 at the start of its label column, and its details name the estimate. The
 TypeScript twin is apps/workspace/src/charts/bargraph.ts; keep both in step.
 """
-from .parser import xml_escape, flatten_nodes, render_info_panel
+from .parser import knn_description, xml_escape, flatten_nodes, render_info_panel
 from ._labels import fit_label
 from .output_tree import MARK_GAP, MARK_ROW_H, _format_time
 from .output_workbench import MARK_COLOR, MARK_FILL, _misestimate, mark_width
@@ -107,6 +107,9 @@ def _build_bar_info(op, pct):
     if cond:
         c_short = (cond[:50] + "\u2026") if len(cond) > 52 else cond
         parts.append(f"Cond: {c_short}")
+    nearest = knn_description(details)
+    if nearest:
+        parts.append(nearest)
     return "  \u00b7  ".join(parts)
 
 

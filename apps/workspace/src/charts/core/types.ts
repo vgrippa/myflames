@@ -40,6 +40,11 @@ export interface ChartNode {
   index: string;
   access_type: string;
   index_access_type: string;
+  /** Reported KNN limit; Python supplies the meaning and bounded point text. */
+  limit?: number;
+  /** Display preview with the full point size when shortened, not executable SQL. */
+  lookup_condition?: string;
+  access_description?: string;
   condition: string;
   ranges: string[];
   covering: boolean | null;

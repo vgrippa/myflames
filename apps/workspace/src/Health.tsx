@@ -1,3 +1,4 @@
+import { villageSQLLabel } from "./serverIdentity";
 import { setUiPreference, useUiPreferences } from "./uiPreferences";
 // Server > Health: two SHOW GLOBAL STATUS samples a few seconds apart
 // (health-1.0 from myflames/health.py). One summary line and the server facts,
@@ -1469,7 +1470,7 @@ export function HealthView({
             <FactStrip
               label="Server"
               facts={[
-                ["Server", `${engine} ${report.server_version || "?"}`],
+                ["Server", villageSQLLabel(report.server_version, report.server_base, report.server_product) || `${engine} ${report.server_version || "?"}`],
                 ["Host", stale ? memory.label : `${connection.host}:${connection.port}`],
                 ["Uptime", uptime(report.uptime_s)],
                 ...(report.server.buffer_pool_bytes !== null

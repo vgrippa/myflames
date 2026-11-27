@@ -35,7 +35,7 @@ import "./schema-versions.css";
 
 export type SchemaVersionsTab = "saved" | "compare";
 const SHEET_WIDTH = 1100;
-const SYSTEM = new Set(["mysql", "sys", "performance_schema", "information_schema"]);
+const SYSTEM = new Set(["mysql", "sys", "performance_schema", "information_schema", "villagesql"]);
 
 /** One side as chosen on screen: a saved version, or a database read now
  * through the connection in use ("current") or a saved connection (its id). */
@@ -153,7 +153,11 @@ function SchemaVersionsView({ connection, profiles, onOpenSql, tab, onTab, selec
   // The databases of the connection in use: the Database choice of the list,
   // the Save sheet and Compare (nothing is typed while they can be read).
   const catalog = useSchemaCatalog(connection, onScreen && !!connection.host);
-  const databases = (catalog.catalog?.schemas || []).filter((s) => !s.system && !SYSTEM.has(s.name)).map((s) => s.name);
+  const databases = (catalog.catalog?.schemas || []).filter((s) => !s.system).map((s) => s.name);
+  // Preserve a typed default when the catalog is unavailable. Only this
+  // connection's catalog can classify villagesql as an internal database.
+  const isSystem = (name: string) => catalog.catalog?.schemas.find((s) => s.name === name)?.system
+    ?? (name !== "villagesql" && SYSTEM.has(name));
   const [database, setDatabase] = useState("");
   const shown = useMemo(() => (versions || []).filter((v) => !database || v.database === database), [versions, database]);
   const databaseOptions = useMemo<[string, string][]>(() => {
@@ -199,7 +203,7 @@ function SchemaVersionsView({ connection, profiles, onOpenSql, tab, onTab, selec
   const [savedNote, setSavedNote] = useState("");
   function openSave() {
     saving.reset();
-    const preferred = database || (connection.database && !SYSTEM.has(connection.database) ? connection.database : "");
+    const preferred = database || (connection.database && !isSystem(connection.database) ? connection.database : "");
     setSaveSheet({ database: preferred || databases[0] || "", name: "", note: "" });
   }
   async function confirmSave() {
@@ -246,7 +250,7 @@ function SchemaVersionsView({ connection, profiles, onOpenSql, tab, onTab, selec
   const [exportSheet, setExportSheet] = useState<ExportSource | null>(null);
   function exportLive() {
     const preferred = database && databases.includes(database) ? database
-      : connection.database && !SYSTEM.has(connection.database) ? connection.database : databases[0] || "";
+      : connection.database && !isSystem(connection.database) ? connection.database : databases[0] || "";
     setExportSheet({ kind: "live", connection, database: preferred, databases });
   }
   async function confirmRename() {
@@ -1124,7 +1128,7 @@ function SidePicker({ label, hint, side, onChange, versions, connection, profile
   const profile = profiles.find((p) => p.id === via && p.has_saved_password);
   const viaConnection = via === "current" ? connection : profile ? profileConnection(profile) : null;
   const catalog = useSchemaCatalog(viaConnection || connection, enabled && side.kind === "live" && !!viaConnection?.host);
-  const databases = (catalog.catalog?.schemas || []).filter((s) => !s.system && !SYSTEM.has(s.name)).map((s) => s.name);
+  const databases = (catalog.catalog?.schemas || []).filter((s) => !s.system).map((s) => s.name);
   const versionOptions: [string, string][] = [["", versions.length ? "Choose a saved version" : "No saved versions"],
     ...versions.map((v) => [v.id, `${v.database} · ${versionTitle(v)} · ${localTime(v.saved_at)}`] as [string, string])];
   // A chosen saved connection that was deleted, or whose password was

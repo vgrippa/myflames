@@ -51,6 +51,7 @@
             "null"
           ]
         },
+        "server_base": {"enum": ["mysql", "percona", null]},
         "server_product": {
           "type": [
             "string",

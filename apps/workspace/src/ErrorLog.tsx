@@ -400,7 +400,7 @@ export function ErrorLogView({ connection, disabled, onBack, selection, report: 
     {report && <>
       <SummaryLine tone={report.summary.status} notes={report.notes}>{!report.available ? (report.reason_text || report.summary.text) : report.summary.text}</SummaryLine>
       <FactStrip label="Error log source" facts={[
-        ["Server", <span title={engineLabel(report)}>{engineName(report.engine, report.server_version, report.server_product)}</span>], ["Source", report.source ?? "Not available"], ["Server start", report.server_started ?? "—"],
+        ["Server", <span title={engineLabel(report)}>{engineName(report.engine, report.server_version, report.server_product, report.server_base)}</span>], ["Source", report.source ?? "Not available"], ["Server start", report.server_started ?? "—"],
         ...(report.buffer ? [["Buffer", `${count(report.buffer.events)} events · ${bytes(report.buffer.bytes)} of ${bytes(report.buffer.capacity_bytes)}`] as [string, ReactNode]] : []),
         ...(report.file ? [["File read", `${bytes(report.file.read_bytes)} of ${bytes(report.file.size_bytes)}`] as [string, ReactNode]] : []),
       ]} />

@@ -11,6 +11,7 @@ export type BaselineServer = {
   flavor: string | null;
   product: string;
   version: string;
+  server_base?: string | null;
   server_uuid: string | null;
   hostname: string | null;
   port: number | null;
@@ -70,7 +71,7 @@ export type BaselineList = {
 export type HealthBaselinePayload = {
   schema_version: "health-1.0";
   engine: string;
-  server_product: string | null;
+  server_product: string | null; server_base?: string | null;
   server_version: string | null;
   interval: number | null;
   taken_at: string;
@@ -96,7 +97,7 @@ export type DigestBaselinePayload = {
   schema_version: "top-1.0";
   engine: string;
   server_version: string | null;
-  server_product: string | null;
+  server_product: string | null; server_base?: string | null;
   order: string;
   limit: number | null;
   read_at: string;
@@ -113,7 +114,7 @@ export type DigestReading = {
   schema_version: "top-1.0";
   engine: string;
   server_version: string;
-  server_product?: string | null;
+  server_product?: string | null; server_base?: string | null;
   order: string;
   limit: number;
   read_at: string;

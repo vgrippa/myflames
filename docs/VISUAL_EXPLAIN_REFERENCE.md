@@ -48,6 +48,8 @@ For `access_type == "materialize"` (two-phase operator) the dict also carries `b
 
 `compute_complexity(node)` returns `None` when the operator is unrecognised or when a required signal is missing — renderers omit the chip in that case rather than display a misleading value.
 
+VillageSQL custom-index KNN scans also return `None`: the extension chooses the search algorithm, so the plan does not establish a Big O formula or an exact-search guarantee. The plan views label the operator **KNN SCAN**, keep K separate from measured rows and use the index-access card in Visual Explain. K can be recovered from a direct, finite Limit parent when the scan omits it, excluding OFFSET from the inherited count. Intervening operators, unbounded limits and count-all-rows limits prevent inheritance. The scan's own K is kept unchanged. K is a request rather than a guaranteed row count: descriptions say **Up to N nearest rows requested**. Query-point previews fit within 128 characters, including truncation annotations, and **Hide literal values** removes both point literals and previews when sharing. Released 0.0.8 JSON v2 `index_distance_scan` and JSON v1 `index_distance`, plus main (0.0.9-dev) JSON v2 `index_knn_scan` and JSON v1 `knn_scan`, are recognized; ordinary MySQL spatial distance scans retain their existing meaning.
+
 ### Renderer surface area
 
 | Renderer | Big O surface |

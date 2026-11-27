@@ -701,6 +701,8 @@ class TestSchemaPicker(unittest.TestCase):
                          "S NOT IN ('mysql', 'performance_schema', 'information_schema', 'sys')")
         for name in ('mysql', 'SYS', 'performance_schema', 'information_schema', '#mysql50#lost+found'):
             self.assertTrue(perf_common.is_system_schema(name), name)
+        self.assertFalse(perf_common.is_system_schema('villagesql'))
+        self.assertTrue(perf_common.is_system_schema('villagesql', 'villagesql'))
         self.assertFalse(perf_common.is_system_schema('shop'))
 
     def catalog_conn(self, engine, user_tables=3):

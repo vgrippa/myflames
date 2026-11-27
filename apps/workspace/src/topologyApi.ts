@@ -47,6 +47,7 @@ export type TopologyMember = {
   engine: "mysql" | "mariadb" | null;
   product: string | null;
   version: string | null;
+  server_base?: string | null;
   version_comment: string | null;
   server_uuid: string | null;
   server_id: number | null;
@@ -125,6 +126,7 @@ export type MapMemberNode = {
   engine: "mysql" | "mariadb" | null;
   product: string | null;
   version: string | null;
+  server_base?: string | null;
   role: MemberRole | null;
   state: string | null;
   outcome: MemberOutcome;

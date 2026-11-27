@@ -1,0 +1,6 @@
+-> Limit: 10 row(s)
+    -> Sort: vsql_vector.l2_distance(review.vsql_knn.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]'), limit input to 10 row(s) per chunk
+        -> Stream results  (cost=202 rows=200)
+            -> Filter: (review.vsql_knn.payload = 3)  (cost=202 rows=200)
+                -> Table scan on vsql_knn  (cost=202 rows=2000)
+

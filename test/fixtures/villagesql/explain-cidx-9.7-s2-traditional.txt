@@ -1,0 +1,1 @@
+1	SIMPLE	t	NULL	index_distance	PRIMARY	NULL	NULL	NULL	2003	100.00	Using where

@@ -61,6 +61,57 @@ class _Refused(str):
     """A recorded server error (replayed as ConnectorError)."""
 
 
+def expanded_preflight_sql(sql, response='', version=''):
+    """Alias an old non-VillageSQL preflight without changing its recording.
+
+    SHOW omits unknown names, so adding this optional name preserves the
+    captured response. Accept only the exact preflight form, including all
+    four identity names; every other SQL difference remains significant.
+    """
+    if 'villagesql' in (str(response or '') + ' ' + version).lower():
+        return sql
+    # Lifecycle's established SHOW uses ordered hex literals without spaces.
+    # Match that whole historical statement, never normalize its name list.
+    if sql.startswith('/*myflames:lifecycle*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN '):
+        from myflames.lifecycle import TAG, _SERVER_VARS
+        from myflames.perf_common import literal
+        names = [name for name in _SERVER_VARS if name != 'villagesql_server_version']
+        original = TAG + 'SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)' % ','.join(
+            literal(name) for name in names)
+        return (original[:-1] + ',' + literal('villagesql_server_version') + ')'
+                if sql == original else sql)
+    # Schema capture has its own smaller sorted variable inventory.
+    if sql.startswith('/*myflames:schema-versions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN '):
+        from myflames.schema_versions import TAG, _VARIABLES
+        names = sorted(name for name in _VARIABLES if name != 'villagesql_server_version')
+        prefix = TAG + 'SHOW GLOBAL VARIABLES WHERE Variable_name IN '
+        original = prefix + '(' + ', '.join("'%s'" % name for name in names) + ')'
+        return (prefix + '(' + ', '.join("'%s'" % name for name in
+                                       sorted(names + ['villagesql_server_version'])) + ')'
+                if sql == original else sql)
+    match = re.fullmatch(
+        r"(/\*myflames:[^\r\n]*?\*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN )\(([^)]+)\)", sql)
+    if not match:
+        return sql
+    names = re.findall(r"'([a-z0-9_.]+)'", match.group(2))
+    # Health keeps its established variable order rather than the sorted
+    # preflight list. Alias only that exact old request and this one optional
+    # addition; the original recording and response remain unchanged.
+    from myflames.health import VARIABLES as health_variables
+    health_names = [name for name in health_variables if name != 'villagesql_server_version']
+    if (match.group(1) == '/*myflames:health*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN '
+            and names == health_names
+            and match.group(2) == ', '.join("'%s'" % name for name in names)):
+        return match.group(1) + '(' + match.group(2) + ", 'villagesql_server_version')"
+    if (not {'version', 'version_comment', 'performance_schema', 'userstat'}.issubset(names)
+            or 'villagesql_server_version' in names
+            or names != sorted(set(names))
+            or match.group(2) != ', '.join("'%s'" % name for name in names)):
+        return sql
+    names = sorted(names + ['villagesql_server_version'])
+    return match.group(1) + '(' + ', '.join("'%s'" % name for name in names) + ')'
+
+
 class ReplayConn(object):
     """Answers recorded statements in order; *edit(sql, text, n)* may change
     the n-th answer to a statement. Unknown SQL fails the test."""
@@ -69,12 +120,30 @@ class ReplayConn(object):
         # Explicit test-only metadata supplement, never a recorded live response.
         self.simulated_partitioning = simulated_partitioning
         self.answers = {}
+        self.aliases = {}
         for call in calls:
             # [sql, text], or [sql, None, error] for a statement the server refused.
             sql, text = call[0], call[1]
             if len(call) > 2 and call[2] is not None:
                 text = _Refused(call[2])
             self.answers.setdefault(sql, []).append(text)
+        # Collect real streams first. A synthetic alias must never replace or
+        # merge with an expanded statement that was itself recorded live.
+        recorded_sql = set(self.answers)
+        for sql in tuple(self.answers):
+            # Older non-VillageSQL recordings predate the optional codebase
+            # name in preflight's existing SHOW. SHOW omits unknown names, so
+            # this exact expanded request has the same recorded response.
+            # This is a synthetic request alias, never new live evidence; keep
+            # both the captured SQL and its response intact, and reject every
+            # other SQL difference as before.
+            if any(expanded_preflight_sql(sql, answer, version) == sql
+                   for answer in self.answers[sql]):
+                continue
+            expanded = expanded_preflight_sql(sql, self.answers[sql][0], version)
+            if expanded != sql and expanded not in recorded_sql:
+                self.aliases[expanded] = sql
+                self.answers[expanded] = self.answers[sql]
         self.seen = {}
         self.clock = clock
         self.error = error
@@ -96,8 +165,10 @@ class ReplayConn(object):
                                   for s, t in keys if (s, t) in self.simulated_partitioning])]
         if not answers:
             raise AssertionError('unexpected SQL: ' + sql)
-        n = self.seen.get(sql, 0)
+        original = self.aliases.get(sql, sql)
+        n = self.seen.get(original, 0)
         self.seen[sql] = n + 1
+        self.seen[original] = n + 1
         text = answers[min(n, len(answers) - 1)]
         if self.edit is not None:
             text = self.edit(sql, text, n)

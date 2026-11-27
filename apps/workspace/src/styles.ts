@@ -25,6 +25,7 @@ import "./digest.css";
 import "./health.css";
 import "./baselines.css";
 import "./instruments.css";
+import "./extensions.css";
 import "./locks.css";
 import "./accounts.css";
 import "./schema-diagram.css";

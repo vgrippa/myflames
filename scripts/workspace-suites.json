@@ -417,6 +417,13 @@
       "timeout": 180,
       "reason": "Shared renderer bridge exercised inside the same opaque sandbox as the UI; local render only."
     },
+    "extensions.mjs": {
+      "kind": "suite",
+      "script": "test:extensions",
+      "timeout": 180,
+      "safety": "Database endpoints are mocked or refused.",
+      "reason": "VillageSQL Extensions states, exports, hostile text and responsive layout."
+    },
     "feedback-audit-lib.mjs": {
       "kind": "helper",
       "script": null,
@@ -1270,6 +1277,13 @@
       "script": "test:update-install",
       "timeout": 180,
       "reason": "In-place update flow with a fake desktop bridge; every check/stage mocked or answered by the real server through MYFLAMES_TEST_UPDATE; no network."
+    },
+    "villagesql-identity-unit.mjs": {
+      "kind": "suite",
+      "script": "test:villagesql-identity",
+      "timeout": 180,
+      "safety": "Hostile codebase metadata never enters labels or rendered markup; VillageSQL documentation links require the exact HTTPS host.",
+      "reason": "Production identity and label helpers compiled in Node, with server-rendered markup assertions; no browser, sockets or server."
     },
     "waits.mjs": {
       "kind": "suite",

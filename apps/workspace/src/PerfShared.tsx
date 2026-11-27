@@ -1,6 +1,7 @@
 // Shared pieces of the Server views: number formatting, the schema field, the
 // sampling window, the database picker, and copyable SQL. Layout components
 // (tables, grouped lists, inspector) are in kit.tsx.
+import { villageSQLLabel } from "./serverIdentity";
 import { useEffect, useId, useRef, useState } from "react";
 import { formatNumber, type Connection, type SchemaCatalog } from "./api";
 import { DataTable, InfoPopover, Popover, Select, closePopovers } from "./kit";
@@ -120,8 +121,9 @@ export function Duration({ value, approx = false, note }: { value: number | null
 
 /** "MySQL 8.4.11", "MariaDB 11.8.9-MariaDB-log", "Percona Server 8.4.11-11": the
  * report's server_product when it names one (Percona keeps engine "mysql"). */
-export function engineLabel(report: { engine: string | null; server_version: string | null; server_product?: string | null }) {
-  return `${report.server_product || (report.engine === "mariadb" ? "MariaDB" : "MySQL")} ${report.server_version || "?"}`;
+export function engineLabel(report: { engine: string | null; server_version: string | null; server_product?: string | null; server_base?: string | null }) {
+  return villageSQLLabel(report.server_version, report.server_base, report.server_product)
+    || `${report.server_product || (report.engine === "mariadb" ? "MariaDB" : "MySQL")} ${report.server_version || "?"}`;
 }
 
 /** SQL the user may run themselves, with a Copy button. myflames never runs it. */

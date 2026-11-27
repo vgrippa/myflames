@@ -43,6 +43,7 @@ export type IconName =
   | "diagram"
   | "configuration"
   | "instruments"
+  | "extensions"
   | "replication"
   | "cluster"
   | "topology"
@@ -95,10 +96,12 @@ export type IconName =
 // Glyphs are Hugeicons (free Stroke Rounded set, MIT) vendored into
 // icons.generated.ts by scripts/vendor-hugeicons.mjs, drawn on a 24 px grid and
 // scaled to 16 px (rows, navigation) or 12 px (disclosures, inline status).
-// Memory's DIMM glyph is local; the vendored icon set stays generated.
+// Memory's DIMM and Extensions' puzzle glyphs are local; the vendored set stays generated.
 const data: Record<IconName, IconShape> = { ...icons, memory: [
   ["rect", { x: "3", y: "6", width: "18", height: "12", rx: "2" }],
   ["path", { d: "M7 9v5h3V9H7ZM14 9v5h3V9h-3ZM6 18v3M10 18v3M14 18v3M18 18v3" }],
+], extensions: [
+  ["path", { d: "M4 4h5a3 3 0 1 1 6 0h5v5a3 3 0 1 0 0 6v5h-5a3 3 0 1 0-6 0H4v-5a3 3 0 1 1 0-6V4Z" }],
 ] };
 export function isIconName(name: string): name is IconName {
   return Object.prototype.hasOwnProperty.call(data, name);

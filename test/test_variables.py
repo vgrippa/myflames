@@ -1012,9 +1012,11 @@ class TestApply(unittest.TestCase):
                 mock.patch.object(V, '_after', return_value=after):
             result = V.apply_change(conn, plan, plan['expect'], confirmed=True, audit=self.audit('global'))
         self.assertEqual(result['status'], 'changed')
-        # This regression changes only persisted audit privacy. The shipped
-        # single-server response and the SQL actually sent stay unchanged.
-        self.assertEqual(result['after']['global'], new_secret)
+        # The SQL actually sent is unchanged; the public response redacts the
+        # secret in every field (finding S2: results never echo secret values).
+        self.assertEqual(result['after']['global'], dbops.REDACTED)
+        self.assertNotIn(old_secret, json.dumps(result))
+        self.assertNotIn(new_secret, json.dumps(result))
         self.assertEqual(self.sent(conn), [(TAG + plan['statement'], list(dbops.WRITE_CLIENT_FLAGS))])
         records = self.records()
         self.assertEqual(len(records), 1)
@@ -1386,16 +1388,48 @@ class TestEndpoints(unittest.TestCase):
         plan = V.build_plan(variable, new, 'global')
         safety, _ = ui._variable_policy('wsrep_sst_auth', 'global', self.connection, self.workspace.store)
         expect = dict(plan['expect'], connection_identity=dbops.connection_identity(self.connection, safety))
+        details = {'name': 'wsrep_sst_auth', 'mode': 'global', 'requested': new, 'expect': dict(expect)}
+        expect['review_token'] = ui._review_tokens(self.workspace).issue(
+            'variable', expect['connection_identity'], details)
         conn = ReplayConn([], error=ConnectorError('ERROR 1045: %s %s' % (old, new)))
-        with self.assertRaises(ConnectorError):
+        with self.assertRaises(ConnectorError) as raised:
             self.call('/api/live/variable/apply', dict(connection=self.connection, name='wsrep_sst_auth',
                 mode='global', value=new, expect=expect, confirmed=True), conn)
+        self.assertTrue(conn.calls, 'a valid review must reach the connector-error path')
         records = dbops.audit_report(self.workspace.store)['records']
         self.assertEqual(len(records), 1)
         self.assertEqual((records[0]['status'], records[0]['outcome']), ('error', 'error'))
         self.assertNotIn(old, json.dumps(records))
         self.assertNotIn(new, json.dumps(records))
         self.assertIn(dbops.REDACTED, json.dumps(records))
+        for secret in (old, new, old.encode().hex(), new.encode().hex(), self.connection['password']):
+            self.assertNotIn(secret, str(raised.exception))
+            self.assertNotIn(secret, json.dumps(records))
+        self.assertNotIn(expect['review_token'], json.dumps(records))
+
+    def test_sensitive_endpoint_without_review_token_refuses_before_connecting(self):
+        from myflames import ui
+        old, new = 'old-exception-secret', 'new-exception-secret'
+        variable = mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value=old,
+                                    session_value=None, min=None, max=None)
+        plan = V.build_plan(variable, new, 'global')
+        safety, _ = ui._variable_policy('wsrep_sst_auth', 'global', self.connection, self.workspace.store)
+        expect = dict(plan['expect'], connection_identity=dbops.connection_identity(self.connection, safety))
+        conn = ReplayConn([])
+        result, factory = self.call('/api/live/variable/apply', dict(
+            connection=self.connection, name='wsrep_sst_auth', mode='global', value=new,
+            expect=expect, confirmed=True), conn)
+        self.assertEqual(result['status'], 'refused')
+        self.assertIsNone(factory.options)
+        self.assertEqual(conn.calls, [])
+        records = dbops.audit_report(self.workspace.store)['records']
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['id'], result['audit_id'])
+        self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'review_changed'))
+        self.assertIn(dbops.REDACTED, json.dumps(records))
+        for secret in (old, new, old.encode().hex(), new.encode().hex(), self.connection['password']):
+            self.assertNotIn(secret, json.dumps(result))
+            self.assertNotIn(secret, json.dumps(records))
 
     def test_sensitive_audit_forwards_late_connection_credentials(self):
         audit = dbops.AuditTrail(self.workspace.store, 'set_global', 'ui')

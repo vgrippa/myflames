@@ -131,7 +131,8 @@ READ_DATABASE = 'information_schema'
 #: Virtual schemas with no definitions to save.
 UNSUPPORTED_DATABASES = ('information_schema', 'performance_schema')
 _VARIABLES = ('version', 'version_comment', 'hostname', 'lower_case_table_names', 'sql_quote_show_create',
-              'show_create_table_verbosity', 'show_gipk_in_create_table_and_information_schema')
+              'show_create_table_verbosity', 'show_gipk_in_create_table_and_information_schema',
+              'villagesql_server_version')
 _ERROR_LINE = re.compile(r'^ERROR (\d+)(?: \(([^)]*)\))? at line (\d+): ?(.*)$')
 #: The object is gone: dropped between the inventory and its SHOW CREATE.
 #: Not 1305: SHOW CREATE PROCEDURE answers it for a routine the account
@@ -474,6 +475,8 @@ def capture(conn, database, source=None, clock=time.monotonic):
                  'server_version': server.version or None, 'hostname': variables.get('hostname'),
                  'host': source.get('host'), 'port': source.get('port'),
                  'lower_case_table_names': variables.get('lower_case_table_names')}
+    if server.flavor == 'villagesql':
+        read_from['server_base'] = server.base
     # Through SSH, host and port are the database as the SSH host reaches it:
     # the SSH target says which server that is.
     if source.get('ssh_host'):
@@ -610,6 +613,10 @@ def validate_snapshot(value):
            'server': {}, 'connection': {}, 'read_settings': {}, 'coverage': {}, 'objects': [], 'notes': []}
     for key in ('flavor', 'server_product', 'server_version', 'hostname', 'host', 'lower_case_table_names'):
         out['server'][key] = _text(server.get(key), 'server field', 255, empty=True, null=True)
+    if 'server_base' in server:
+        if server['server_base'] not in ('mysql', 'percona', None):
+            raise ValueError('Invalid server base in the schema version.')
+        out['server']['server_base'] = server['server_base']
     out['server']['engine'] = server['engine']
     port = server.get('port')
     if port is not None and (isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536):

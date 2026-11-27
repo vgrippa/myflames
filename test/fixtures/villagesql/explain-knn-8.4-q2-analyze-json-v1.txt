@@ -1,0 +1,1 @@
+ERROR 1235 (42000) at line 1: This version of MySQL doesn't yet support 'EXPLAIN ANALYZE with JSON format'

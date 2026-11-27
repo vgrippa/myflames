@@ -20,7 +20,7 @@ function sameOrigin(url, origin) {
 // docs.percona.com: Percona's manuals for the variables Parameters links to
 // (myflames/sysvar_docs.py).
 const EXTERNAL_HOSTS = new Set(['dev.mysql.com', 'mysql.com', 'www.mysql.com', 'mariadb.org', 'mariadb.com', 'github.com', 'tanelpoder.com',
-  'blogs.oracle.com', 'docs.percona.com']);
+  'blogs.oracle.com', 'docs.percona.com', 'villagesql.com']);
 function externalLink(url) {
   try {
     const parsed = new URL(url);

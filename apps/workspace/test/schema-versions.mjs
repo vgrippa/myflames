@@ -125,7 +125,8 @@ const fixtures = (keys, dependencies = false) => JSON.parse(execFileSync("python
 const made = fixtures();
 
 const catalog = { schema_version: "schemas-1.0", engine: "mysql", server_version: "8.4.11", user_tables: 14, all_limit: 2000, all_note: "", system: [],
-  schemas: [{ name: "sv_b", tables: 7, system: false }, { name: "sv_m", tables: 7, system: false }, { name: "mysql", tables: 38, system: true }] };
+  schemas: [{ name: "sv_b", tables: 7, system: false }, { name: "sv_m", tables: 7, system: false },
+    { name: "villagesql", tables: 1, system: false }, { name: "mysql", tables: 38, system: true }] };
 let versions = [];
 let saves = 0;
 const replies = { sync: [], lint: [] };
@@ -178,7 +179,7 @@ try {
   await page.click('[data-action="schema-save"]');
   await page.waitForSelector("dialog[open] select#schema-save-database");
   const options = await page.$$eval("dialog[open] select#schema-save-database option", (os) => os.map((o) => o.value));
-  assert.deepEqual(options.filter(Boolean), ["sv_b", "sv_m"], "system databases are not offered");
+  assert.deepEqual(options.filter(Boolean), ["sv_b", "sv_m", "villagesql"], "catalog classification keeps a MySQL user database named villagesql");
   await page.select("dialog[open] select#schema-save-database", "sv_m");
   await page.type("dialog[open] #schema-save-name", "before release 42");
   await page.click("dialog[open] button ::-p-text(Save version)");
@@ -245,7 +246,7 @@ try {
   await page.screenshot({ path: `${h.shots}/schema-checks-1440.png`, fullPage: true });
   // The Database choice lists the server's databases (no system ones) with their saved versions; nothing is typed.
   const choices = await page.$$eval(".schema-database-filter select option", (os) => os.map((o) => [o.value, o.textContent]));
-  assert.deepEqual(choices, [["", "All databases"], ["sv_b", "sv_b · none saved"], ["sv_m", "sv_m · 2 versions"]]);
+  assert.deepEqual(choices, [["", "All databases"], ["sv_b", "sv_b · none saved"], ["sv_m", "sv_m · 2 versions"], ["villagesql", "villagesql · none saved"]]);
   await page.select(".schema-database-filter select", "sv_b");
   await page.waitForFunction(() => /No saved versions of sv_b/.test(document.querySelector(".schema-versions-view .view-empty")?.textContent || ""));
   await page.click('.schema-versions-view .view-empty [data-action="schema-save"]');
@@ -291,6 +292,8 @@ try {
   await page.waitForFunction(() => /Ready to compare/.test(document.querySelector(".schema-versions-view .view-empty")?.textContent || ""));
   assert.equal(await page.$eval("#schema-side-source-version", (s) => s.value), made.v2.id, "the newest version is the source");
   assert.equal(await page.$eval("select#schema-side-target-database", (s) => s.value), "sv_b", "the target is a database now");
+  assert.deepEqual(await page.$$eval("select#schema-side-target-database option", options => options.map(option => option.value).filter(Boolean)),
+    ["sv_b", "sv_m", "villagesql"], "Compare keeps the same catalog-classified user databases");
   await page.select("#schema-side-source-version", made.v1.id);
   // Keyboard: the first result replaces the setup and its Compare button;
   // focus lands on the bar's Compare, never on the page.
@@ -571,4 +574,56 @@ try {
   console.log("schema-versions: ok");
 } finally {
   await h.close();
+}
+
+// The same catalog hook must replace its classification on a connection
+// switch, and each Compare side must use the connection it actually reads.
+const products = ["mysql", "percona", "mariadb", "readyset", "villagesql"];
+const catalogProfiles = products.map(flavor => ({ ...sshProfile(`catalog-${flavor}`, flavor, ""),
+  host: `${flavor}.example`, has_saved_password: true }));
+const catalogs = await open("/api/schema-versions/compare", "schema-version-catalogs", {
+  "/api/profiles/list": { status: 200, body: { items: catalogProfiles, secret_store: { backend: "vault", available: true } } },
+  "/api/schema-versions/list": { status: 200, body: { schema_version: "schema-version-list-1.0", items: [] } },
+  "/api/live/schemas": body => {
+    const flavor = body.connection.host.split(".")[0];
+    return { status: 200, body: { ...catalog, flavor, engine: flavor === "mariadb" ? "mariadb" : "mysql",
+      system: ["mysql", ...(flavor === "villagesql" ? ["villagesql"] : [])],
+      schemas: catalog.schemas.map(schema => schema.name === "villagesql" ? { ...schema, system: flavor === "villagesql" } : schema) } };
+  },
+  "/api/live/readiness": body => ({ status: 200, body: { flavor: body.connection.host.split(".")[0],
+    product: body.connection.host.split(".")[0], version: "8.4.11", checked_at: "2026-11-27T12:00:00Z", privileges: {}, actions: {}, notes: [] } }),
+});
+try {
+  const page = catalogs.page;
+  await page.click('.main-nav button[data-place="schema"]');
+  await page.waitForSelector(".window-toolbar .connection-pill");
+  for (const profile of catalogProfiles) {
+    await chooseConnection(page, profile.id);
+    await page.click('.main-nav button[data-place="schema"]');
+    await page.click("#schema-versions-tab-saved");
+    await page.click('[data-action="schema-save"]');
+    await page.waitForSelector("dialog[open] select#schema-save-database");
+    const expected = profile.name === "villagesql" ? ["sv_b", "sv_m"] : ["sv_b", "sv_m", "villagesql"];
+    assert.deepEqual(await page.$$eval("#schema-save-database option", options => options.map(option => option.value).filter(Boolean)), expected,
+      `${profile.name}: Save version uses this connection's system classification`);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog[open]"));
+    await page.click("#schema-versions-tab-compare");
+    for (const side of ["Source", "Target"]) {
+      await page.click(`[aria-label="${side}: what to read"] button[data-value="live"]`);
+      const selector = `#schema-side-${side.toLowerCase()}-database`;
+      await page.waitForSelector(`select${selector}`);
+      assert.deepEqual(await page.$$eval(`${selector} option`, options => options.map(option => option.value).filter(Boolean)), expected,
+        `${profile.name}: ${side} uses this connection's system classification`);
+    }
+  }
+  await page.select("#schema-side-source-connection", catalogProfiles[0].id);
+  await page.waitForFunction(() => [...document.querySelectorAll("#schema-side-source-database option")].some(option => option.value === "villagesql"));
+  assert.equal(await page.$("#schema-side-target-database option[value=villagesql]"), null,
+    "a saved MySQL Source keeps its user database while the VillageSQL Target hides its internal database");
+  assert.deepEqual(catalogs.errors, []);
+  assert.equal(catalogs.state.seen.length, 0, "catalog choices never capture or compare a database");
+  console.log("schema-version catalogs: MySQL, Percona, MariaDB, Readyset and VillageSQL connection switches and independent Compare sides passed");
+} finally {
+  await catalogs.close();
 }

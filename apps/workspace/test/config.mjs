@@ -6,6 +6,7 @@ import { objectAuditFixture, assertObjectHistory } from "./object-changes-fixtur
 // Single-variable sheets retain engine-specific modes, exact reviewed facts,
 // NULL and Session SQL handoff, declined audits and connection binding.
 import assert from "node:assert/strict";
+import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { assertPrivilege, privilegeAnswer, load, open, pause } from "./perf-harness.mjs";
 
@@ -19,15 +20,15 @@ if (process.argv.includes("--unit")) {
   const entry = "\0config-unit";
   const compiled = await build({ root: workspace, configFile: false, publicDir: false, logLevel: "error",
     plugins: [{ name: "config-unit", enforce: "pre", transform(code, id) {
-      if (id.endsWith("/src/Config.tsx")) return code + "\nexport { parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch };";
+      if (id.endsWith("/src/Config.tsx")) return code + "\nexport { parametersOf, allowedValues, unmodifiable, startValue, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch };";
     }, resolveId(id) { if (id === entry) return entry; }, load(id) {
-      if (id === entry) return `export { openSessionSql, documentationLink, oneLine, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch } from ${JSON.stringify(path.join(workspace, "src/Config.tsx"))}; export { connectionKey } from ${JSON.stringify(path.join(workspace, "src/binding.ts"))};`;
+      if (id === entry) return `export { openSessionSql, documentationLink, oneLine, parametersOf, allowedValues, unmodifiable, startValue, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch } from ${JSON.stringify(path.join(workspace, "src/Config.tsx"))}; export { connectionKey } from ${JSON.stringify(path.join(workspace, "src/binding.ts"))};`;
     } }], build: { ssr: true, write: false, rollupOptions: { input: entry, output: { inlineDynamicImports: true } } } });
   const temporary = await fs.mkdtemp(path.join(workspace, ".config-unit-"));
   try {
     const module = path.join(temporary, "unit.mjs");
     await fs.writeFile(module, compiled.output.find(f => f.type === "chunk").code);
-    const { openSessionSql, documentationLink, oneLine, parametersOf, allowedValues, unmodifiable, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch, connectionKey } = await import(pathToFileURL(module));
+    const { openSessionSql, documentationLink, oneLine, parametersOf, allowedValues, unmodifiable, startValue, draftValue, sourceDetails, applyType, planParameterBatch, applyParameterBatch, connectionKey } = await import(pathToFileURL(module));
     globalThis.fetch = () => { throw new Error("A handoff must never call an API"); };
     const opened = [], callback = sql => opened.push(sql);
     for (const statement of ["SET SESSION character_set_results = NULL", "SET SESSION character_set_results = 'NULL'", "SET SESSION sql_mode = 'STRICT_TRANS_TABLES';"]) {
@@ -58,6 +59,13 @@ if (process.argv.includes("--unit")) {
     assert.equal(allowedValues({ ...find("max_connections"), type: "string" }), "Any text");
     assert.equal(allowedValues(find("unknown_parameter")), "");
     assert.equal(draftValue({ ...find("slow_query_log"), value: "1" }), "ON");
+    for (const type of ["string", "integer", "boolean", "enum"]) {
+      const secret = { sensitive: true, type, values: ["[redacted]"], value: "[redacted]",
+        global_value: "[redacted]", session_value: "[redacted]" };
+      assert.equal(draftValue(secret), "", "batch secrets start empty");
+      for (const mode of ["global", "session", "persist", "persist_only"])
+        assert.equal(startValue(secret, mode), "", "single-variable secrets start empty");
+    }
     assert.equal(draftValue({ ...find("log_output"), value: "file" }), "FILE");
     assert.equal(unmodifiable(find("max_connections"), "mysql"), "");
     assert.equal(unmodifiable(find("innodb_log_file_size"), "mysql"), "");
@@ -233,7 +241,7 @@ function variableFor(name) {
   const p = parameter(name);
   const v = structuredClone((catalog.engine === "mysql" ? variableFixture : mariaFixture).variable);
   Object.assign(v, { name, type: p?.type || "integer", values: p?.values || null, min: p?.min ?? 1, max: p?.max ?? 100000,
-    global_value: p?.value ?? "151", default: p?.default ?? "151", scope: "both", session_value: "151", nullable: false,
+    sensitive: !!p?.sensitive, global_value: p?.value ?? "151", default: p?.default ?? "151", scope: "both", session_value: "151", nullable: false,
     dynamic: p?.apply_type === "dynamic", description: p?.description, read_at: "2026-10-18T12:00:00Z" });
   for (const [mode, m] of Object.entries(v.modes)) {
     m.available = mode === "global" || mode === "session" || catalog.engine === "mysql";
@@ -292,7 +300,7 @@ const batch = "dialog.parameter-batch-sheet[open]";
 const confirm = `${batch} .sheet-actions button:last-of-type`;
 const single = "dialog.variable-sheet[open]";
 const singleConfirm = `${single} .sheet-actions button:last-of-type`;
-const input = name => `${view} #parameter-value-${name}`;
+const input = name => `${view} [id="parameter-value-${name}"]`;
 const pendingCount = n => page.waitForFunction((v, count) => [...document.querySelectorAll(`${v} .toolbar-controls button`)].some(e => e.textContent === `Review and apply (${count})`), {}, view, n);
 const waitFor = async (check, message) => {
   for (let i = 0; i < 100; i++) { if (check()) return; await pause(30); }
@@ -1511,6 +1519,99 @@ try {
     assert.equal(await text('.view-inspector [data-object-changes="parameter"] pre'), `Change through bastion-${letter.toLowerCase()}`);
   }
   objectAuditReply = objectAuditFixture;
+  // Hidden values are display text, never the initial replacement draft.
+  await chooseConnection(page, initialConnection);
+  const secrets = structuredClone(mysql), secretName = "vsql_rest.jwt_secret";
+  const sensitiveHint = "The current value is hidden. Type the complete new value; the server checks it.";
+  secrets.parameters.items.push({ ...secrets.parameters.items.find(p => p.name === "max_connections"),
+    name: secretName, sensitive: true, type: "string", value: "[redacted]", default: "[redacted]",
+    values: null, min: null, max: null, checks: [], description: "REST signing secret" });
+  await refresh(secrets);
+  await search(secretName); await h.select(row(secretName));
+  const beforeSecretPlans = planned.length, beforeSecretWrites = applied.length;
+  await openChange(secretName);
+  assert.equal(await page.$eval(`${single} .variable-input`, e => e.value), "");
+  assert.equal(await page.$eval(`${single} .variable-field .hint`, e => e.textContent.trim()), sensitiveHint,
+    "single editor explains why the current value is empty");
+  assert.equal(await page.$eval(singleConfirm, e => e.disabled), true);
+  await pause(500);
+  assert.equal(planned.length, beforeSecretPlans, "opening a hidden value sends no replacement plan");
+  // Keep the untouched secret sheet visible in both appearances and window sizes.
+  const sensitiveShots = new URL("../../../local/vsql-screens/", import.meta.url);
+  await mkdir(sensitiveShots, { recursive: true });
+  for (const appearance of ["light", "dark"]) for (const width of [1440, 720]) {
+    await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: appearance }]);
+    await page.setViewport({ width, height: width === 720 ? 600 : 1000 });
+    await pause(150);
+    assert.equal(await page.$eval(`${single} .variable-field .hint`, e => {
+      const rect = e.getBoundingClientRect();
+      return rect.width > 1 && rect.height > 1 && rect.left >= 0 && rect.right <= innerWidth;
+    }), true, `sensitive hint fits at ${appearance} ${width}`);
+    const name = `change-sheet-sensitive-${appearance}-${width}.png`;
+    await page.screenshot({ path: path.join(h.shots, name) });
+    await copyFile(path.join(h.shots, name), new URL(name, sensitiveShots));
+  }
+  await page.setViewport({ width: 1440, height: 1000 });
+  await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
+  // Returning from a pending RESET plan to an untouched secret must also
+  // clear the planning indicator and leave confirmation disabled.
+  planReply = body => ({ status: 200, body: planFor(body), delay: 600 });
+  await page.click(`${single} input[value="reset_persist"]`);
+  await waitFor(() => planned.length > beforeSecretPlans, "RESET plan started");
+  await page.click(`${single} input[value="global"]`);
+  await page.waitForFunction(s => !/Checking with the server/.test(document.querySelector(s)?.textContent || ""), {}, single);
+  assert.equal(await page.$eval(singleConfirm, e => e.disabled), true);
+  planReply = body => {
+    const plan = planFor(body);
+    plan.expect.review_token = "synthetic-secret-review";
+    return { status: 200, body: plan };
+  };
+  await page.type(`${single} .variable-input`, "replacement-secret");
+  await page.waitForFunction(s => !document.querySelector(s).disabled, {}, singleConfirm);
+  assert.equal(planned.at(-1).value, "replacement-secret");
+  assert.ok(planned.slice(beforeSecretPlans).every(p => !String(p.value).includes("[redacted]")));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));
+  assert.equal(applied.length, beforeSecretWrites, "opening and cancelling a secret sends no write");
+  for (const outcome of [
+    { status: "unknown", value_matched: null, message: "The write may have run; its outcome is unknown.", headline: "Outcome unknown." },
+    { status: "unchanged", value_matched: true, message: "The requested value was already set.", headline: "Already set." },
+    { status: "unchanged", value_matched: false, message: "The server kept the previous value and did not take the requested change.", headline: "Not applied." },
+  ]) {
+    applyReply = () => ({ status: 200, body: { schema_version: "variable-change-1.0", name: secretName,
+      mode: "global", statement: "[redacted]", before: null, after: null, adjusted: false, ...outcome } });
+    await openChange(secretName);
+    await page.type(`${single} .variable-input`, "replacement-secret");
+    await page.waitForFunction(s => !document.querySelector(s).disabled, {}, singleConfirm);
+    await page.click(singleConfirm);
+    const result = `${view} .variable-result[data-status="${outcome.status}"]`;
+    await page.waitForSelector(result);
+    assert.equal(await text(`${result} strong`), outcome.headline);
+    assert.ok((await text(result)).includes(outcome.message));
+    assert.equal(applied.at(-1).expect.review_token, "synthetic-secret-review", "confirmation preserves its review token");
+    await page.click(`${result} .text-button`);
+    await h.idle(view);
+  }
+  applyReply = null;
+  await back();
+  if (await page.$(`${view} [data-action="edit-parameters"]`)) await edit();
+  await search(secretName);
+  assert.equal(await page.$eval(input(secretName), e => e.value), "", "batch editor starts empty too");
+  assert.equal(await page.$eval(`${row(secretName)} .parameter-cell-editor > .hint:last-child`, e => e.textContent.trim()), sensitiveHint,
+    "batch editor explains why the current value is empty");
+  assert.equal(await page.$eval(`${row(secretName)} .parameter-cell-editor > .hint:last-child`, e => {
+    const rect = e.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1 && getComputedStyle(e).position !== "absolute";
+  }), true, "batch hint is visible beside the empty secret editor");
+  await page.type(input(secretName), "temporary");
+  await page.click(input(secretName), { count: 3 });
+  await page.keyboard.press("Backspace");
+  await pendingCount(1);
+  await review(1);
+  assert.equal(planned.at(-1).name, secretName);
+  assert.equal(planned.at(-1).value, "", "explicitly clearing a typed secret remains a reviewable change");
+  await closeReview();
+  planReply = null;
   const saved = await h.savedSlow(s => s.kind === "config");
   assert.equal(JSON.stringify(saved.state).includes("config-1.0"), false, "reports are not saved");
   assert.equal(JSON.stringify(saved.state).includes("variable-plan"), false, "plans are not saved");

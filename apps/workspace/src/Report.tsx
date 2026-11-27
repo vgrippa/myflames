@@ -135,7 +135,7 @@ export function ReportDiagnosticBody({
       <FactStrip
         label="Full analysis"
         facts={[
-          ["Server", engineLabel({ engine: report.engine, server_version: report.server_version, server_product: report.server_product })],
+          ["Server", engineLabel(report)],
           ["Host", hostLabel || ""],
           ["Uptime", uptime(report.uptime_s)],
           ["Taken", `${clock(report.taken_at)}, in ${(report.header.elapsed_s ?? 0).toFixed(1)} s`],

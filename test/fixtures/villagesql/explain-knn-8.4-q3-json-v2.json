@@ -1,0 +1,69 @@
+{
+  "limit": 10,
+  "query": "/* select#1 */ select `k`.`id` AS `id`,`k`.`payload` AS `payload`,`l`.`label` AS `label` from `review`.`vsql_knn` `k` join `review`.`vsql_knn_labels` `l` where (`l`.`id` = `k`.`id`) order by vsql_vector.l2_distance(`k`.`vec`,'[0.100000001,0.200000003,0.300000012,0.400000006]') limit 10",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "alias": "k",
+                  "operation": "Table scan on k",
+                  "table_name": "vsql_knn",
+                  "access_type": "table",
+                  "schema_name": "review",
+                  "used_columns": [
+                    "id",
+                    "vec",
+                    "payload"
+                  ],
+                  "estimated_rows": 2000.0,
+                  "estimated_total_cost": 201.75
+                },
+                {
+                  "alias": "l",
+                  "covering": false,
+                  "operation": "Single-row index lookup on l using PRIMARY (id=k.id)",
+                  "index_name": "PRIMARY",
+                  "table_name": "vsql_knn_labels",
+                  "access_type": "index",
+                  "schema_name": "review",
+                  "used_columns": [
+                    "id",
+                    "label"
+                  ],
+                  "estimated_rows": 1.0,
+                  "lookup_condition": "id=k.id",
+                  "index_access_type": "index_lookup",
+                  "estimated_total_cost": 0.25005
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "estimated_rows": 2000.0,
+              "join_algorithm": "nested_loop",
+              "estimated_total_cost": 901.75
+            }
+          ],
+          "operation": "Stream results",
+          "access_type": "stream",
+          "estimated_rows": 2000.0,
+          "estimated_total_cost": 901.75
+        }
+      ],
+      "operation": "Sort: vsql_vector.l2_distance(k.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]'), limit input to 10 row(s) per chunk",
+      "access_type": "sort",
+      "sort_fields": [
+        "vsql_vector.l2_distance(k.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]')"
+      ],
+      "per_chunk_limit": 10
+    }
+  ],
+  "operation": "Limit: 10 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "limit_offset": 0
+}

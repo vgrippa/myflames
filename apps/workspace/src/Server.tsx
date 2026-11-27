@@ -1,3 +1,4 @@
+import { villageSQLLabel } from "./serverIdentity";
 import type { SqlOpenOptions } from "./statementThread";
 // The Server, Workload and Tuning places: live views of the connection in use.
 // Server uses a grouped sub-navigation (Overview, Contention, Schema, Setup,
@@ -30,6 +31,7 @@ import type {
   Connection,
   ConnectionPlan,
   ErrorLogReport,
+  ExtensionsReport,
   GroupConnection,
   HealthReport,
   IndexesReport,
@@ -49,6 +51,7 @@ import type {
   WaitsReport,
 } from "./api";
 import { api } from "./api";
+import { useReadiness } from "./readiness";
 import { validateDiagram, rebuildDiagramLayout, type DiagramDocument, type SchemaDiagram } from "./schemaDiagramModel";
 import type { AccountsReport } from "./accountsApi";
 import {
@@ -132,7 +135,7 @@ import {
 } from "./opsApi";
 import type { ClusterReport } from "./clusterApi";
 import { ViewOnScreenContext } from "./viewOnScreen";
-import { ALL_SERVER_VIEWS, SERVER_GROUPS, SERVER_VIEWS, WORKLOAD_GROUPS, WORKLOAD_KINDS, WORKLOAD_VIEWS } from "./serverViews";
+import { ALL_SERVER_VIEWS, EXTENSIONS_VIEW, SERVER_GROUPS, SERVER_VIEWS, WORKLOAD_GROUPS, WORKLOAD_KINDS, WORKLOAD_VIEWS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { shortcut } from "./platform";
 import "./server.css";
@@ -152,6 +155,7 @@ const TablesView = lazyComponent(() => import("./Tables").then((m) => m.TablesVi
 const ConfigView = lazyComponent(() => import("./Config").then((m) => m.ConfigView));
 const SchemaDiagramView = lazyComponent(() => import("./SchemaDiagram").then((m) => m.SchemaDiagramView));
 const AccountsView = lazyComponent(() => import("./Accounts").then((m) => m.AccountsView));
+const ExtensionsView = lazyComponent(() => import("./Extensions").then((m) => m.ExtensionsView));
 const LAZY_VIEWS = [InnodbView, TuningView, SessionsView, MemoryView, WaitsView, IoView, IndexesView, TablesView, ConfigView, SchemaDiagramView, AccountsView];
 /** Focuses the element with *id* after this task, or once it appears: a view
  * whose chunk is still loading mounts its heading a moment later (up to 2 s). */
@@ -437,7 +441,14 @@ export function Server({
   // Tuning and Database diagram are places of one view each: no list of
   // views, no Refresh all toolbar, full width.
   const singlePlace = tuningPlace || diagramPlace;
-  const kind: ServerKind = place === "workload" ? workloadSelectedKind : tuningPlace ? "tuning" : diagramPlace ? "diagram" : serverSelectedKind;
+  // Identity comes only from this connection's successful reads. Restored or
+  // stale readiness facts cannot offer a product-specific view on an unknown
+  // server, and opening a menu never starts an identity query.
+  const readiness = useReadiness(connection);
+  const [serverFlavor, setServerFlavor] = useState<{ key: string; flavor: string | null }>({ key: "", flavor: null });
+  const villagesql = serverFlavor.key === connectionKey(connection) && serverFlavor.flavor === "villagesql";
+  const visibleServerKind = serverSelectedKind === "extensions" && !villagesql ? "health" : serverSelectedKind;
+  const kind: ServerKind = place === "workload" ? workloadSelectedKind : tuningPlace ? "tuning" : diagramPlace ? "diagram" : visibleServerKind;
   const kindRef = useRef(kind);
   kindRef.current = kind;
   // A place of one view saves the Server view under it, so Server opens where it was.
@@ -606,6 +617,7 @@ export function Server({
   const [config, setConfig] = useState<Bound<ConfigReport> | null>(null);
   const [accounts, setAccounts] = useState<Bound<AccountsReport> | null>(null);
   const [instruments, setInstruments] = useState<Bound<InstrumentsReport> | null>(null);
+  const [extensions, setExtensions] = useState<Bound<ExtensionsReport> | null>(null);
   const [localReplication, setLocalReplication] = useState<Bound<ReplicationReport> | null>(null);
   const replication = propReplication !== undefined ? propReplication : localReplication;
   const setReplication = useCallback(
@@ -659,40 +671,53 @@ export function Server({
       return { key: activeKey, views: { ...old.views, [view]: loading } };
     });
   }, [activeKey]);
-  // Timestamp only accepted report objects. Failed reads retain the previous
-  // timestamp, and switching connections never relabels another server's data.
-  const received = useRef(new WeakMap<object, number>());
+  // Order accepted report objects independently of the wall clock. Failed
+  // reads retain their receipt, and another connection never relabels this one.
+  const received = useRef(new WeakMap<object, { at: number; order: number }>());
+  const receiptSequence = useRef(0);
   const [lastRead, setLastRead] = useState<{ key: string; at?: number; engineVersion?: string }>({ key: activeKey });
   useEffect(() => {
-    const reports = [health.report ? { key: health.key, report: health.report } : null,
-      innodb, errorlog, sessions, memory, waits, io, locks, indexes, tables, config, instruments, replication, cluster,
-      accounts ? { key: accounts.key, report: { engine: accounts.report.engine, server_version: accounts.report.version } } : null,
+    const reports = [!readiness.stale && readiness.facts ? { key: activeKey, report: readiness.facts } : null,
+      health.report ? { key: health.key, report: health.report } : null,
+      innodb, errorlog, sessions, memory, waits, io, locks, indexes, tables, config, instruments, extensions, replication, cluster,
+      accounts,
       diagram && diagram.source.key === activeKey ? { key: activeKey, report: diagram.diagram } : null,
       maintenance.tools, maintenance.upgrade, analysis, topStatements.top];
     let at: number | undefined;
     let engineVersion: string | undefined;
     let versionAt = -1;
+    let flavor: string | null = null;
+    let flavorAt = -1;
     for (const bound of reports) {
       if (!bound || bound.key !== activeKey) continue;
       let seen = received.current.get(bound.report);
       if (seen === undefined) {
-        seen = bound === topStatements.top ? topStatements.refreshedAt ?? Date.now() : Date.now();
+        seen = { at: bound === topStatements.top ? topStatements.refreshedAt ?? Date.now() : Date.now(), order: ++receiptSequence.current };
         received.current.set(bound.report, seen);
       }
-      at = Math.max(at ?? seen, seen);
+      at = Math.max(at ?? seen.at, seen.at);
       const report = bound.report;
-      if ('server_version' in report && report.server_version && seen >= versionAt) {
+      if ('flavor' in report && typeof report.flavor === "string" && report.flavor && seen.order > flavorAt) {
+        flavor = report.flavor;
+        flavorAt = seen.order;
+      }
+      const version = "server_version" in report ? report.server_version : "version" in report ? report.version : null;
+      if (version && seen.order > versionAt) {
         const engine = 'engine' in report ? report.engine : null;
         // Percona Server keeps engine "mysql"; its reports name the product.
-        const product = 'server_product' in report && typeof report.server_product === "string" ? report.server_product : null;
-        engineVersion = `${product || (engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : "Server")} ${report.server_version}`;
-        versionAt = seen;
+        const product = "server_product" in report && typeof report.server_product === "string" ? report.server_product
+          : "product" in report && typeof report.product === "string" ? report.product : null;
+        const base = 'server_base' in report && typeof report.server_base === "string" ? report.server_base : null;
+        engineVersion = villageSQLLabel(version, base, product)
+          || `${product || (engine === "mariadb" ? "MariaDB" : engine === "mysql" ? "MySQL" : "Server")} ${version}`;
+        versionAt = seen.order;
       }
     }
     setLastRead((old) => old.key === activeKey && old.at === at && old.engineVersion === engineVersion
       ? old : { key: activeKey, at, engineVersion });
-  }, [activeKey, health.report, health.key, innodb, errorlog, sessions, memory, waits, io, locks, indexes, tables,
-    config, instruments, replication, cluster, accounts, diagram, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
+    setServerFlavor((old) => old.key === activeKey && old.flavor === flavor ? old : { key: activeKey, flavor });
+  }, [activeKey, readiness.facts, readiness.stale, health.report, health.key, innodb, errorlog, sessions, memory, waits, io, locks, indexes, tables,
+    config, instruments, extensions, replication, cluster, accounts, diagram, maintenance.tools, maintenance.upgrade, analysis, topStatements.top, topStatements.refreshedAt]);
 
   // Links between views.
   const [instrumentsTarget, setInstrumentsTarget] = useState<{ row: string; n: number } | null>(null);
@@ -720,6 +745,7 @@ export function Server({
     diagram: diagram?.source.key || (diagram ? "import" : ""),
     config: config?.key || "",
     instruments: instruments?.key || "",
+    extensions: extensions?.key || "",
     accounts: accounts?.key || "",
     maintenance:
       (maintenanceSection === "upgrade" ? maintenance.upgrade?.key : maintenance.tools?.key) || "",
@@ -814,6 +840,7 @@ export function Server({
   /** Choose a view from the list (narrow layouts push it on screen). Tuning
    * has one home, its own place: a route to it goes there. */
   function choose(view: ServerKind) {
+    if (view === "extensions" && !villagesql) return;
     if (view === "replication" || view === "cluster") {
       onNavigatePlace?.(view, view);
       return;
@@ -1033,6 +1060,7 @@ export function Server({
       diagram: diagram?.diagram,
       config: config?.report,
       instruments: instruments?.report,
+      extensions: extensions?.report,
       accounts: accounts?.report,
       maintenance: maintenanceSection === "upgrade" ? maintenance.upgrade?.report : maintenance.tools?.report,
     })[view] ?? null;
@@ -1144,6 +1172,7 @@ export function Server({
     add("accounts", "accounts", "accounts/list", (c) => ({ connection: c }), (b) => setAccounts(b as Bound<AccountsReport>));
     add("config", "config", "live/config", (c) => ({ connection: c }), (b) => setConfig(b as Bound<ConfigReport>));
     add("instruments", "instruments", "live/instruments", (c) => ({ connection: c }), (b) => setInstruments(b as Bound<InstrumentsReport>));
+    if (villagesql) add("extensions", "extensions", "live/extensions", (c) => ({ connection: c }), (b) => setExtensions(b as Bound<ExtensionsReport>));
     // Replication status and detected maintenance tools refresh like the other
     // views; loop starts, preflights, jobs and the upgrade check never run in
     // Refresh all.
@@ -1338,6 +1367,7 @@ export function Server({
   const tablesNow = current(tables);
   const configNow = current(config);
   const instrumentsNow = current(instruments);
+  const extensionsNow = current(extensions);
   const topNow = current(topStatements.top);
   const badges: Partial<Record<ServerKind, Marker>> = {};
   const memoryNow = current(memory);
@@ -1398,6 +1428,13 @@ export function Server({
         ? dot("watch", `${missing} views missing instruments`)
         : dot("ok", "ready");
   }
+  if (extensionsNow) {
+    const { installed, failing, deprecated_protocol, unsupported_protocol, pending } = extensionsNow.summary;
+    badges.extensions = failing || unsupported_protocol ? dot("problem", "Updates or protocols need attention")
+      : deprecated_protocol || pending ? dot("watch", "Updates pending or deprecated protocols")
+      : installed === null ? dot("unknown", "Inventory not collected")
+      : count(installed, "neutral", `${installed} installed`);
+  }
   // Maintenance: jobs of the connection in use (plus running jobs of any
   // member of the active group, so switching Server: never hides a running
   // dump, restore or clone); nothing is polled or read for a badge.
@@ -1451,7 +1488,8 @@ export function Server({
     }
     return own;
   };
-  const activeViews = place === "workload" ? WORKLOAD_VIEWS : SERVER_VIEWS;
+  const activeViews = place === "workload" ? WORKLOAD_VIEWS : villagesql
+    ? SERVER_VIEWS.flatMap((view) => view.id === "instruments" ? [view, EXTENSIONS_VIEW] : [view]) : SERVER_VIEWS;
   const activeGroups = place === "workload" ? WORKLOAD_GROUPS : SERVER_GROUPS;
   const groups = activeGroups.map((label) => ({
     label,
@@ -1462,7 +1500,7 @@ export function Server({
   }));
   // Counting does not allocate request closures or inspect in-flight reads on
   // every render; build the actual tasks only when Refresh all starts.
-  const refreshableCount = ALL_SERVER_VIEWS.length + EXTRA_REFRESH_SECTIONS.length +
+  const refreshableCount = ALL_SERVER_VIEWS.length - (villagesql ? 0 : 1) + EXTRA_REFRESH_SECTIONS.length +
     (refreshDiagramDatabase(diagram, diagramDatabase, activeKey) ? 1 : 0);
   const refreshDone = refreshHere ? refreshHere.views.filter((v) => outcome(v) === "ok").length : 0;
   const refreshFailed = refreshHere ? refreshHere.views.filter((v) => v.state === "failed") : [];
@@ -1835,6 +1873,8 @@ export function Server({
         return <InnodbView {...common} selection={selection("innodb")} report={innodb} onReport={setInnodb} onOpenView={openView} />;
       case "errorlog":
         return <ErrorLogView {...common} selection={selection("errorlog")} report={errorlog} onReport={setErrorlog} />;
+      case "extensions":
+        return <ExtensionsView {...common} selection={selection("extensions")} report={extensions} onReport={setExtensions} />;
       case "tuning":
         return (
           <TuningView

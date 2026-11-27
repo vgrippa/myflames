@@ -1,0 +1,93 @@
+{
+  "limit": 10,
+  "query": "/* select#1 */ select `k`.`id` AS `id`,`k`.`payload` AS `payload`,`l`.`label` AS `label` from `review`.`vsql_knn` `k` join `review`.`vsql_knn_labels` `l` where (`l`.`id` = `k`.`id`) order by `vsql_vector.l2_distance(k.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]')` limit 10",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "alias": "k",
+                  "operation": "Table scan on k",
+                  "table_name": "vsql_knn",
+                  "access_type": "table",
+                  "actual_rows": 2000.0,
+                  "schema_name": "review",
+                  "actual_loops": 1,
+                  "used_columns": [
+                    "id",
+                    "vec",
+                    "payload"
+                  ],
+                  "estimated_rows": 2000.0,
+                  "actual_last_row_ms": 0.40937999999999997,
+                  "actual_first_row_ms": 0.056084,
+                  "estimated_total_cost": 201.75
+                },
+                {
+                  "alias": "l",
+                  "covering": false,
+                  "operation": "Single-row index lookup on l using PRIMARY (id=k.id)",
+                  "index_name": "PRIMARY",
+                  "table_name": "vsql_knn_labels",
+                  "access_type": "index",
+                  "actual_rows": 1.0,
+                  "schema_name": "review",
+                  "actual_loops": 2000,
+                  "used_columns": [
+                    "id",
+                    "label"
+                  ],
+                  "estimated_rows": 1.0,
+                  "lookup_condition": "id=k.id",
+                  "index_access_type": "index_lookup",
+                  "actual_last_row_ms": 0.000535241,
+                  "actual_first_row_ms": 0.000518,
+                  "estimated_total_cost": 0.25005
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "actual_rows": 2000.0,
+              "actual_loops": 1,
+              "estimated_rows": 2000.0,
+              "join_algorithm": "nested_loop",
+              "actual_last_row_ms": 1.664699,
+              "actual_first_row_ms": 0.066374,
+              "estimated_total_cost": 901.75
+            }
+          ],
+          "operation": "Stream results",
+          "access_type": "stream",
+          "actual_rows": 2000.0,
+          "actual_loops": 1,
+          "estimated_rows": 2000.0,
+          "actual_last_row_ms": 2.072229,
+          "actual_first_row_ms": 0.07070800000000001,
+          "estimated_total_cost": 901.75
+        }
+      ],
+      "operation": "Sort: `vsql_vector.l2_distance(k.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]')`, limit input to 10 row(s) per chunk",
+      "access_type": "sort",
+      "actual_rows": 10.0,
+      "sort_fields": [
+        "`vsql_vector.l2_distance(k.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]')`"
+      ],
+      "actual_loops": 1,
+      "per_chunk_limit": 10,
+      "actual_last_row_ms": 2.212002,
+      "actual_first_row_ms": 2.211583
+    }
+  ],
+  "operation": "Limit: 10 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "actual_rows": 10.0,
+  "actual_loops": 1,
+  "limit_offset": 0,
+  "actual_last_row_ms": 2.2128769999999998,
+  "actual_first_row_ms": 2.2120830000000002
+}

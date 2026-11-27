@@ -50,9 +50,9 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
 import re
 import time
 
-from .server_info import product_name
+from .server_info import has_percona_features, product_name, server_label
 from .connector import ConnectorError
-from .perf_common import (DEFAULT_WINDOW, SYSTEM_SCHEMAS, Reader, _bytes_text, _count_text, _duration_text,
+from .perf_common import (DEFAULT_WINDOW, system_schemas, Reader, _bytes_text, _count_text, _duration_text,
                           _number, _round, base_report, check_limit, check_schema, check_window, consumer_note,
                           consumer_state, denied, elapsed, literal, lost_note, ms_text, now, preflight, ps_off_text,
                           reason, restarted, sample_twice, table_text)
@@ -145,10 +145,10 @@ def classify_file(path, event, datadir=""):
 # ---- sampling (talks to the server) ------------------------------------------
 
 
-def _scope(schema):
+def _scope(schema, flavor=None):
     if schema:
         return "OBJECT_SCHEMA = " + literal(schema)
-    return "OBJECT_SCHEMA NOT IN (%s)" % ", ".join("'%s'" % s for s in SYSTEM_SCHEMAS)
+    return "OBJECT_SCHEMA NOT IN (%s)" % ", ".join("'%s'" % s for s in system_schemas(flavor))
 
 
 def _file_scope(schema):
@@ -163,24 +163,24 @@ def _file_scope(schema):
     return " AND %s = %s" % (directory, literal(encoded))
 
 
-def _instance_queries(schema):
+def _instance_queries(schema, flavor=None):
     return {
         "tables": ("SELECT OBJECT_SCHEMA, OBJECT_NAME, %s FROM performance_schema.table_io_waits_summary_by_table "
-                   "WHERE OBJECT_TYPE = 'TABLE' AND COUNT_STAR > 0 AND %s" % (", ".join(_TABLE_COLUMNS), _scope(schema))),
+                   "WHERE OBJECT_TYPE = 'TABLE' AND COUNT_STAR > 0 AND %s" % (", ".join(_TABLE_COLUMNS), _scope(schema, flavor))),
         "files": ("SELECT FILE_NAME, EVENT_NAME, %s FROM performance_schema.file_summary_by_instance "
                   "WHERE COUNT_STAR > 0%s" % (", ".join(_FILE_COLUMNS), _file_scope(schema))),
         "classes": ("SELECT EVENT_NAME, %s FROM performance_schema.file_summary_by_event_name "
                     "WHERE COUNT_STAR > 0" % ", ".join(_FILE_COLUMNS)),
         "userstat": ("SELECT TABLE_SCHEMA, TABLE_NAME, ROWS_READ, ROWS_CHANGED FROM information_schema.TABLE_STATISTICS "
                      "WHERE " + (("TABLE_SCHEMA = " + literal(schema)) if schema else
-                     "TABLE_SCHEMA NOT IN (%s)" % ", ".join("'%s'" % s for s in SYSTEM_SCHEMAS)))
+                     "TABLE_SCHEMA NOT IN (%s)" % ", ".join("'%s'" % s for s in system_schemas(flavor))))
     }
 
 
 def _take(reader, server, schema, state):
     status_sql = ("SHOW GLOBAL STATUS WHERE Variable_name IN (%s)"
                   % ", ".join("'%s'" % n for n in STATUS_NAMES))
-    queries = _instance_queries(schema)
+    queries = _instance_queries(schema, server.flavor)
 
     def collect(kind):
         if kind in state["omitted"]:
@@ -250,7 +250,7 @@ def io_report(conn, interval=DEFAULT_WINDOW, schema=None, limit=DEFAULT_LIMIT, s
         elif server.userstat:
             # MariaDB and Percona Server (MySQL itself has no userstat).
             state["source"] = "userstat"
-        queries = _instance_queries(schema)
+        queries = _instance_queries(schema, server.flavor)
         families = ("tables", "files") if state["source"] == "performance_schema" else (
             ("userstat",) if state["source"] == "userstat" else ())
         if not all_instances:
@@ -500,7 +500,7 @@ def _notes(server, report, source, schema, notes):
     if source == "status":
         if not server.ps_on:
             text = ps_off_text(server, "per-table and per-file I/O")
-            if server.engine == "mariadb" or server.flavor == "percona":
+            if server.engine == "mariadb" or has_percona_features(server.flavor, getattr(server, "base", None)):
                 text += (" Or turn on user statistics with SET GLOBAL userstat = ON (runtime, small overhead "
                          "on every statement) for rows read and changed per table.")
             notes.insert(0, text)
@@ -542,7 +542,7 @@ def _rate_text(metric):
 
 
 def format_text(report):
-    head = "%s %s" % (product_name(report), report["server_version"] or "?")
+    head = server_label(report)
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     head += ", sampled over %s s" % (_count_text(report["elapsed_s"]) if report["elapsed_s"] else "?")

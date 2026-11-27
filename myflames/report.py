@@ -82,7 +82,7 @@ import time
 
 from . import __version__
 from .connector import ConnectorError, terminal_text
-from .server_info import product_name
+from .server_info import product_name, server_label
 from .perf_common import (ALL_SCHEMAS_TABLE_LIMIT, Reader, _bytes_text, _count_text, _duration_text,
                           check_schemas, check_window, lost_note, now, preflight, ps_off_text, reason, require_choice,
                           scope_text)
@@ -1077,18 +1077,21 @@ def compose_report(server, runs, attribution, interval=DEFAULT_INTERVAL, schemas
         notes.append("%d of %d views did not run or failed: %s." % (
             len(failures), len(views), "; ".join("%s: %s" % (f["label"], f["error"]) for f in failures)))
     comment = server.var("version_comment")
+    village_fields = {"server_base": server.base} if server.flavor == "villagesql" else {}
     return {
         "schema_version": SCHEMA_VERSION,
         "myflames_version": __version__,
         "engine": server.engine,
         "flavor": server.flavor,
         "server_product": server.product,
+        **village_fields,
         "server_version": server.version or None,
         "taken_at": now(),
         "uptime_s": server.uptime,
         "performance_schema": server.ps_on,
         "header": {
             "server": {"engine": server.engine, "flavor": server.flavor, "product": server.product,
+                       **village_fields,
                        "version": server.version or None, "version_comment": comment,
                        "uptime_s": server.uptime, "performance_schema": server.ps_on},
             "started_at": started_at, "elapsed_s": elapsed_s, "interval": interval,
@@ -1237,7 +1240,7 @@ _WRAP = 100
 
 def _server_line(report):
     h = report["header"]["server"]
-    line = "%s %s" % (product_name(report), report["server_version"] or "?")
+    line = server_label(report)
     if h.get("version_comment"):
         line += " (%s)" % h["version_comment"]
     if report.get("uptime_s") is not None:

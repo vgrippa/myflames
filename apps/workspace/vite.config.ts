@@ -63,6 +63,9 @@ export default defineConfig({
     target: "es2020",
     rollupOptions: {
       output: {
+        // These pure display helpers are shared by the shell and lazy views.
+        // Keep their growth outside the shell's tightly bounded entry chunk.
+        manualChunks: (id) => /\/src\/(serverIdentity|planDisplay)\.ts$/.test(id) ? "planDisplay" : undefined,
         // Keep the logo address valid for tabs left open during a rebuild.
         assetFileNames: (asset) =>
           asset.name === "myflames-app-logo.png"

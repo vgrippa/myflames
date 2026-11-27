@@ -6,6 +6,7 @@
 // Query digest lists the statements that are new since the baseline and the
 // ones whose average latency or calls per second grew by more than half.
 import type { HealthReport, HealthStatus, TopStatement } from "./api";
+import { villageSQLLabel } from "./serverIdentity";
 import type { BaselineServer, DigestBaselinePayload, DigestBaselineRow, HealthBaselinePayload, ReadingServer } from "./baselinesApi";
 
 /** A server start that moved by more than this (seconds), from two
@@ -122,7 +123,7 @@ export function compareHealth(baseline: HealthBaselinePayload, report: HealthRep
 /** A server in words: "MySQL 8.4.3 (server_uuid 3e11fa47-...)" or
  * "MariaDB 11.4.5 at db2:3306" (baselines.describe). */
 export function serverName(server: Partial<BaselineServer> | null | undefined) {
-  const name = `${server?.product || server?.engine || "?"} ${server?.version || "?"}`;
+  const name = villageSQLLabel(server?.version, server?.server_base, server?.product) || `${server?.product || server?.engine || "?"} ${server?.version || "?"}`;
   return server?.server_uuid ? `${name} (server_uuid ${server.server_uuid})` : `${name} at ${server?.hostname || "?"}:${server?.port || "?"}`;
 }
 

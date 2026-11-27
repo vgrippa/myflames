@@ -1,0 +1,5 @@
+-> Limit: 10 row(s)  (cost=904 rows=10) (actual time=0.909..0.923 rows=10 loops=1)
+    -> Nested loop inner join  (cost=904 rows=2005) (actual time=0.904..0.918 rows=10 loops=1)
+        -> Custom index distance scan on idx_v  (cost=202 rows=2005) (actual time=0.877..0.886 rows=10 loops=1)
+        -> Single-row index lookup on labels using PRIMARY (id = t.id)  (cost=0.25 rows=1) (actual time=0.00165..0.00168 rows=1 loops=10)
+

@@ -1,0 +1,7 @@
+-> Limit: 10 row(s)  (actual time=2.29..2.29 rows=10 loops=1)
+    -> Sort: `vsql_vector.l2_distance(k.vec,'[0.100000001,0.200000003,0.300000012,0.400000006]')`, limit input to 10 row(s) per chunk  (actual time=2.29..2.29 rows=10 loops=1)
+        -> Stream results  (cost=902 rows=2000) (actual time=0.0755..2.16 rows=2000 loops=1)
+            -> Nested loop inner join  (cost=902 rows=2000) (actual time=0.0655..1.75 rows=2000 loops=1)
+                -> Table scan on k  (cost=202 rows=2000) (actual time=0.0562..0.437 rows=2000 loops=1)
+                -> Single-row index lookup on l using PRIMARY (id = k.id)  (cost=0.25 rows=1) (actual time=538e-6..559e-6 rows=1 loops=2000)
+

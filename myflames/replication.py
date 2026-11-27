@@ -141,7 +141,7 @@ from . import dbops, privileges
 from .connection_groups import ProfileReadError, grouped_read, probe_note, record_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, _duration_text, _version_tuple, denied, now, preflight, reason
-from .server_info import identity_from_version, product_identity, product_name
+from .server_info import identity_from_version, product_identity, product_name, server_label
 from .topology_links import _host_key, _norm_host, is_loopback as _is_loopback
 
 SCHEMA_VERSION = "replication-1.0"
@@ -1228,6 +1228,8 @@ def _known_version(version, comment, provenance, label, **extra):
     out.update({"version": version, "version_comment": comment or None,
                 "engine": identity["engine"], "flavor": identity["flavor"], "product": identity["product"],
                 "provenance": provenance, "label": label, "reason": None})
+    if identity["flavor"] == "villagesql":
+        out["server_base"] = identity.get("base")
     out.update(extra)
     return out
 
@@ -3392,8 +3394,7 @@ def format_text(report):
         out.append("MariaDB %s  gtid_slave_pos %s" % (report.get("server_version") or "?",
                                                       gtid.get("slave_pos") or "(empty)"))
     else:
-        out.append("%s %s  gtid_mode %s" % (product_name(report), report.get("server_version") or "?",
-                                            gtid.get("mode") or "?"))
+        out.append("%s  gtid_mode %s" % (server_label(report), gtid.get("mode") or "?"))
     for channel in report["channels"]:
         label = "channel %r" % channel["name"] if report.get("engine") == "mysql" else \
             "connection %r" % channel["name"]
@@ -3434,6 +3435,9 @@ def source_version_text(value):
             how = "saved connection %s" % value.get("profile_name")
             if not value.get("verified"):
                 how += "; " + SERVER_ID_ONLY
+        if value.get("flavor") == "villagesql":
+            label = server_label(dict(value, server_version=value["version"], server_product=value.get("product")))
+            return "Source version: %s (%s)" % (label, how)
         # MySQL and MariaDB versions name themselves; Percona's needs the product.
         product = value.get("product") if value.get("flavor") == "percona" else None
         return "Source version: %s%s (%s)" % (product + " " if product else "", value["version"], how)

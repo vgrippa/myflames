@@ -95,7 +95,7 @@ Verified against server source (mysql-server 9.7 "M/", mariadb-server 13.0
   (perf_common.Reader.rows_with_columns): every index is visible there, no
   key part is an expression, and no visibility statement is offered.
 """
-from .server_info import product_name
+from .server_info import has_percona_features, product_name, server_label
 from .advisor import _index_text, find_redundant_indexes
 from .connector import ConnectorError
 from .perf_common import (Reader, _count_text, _duration_text, _number, _round, base_report, check_limit,
@@ -107,6 +107,8 @@ INDEXES_TAG = "/*myflames:indexes*/ "
 DEFAULT_LIMIT = 200
 MAX_BROWSE_ROWS = 100000
 PARTITION_BATCH_SIZE = 100
+#: VillageSQL custom types can also collide with these displayed names.
+BUILTIN_INDEX_TYPES = frozenset(("BTREE", "HASH", "FULLTEXT", "SPATIAL", "RTREE"))
 #: A server younger than this has seen too little of its workload.
 SHORT_UPTIME_S = 7 * 86400
 #: A table counts as read mostly by full scans from this share of fetch time.
@@ -132,8 +134,8 @@ def _schemas(schema):
     return check_schemas(list(schema) if schema else None)
 
 
-def _scope_sql(column, schema):
-    return scope_sql(column, _schemas(schema))
+def _scope_sql(column, schema, flavor=None):
+    return scope_sql(column, _schemas(schema), flavor)
 
 
 def _statistics_sql(server, schema, columns=None):
@@ -142,22 +144,32 @@ def _statistics_sql(server, schema, columns=None):
     optional = STATISTICS_OPTIONAL["mysql" if server.engine == "mysql" else "mariadb"]
     columns = columns or {name: name for name in optional}
     extra = ", ".join(columns[name] for name in optional)
+    source = "information_schema.STATISTICS"
+    if server.flavor == "villagesql":
+        # Custom index registrations may be named btree, hash, etc. Their
+        # first column has an extension type, exposed as extension.type in
+        # COLUMNS. Collect that evidence in this same statement, never a
+        # separate probe; missing column metadata remains ambiguous.
+        source += " AS s"
+        extra += (", IF(SEQ_IN_INDEX = 1, (SELECT c.DATA_TYPE FROM information_schema.COLUMNS AS c "
+                  "WHERE c.TABLE_SCHEMA = s.TABLE_SCHEMA AND c.TABLE_NAME = s.TABLE_NAME "
+                  "AND c.COLUMN_NAME = s.COLUMN_NAME), NULL) AS FIRST_COLUMN_TYPE")
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART, "
-            "COLLATION, INDEX_TYPE, %s FROM information_schema.STATISTICS WHERE %s"
-            % (extra, _scope_sql("TABLE_SCHEMA", schema)))
+            "COLLATION, INDEX_TYPE, %s FROM %s WHERE %s"
+            % (extra, source, _scope_sql("TABLE_SCHEMA", schema, server.flavor)))
 
 
-def _fk_sql(schema):
+def _fk_sql(schema, flavor=None):
     return ("SELECT TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, ORDINAL_POSITION, "
             "REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME "
             "FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_NAME IS NOT NULL AND %s"
-            % _scope_sql("TABLE_SCHEMA", schema))
+            % _scope_sql("TABLE_SCHEMA", schema, flavor))
 
 
-def _usage_sql(schema):
+def _usage_sql(schema, flavor=None):
     return ("SELECT OBJECT_SCHEMA, OBJECT_NAME, INDEX_NAME, COUNT_STAR, COUNT_FETCH, SUM_TIMER_FETCH "
             "FROM performance_schema.table_io_waits_summary_by_index_usage "
-            "WHERE OBJECT_TYPE = 'TABLE' AND %s" % _scope_sql("OBJECT_SCHEMA", schema))
+            "WHERE OBJECT_TYPE = 'TABLE' AND %s" % _scope_sql("OBJECT_SCHEMA", schema, flavor))
 
 # ---- sampling (talks to the server) ------------------------------------------
 
@@ -197,11 +209,11 @@ def index_report(conn, schema=None, limit=DEFAULT_LIMIT, schemas=None, require_c
             raw["objects"] = reader.optional(
                 "SELECT OBJECT_SCHEMA, OBJECT_NAME, ENABLED FROM performance_schema.setup_objects "
                 "WHERE OBJECT_TYPE = 'TABLE'", "performance_schema.setup_objects", notes)
-            raw["usage"] = reader.optional(_usage_sql(schema),
+            raw["usage"] = reader.optional(_usage_sql(schema, server.flavor),
                                            "performance_schema.table_io_waits_summary_by_index_usage", notes)
         if server.userstat:
             # The only source with Performance Schema off; evidence beside it when on.
-            where = _scope_sql("TABLE_SCHEMA", schema)
+            where = _scope_sql("TABLE_SCHEMA", schema, server.flavor)
             raw["index_stats"] = reader.optional(
                 "SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, ROWS_READ FROM information_schema.INDEX_STATISTICS "
                 "WHERE " + where, "information_schema.INDEX_STATISTICS", notes)
@@ -213,11 +225,12 @@ def index_report(conn, schema=None, limit=DEFAULT_LIMIT, schemas=None, require_c
             lambda chosen: _statistics_sql(server, schema, chosen), optional)
         # No IS_VISIBLE (MySQL 5.7) or IGNORED: the server cannot hide an index.
         raw["visibility"] = columns.get("IS_VISIBLE", columns.get("IGNORED")) in ("IS_VISIBLE", "IGNORED")
-        raw["foreign_keys"] = reader.optional(_fk_sql(schema), "information_schema.KEY_COLUMN_USAGE", notes) or []
+        raw["foreign_keys"] = reader.optional(_fk_sql(schema, server.flavor), "information_schema.KEY_COLUMN_USAGE", notes) or []
         # Reuse the partition metadata read for every engine, after usage and
         # definitions. On MariaDB CREATE_OPTIONS opens tables, so restrict it
         # to tables that actually have zero-use candidates, in bounded batches.
         tables = _tables(raw["statistics"], server.engine)
+        tables = _usage_tables(server, tables)
         source, instrument_off = _usage_source(server, raw)
         candidates, _, _ = _usage(server, raw, tables, {}, source,
                                   source is not None and not instrument_off, check_partitioning=False)
@@ -270,6 +283,8 @@ def _tables(statistics, engine):
                      "using": "HASH" if itype == "HASH" else None, "visible": visible, "_parts": {}}
             indexes[name] = index
         seq = _number(row[4]) or 0
+        if seq == 1 and engine == "mysql":
+            index["first_column_type"] = row[11] if len(row) > 11 else None
         expression = row[10] if len(row) > 10 else None
         index["_parts"][seq] = {"name": row[5] or expression or "?", "length": _number(row[6]),
                                 "desc": (row[7] or "").upper() == "D",
@@ -287,6 +302,30 @@ def _ordered(indexes):
     (information_schema has no index position)."""
     return sorted(indexes.values(), key=lambda i: (0 if i["kind"] == "PRIMARY KEY" else 1 if i["unique"] else 2,
                                                    i["name"].lower()))
+
+
+def _custom_index(server, index):
+    """Custom or ambiguous VillageSQL indexes have no reliable usage accounting."""
+    if server.flavor != "villagesql":
+        return False
+    data_type = index.get("first_column_type")
+    return (index["type"] not in BUILTIN_INDEX_TYPES or not data_type or "." in data_type)
+
+
+def _usage_tables(server, tables):
+    """Keep only indexes whose usage and redundancy rules we understand.
+
+    Do not compare an extension index to a B-tree, even if the same columns
+    appear in both: the custom index can serve different lookup operations.
+    """
+    if server.flavor != "villagesql":
+        return tables
+    result = {}
+    for key, entries in tables.items():
+        ordinary = {name: index for name, index in entries.items() if not _custom_index(server, index)}
+        if ordinary:
+            result[key] = ordinary
+    return result
 
 
 def _foreign_keys(rows):
@@ -443,8 +482,9 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
     visibility = raw.get("visibility", True)
     caveat = UNUSED_CAVEAT if visibility else NO_INVISIBLE_CAVEAT
     tables = _tables(raw.get("statistics") or [], server.engine)
+    usage_tables = _usage_tables(server, tables)
     fks = _foreign_keys(raw.get("foreign_keys"))
-    backing = _fk_backing(tables, fks, server.engine)
+    backing = _fk_backing(usage_tables, fks, server.engine)
     source, instrument_off = _usage_source(server, raw)
     report.update({
         "scope": {"schema": schema[0] if schema and len(schema) == 1 else None,
@@ -459,13 +499,14 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
         "unused": [], "redundant": [], "full_scans": [], "no_data": [],
         "foreign_keys": len(fks), "notes": notes,
     })
-    unused, full_scans, no_data = _usage(server, raw, tables, backing, source, report["available"],
+    unused, full_scans, no_data = _usage(server, raw, usage_tables, backing, source, report["available"],
                                          visibility=visibility)
     blocked = {(n["schema"], n["table"]): n["reason_text"] for n in no_data
                if n["reason"] in ("partitioned", "partitioning_unknown")}
+    partitioning_unknown = any(n["reason"] == "partitioning_unknown" for n in no_data)
     redundant = []
-    for (s, t) in sorted(tables):
-        for index, other, why in find_redundant_indexes(_ordered(tables[(s, t)])):
+    for (s, t) in sorted(usage_tables):
+        for index, other, why in find_redundant_indexes(_ordered(usage_tables[(s, t)])):
             test, drop = _sql(server, s, t, index["name"], visibility)
             fk = backing.get((s, t, index["name"]), [])
             text = ("%s %s %s, so %s serves every lookup %s serves. Each extra index slows writes and uses "
@@ -484,6 +525,28 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
             if (s, t) in blocked:
                 redundant[-1].update(test_sql="", drop_sql="", caveat="",
                                      action_blocked_reason=blocked[(s, t)])
+    # No data remains one row per table, including when ordinary indexes on
+    # that table also lack counters. Keep their explanation when merging.
+    by_table = {(entry["schema"], entry["table"]): entry for entry in no_data}
+    custom_tables = set()
+    for (s, t), entries in sorted(tables.items()):
+        custom_count = sum(1 for index in entries.values() if _custom_index(server, index))
+        if not custom_count:
+            continue
+        custom_tables.add((s, t))
+        entry = by_table.get((s, t))
+        text = NO_DATA_TEXT["custom_index"]
+        if entry is None:
+            no_data.append({"schema": s, "table": t, "indexes": custom_count,
+                            "reason": "custom_index", "reason_text": text})
+        else:
+            text += ". Other indexes on this table: " + (entry.get("reason_text") or
+                                                        NO_DATA_TEXT.get(entry["reason"], entry["reason"]))
+            entry.update(indexes=entry["indexes"] + custom_count, reason="custom_index", reason_text=text)
+    # Missing custom-index reads also make the denominator of a table's scan
+    # share incomplete. Neither a high share nor a userstat subtraction can
+    # establish that these tables are read mostly without an index.
+    full_scans = [row for row in full_scans if (row["schema"], row["table"]) not in custom_tables]
     report["summary"] = {
         "tables": len(tables), "indexes": sum(len(v) for v in tables.values()),
         "unused": len(unused), "unused_candidates": sum(1 for u in unused if u["verdict"] == "candidate"),
@@ -498,7 +561,10 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
                  for (schema_name, table_name), entries in sorted(tables.items())
                  for index in _ordered(entries)]
     for row in inventory:
-        if (row["schema"], row["table"]) in blocked:
+        index = tables[(row["schema"], row["table"])][row["index"]]
+        if _custom_index(server, index):
+            row["action_blocked_reason"] = NO_DATA_TEXT["custom_index"]
+        elif (row["schema"], row["table"]) in blocked:
             row["action_blocked_reason"] = blocked[(row["schema"], row["table"])]
     # Workspace browsing keeps every collected row. CLI callers retain their limit.
     if limit is None:
@@ -512,8 +578,7 @@ def compute_indexes(server, raw, schema=None, limit=DEFAULT_LIMIT, notes=None):
     report["redundant"] = redundant[:limit]
     report["full_scans"] = full_scans[:limit]
     report["no_data"] = no_data[:limit]
-    _notes(server, raw, report, schema, source, instrument_off, notes,
-           any(n["reason"] == "partitioning_unknown" for n in no_data))
+    _notes(server, raw, report, schema, source, instrument_off, notes, partitioning_unknown)
     return report
 
 
@@ -633,7 +698,10 @@ def _usage(server, raw, tables, backing, source, available, check_partitioning=T
             # The former Percona partition lookup also guarded this subtraction.
             # Candidate-only metadata leaves other tables unresolved; incomplete
             # user statistics must not turn their missing reads into full scans.
-            if server.flavor == "percona" and partitioning.get((s, t)) is not False:
+            # On the MySQL engine, using userstat itself establishes the
+            # Percona source and its partition limitation, even if identity
+            # metadata could not establish the server's base.
+            if server.engine == "mysql" and partitioning.get((s, t)) is not False:
                 continue
             table_rows = (rows.get(None) or (0,))[0]
             with_rows = sum(v[0] for k, v in rows.items() if k is not None)
@@ -669,7 +737,7 @@ def _full_scan_why(f):
 def _notes(server, raw, report, schema, source, instrument_off, notes, partitioning_unknown=False):
     uptime = server.uptime
     if source is None:
-        if (server.engine == "mariadb" or server.flavor == "percona") and not server.ps_on:
+        if (server.engine == "mariadb" or has_percona_features(server.flavor, getattr(server, "base", None))) and not server.ps_on:
             notes.insert(0, ps_off_text(server, "index usage") + (
                 " Alternatively, turn on user statistics at runtime with SET GLOBAL userstat = ON; it "
                 "counts reads through each index from that moment (a small overhead on every "
@@ -714,11 +782,11 @@ def _notes(server, raw, report, schema, source, instrument_off, notes, partition
                      "reads only, from when userstat was turned on or the last FLUSH INDEX_STATISTICS; there is "
                      "no start time to show. Tables with no reads or changes since then are under No data."
                      % server.product)
-    if source == "userstat" and server.flavor == "percona":
+    if source == "userstat" and server.engine == "mysql":
         states = _partitioning(raw)
         if any(len(r) >= 2 and states.get((r[0], r[1])) is not False for r in raw.get("table_stats") or []):
-            notes.append("Full-scan shares from Percona user statistics are shown only for known plain tables. "
-                         "Partitioning is checked only for tables with unused-index candidates.")
+            notes.append("Full-scan shares from %s user statistics are shown only for known plain tables. "
+                         "Partitioning is checked only for tables with unused-index candidates." % server.product)
     if any(_partitioning(raw).values()):
         notes.append("Partitioned tables with unused-index candidates are under No data: Performance Schema "
                      "does not count every read through their indexes, and user statistics do not establish "
@@ -747,6 +815,7 @@ def _notes(server, raw, report, schema, source, instrument_off, notes, partition
 
 # Why a table is under No data, for the text output (Indexes.tsx NO_DATA).
 NO_DATA_TEXT = {
+    "custom_index": "Performance Schema does not record reads through VillageSQL custom indexes",
     "not_opened": "not opened since the counts started",
     "no_activity": "no rows read or written",
     "not_instrumented": "not instrumented (setup_objects)",
@@ -758,7 +827,7 @@ NO_DATA_TEXT = {
 
 
 def format_text(report):
-    head = "%s %s" % (product_name(report), report["server_version"] or "?")
+    head = server_label(report)
     if report["uptime_s"] is not None:
         head += ", up %s" % _duration_text(report["uptime_s"])
     scope = report["scope"]

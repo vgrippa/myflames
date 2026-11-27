@@ -9,7 +9,7 @@ export const COMPARE_LABELS: Record<CompareStatus, string> = {
 };
 export const COMPARE_ORDER: CompareStatus[] = ["different", "only_in_source", "only_in_target", "not_compared", "identical"];
 export type CompareSide = { live: { connection: Connection } } | { profile: string } | { snapshot: string };
-export type CompareServer = { host: string; port: number; engine: string; server_product?: string | null; server_version?: string | null;
+export type CompareServer = { host: string; port: number; engine: string; server_product?: string | null; server_base?: string | null; server_version?: string | null;
   profile_id?: string; profile_name?: string };
 export type SideMetadata = { kind: "live" | "snapshot" | "file" | "unavailable"; label?: string; server?: CompareServer; captured_at?: string; complete: boolean;
   error?: string; number?: number; id?: string; saved_at?: string };

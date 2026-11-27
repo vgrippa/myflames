@@ -2291,6 +2291,28 @@ class TargetEvidenceConnection(object):
         self.server_version()
         return self.variables.get("version_comment", "")
 
+    def villagesql_server_version(self, version=None, version_comment=None):
+        """Keep optional product metadata inside this scope's validated reads."""
+        from .connector import ConnectorError
+        from .perf_common import Reader
+        from .server_info import product_identity
+        self.check()
+        version = self.server_version() if version is None else version
+        comment = self.server_version_comment() if version_comment is None else version_comment
+        if product_identity(version, comment)["flavor"] != "villagesql":
+            self.check()
+            return None
+        # Do not delegate this method through __getattr__: that would read
+        # outside the scope's target validation and use the transport cache.
+        if "_villagesql_version_cache" not in self.__dict__:
+            try:
+                rows = Reader(self, "/*myflames:target-evidence*/ ").rows("SELECT @@villagesql_server_version")
+                self._villagesql_version_cache = rows[0][0] if rows and rows[0] else ""
+            except ConnectorError:
+                self._villagesql_version_cache = ""
+        self.check()
+        return self._villagesql_version_cache or None
+
     def is_mariadb(self):
         from .server_info import detect_flavor
         return detect_flavor(self.server_version(), self.server_version_comment()) == "mariadb"
@@ -3514,7 +3536,8 @@ _SECRET_VARIABLES = frozenset((
     'telemetry.otel_exporter_otlp_traces_headers',
     'telemetry.otel_exporter_otlp_logs_secret_headers',
     'telemetry.otel_exporter_otlp_metrics_secret_headers',
-    'telemetry.otel_exporter_otlp_traces_secret_headers'))
+    'telemetry.otel_exporter_otlp_traces_secret_headers',
+    'vsql_rest.jwt_secret'))
 
 
 def sensitive(name):
@@ -3546,18 +3569,53 @@ _SECRET_VARIABLE_NAME = r"(?:" + "|".join(
 _SECRET_VARIABLE_LITERAL = re.compile(
     r"((?<![\w$])(?:@@\s*)?(?:(?:GLOBAL|SESSION|PERSIST_ONLY|PERSIST|LOCAL)\s*\.\s*)?" +
     _SECRET_VARIABLE_NAME + r"\s*(?::=|=)\s*)(?P<secret>" + _SECRET_VALUE + r")", re.I | re.S)
+def _common_prefix(values):
+    if not values:
+        return ''
+    first, last = min(values), max(values)
+    for index, ch in enumerate(first):
+        if index >= len(last) or last[index] != ch:
+            return first[:index]
+    return first
+
+
+def _dotted_secret_tails(names):
+    """Map each dotted inventory prefix to its required lowercased tail substring(s).
+
+    A statement may write ``prefix . tail`` or quote each part, so the full
+    dotted name is not a reliable substring, while both parts are. When every
+    tail under a prefix shares a non-trivial prefix (like telemetry.*), keep
+    that one shared tail; otherwise keep each distinct tail.
+    """
+    by_prefix = {}
+    for name in sorted(names):
+        if '.' in name:
+            prefix, tail = name.split('.', 1)
+            by_prefix.setdefault(prefix, []).append(tail)
+    out = {}
+    for prefix, tails in by_prefix.items():
+        if len(tails) == 1:
+            out[prefix] = (tails[0],)
+        else:
+            common = _common_prefix(tails)
+            out[prefix] = (common,) if len(common) >= 4 else tuple(sorted(set(tails)))
+    return out
+
+
+_SECRET_VARIABLE_DOTTED_TAILS = _dotted_secret_tails(_SECRET_VARIABLES)
 # Anchors guaranteed to appear (lowercased) in any ASCII match of
-# _SECRET_VARIABLE_LITERAL. Dotted telemetry.* names all share
-# 'otel_exporter_otlp_', so 'telemetry' is searched only when that tail exists.
+# _SECRET_VARIABLE_LITERAL. Dotted names search their prefix only when a
+# matching tail exists (for example 'otel_exporter_otlp_' for telemetry.* and
+# 'jwt_secret' for vsql_rest.jwt_secret).
 _SECRET_VARIABLE_LITERAL_ANCHORS = tuple(sorted({
     name.split('.', 1)[0] for name in _SECRET_VARIABLES
     if name != 'handlersocket_plain_secret_wr'
 }))
-_SECRET_VARIABLE_LITERAL_SUBSTRINGS = tuple(sorted({
-    'otel_exporter_otlp_' if name.startswith('telemetry.otel_exporter_otlp_') else name
-    for name in _SECRET_VARIABLES
-    if name != 'handlersocket_plain_secret_wr'
-}))
+_SECRET_VARIABLE_LITERAL_SUBSTRINGS = tuple(sorted(
+    {name for name in _SECRET_VARIABLES
+     if '.' not in name and name != 'handlersocket_plain_secret_wr'}
+    | {tail for tails in _SECRET_VARIABLE_DOTTED_TAILS.values() for tail in tails}
+))
 # Keep original enclosing-string boundaries, including whether the final
 # quote closed the string or was escaped. The ordinary literal fallback
 # cannot distinguish a doubled quote in dynamic SQL from an empty value.
@@ -4933,10 +4991,11 @@ _INVENTORY_SCOPE_SUFFIXES = (
 def _make_inventory_literal_search(pattern, text, folded):
     """Anchor-guided search for ASCII _SECRET_VARIABLE_LITERAL scans."""
     text_len = len(text)
-    has_otel = 'otel_exporter_otlp_' in folded
+    dotted_tails = _SECRET_VARIABLE_DOTTED_TAILS
     anchors = []
     for anchor in _SECRET_VARIABLE_LITERAL_ANCHORS:
-        if anchor == 'telemetry' and not has_otel:
+        tails = dotted_tails.get(anchor)
+        if tails is not None and not any(tail in folded for tail in tails):
             continue
         idx = folded.find(anchor)
         if idx >= 0:
@@ -4975,9 +5034,9 @@ def _make_inventory_literal_search(pattern, text, folded):
                 anchors.pop(best_i)
             else:
                 entry[0] = next_idx
-            # Quick-reject non-telemetry anchors whose tail cannot start
+            # Quick-reject non-dotted anchors whose tail cannot start
             # an assignment to a _SECRET_VALUE literal.
-            if anchor != 'telemetry':
+            if anchor not in dotted_tails:
                 p = idx + alen
                 if anchor == 'handlersocket_plain_secret' and folded.startswith('_wr', p):
                     p += 3

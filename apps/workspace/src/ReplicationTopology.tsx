@@ -65,7 +65,7 @@ const SERVER_ID_ONLY = "only its server ID could be compared";
 
 /** "MySQL 9.7.2", or "Version unknown". */
 export function sourceVersionText(v: SourceVersion): string {
-  return v.version ? engineName(v.engine, v.version, v.product) : "Version unknown";
+  return v.version ? engineName(v.engine, v.version, v.product, v.server_base) : "Version unknown";
 }
 
 /** "from the saved connection X (only its server ID could be compared)", or the label. */
@@ -84,7 +84,7 @@ export function sourceVersionNote(v: SourceVersion): string {
 export function sourceVersionDetail(v: SourceVersion): string {
   if (!v.version) return [v.reason, v.hint].filter(Boolean).join(" ") || "The source's version could not be read.";
   const how = sourceVersionHow(v);
-  const short = engineName(v.engine, v.version, v.product);
+  const short = engineName(v.engine, v.version, v.product, v.server_base);
   const full = short.endsWith(` ${v.version}`) ? short : `${short} (${v.version})`;
   return [`${full}, ${how}.`, v.caveat].filter(Boolean).join(" ");
 }
@@ -252,7 +252,7 @@ export function ReplicationTopology({
               <span className="topology-eyebrow"><ServerGlyph />Replica</span>
               <strong className="topology-host">{connection.host || "This server"}</strong>
               <span className="topology-meta">
-                Port {connection.port || 3306} · {engineName(report.engine, report.server_version || "", report.server_product)}
+                Port {connection.port || 3306} · {engineName(report.engine, report.server_version || "", report.server_product, report.server_base)}
               </span>
               {gtid ? <span className="topology-meta">GTID mode {String(gtid)}</span> : null}
               <span className={`topology-lag tone-${tone}`} title={report.summary.lag_max_s == null ? undefined : `${report.summary.lag_max_s} seconds`}>

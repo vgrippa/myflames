@@ -28,7 +28,8 @@ IDENTITY_NAMES = frozenset(('server_id', 'server_uuid', 'hostname', 'port', 'ext
     'wsrep_node_address', 'wsrep_cluster_address', 'wsrep_data_home_dir'))
 _ITEM_FIELDS = ('name', 'value', 'default', 'type', 'values', 'apply_type', 'dynamic', 'source',
                 'source_label', 'scope', 'modifiable', 'group', 'truncated', 'redacted')
-_SERVER_FIELDS = ('host', 'port', 'engine', 'flavor', 'server_product', 'server_version', 'profile_id', 'profile_name')
+_SERVER_FIELDS = ('host', 'port', 'engine', 'flavor', 'server_product', 'server_version', 'server_base',
+                  'profile_id', 'profile_name')
 
 
 class BoundedConnection(object):
@@ -131,6 +132,8 @@ def validate_snapshot(value):
     for key, item in clean['server'].items():
         if key != 'port' and item is not None and not isinstance(item, str):
             raise ValueError('Invalid server metadata.')
+    if clean['server'].get('server_base') not in ('mysql', 'percona', None):
+        raise ValueError('Invalid server base in the parameter snapshot.')
     if not isinstance(value.get('notes', []), list) or type(value.get('complete')) is not bool:
         raise ValueError('Invalid snapshot notes or completeness.')
     clean['notes'] = [n for n in clean['notes'] if not n.startswith(_CONFIG_NOTE_PREFIXES)]
@@ -212,6 +215,8 @@ def capture(conn, server=None, label='', full_provider_options=False):
     identity.update(engine=report['engine'], flavor=report.get('flavor'),
                     server_product=report.get('server_product') or report.get('product'),
                     server_version=report.get('server_version'))
+    if 'server_base' in report:
+        identity['server_base'] = report['server_base']
     identity.update({k: server[k] for k in ('profile_id', 'profile_name') if server and k in server})
     catalog = report['parameters']
     # parameters-1.0 has check associations rather than a group field today.

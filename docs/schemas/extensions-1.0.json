@@ -1,0 +1,620 @@
+{
+  "type": "object",
+  "required": [
+    "schema_version",
+    "engine",
+    "flavor",
+    "server_product",
+    "server_version",
+    "taken_at",
+    "uptime_s",
+    "performance_schema",
+    "available",
+    "reason",
+    "settings",
+    "status",
+    "extensions",
+    "other_variables",
+    "other_variables_truncated",
+    "summary",
+    "notes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "extensions-1.0"
+    },
+    "engine": {
+      "enum": [
+        "mysql",
+        "mariadb"
+      ]
+    },
+    "flavor": {
+      "enum": [
+        "mysql",
+        "percona",
+        "mariadb",
+        "readyset",
+        "villagesql"
+      ]
+    },
+    "server_product": {
+      "type": "string"
+    },
+    "server_base": {
+      "enum": [
+        "mysql",
+        "percona",
+        null
+      ]
+    },
+    "server_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 2000
+    },
+    "taken_at": {
+      "type": "string"
+    },
+    "uptime_s": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "performance_schema": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "available": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 2000
+    },
+    "settings": {
+      "type": "object",
+      "required": [
+        "veb_dir",
+        "preview_extensions",
+        "server_protocol",
+        "schema_version",
+        "codebase",
+        "build"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "veb_dir": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        },
+        "preview_extensions": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "server_protocol": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "schema_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "codebase": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "build": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "git_sha",
+            "is_dirty"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "git_sha": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 256
+            },
+            "is_dirty": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "object",
+      "required": [
+        "veb_cache_repaired",
+        "install_count",
+        "uninstall_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "veb_cache_repaired": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "install_count": {
+          "description": "Install and update requests (Com_install_extension): INSTALL EXTENSION and ALTER EXTENSION ... AT RESTART share this command counter; it does not count successful installations.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "uninstall_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "extensions": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/extension"
+      },
+      "maxItems": 1000
+    },
+    "other_variables": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/definitions/variable"
+      },
+      "maxItems": 1000
+    },
+    "other_variables_truncated": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "installed",
+        "pending",
+        "failing",
+        "deprecated_protocol",
+        "unsupported_protocol"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "installed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "pending": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "failing": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "deprecated_protocol": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "unsupported_protocol": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "extensions-1.0.json",
+  "title": "Read-only VillageSQL extension inventory",
+  "definitions": {
+    "variable": {
+      "type": "object",
+      "required": [
+        "name",
+        "value",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        },
+        "kind": {
+          "enum": [
+            "system",
+            "status"
+          ]
+        }
+      }
+    },
+    "column": {
+      "type": "object",
+      "required": [
+        "schema",
+        "table",
+        "column",
+        "data_type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "table": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "column": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      }
+    },
+    "routine": {
+      "type": "object",
+      "required": [
+        "schema",
+        "routine",
+        "routine_type",
+        "parameter",
+        "data_type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "routine": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "routine_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "parameter": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "data_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      }
+    },
+    "pending": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "version",
+        "requested_at",
+        "last_error",
+        "error_truncated",
+        "last_error_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "requested_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        },
+        "error_truncated": {
+          "type": "boolean"
+        },
+        "last_error_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      }
+    },
+    "extension": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "pending",
+        "protocol",
+        "protocol_state",
+        "protocol_note",
+        "sdk_version",
+        "functions",
+        "types",
+        "functions_truncated",
+        "types_truncated",
+        "columns",
+        "routines",
+        "variables",
+        "variables_truncated"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "pending": {
+          "$ref": "#/definitions/pending"
+        },
+        "protocol": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "protocol_state": {
+          "enum": [
+            "current",
+            "deprecated",
+            "unsupported",
+            "unknown"
+          ]
+        },
+        "protocol_note": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2000
+        },
+        "sdk_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "functions": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "maxItems": 200
+        },
+        "types": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "maxItems": 200
+        },
+        "functions_truncated": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "types_truncated": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "columns": {
+          "type": "object",
+          "required": [
+            "count",
+            "sample",
+            "truncated"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "sample": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/column"
+              },
+              "maxItems": 50
+            },
+            "truncated": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        },
+        "routines": {
+          "type": "object",
+          "required": [
+            "count",
+            "sample",
+            "truncated"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "sample": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/routine"
+              },
+              "maxItems": 50
+            },
+            "truncated": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        },
+        "variables": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/variable"
+          },
+          "maxItems": 1000
+        },
+        "variables_truncated": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "description": "Null means unknown or unreadable; zero and empty arrays require a successful read. Dependency counts are unknown when the global row limit is reached. Text is bounded and never markup."
+}

@@ -1,0 +1,15 @@
+vsql_ai	0.0.8	NULL	NULL	NULL	NULL
+vsql_boolean	0.0.3	NULL	NULL	NULL	NULL
+vsql_complex	0.0.1	NULL	NULL	NULL	NULL
+vsql_crypto	0.0.8	NULL	NULL	NULL	NULL
+vsql_cube	0.0.8	NULL	NULL	NULL	NULL
+vsql_fuzzystrmatch	0.0.2	NULL	NULL	NULL	NULL
+vsql_http	0.0.4	NULL	NULL	NULL	NULL
+vsql_network_address	0.0.8	NULL	NULL	NULL	NULL
+vsql_oauth2	0.0.5	NULL	NULL	NULL	NULL
+vsql_rest	0.0.11	NULL	NULL	NULL	NULL
+vsql_simple	0.0.1	NULL	NULL	NULL	NULL
+vsql_trgm	0.0.5	NULL	NULL	NULL	NULL
+vsql_tvector	0.0.1	NULL	NULL	NULL	NULL
+vsql_uuid	0.0.9	NULL	NULL	NULL	NULL
+vsql_vector	0.0.1	NULL	NULL	NULL	NULL

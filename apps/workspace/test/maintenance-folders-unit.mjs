@@ -24,7 +24,9 @@ const perfUrl = moduleUrl('export const Duration = null;');
 const opsUrl = moduleUrl('export const chooseBackupDirectory = null, factText = null;');
 // OpsShared re-exports Commands from its own module; the folder helpers do not use it.
 const commandsUrl = moduleUrl('export const Commands = null;');
+const identityUrl = moduleUrl(await compile('serverIdentity.ts'));
 const source = (await compile('OpsShared.tsx'))
+  .replace('"./serverIdentity"', JSON.stringify(identityUrl))
   .replace('"./Commands"', JSON.stringify(commandsUrl))
   .replace('"react/jsx-runtime"', JSON.stringify(pathToFileURL(require.resolve('react/jsx-runtime')).href))
   .replace('"react"', JSON.stringify(pathToFileURL(require.resolve('react')).href))
@@ -150,6 +152,70 @@ try {
   assert.equal(autoRevealDump({ id: 'j1', directory: '/Users/dba/app-2026-11-06' }, true, new Set(['j1']), false), false, 'once per job');
   assert.equal(autoRevealDump({ id: null, directory: '/Users/dba/x' }, true, new Set(), false), false);
   assert.equal(autoRevealDump({ id: 'j2' }, true, new Set(), false), false, 'no folder for failed dumps, restore or clone');
+  // Evaluate the exact dropdown expression, including its fallback while
+  // target discovery is pending or unavailable. No upstream releases are
+  // invented for a product whose backend deliberately withholds them.
+  const maintenanceText = await fs.readFile(new URL('../src/Maintenance.tsx', import.meta.url), 'utf8');
+  const maintenanceAst = ts.createSourceFile('Maintenance.tsx', maintenanceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const findNodes = matches => {
+    const found = [];
+    const visit = node => { if (matches(node)) found.push(node); ts.forEachChild(node, visit); };
+    visit(maintenanceAst);
+    return found;
+  };
+  const targetNode = findNodes(node => ts.isVariableDeclaration(node) && node.name.getText(maintenanceAst) === 'targetOptions');
+  assert.equal(targetNode.length, 1);
+  const targetCode = ts.transpileModule(`const targetOptions = ${targetNode[0].initializer.getText(maintenanceAst)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  const targetOptionsFor = (targetReport, tools) => new Function('targetReport', 'tools', 'versions', 'suggestedTarget', 'shellBlocked', 'shellNeeds',
+    targetCode + '\nreturn targetOptions;')(targetReport, tools, ['9.6.0'], null, () => false, () => '');
+  const village = { engine: 'mysql', flavor: 'villagesql', product: 'VillageSQL', version: '8.4.11-villagesql-0.0.8' };
+  assert.deepEqual(targetOptionsFor({ server: village, targets: [] }, { server: village }), [],
+    'an empty VillageSQL target list never reintroduces the installed upstream Shell');
+  assert.deepEqual(targetOptionsFor(null, { server: village }), [], 'VillageSQL keeps no fallback while target discovery is unavailable');
+  for (const flavor of ['mysql', 'percona', 'readyset']) {
+    const server = { engine: 'mysql', flavor };
+    assert.deepEqual(targetOptionsFor({ server, targets: [] }, { server }), [['9.6.0', '9.6.0']], `${flavor} keeps its fallback`);
+  }
+  assert.deepEqual(targetOptionsFor({ server: { engine: 'mariadb' }, targets: [] }, null), []);
+  assert.deepEqual(targetOptionsFor({ server: { engine: 'mysql', flavor: 'percona' },
+    targets: [{ version: '8.4.11-11', path_label: 'patch' }] }, null), [['8.4.11-11', '8.4.11-11 · patch']]);
+  const dumpNode = findNodes(node => ts.isVariableDeclaration(node) && node.name.getText(maintenanceAst) === 'dumpToolOptions');
+  assert.equal(dumpNode.length, 1);
+  const dumpStatement = dumpNode[0].parent.parent;
+  const dumpStatements = dumpStatement.parent.statements;
+  const dumpIf = dumpStatements[dumpStatements.indexOf(dumpStatement) + 1];
+  assert.ok(ts.isIfStatement(dumpIf), 'execute the actual dump tool option block');
+  const dumpCode = ts.transpileModule(dumpStatement.getText(maintenanceAst) + '\n' + dumpIf.getText(maintenanceAst), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  const dumpOptionsFor = (server, offered, installedShell = true) => {
+    const tools = { server, offered: { dump: offered } };
+    const rawTools = { used: installedShell ? { shell: { version: '9.6.0' } } : {} };
+    return new Function('tools', 'rawTools', 'noDumpTool', 'sqlDumpOffered', dumpCode + '\nreturn dumpToolOptions;')(
+      tools, rawTools, !offered.length, offered.some(name => name !== 'mysqlsh'));
+  };
+  assert.equal(dumpOptionsFor(village, ['mysqldump'])[0][1], 'Automatic (mysqldump)',
+    'detected Shell cannot be advertised when it is not offered for VillageSQL dumps');
+  assert.equal(dumpOptionsFor({ engine: 'mysql' }, ['mysqlsh', 'mysqldump'])[0][1], 'Automatic (MySQL Shell 9.6.0 first)');
+  assert.equal(dumpOptionsFor({ engine: 'mysql' }, ['mysqlsh'], false)[0][1], 'Automatic (MySQL Shell first)');
+  assert.equal(dumpOptionsFor({ engine: 'mariadb' }, ['mariadb-dump'])[0][1], 'Automatic (mariadb-dump)');
+  assert.deepEqual(dumpOptionsFor(village, []), [], 'no available dump tool invents no option');
+  const dumpReason = findNodes(node => ts.isJsxExpression(node) && ts.isBinaryExpression(node.expression)
+    && node.expression.right.getText(maintenanceAst).startsWith('<p')
+    && node.expression.right.getText(maintenanceAst).includes('MySQL Shell cannot dump VillageSQL custom data types'));
+  assert.equal(dumpReason.length, 1, 'the dump form explains the custom-type incompatibility');
+  const reasonCode = ts.transpileModule('const reason = ' + dumpReason[0].expression.getText(maintenanceAst), {
+    compilerOptions: { target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React, jsxFactory: 'jsx' },
+    fileName: 'reason.tsx',
+  }).outputText;
+  const dumpReasonFor = server => new Function('tools', 'jsx', reasonCode + '\nreturn reason;')(
+    { server }, (type, props, ...children) => ({ type, props, children }));
+  assert.match(dumpReasonFor(village).children.join(''), /MySQL Shell cannot dump VillageSQL custom data types.*use mysqldump/);
+  assert.equal(dumpReasonFor({ engine: 'mysql', flavor: 'mysql' }), false, 'other products get no VillageSQL warning');
+  console.log('PASS maintenance dump selector names offered tools and explains VillageSQL custom types');
+  console.log('PASS maintenance upgrade targets preserve VillageSQL withholding and other-product choices');
   console.log('PASS maintenance reported and estimated progress, over-estimate and unknown output, snapshot rates and elapsed clocks');
   console.log('PASS maintenance folder names, local date, collisions, reserved paths, Windows roots and read-only suggestions');
   console.log('PASS maintenance acknowledgement request omission and exact reviewed-plan round trip');

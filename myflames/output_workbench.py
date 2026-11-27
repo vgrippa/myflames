@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 from ._labels import fit_label
-from .parser import xml_escape, render_info_panel
+from .parser import is_knn_scan, knn_description, xml_escape, render_info_panel
 
 BOX_W = 256
 BOX_H = 126
@@ -88,6 +88,8 @@ def _edge_chip_width(text):
 def _kind(node):
     """Use explicit metadata first; operation text covers normalized MariaDB."""
     d = node.get("details") or {}
+    if is_knn_scan(d):
+        return "index"
     access = str(d.get("access_type") or "").lower()
     index = str(d.get("index_access_type") or "").lower()
     op = str(d.get("operation") or node.get("full_label") or "").lower()
@@ -257,6 +259,7 @@ def _details(node, evidence=None):
     miss = _misestimate(d)
     fields = [
         ("Operation", node.get("full_label") or node.get("short_label") or "Unknown"),
+        ("Index read", knn_description(d)),
         ("Actual rows / loop", d.get("actual_rows")),
         ("Estimated rows / loop", d.get("estimated_rows")),
         ("Row estimate", miss.get("text") if miss else None),

@@ -53,6 +53,7 @@
                 }
               ]
             },
+            "server_base": {"enum": ["mysql", "percona", null]},
             "server_product": {
               "oneOf": [
                 {
@@ -165,6 +166,7 @@
                 }
               ]
             },
+            "server_base": {"enum": ["mysql", "percona", null]},
             "server_product": {
               "oneOf": [
                 {
