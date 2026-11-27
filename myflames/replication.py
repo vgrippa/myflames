@@ -2151,6 +2151,26 @@ def _mariadb_plan(plan, report, channel):
 
 # ---- the guarded write -----------------------------------------------------------
 
+def check_loop_expect(expect):
+    """The reviewed node, independent of the failures a loop may later skip."""
+    if not isinstance(expect, dict) or not isinstance(expect.get("server_identity"), dict):
+        raise ValueError("Send the reviewed server identity for the skip loop. Nothing was sent.")
+    engine, identity = expect.get("engine"), dict(expect["server_identity"])
+    # Reuse the identity requirements of the write packets. A missing UUID
+    # or incomplete MariaDB identity cannot authorize a loop.
+    dbops.target_session_guard(engine, identity)
+    return {"engine": engine, "server_identity": identity}
+
+
+def loop_target_problem(report, expect):
+    """Refuse a different node before adopting any initial loop baseline."""
+    current = report.get("server_identity") or (report.get("settings") or {}).get("server_identity")
+    if report.get("engine") != expect["engine"] or current != expect["server_identity"]:
+        return ("The server identity changed after you reviewed the skip loop. Nothing was sent; "
+                "refresh replication and review the loop again.")
+    return None
+
+
 def check_expect(expect):
     """Require the whole confirmed identity, including explicit null fields."""
     message = ("Send the complete identity you confirmed: channel, method, failure fields, source, and a "
@@ -2847,7 +2867,7 @@ class SkipLoop(object):
     def __init__(self, conn, channel, codes, max_skips, max_duration_s=None, poll_s=LOOP_DEFAULT_POLL_S,
                  decision=None, audit_factory=None, identity=None, clock=None, sleep=None, on_event=None,
                  settle_s=SETTLE_S, close_conn=False, decision_reader=None, receiver_reader=None,
-                 receiver_required=False):
+                 receiver_required=False, expect=None):
         if not isinstance(channel, str) or len(channel) > 256:
             raise ValueError("Choose the channel to watch by its name.")
         # Receiver checks run from status-guard callbacks as well as between
@@ -2864,6 +2884,7 @@ class SkipLoop(object):
         self.decision_reader = decision_reader
         self.receiver_reader = receiver_reader or read_receiver_identity
         self.identity = identity
+        self.expect = check_loop_expect(expect) if expect is not None else None
         self.settle_s = settle_s
         self.close_conn = close_conn
         self.on_event = on_event
@@ -2910,7 +2931,8 @@ class SkipLoop(object):
             report = self._read_status(self.conn)
             self.conn.check()
             self._engine, self._server_version = report.get("engine"), report.get("server_version")
-            problem = self._receiver_guard(report)
+            target_problem = loop_target_problem(report, self.expect) if self.expect is not None else None
+            problem = ("config_changed", target_problem) if target_problem else self._receiver_guard(report)
             self.conn.check()
         except (ConnectorError, ValueError) as exc:
             problem = ("connection_lost", str(exc))
@@ -3041,6 +3063,10 @@ class SkipLoop(object):
 
     def _changed(self, report, channel):
         """A stop reason when the server or the channel changed under the loop."""
+        if self.expect is not None:
+            problem = loop_target_problem(report, self.expect)
+            if problem:
+                return "config_changed", problem
         uptime = report.get("uptime_s")
         if self._last_uptime is not None and uptime is not None and uptime < self._last_uptime:
             return "server_restarted", None

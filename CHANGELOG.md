@@ -22,4 +22,9 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- ProxySQL changes now check the reviewed instance's UUID in the same login that sends the change. A different or unreadable identity refuses the action before any change and records the refusal in the audit log. ProxySQL 2.x and 3.x remain available for inspection; reviewed changes require 2.4.0 or later and a readable instance UUID. Without it, changes stay listed and disabled, and clicking one explains the reason and fix.
+- **Skip until stopped** now binds its start confirmation to the reviewed replica. A missing, expired or changed review, or a server identity that changes before the loop starts, refuses the loop without skipping a transaction and records the refusal in the audit log.
+
 ### Known issues
+
+- Readyset actions still recheck status in a separate login before sending changes. A target switch between that check and the send is not detected; same-login instance verification requires further connection support.

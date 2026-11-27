@@ -16,8 +16,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { assertPrivilege as assertPrivilegeState, privilegeAnswer, load, open, pause } from "./perf-harness.mjs";
 
-// Older live recordings predate receiver coverage. Add explicitly synthetic
-// coverage, leaving their recorded transaction identities and SQL untouched.
+// Older live recordings predate receiver coverage and reviewed loop targets.
+// Add explicitly synthetic coverage and target identity, keeping recorded SQL.
 function receiverGuard(engine, enabled) {
   const instrument = engine === "mariadb" ? "stage/sql/Checking master version" : "stage/sql/Checking source version";
   return {
@@ -32,7 +32,12 @@ function withReceiverGuard(report, enabled) {
   const next = structuredClone(report);
   const guard = receiverGuard(report.engine, enabled);
   Object.assign(next, guard);
-  for (const channel of next.channels) if (channel.skip_plan) Object.assign(channel.skip_plan, guard, { review_token: "review-skip" });
+  for (const channel of next.channels) if (channel.skip_plan) {
+    Object.assign(channel.skip_plan, guard, { review_token: "review-skip", loop_review_token: "review-loop" });
+    channel.skip_plan.identity.server_identity ??= report.engine === "mariadb"
+      ? { server_id: "1", hostname: "fixture-db", port: "3306" }
+      : { server_uuid: "11111111-2222-3333-4444-555555555555" };
+  }
   return next;
 }
 
@@ -95,6 +100,8 @@ const h = await open("/api/live/replication", "replication", {
       : { status: 200, body: { schema_version: "replication-skip-loop-1.0", loops: registry.get(endpoint(body.connection)) || [] } },
   [START]: (body) => {
     assert.ok(["on", "off"].includes(body.receiver_guard), "Start echoes the confirmed coverage mode");
+    assert.equal(body.review_token, "review-loop", "Start passes the loop review token, not the single-skip token");
+    assert.ok(body.expect?.server_identity, "Start carries the reviewed server identity");
     const running = { ...loopRunning, ...receiverGuard("mysql", body.receiver_guard === "on") };
     registry.set(endpoint(body.connection), [running]);
     return { status: 200, body: running, delay: 50 };
@@ -428,6 +435,8 @@ try {
   const startBody = calls(START)[0].body;
   assert.deepEqual([startBody.channel, startBody.codes, startBody.max_skips, startBody.max_minutes, startBody.confirmed], ["", [1062], 2, 10, true]);
   assert.equal(startBody.receiver_guard, "off");
+  assert.deepEqual(startBody.expect, { engine: plan.engine, server_identity: plan.identity.server_identity });
+  assert.equal(startBody.review_token, plan.loop_review_token);
   await closedSheet();
   await page.waitForSelector(`${view} .ops-loop[data-loop=running]`);
   assert.match(loopRunning.message, /^Skipping 1062 on channel '': 1 skipped since \d\d:\d\d UTC\.$/);

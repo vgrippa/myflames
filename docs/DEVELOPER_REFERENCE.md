@@ -2060,7 +2060,7 @@ request supplies no password.
 
 ### Reviewed actions and session ownership
 
-Kill preparation, single replication skips, and lifecycle plans
+Kill preparation, single replication skips, skip-loop starts, and lifecycle plans
 carry a server-issued review token. Its registry holds at most 256 entries for
 300 seconds. Tokens bind the operation, connection identity and policy, and
 reviewed details. Every review on a Group connection, including Accounts and
@@ -2121,8 +2121,10 @@ AdminAPI manages its own member connections. A different identity
 throws `MYFLAMES_IDENTITY_MISMATCH`; `ShellWriter` maps that first-line
 exception to a refusal with `sent: []`. Its guard is reviewed, token-bound and
 audited like the SQL prefix, and later error line numbers exclude it.
-ProxySQL Admin and Readyset actions do not expose these identity variables
-and retain their own protocol contracts.
+ProxySQL Admin checks its persisted UUID with an Admin-local SQLite guard
+in the same batch login as the changes (see [ProxySQL](#proxysql)). Readyset
+retains its separate status re-read; its public-key `SHOW` cannot serve as a
+conditional identity guard in the batch sender (see [Readyset](#readyset)).
 
 Group Cluster reviews also bind `expect.target`: the target's saved
 `profile_id`, `profile_name`, every stored endpoint field (host, port, user,
@@ -2849,6 +2851,15 @@ desktop launcher.
   tool groups is read, one more is not).
 
 ### Write safety and audit
+
+ProxySQL Admin changes bind the persisted instance UUID and prepend a
+conditional SQLite identity check to the same non-reconnecting client login.
+A guard error stops the batch before any reviewed change and finishes the
+audit as `refused`. Readyset still has a separate-login status re-read, so a
+target swap after that read is not covered. Replication skip-loop startup
+requires its own one-use review token and checks the reviewed server identity
+before adopting the first loop baseline; individual skips retain their
+existing guarded write packets.
 
 `myflames/dbops.py` is the one safety layer for every statement that changes
 server state (db-operations skill). Editor run reviews also bind the **On error** mode through `editor_session._review_digest`: a Stop review cannot authorize Continue, or the reverse; changing the mode requires a fresh review. Its parts:
@@ -7153,6 +7164,22 @@ Backend `myflames/lifecycle.py` (contract and evidence: the server-lifecycle ski
 
 ### Replication: status, skip, skip-loop
 
+`POST /api/live/replication` adds `loop_review_token` to each available
+channel `skip_plan`. It binds operation `replication_skip_loop`, the connection
+identity and policy, the channel, `expect: {engine, server_identity}` from
+that plan, and the reviewed `receiver_guard` mode. `skip-loop/start` requires
+that token as `review_token` and the same `expect` and mode, after the write
+policy gate and before opening a connection. Missing, changed, expired or
+used tokens are audited refusals with no login. The token is consumed after
+the startup preflight and before registration. A mismatched preflight target
+refuses with nothing sent; `SkipLoop(expect=...)` also checks before its first
+receiver read and on every iteration, including the first, and stops with
+`config_changed` and a refusal audit if the reviewed node no longer matches.
+The workspace forwards the token and identity from the reviewed plan, not a
+replacement token from its final refresh. Loop options remain bounded by the
+existing validators; the token authorizes the reviewed node and channel,
+while the confirmation selects error codes and limits.
+
 Status and receiver-coverage reads for a loop confirmation share one
 `TargetEvidenceConnection`. Workspace and deprecated CLI loop startup pass
 that same scope into `SkipLoop`, which retains it for initial receiver reads
@@ -7760,6 +7787,49 @@ and a fresh read that supersedes the displayed catalog).
 
 ### ProxySQL
 
+The place reads ProxySQL 2.x and 3.x. Reviewed actions require ProxySQL
+2.4.0 or later and a valid persisted instance UUID, read with
+`SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'`.
+`read_status.server_identity` and every action's `expect.server_identity`
+carry `{uuid}`. This is separate from detecting the product by its version.
+Upstream [ProxySQL 2.4.0 introduced node UUIDs](https://github.com/sysown/proxysql/releases/tag/v2.4.0);
+[`load_or_update_global_settings(configdb)` persists them](https://github.com/sysown/proxysql/blob/v2.4.0/lib/ProxySQL_Admin.cpp#L6251-L6324).
+The persisted UUID is available in 2.4.x and later 2.x releases and in 3.x;
+upstream releases before 2.4.0 lack it and cannot apply changes. Status remains
+readable when the UUID is unavailable. `action_catalog(report, target)` keeps
+the actions that the readable configuration supports listed in the report's
+place, server and rule `actions` arrays. When the UUID is missing, malformed
+or unreadable, `report.message` contains one shared reason and fix for those
+actions: upgrade a release before 2.4.0, or check the admin account's access
+to a valid UUID in `disk.global_settings` and refresh. `available_actions`
+returns no executable changes in that case, and `plan_action` raises
+`ActionUnavailable` with the same reason and fix. Eligibility uses the same
+UUID validation as the in-login guard; a version or configuration fingerprint
+never substitutes for an instance identity. `ProxySqlPlace.tsx` applies the
+message to every change button, including Load and Save: the buttons stay
+focusable with `aria-disabled` and an `aria-describedby` explanation, and
+click, Enter or Space opens `WhyDisabled` without planning or sending SQL.
+Copying a data directory can duplicate this UUID, just as copying MySQL's
+UUID can duplicate its identity.
+
+`plan.session_guard` is derived from that UUID and bound by the review token.
+`_IdentityBoundAdmin` prepends it to the unchanged reviewed statements in one
+`run_write` call; `_IdentityAudit` records the same prefix. The guard is
+`INSERT INTO global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE (SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '<reviewed UUID>';`.
+The UUID must match the hexadecimal UUID regex before it is put in SQL.
+A matching UUID inserts no rows; an absent or different UUID attempts to insert
+NULL and fails the `global_variables.variable_name` NOT NULL constraint, so
+neither outcome changes a row. ProxySQL Admin reports this DML constraint
+error (verified on 3.0.11); it can swallow runtime errors from SELECT guards.
+The batch client has no `--force` or reconnect, so the error stops the batch
+before UPDATE, LOAD or SAVE. A definite server error on the first line is
+audited as `refused`, with outcome `identity_mismatch` for
+`NOT NULL constraint failed: global_variables.variable_name` or
+`identity_unavailable` otherwise, and every action statement `not_sent`.
+Later error lines exclude the guard; partial and unknown outcomes keep their
+existing meanings. This guard checks the local Admin instance, not a routed
+backend, and does not replace the fresh configuration comparison.
+
 Group connection reads, plans, fresh apply reads, reviewed sends and after
 reads use `ui._group_guarded_connection`. Each client login rechecks current
 group consent. Apply also binds the reviewed connection identity and effective
@@ -7804,6 +7874,18 @@ A row change refuses while the module has other changes in memory (LOAD would ap
 `myflames/reviewed_writes.py`, `apps/workspace/src/ActionReview.tsx` and `apps/workspace/src/CatalogActions.tsx`. Catalog refusal now covers both Cluster and Readyset: `ActionUnavailable` (defined as a `ValueError` subclass in `myflames/reviewed_writes.py` and re-exported by `myflames/cluster.py` for `ui.request_error_text`) carries the catalog entry's `why_not` and `fix` (plus Cluster's `grant_sql` when present) straight through HTTP 400 unchanged with no review token. In the workspace, `CatalogActions.tsx` (`ActionGroup`) renders complete catalogs for both Cluster and Readyset: every action stays visible and focusable (`aria-disabled`), with `why_not` and `fix` in a visually hidden `aria-describedby` description and in a `WhyDisabled` message anchored to the button that click, Enter or Space opens, while a client-side `blocked` reason (stale or failed report, paused reads, write policy, read-only connection) disables every action with one line. Plan: the module reads and plans (exact statements, `expect`, `typed_guard`, `facts`, `warnings`, `undo`, `changes`, `next`); `ui._action_response` adds `policy` from `dbops.decide(worst_kind(statements))` (every statement is risky, so Production and Development both confirm and Read-only answers `refuse`) and a review token over the plan without `review_token` and `policy` (`reviewed_writes.review_details`). Action: `check_reviewed` (a dict with an action and 1 to 10 complete statements; MySQL/MariaDB identity packets permit multi-line SQL, while Admin interfaces require single-line statements), the policy gate before any connection (refused and audited: `read_only`, `needs_confirmation`), the token consumer (missing, expired, used or changed: refused and audited as `review`), the saved password, then `execute`: plan again from a fresh read (not offered any more or disabled: refused `changed`), compare statements and `expect` (refused `changed`), the typed guard (refused `typed_guard`), read the saved policy again (`ui._action_response` `before_send`: a profile made Read-only or another type since the request refuses as `policy_changed`), consume the token, write the pending audit record (failure sends nothing), one `run_write` with the statements joined by newlines (`--comments --binary-mode`, stdin, no reconnect; batch mode stops at the first error), then: `done` with `after` (the state read again) and `next`. Only an error the client printed with its number decides a failure: `failed` when a server error (any number but the client's 2000 to 2999) names line 1, or for an initial connection/login error without a line or private acknowledgement (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005 or 2026; audit outcome `not_connected`); `partial` when a server error names line N > 1 (`sent`, `not_sent`). The mysql and MariaDB clients add "at line N" once they have read a statement (client/mysql.cc `put_info`). Everything else is `unknown` (audit `unknown`, outcome `timeout` or `no_reply`; never retried): a time limit, an interrupt, a client error at a line (2013, 2006), a line past the last statement, and a client that ended without printing an error number (killed or crashed after the server may have run every statement). Envelope `proxysql-action-1.0` / `cluster-action-1.1` / `readyset-action-1.0`: `{schema_version, action, status, message, statements, sent, not_sent, error, after, undo, next, audit_id, policy, states, effect, checks}`: `states` is each statement's final state (`done`, `failed`, `not_run`, `not_sent`, `unknown`; `done` only for statements the server answered), `effect` the rows `[what, before, now]` the module builds from the read before the send (captured in its fresh plan) and the read after (`proxysql._effect`: the changed field of the configuration row, Runtime, the rule in memory and runtime, memory versus runtime and disk; `cluster._effect`: Primary, the member's state, `wsrep_desync` and state, Component or Group mode; a missing value says why, never "Not readable": "No member reported the PRIMARY role in the view read here" for the primary, and after stop or start a missing member state is "The read after the action failed", told apart from a server that reported no value; `readyset._effect`: Readyset status, Replication status, Replication offset on `set_replication_position`, Caches count, Proxied queries count on `drop_all_proxied_queries`, changed Table statuses up to 5, and changed allowlists), null when the read after failed or the outcome is not done; `checks` comes from the plan (`proxysql._checks`, `cluster._checks`, `readyset`: what to refresh and look at, and that the Audit log keeps it as Outcome unknown). Plans also carry `timeout_s` (60 for ProxySQL, 120 for Cluster, 30 for Readyset). Progress (`reviewed_writes.Progress`, kept by `ProgressRegistry` on the workspace: at most 64, ten minutes after their last change): the action request may carry `progress_id` (16 to 64 of `[A-Za-z0-9_-]`; missing, invalid or reused means only that no progress is kept), and `POST /api/live/action/progress {progress_id}` (no connection, not in `_CONNECTION_PATHS`) returns `action-progress-1.0` `{phase received|checking|sending|reading|finished|unknown, states, status, elapsed_s, waiting_s, timeout_s}`: received (policy gate and token), checking (the fresh read and plan), sending (the pending audit record is written and every statement is `sent`: with the server, it may run), reading (the server answered; final states) and finished; a refusal finishes with `not_sent`, an exception after sending with `unknown`. No SQL, no credentials. The sheet: eyebrow (statement verb), question title, the description, the target, Connection (label with address), Type, the facts, Undo, the policy text, warnings, the statements exactly as sent, the differences (`changes`), a typed name field when needed; Cancel and Escape call `recordDeclined` (`proxysql_action`, `cluster_action` or `readyset_action`, the statements, the connection, the action, target and `expect`); a confirm the workspace stops itself (the saved connections cannot be read, or name another policy) posts the same to `/api/audit/declined` with `reason` `policy_unknown` or `policy_changed`, recorded as refused; a connection change closes and audits an open sheet; confirm re-reads the saved connections (`useWritePolicy().check()`) and refuses locally when the key changed; a reply below 500 means nothing was sent unless the last progress read was sending or reading; no reply or a 500 is Outcome unknown, never retried. After Confirm the same sheet stays (no second dialog): `confirm()` makes a 128-bit hex `progress_id`, polls the progress every 400 ms while the request runs, and the sheet shows the phase line (the seconds waited counted from the first sending snapshot, with `timeout_s`), each statement with its state (a spinner on Sent), the confirm button reading Sending… with `aria-busy` and duplicate clicks ignored. After ten seconds without a reply, Close and Escape can hide the sheet (`onLeave`) while the request continues; a pending line in the view retains its start time and connection label. A late reply replaces it with the result panel without reopening the sheet or resending the statements. On the answer: the outcome pill and message, the statements' final states, What changed (`effect`), What to check (`checks`, for unknown), the undo for partial or unknown, the Audit log line with Open the Audit log (the `myflames-open-audit` event with `audit_id`; `main.tsx` opens the Audit log with that record selected, `AuditLog focusId`), and ConfirmSheet's `doneLabel` mode: the next change (Save … to disk…) as secondary and Close focused, no Cancel; Close records nothing. The result panel in the view keeps the result (with an Audit log button). A planning error or a Read-only plan shows in the view and opens no sheet. Values (weight, hostgroup) are asked first in a small sheet with bounds and the current value; nothing is planned until Review.
 
 ### Readyset
+
+Instance binding remains a known limitation: the status re-read before apply
+uses a separate client login from the send. Product version, port role and
+cache/configuration state cannot distinguish otherwise identical instances,
+and a proxied `@@server_uuid` identifies the upstream, not Readyset.
+[Readyset's MySQL handler](https://github.com/readysettech/readyset/blob/9f21608e384aa61628c7ea25d968455d882daa2e/readyset-mysql/src/query_handler.rs#L1042)
+exposes `SHOW READYSET RSA PUBLIC KEY`; its authentication key is immutable
+within a process and [persisted when a deployment directory is available](https://github.com/readysettech/readyset/blob/9f21608e384aa61628c7ea25d968455d882daa2e/mysql-srv/src/authentication.rs#L62).
+That `SHOW` result is not an SQL expression usable in a conditional guard.
+The current batch sender cannot compare it before supplying the changes;
+closing this gap requires a persistent read/check/send connection facility.
+Keep the current re-read and review-token checks until that facility exists.
 
 Group connection status, explain-cache, cache export and plan reads use the
 read consent guard; reviewed actions use the same per-login check with the

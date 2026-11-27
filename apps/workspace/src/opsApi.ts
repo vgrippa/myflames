@@ -31,11 +31,13 @@ export type SkipIdentity = {
   gtid: string | null;
   position: Facts;
   source: Facts;
+  server_identity: Facts;
 };
 /** The product family: Percona Server and Percona XtraDB Cluster are MySQL builds (engine "mysql"). */
 export type Flavor = "mysql" | "percona" | "mariadb";
 export type SkipPlan = Partial<ReceiverGuard> & {
   review_token?: string;
+  loop_review_token?: string;
   channel: string; engine: string; server_version: string | null;
   available: boolean; message: string | null; method: string | null;
   statements: string[]; identity: SkipIdentity; skip: Facts;
@@ -131,7 +133,11 @@ export const readReplication = (connection: Connection, signal?: AbortSignal) =>
 export const skipTransaction = (connection: Connection, plan: SkipPlan) => api<SkipResult>("live/replication/skip", {
   connection, channel: plan.channel, expect: plan.identity, statements: plan.statements, review_token: plan.review_token, confirmed: true,
 });
-export const startSkipLoop = (connection: Connection, channel: string, options: LoopOptions) => api<SkipLoop>("live/replication/skip-loop/start", { connection, channel, ...options, confirmed: true });
+export const startSkipLoop = (connection: Connection, plan: SkipPlan, options: LoopOptions) => api<SkipLoop>("live/replication/skip-loop/start", {
+  connection, channel: plan.channel, ...options, receiver_guard: plan.receiver_guard,
+  expect: { engine: plan.engine, server_identity: plan.identity.server_identity },
+  review_token: plan.loop_review_token, confirmed: true,
+});
 export const readSkipLoops = (connection: Connection, signal?: AbortSignal) => api<{ schema_version: string; loops: SkipLoop[] }>("live/replication/skip-loop/status", { connection }, signal);
 export const stopSkipLoop = (connection: Connection, job_id: string) => api<SkipLoop>("live/replication/skip-loop/stop", { connection, job_id });
 

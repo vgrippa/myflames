@@ -11,7 +11,8 @@ interface (port 6032 by default). It reads, never writes:
   @@version``, which Admin answers with the same version (Admin_Handler.cpp
   ``SELECT @@version`` interception; the ``version`` admin variable exists
   in 2.0.0, 2.7.3 and 3.0). A MySQL or MariaDB server, even one with a
-  ``mysql_servers`` table, has neither, so it is "not ProxySQL".
+  ``mysql_servers`` table, has neither, so it is "not ProxySQL". Reviewed
+  changes also bind the persisted UUID in ``disk.global_settings``.
 * the configuration in memory (``main.mysql_servers``, the monitor
   hostgroup tables, ``main.mysql_query_rules``), what ProxySQL runs
   (``runtime_*``), what is saved (``disk.*``), the connection pool
@@ -287,6 +288,14 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
     report = _not_proxysql(None, detail)
     report.update({"available": True, "is_proxysql": True, "message": None, "status_why": []})
     report["statements"] = ["SELECT admin-version", "SELECT @@version"]
+    identity_rows = reads.table("SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'",
+                                "disk.global_settings")
+    report["server_identity"] = {"uuid": identity_rows[0].get("variable_value")} if identity_rows and \
+        len(identity_rows) == 1 else {}
+    # Keep the report and its action catalog readable when this instance
+    # cannot be bound to a reviewed change. The place opens this shared
+    # reason on each disabled action; it does not hide the catalog.
+    report["message"] = _identity_block(report)
 
     globals_rows = reads.table("SELECT * FROM stats_mysql_global", "stats_mysql_global") or []
     values = dict((r.get("Variable_Name"), r.get("Variable_Value")) for r in globals_rows)
@@ -354,9 +363,9 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
         report["notes"].append("The configuration tables could not be read with this account (a stats-only "
                                "account reads the stats schema only), so no change is offered.")
     report["statements"] += reads.statements
-    report["actions"] = available_actions(report)
+    report["actions"] = action_catalog(report)
     for server in report["servers"]:
-        server["actions"] = available_actions(report, {"config": server.get("config_key")}) \
+        server["actions"] = action_catalog(report, {"config": server.get("config_key")}) \
             if server.get("config_key") else []
         server["action_notes"] = []
         if server.get("monitor") == "galera" and server.get("config_key"):
@@ -368,7 +377,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                 "Move to hostgroup is not offered: a row moved out of the %s monitor's hostgroups stays in its "
                 "runtime hostgroups (seen live on ProxySQL 3.0.11)." % MONITOR_WORD[server["monitor"]])
     for rule in report["query_rules"]:
-        rule["actions"] = available_actions(report, {"rule_id": rule["rule_id"]})
+        rule["actions"] = action_catalog(report, {"rule_id": rule["rule_id"]})
     from .replication import reached_host as _reached_host
     from .topology_links import classify_proxysql_topology
     obs_host = reached_host if reached_host is not None else _reached_host(conn)
@@ -837,8 +846,17 @@ def _compared(report, module, kind):
 
 
 def available_actions(report, target=None):
+    """The catalog entries executable now, including the instance guard."""
+    if _identity_block(report):
+        return []
+    return action_catalog(report, target)
+
+
+def action_catalog(report, target=None):
     """The changes offered for *target* ({"config": [hg, host, port]},
     {"rule_id": n}, or None for the place's own Load and Save actions).
+    A missing instance UUID keeps these entries listed, disabled together
+    by the report's message. :func:`available_actions` filters that block.
     Nothing without a readable configuration, and nothing for a module whose
     memory-versus-runtime comparison (and, to save, memory versus disk) is
     unknown: its LOAD or SAVE would copy rows nobody reviewed."""
@@ -953,8 +971,52 @@ def _identity(report, *copies):
     the module copies the statements depend on (never runtime servers, which
     the pool and the monitors change on their own)."""
     prints = report.get("fingerprints") or {}
-    return {"proxysql_version": report.get("version"),
+    return {"proxysql_version": report.get("version"), "server_identity": dict(report.get("server_identity") or {}),
             "fingerprints": dict((name, prints.get(name)) for name in copies)}
+
+
+def _valid_uuid(value):
+    return isinstance(value, str) and re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value) is not None
+
+
+def _identity_block(report):
+    """One reason and fix for all changes, using the guard's UUID rules.
+
+    Version only explains the fix. A version string never substitutes for
+    the persisted identity, including on a new release with unreadable disk.
+    """
+    if not report or not report.get("is_proxysql"):
+        return None
+    identity = report.get("server_identity")
+    if isinstance(identity, dict) and _valid_uuid(identity.get("uuid")):
+        return None
+    version = re.match(r"^(\d+)\.(\d+)\.(\d+)", str(report.get("version") or ""))
+    if version and tuple(int(n) for n in version.groups()) < (2, 4, 0):
+        return ("This ProxySQL does not report an instance UUID (available in ProxySQL 2.4.0 or later), "
+                "so myflames cannot check it is the server you reviewed. Upgrade ProxySQL to change it here.")
+    return ("A valid ProxySQL instance UUID could not be read, so myflames cannot check it is the server you "
+            "reviewed. Check that this admin account can read a valid UUID in disk.global_settings, then "
+            "refresh to change it here.")
+
+
+def _session_guard(expect):
+    """An Admin-local guard that fails before the reviewed changes.
+
+    ProxySQL 2.4.0+ ProxySQL_Admin.cpp load_or_update_global_settings persists
+    its UUID in the config database attached as disk. A matching UUID inserts
+    no rows; a missing or different UUID hits global_variables.variable_name's
+    NOT NULL constraint. Admin reports this DML error, stopping the batch;
+    SELECT runtime errors can be swallowed. Neither outcome changes a row.
+    Admin commands cannot use the MySQL server-variable packet guard.
+    """
+    identity = (expect or {}).get("server_identity") or {}
+    uuid = identity.get("uuid") if isinstance(identity, dict) else None
+    if not _valid_uuid(uuid):
+        raise ValueError("The ProxySQL instance UUID could not be read. Nothing was sent. "
+                         "Refresh and review again; this change requires disk.global_settings to expose its UUID.")
+    return ["INSERT INTO global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE "
+            "(SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '%s';" % uuid]
 
 
 def _pending_block(report, module, kind):
@@ -974,9 +1036,13 @@ def plan_action(report, action, target=None, value=None):
         raise ValueError("This connection is not a ProxySQL Admin interface.")
     if not isinstance(action, str):
         raise ValueError("Choose an action.")
-    offered = [a["id"] for a in available_actions(report, target)]
-    if action not in offered:
+    catalog = [a["id"] for a in action_catalog(report, target)]
+    if action not in catalog:
         raise ValueError("That change is not offered for this target now. Refresh and try again.")
+    blocked = _identity_block(report)
+    if blocked:
+        from .reviewed_writes import ActionUnavailable
+        raise ActionUnavailable(blocked)
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "target": target,
             "value": value if action in ("server_weight", "server_hostgroup") else None,
             "facts": [["ProxySQL", report.get("version") or "Unknown"]], "warnings": [], "typed_guard": None,
@@ -989,6 +1055,8 @@ def plan_action(report, action, target=None, value=None):
     else:
         plan = _plan_server(report, plan, action, target, value)
     plan["checks"] = _checks(plan)
+    plan["session_guard"] = _session_guard(plan["expect"])
+    plan["verified"].append("ProxySQL instance UUID")
     return plan
 
 
@@ -1284,6 +1352,52 @@ def _effect(plan, before, after):
     return rows
 
 
+class _IdentityBoundAdmin(object):
+    """Keep the Admin guard and changes in one non-reconnecting batch login.
+
+    Preserve the reviewed action's line numbers for the shared result logic.
+    A server error on the guard means none of the changes were sent. A lost
+    reply remains unknown, just as it does for the regular sender.
+    """
+
+    def __init__(self, conn, guard):
+        self.conn, self.guard = conn, guard
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+    def run_write(self, sql, extra_flags=None, timeout=None):
+        from . import dbops, reviewed_writes
+        try:
+            return self.conn.run_write("\n".join(self.guard + [sql]), extra_flags=extra_flags, timeout=timeout)
+        except ConnectorError as exc:
+            text = str(exc)
+            if dbops.target_guard_failed(exc) and not dbops.may_have_run(exc):
+                mismatch = "NOT NULL constraint failed: global_variables.variable_name" in text
+                raise reviewed_writes.Refusal(
+                    "The ProxySQL instance is not the one you reviewed. Nothing was sent; refresh and review again."
+                    if mismatch else "The ProxySQL instance identity could not be checked. Nothing was sent; "
+                                     "refresh and review again.",
+                    "identity_mismatch" if mismatch else "identity_unavailable") from None
+            raise dbops.shift_guard_error(exc) from None
+
+
+class _IdentityAudit(object):
+    """Record the same Admin guard that the sender prepends to the script."""
+
+    def __init__(self, audit, guard):
+        self.audit, self.guard = audit, guard
+
+    def __getattr__(self, name):
+        return getattr(self.audit, name)
+
+    def attempt(self, statements, **kwargs):
+        return self.audit.attempt(self.guard + list(statements), **kwargs)
+
+    def outcome(self, statements, *args, **kwargs):
+        return self.audit.outcome(self.guard + list(statements), *args, **kwargs)
+
+
 def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None):
     """Send a reviewed plan (see :mod:`myflames.reviewed_writes`): read the
     target again, refuse with nothing sent when it changed, then send the
@@ -1293,6 +1407,11 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
     reviewed = reviewed_writes.check_reviewed(reviewed, single_line=True)
     if audit is not None:
         audit.server("proxysql", (reviewed.get("expect") or {}).get("proxysql_version"))
+    try:
+        guard = _session_guard(reviewed.get("expect"))
+    except ValueError as exc:
+        return reviewed_writes.refused(reviewed_writes.result(ACTION_SCHEMA_VERSION, reviewed), str(exc),
+                                       "identity_unavailable", audit, reviewed.get("expect"), progress)
     state = {}
 
     def fresh():
@@ -1303,8 +1422,11 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
         state["before"] = _after(report, reviewed)
         return plan
 
-    return reviewed_writes.execute(conn, reviewed, fresh, ACTION_SCHEMA_VERSION, audit=audit, typed=typed,
+    out = reviewed_writes.execute(_IdentityBoundAdmin(conn, guard), reviewed, fresh, ACTION_SCHEMA_VERSION,
+                                   audit=_IdentityAudit(audit, guard) if audit is not None else None, typed=typed,
                                    before_send=before_send, read_after=lambda: _after(read_status(conn), reviewed),
                                    timeout=ACTION_TIMEOUT, partial_text=_partial_text, done_text=_done_text,
                                    progress=progress,
                                    effect=lambda plan, after: _effect(plan, state.get("before") or {}, after))
+    out["session_guard"] = guard
+    return out

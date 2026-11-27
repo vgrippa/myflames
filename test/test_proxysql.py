@@ -25,6 +25,11 @@ from myflames.connector import ConnectorError
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = json.loads((ROOT / 'docs' / 'schemas' / 'proxysql-1.0.json').read_text(encoding='utf-8'))
 VERSION = '3.0.11-797-g7c91137'
+# Synthetic persisted instance identity. The lab recording predates this read.
+ADMIN_UUID = '11111111-2222-3333-4444-555555555555'
+# Exact diagnostic from ProxySQL 3.0.11 Admin and the mysql 8.4 batch client.
+GUARD_MISMATCH_ERROR = ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
+                        'NOT NULL constraint failed: global_variables.variable_name')
 SERVER_COLUMNS = ('hostgroup_id INT, hostname VARCHAR, port INT, gtid_port INT, status VARCHAR, weight INT, '
                   'compression INT, max_connections INT, max_replication_lag INT, use_ssl INT, max_latency_ms INT, '
                   'comment VARCHAR, PRIMARY KEY (hostgroup_id, hostname, port)')
@@ -110,7 +115,8 @@ class FakeAdmin(object):
     """ProxySQL Admin over SQLite (see the module docstring)."""
 
     def __init__(self, version=VERSION, missing=(), fail_line=None, fail_text='ProxySQL Admin Error: boom',
-                 timeout_line=None, pool_columns=None, missing_text='ProxySQL Admin Error: no such table: %s'):
+                 timeout_line=None, pool_columns=None, missing_text='ProxySQL Admin Error: no such table: %s',
+                 server_uuid=ADMIN_UUID):
         self.version = version
         self.missing_text = missing_text
         self.db = sqlite3.connect(':memory:')
@@ -119,6 +125,10 @@ class FakeAdmin(object):
         self.missing = set(missing)
         self.fail_line, self.fail_text, self.timeout_line = fail_line, fail_text, timeout_line
         self.calls, self.writes = [], []
+        self.db.execute('CREATE TABLE disk.global_settings '
+                        '(variable_name VARCHAR NOT NULL PRIMARY KEY, variable_value VARCHAR NOT NULL)')
+        if server_uuid is not None:
+            self.db.execute("INSERT INTO disk.global_settings VALUES ('uuid', ?)", (server_uuid,))
         for schema in ('main', 'disk'):
             self.db.execute('CREATE TABLE %s.mysql_servers (%s)' % (schema, SERVER_COLUMNS))
             for t in ('mysql_galera_hostgroups', 'mysql_group_replication_hostgroups'):
@@ -141,7 +151,8 @@ class FakeAdmin(object):
             self.db.execute('CREATE TABLE main.runtime_%s (%s)' % (t, plain))
         for t, cols in EMPTY_TABLES:
             self.db.execute('CREATE TABLE main.runtime_%s (%s)' % (t, cols))
-        self.db.execute('CREATE TABLE main.global_variables (variable_name VARCHAR, variable_value VARCHAR)')
+        self.db.execute('CREATE TABLE main.global_variables '
+                        '(variable_name VARCHAR NOT NULL PRIMARY KEY, variable_value VARCHAR NOT NULL)')
         self.db.execute("INSERT INTO main.global_variables VALUES ('admin-version', ?)", (version,))
         self.db.execute('CREATE TABLE stats.stats_mysql_global (Variable_Name VARCHAR, Variable_Value VARCHAR)')
         for name, value in (('ProxySQL_Uptime', '187200'), ('Client_Connections_connected', '4'),
@@ -266,10 +277,20 @@ class FakeAdmin(object):
 
     def run_write(self, sql, extra_flags=None, timeout=None):
         self.writes.append(sql)
+        hook = getattr(self, 'on_write', None)
+        if hook is not None:
+            self.on_write = None
+            hook()
+        action_line = 0
         for line, statement in enumerate(sql.split('\n'), 1):
-            if self.timeout_line == line:
+            # Existing failure fixtures name reviewed actions, while client
+            # errors must retain physical input lines including the guard.
+            guard = statement.startswith('INSERT INTO global_variables ') and 'disk.global_settings' in statement
+            if not guard:
+                action_line += 1
+            if not guard and self.timeout_line == action_line:
                 raise ConnectorError('Query timed out after 60s; the outcome is unknown.')
-            if self.fail_line == line:
+            if not guard and self.fail_line == action_line:
                 raise self._error(line, self.fail_text)
             self._execute(statement, line)
         return ''
@@ -364,6 +385,7 @@ class TestRead(Home):
         report = proxysql.read_status(conn)
         validate(report, SCHEMA)
         self.assertEqual((report['is_proxysql'], report['version'], report['uptime_s']), (True, VERSION, 187200))
+        self.assertEqual(report['server_identity'], {'uuid': ADMIN_UUID})
         self.assertEqual(report['summary'], {'backends': 10, 'ONLINE': 8, 'SHUNNED': 2, 'OFFLINE_SOFT': 0,
                                              'OFFLINE_HARD': 0, 'not_in_runtime': 0})
         ic2 = next(s for s in report['servers'] if s['key'] == 'rt|32|mf-ic-2|3306')
@@ -599,6 +621,101 @@ class TestActionsOffered(Home):
         self.assertEqual([a['id'] for a in self.report['actions']],
                          ['servers_load', 'servers_save', 'query_rules_load', 'query_rules_save'])
 
+    @staticmethod
+    def catalog_targets(report):
+        """Every control location in the place, including duplicate runtime rows."""
+        return [(None, report['actions'])] + [
+            ({'config': s['config_key']}, s['actions']) for s in report['servers'] if s.get('config_key')
+        ] + [({'rule_id': r['rule_id']}, r['actions']) for r in report['query_rules']]
+
+    def assert_identity_blocks_changes_only(self, conn, baseline=None):
+        from test_chart_data import validate
+        baseline = self.report if baseline is None else baseline
+        report = proxysql.read_status(conn)
+        validate(report, SCHEMA)
+        self.assertTrue(report['available'])
+        self.assertTrue(report['is_proxysql'])
+        self.assertTrue(report['config_readable'])
+        self.assertEqual(report['summary'], baseline['summary'])
+        self.assertEqual(report['query_digests'], baseline['query_digests'])
+        self.assertEqual(report['pending'], baseline['pending'])
+        # The shared block must not remove server, rule, Load or Save controls.
+        self.assertEqual(self.catalog_targets(report), self.catalog_targets(baseline))
+        for target, entries in self.catalog_targets(report):
+            self.assertTrue(entries, target)
+            self.assertEqual(proxysql.action_catalog(report, target), entries)
+            self.assertEqual(proxysql.available_actions(report, target), [])
+            for entry in entries:
+                with self.subTest(target=target, action=entry['id']):
+                    with self.assertRaises(reviewed_writes.ActionUnavailable) as caught:
+                        proxysql.plan_action(report, entry['id'], target, 50)
+                    self.assertEqual(str(caught.exception), report['message'])
+        self.assertEqual(conn.writes, [])
+        return report
+
+    def test_before_240_keeps_every_change_listed_with_upgrade_reason(self):
+        for version in ('2.0.6', '2.3.2-1-gabcdef'):
+            for missing in ((), ('disk.global_settings',)):
+                with self.subTest(version=version, missing=missing):
+                    report = self.assert_identity_blocks_changes_only(
+                        self.admin(version=version, server_uuid=None, missing=missing))
+                    self.assertEqual(report['server_identity'], {})
+                    self.assertIn('does not report an instance UUID', report['message'])
+                    self.assertIn('ProxySQL 2.4.0 or later', report['message'])
+                    self.assertIn('Upgrade ProxySQL to change it here.', report['message'])
+
+    def test_240_and_3x_need_a_readable_uuid_even_when_the_version_is_supported(self):
+        for version in ('2.4.0', VERSION):
+            for missing, error in (((), 'ProxySQL Admin Error: no such table: %s'),
+                                   (('disk.global_settings',), 'ProxySQL Admin Error: no such table: %s'),
+                                   (('disk.global_settings',), 'ProxySQL Admin Error: permission denied')):
+                with self.subTest(version=version, missing=missing, error=error):
+                    report = self.assert_identity_blocks_changes_only(
+                        self.admin(version=version, server_uuid=None, missing=missing, missing_text=error))
+                    self.assertEqual(report['server_identity'], {})
+                    self.assertIn('UUID could not be read', report['message'])
+                    self.assertIn('disk.global_settings', report['message'])
+                    self.assertIn('refresh to change it here.', report['message'])
+                    self.assertNotIn('Upgrade ProxySQL', report['message'])
+
+    def test_malformed_persisted_uuid_keeps_catalog_but_cannot_plan_any_change(self):
+        for value in ('', 'not-a-uuid', ADMIN_UUID + '\n', ADMIN_UUID + '\r',
+                      ADMIN_UUID.replace('-', ''), 'g' + ADMIN_UUID[1:],
+                      ADMIN_UUID + "'; DROP TABLE mysql_servers; --"):
+            with self.subTest(uuid=value):
+                report = self.assert_identity_blocks_changes_only(self.admin(server_uuid=value))
+                self.assertIn('valid ProxySQL instance UUID', report['message'])
+                if value:
+                    self.assertNotIn(value, report['message'])
+
+    def test_uuid_block_also_keeps_online_move_and_enable_controls(self):
+        conn = self.admin()
+        conn.db.execute("INSERT INTO main.mysql_servers VALUES "
+                        "(50, 'mf-app-1', 3306, 0, 'OFFLINE_SOFT', 1, 0, 100, 0, 0, 0, 'app')")
+        conn.db.execute('UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30')
+        conn.load('servers')
+        conn.load('query_rules')
+        baseline = proxysql.read_status(conn)
+        conn.db.execute("DELETE FROM disk.global_settings WHERE variable_name = 'uuid'")
+        report = self.assert_identity_blocks_changes_only(conn, baseline)
+        self.assertEqual({a['id'] for _, entries in self.catalog_targets(report) for a in entries},
+                         {'server_online', 'server_offline_soft', 'server_offline_hard', 'server_weight',
+                          'server_hostgroup', 'rule_enable', 'rule_disable', 'servers_load', 'servers_save',
+                          'query_rules_load', 'query_rules_save'})
+
+    def test_valid_uuid_enables_the_same_catalog_on_240_later_2x_and_3x(self):
+        uuid = 'ABCDEF01-2345-6789-ABCD-EF0123456789'
+        for version in ('2.4.0', '2.7.3', VERSION):
+            with self.subTest(version=version):
+                report = proxysql.read_status(self.admin(version=version, server_uuid=uuid))
+                self.assertIsNone(report['message'])
+                for target, entries in self.catalog_targets(report):
+                    self.assertEqual(proxysql.available_actions(report, target), entries)
+                    for entry in entries:
+                        plan = proxysql.plan_action(report, entry['id'], target, 50)
+                        self.assertEqual(plan['expect']['server_identity'], {'uuid': uuid})
+                        self.assertIn(uuid, plan['session_guard'][0])
+
     def test_unsafe_host_names_offer_nothing(self):
         conn = self.admin()
         conn.db.execute("INSERT INTO main.mysql_servers VALUES (50, 'db''1', 3306, 0, 'ONLINE', 1, 0, 10, 0, 0, 0, '')")
@@ -780,9 +897,14 @@ class Endpoints(Home):
     def test_reviewed_statements_are_the_sent_statements(self):
         plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
         self.assertEqual(plan['policy']['action'], 'confirm')
+        variables = self.conn.rows('SELECT * FROM main.global_variables')
         result = self.send(plan)
         self.assertEqual(result['status'], 'done', result)
-        self.assertEqual(self.conn.writes, ['\n'.join(plan['statements'])])
+        self.assertEqual(plan['expect']['server_identity'], {'uuid': ADMIN_UUID})
+        self.assertEqual(self.conn.writes, ['\n'.join(plan['session_guard'] + plan['statements'])])
+        self.assertEqual(result['session_guard'], plan['session_guard'])
+        self.assertEqual(self.conn.rows('SELECT * FROM main.global_variables'), variables,
+                         'the matching guard inserts no rows')
         self.assertEqual(self.conn.rows("SELECT status FROM main.mysql_servers WHERE hostname='mf-ic-2'"),
                          [('OFFLINE_SOFT',)])
         self.assertEqual(self.conn.rows("SELECT status FROM disk.mysql_servers WHERE hostname='mf-ic-2'"),
@@ -791,7 +913,7 @@ class Endpoints(Home):
         self.assertEqual(result['next']['action'], 'servers_save')
         (record,) = self.audit()
         self.assertEqual((record['status'], record['outcome'], record['operation']), ('ok', 'applied', 'proxysql_action'))
-        self.assertEqual(record['statements'], plan['statements'])
+        self.assertEqual(record['statements'], plan['session_guard'] + plan['statements'])
         self.assertEqual(record['target']['config']['hostname'], 'mf-ic-2')
         self.assertNotIn('pw-secret', json.dumps(record))
         # Then the separate save, reviewed on its own.
@@ -863,6 +985,182 @@ class Endpoints(Home):
         self.assertEqual(self.conn.writes, [])
         (record,) = self.audit()
         self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+
+    def test_instance_changed_after_review_is_refused_before_write_login(self):
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+        self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                             ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',))
+        result = self.send(plan)
+        self.assertEqual((result['status'], result['outcome']), ('refused', 'changed'))
+        self.assertEqual(self.conn.writes, [])
+        self.assertEqual(self.conn.rows("SELECT weight FROM main.mysql_servers WHERE hostname='mf-ic-2'"), [(100,)])
+        (record,) = self.audit()
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+
+    def test_instance_swapped_after_reread_refuses_every_action_before_any_change(self):
+        actions = [('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]}),
+                   ('rule_disable', {'rule_id': 30}), ('servers_load', None), ('query_rules_load', None),
+                   ('servers_save', None), ('query_rules_save', None)]
+        for action, target in actions:
+            with self.subTest(action=action):
+                self.conn = self.admin()
+                if action.startswith('servers_'):
+                    self.conn.db.execute("UPDATE main.mysql_servers SET weight = 50 WHERE hostname='mf-ic-2'")
+                elif action.startswith('query_rules_'):
+                    self.conn.db.execute('UPDATE main.mysql_query_rules SET active = 0 WHERE rule_id = 30')
+                plan = self.plan(action, target)
+                tables = ('main.global_variables', 'main.mysql_servers', 'main.runtime_mysql_servers', 'disk.mysql_servers',
+                          'main.mysql_query_rules', 'main.runtime_mysql_query_rules', 'disk.mysql_query_rules')
+                before = [self.conn.rows('SELECT * FROM ' + table) for table in tables]
+                previous_audits = len(self.audit())
+
+                def swap():
+                    self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                                         ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',))
+                self.conn.on_write = swap
+                with mock.patch.object(self.conn, 'load', wraps=self.conn.load) as load, \
+                        mock.patch.object(self.conn, 'save', wraps=self.conn.save) as save:
+                    result = self.send(plan)
+                self.assertEqual((result['status'], result['outcome']), ('refused', 'identity_mismatch'), result)
+                self.assertEqual(result['sent'], [])
+                self.assertEqual(result['not_sent'], plan['statements'])
+                self.assertEqual(result['states'], ['not_sent'] * len(plan['statements']))
+                self.assertEqual(self.conn.writes, ['\n'.join(plan['session_guard'] + plan['statements'])])
+                self.assertEqual([self.conn.rows('SELECT * FROM ' + table) for table in tables], before)
+                load.assert_not_called()
+                save.assert_not_called()
+                records = self.audit()
+                self.assertEqual(len(records), previous_audits + 1, 'complete the pending record exactly once')
+                self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'identity_mismatch'))
+                self.assertEqual(records[0]['statements'], plan['session_guard'] + plan['statements'])
+                self.assertEqual(records[0]['target']['server_identity'], {'uuid': ADMIN_UUID})
+
+    def test_identity_disappearing_in_write_login_refuses_without_loading(self):
+        for removed, outcome in (('row', 'identity_mismatch'), ('table', 'identity_unavailable')):
+            with self.subTest(removed=removed):
+                self.conn = self.admin()
+                plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
+                before = self.conn.rows('SELECT * FROM main.mysql_servers')
+                previous_audits = len(self.audit())
+                self.conn.on_write = lambda: self.conn.db.execute(
+                    "DELETE FROM disk.global_settings WHERE variable_name = 'uuid'" if removed == 'row' else
+                    'DROP TABLE disk.global_settings')
+                with mock.patch.object(self.conn, 'load', wraps=self.conn.load) as load:
+                    result = self.send(plan)
+                self.assertEqual((result['status'], result['outcome'], result['sent']), ('refused', outcome, []))
+                self.assertIn('not the one you reviewed' if removed == 'row' else 'identity could not be checked',
+                              result['message'])
+                self.assertEqual(result['not_sent'], plan['statements'])
+                self.assertEqual(self.conn.rows('SELECT * FROM main.mysql_servers'), before)
+                load.assert_not_called()
+                records = self.audit()
+                self.assertEqual(len(records), previous_audits + 1)
+                self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', outcome))
+
+    def test_guard_stops_the_batch_with_the_exact_live_constraint_error(self):
+        plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
+        self.assertEqual(plan['session_guard'], [
+            "INSERT INTO global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE "
+            "(SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '%s';"
+            % ADMIN_UUID])
+        self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                             ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',))
+        variables = self.conn.rows('SELECT * FROM main.global_variables')
+        with self.assertRaises(ConnectorError) as error:
+            self.conn.run_write('\n'.join(plan['session_guard'] + plan['statements']))
+        self.assertEqual(str(error.exception), 'mysql client exited 1: ' + GUARD_MISMATCH_ERROR)
+        self.assertEqual(self.conn.rows('SELECT * FROM main.global_variables'), variables)
+        self.assertEqual(self.conn.rows("SELECT status FROM main.mysql_servers WHERE hostname='mf-ic-2'"),
+                         [('ONLINE',)], 'the statement after the guard never ran')
+
+    def test_guard_error_text_distinguishes_mismatch_from_unavailable_identity(self):
+        errors = ((GUARD_MISMATCH_ERROR, 'identity_mismatch', 'not the one you reviewed'),
+                  ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: integer overflow',
+                   'identity_unavailable', 'identity could not be checked'),
+                  ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
+                   'NOT NULL constraint failed: global_variables.variable_value',
+                   'identity_unavailable', 'identity could not be checked'),
+                  ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: no such table: disk.global_settings',
+                   'identity_unavailable', 'identity could not be checked'))
+        for text, outcome, message in errors:
+            with self.subTest(error=text):
+                self.conn = self.admin()
+                plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
+
+                def fail_guard():
+                    raise ConnectorError(text)
+                self.conn.on_write = fail_guard
+                result = self.send(plan)
+                self.assertEqual((result['status'], result['outcome'], result['sent']), ('refused', outcome, []))
+                self.assertEqual(result['states'], ['not_sent'] * len(plan['statements']))
+                self.assertEqual(result['not_sent'], plan['statements'])
+                self.assertIn(message, result['message'])
+                record = self.audit()[0]
+                self.assertEqual((record['status'], record['outcome']), ('refused', outcome))
+
+    def test_guard_constraint_error_after_line_one_is_an_action_failure(self):
+        for action_line, status in ((1, 'failed'), (2, 'partial')):
+            with self.subTest(action_line=action_line):
+                self.conn = self.admin(fail_line=action_line, fail_text='ProxySQL Admin Error: '
+                                       'NOT NULL constraint failed: global_variables.variable_name')
+                plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
+                result = self.send(plan)
+                self.assertEqual(result['status'], status)
+                self.assertEqual(result['sent'], plan['statements'][:action_line - 1])
+                self.assertEqual(result['states'], ['failed', 'not_run'] if action_line == 1 else ['done', 'failed'])
+                self.assertEqual(self.audit()[0]['status'], 'error')
+
+    def test_missing_or_unsafe_reviewed_uuid_refuses_before_any_login(self):
+        invalid = (None, {}, {'uuid': None}, {'uuid': ''}, {'uuid': 123}, {'uuid': 'not-a-uuid'},
+                   {'uuid': ADMIN_UUID + "'; DROP TABLE mysql_servers; --"},
+                   {'uuid': ADMIN_UUID + '\n'}, {'uuid': ADMIN_UUID + '\r'},
+                   {'uuid': ADMIN_UUID.replace('-', '')}, {'uuid': 'g' + ADMIN_UUID[1:]})
+        for identity in invalid:
+            with self.subTest(identity=identity):
+                plan = {'action': 'servers_load', 'statements': [proxysql.LOAD['servers']],
+                        'expect': {'server_identity': identity}}
+                audit = dbops.AuditTrail(self.workspace.store, 'proxysql_action', 'ui')
+                with mock.patch.object(proxysql, 'read_status', side_effect=AssertionError('unexpected login')) as read:
+                    result = proxysql.execute_action(self.conn, plan, audit=audit)
+                read.assert_not_called()
+                self.assertEqual(self.conn.calls, [])
+                self.assertEqual(self.conn.writes, [])
+                self.assertEqual((result['status'], result['outcome'], result['sent']),
+                                 ('refused', 'identity_unavailable', []))
+                self.assertEqual(result['states'], ['not_sent'])
+                self.assertIn('UUID could not be read', result['message'])
+                record = self.audit()[0]
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_unavailable'))
+
+    def test_missing_or_unsafe_uuid_never_creates_an_action_plan(self):
+        for value in (None, '', 'not-a-uuid', ADMIN_UUID + "'; DROP TABLE mysql_servers; --", ADMIN_UUID + '\n'):
+            with self.subTest(uuid=value):
+                conn = self.admin(server_uuid=value)
+                with self.assertRaisesRegex(ValueError, 'UUID could not be read'):
+                    self.api('/api/live/proxysql/plan', {'connection': self.connection,
+                                                       'action': 'server_offline_soft',
+                                                       'target': {'config': [30, 'mf-ic-2', 3306]}}, conn=conn)
+                self.assertEqual(conn.writes, [])
+                self.assertEqual(len(conn.rows('SELECT * FROM main.mysql_servers')), len(CONFIG))
+
+    def test_review_binds_the_visible_identity_guard(self):
+        plan = self.plan('rule_disable', {'rule_id': 30})
+        result = self.send(dict(plan, session_guard=['SELECT 1;']))
+        self.assertEqual((result['status'], result['outcome']), ('refused', 'review'))
+        self.assertEqual(self.conn.writes, [])
+
+    def test_lost_reply_during_the_guard_remains_unknown(self):
+        plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
+
+        def disconnect():
+            raise ConnectorError('mysql client exited 1: ERROR 2013 (HY000) at line 1: Lost connection to server')
+        self.conn.on_write = disconnect
+        result = self.send(plan)
+        self.assertEqual(result['status'], 'unknown')
+        self.assertEqual(result['states'], ['unknown', 'unknown'])
+        self.assertEqual(len(self.conn.writes), 1)
+        (record,) = self.audit()
+        self.assertEqual(record['status'], 'unknown')
 
     def test_typed_guard(self):
         plan = self.plan('server_offline_hard', {'config': [30, 'mf-ic-2', 3306]})

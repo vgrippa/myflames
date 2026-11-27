@@ -361,7 +361,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         // Keep the mode the person reviewed, even if coverage changed during
         // the fresh read. Python requires an acknowledged active guard.
         sent = true;
-        const result = await startSkipLoop(checked, c.plan.channel, { ...c.options, receiver_guard: c.plan.receiver_guard });
+        const result = await startSkipLoop(checked, c.plan, c.options);
         setConfirmation(null);
         setLoopResult({ key: c.key, label: c.label, report: result });
         if (!live()) { focusResult(".replication-write-result"); return; }

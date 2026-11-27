@@ -20,7 +20,7 @@
 // hostgroup, or a rule's active flag, is changed in memory and loaded to
 // runtime in one unit; saving to disk is a separate change, offered after it
 // and in the Configuration line. Nothing is persisted without its own review.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection } from "./api";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { useWritePolicy } from "./Connections";
@@ -35,6 +35,7 @@ import { bytes, CompactNumber, CopySql, count, ms } from "./PerfShared";
 import { plural } from "./OpsShared";
 import { ClusterMark } from "./ClusterTopology";
 import { ActionResult, useReviewedActions } from "./ActionReview";
+import { WhyDisabled } from "./WhyDisabled";
 import {
   planProxySqlAction, readProxySql, readProxySqlDigests, sendProxySqlAction,
   type DigestFilters, type DigestOrder, type ProxySqlAction, type ProxySqlDigest, type ProxySqlDigestsReport,
@@ -252,7 +253,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   const changeBlock = !isProxy ? "Not a ProxySQL Admin interface."
     : stale ? (other ? `This report was read on ${other}. Refresh to read the connection in use.` : "The last read failed. Refresh first.")
       : disabled ? "Reads are paused." : policy?.blocked ? policy.blocked
-        : connection.read_only ? "This connection is read-only in myflames, so changes are refused." : "";
+        : connection.read_only ? "This connection is read-only in myflames, so changes are refused." : report?.message || "";
   function start(action: ProxySqlAction, target: ProxySqlTarget, subject: string) {
     if (changeBlock || actions.busy) return;
     if (action.value) {
@@ -271,12 +272,9 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   const buttons = (list: ProxySqlAction[], target: ProxySqlTarget, subject: string) => list.length ? (
     <div className="review-actions" role="group" aria-label={`Changes for ${subject}`}>
       {list.map((a) => (
-        <button key={a.id} type="button" className={`button${a.danger ? " danger" : ""}`} title={changeBlock || a.description}
-          aria-disabled={!!changeBlock || actions.busy} onClick={() => start(a, target, subject)}>
-          {actions.planning === a.id ? "Reading…" : a.label}
-        </button>
+        <ProxySqlChangeButton key={a.id} action={a} blocked={changeBlock} busy={actions.busy}
+          planning={actions.planning} onAction={() => start(a, target, subject)} />
       ))}
-      {changeBlock && <p className="hint">{changeBlock}</p>}
     </div>
   ) : undefined;
 
@@ -475,6 +473,31 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   );
 }
 
+/** Keep blocked changes focusable and open the backend's reason on click,
+ * Enter or Space, just like the other places' disabled action catalogs. */
+function ProxySqlChangeButton({ action, blocked, busy, planning, ghost = false, title, onAction }: {
+  action: ProxySqlAction; blocked: string; busy: boolean; planning: string; ghost?: boolean; title?: string; onAction: () => void;
+}) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const descriptionId = useId();
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setOpen(false); }, [blocked, busy, action.id]);
+  return <>
+    <button ref={anchor} type="button" className={`button${action.danger ? " danger" : ""}${ghost ? " ghost" : ""}`}
+      title={blocked || title || action.description} aria-disabled={!!blocked || busy}
+      aria-describedby={blocked ? descriptionId : undefined}
+      onClick={() => { if (!blocked && !busy) onAction(); }}>
+      {planning === action.id ? "Reading…" : action.label}
+    </button>
+    {blocked && <>
+      <span className="visually-hidden" id={descriptionId}>{blocked}</span>
+      <WhyDisabled anchor={anchor} open={open} mayOpen={!busy}
+        label={`Why ${action.label.replace(/[….]+$/, "")} is unavailable`}
+        onOpen={() => setOpen(true)} onClose={() => setOpen(false)}><p>{blocked}</p></WhyDisabled>
+    </>}
+  </>;
+}
+
 /** Memory versus runtime and disk for one module, with its Load and Save changes. */
 function ConfigLine({ report, module, block, busy, planning, onAction }: {
   report: ProxySqlReport; module: "servers" | "query_rules"; block: string; busy: boolean; planning: string; onAction: (id: string) => void;
@@ -499,8 +522,8 @@ function ConfigLine({ report, module, block, busy, planning, onAction }: {
         const matches = isLoad ? runtimeMatches : diskMatches;
         const noOpTitle = isLoad ? "Nothing to load: memory matches runtime" : "Nothing to save: disk matches memory";
         return (
-          <button key={a.id} type="button" className={`button${matches ? " ghost" : ""}`} title={block || (matches ? noOpTitle : a.description)} aria-disabled={!!block || busy}
-            onClick={() => { if (!block && !busy) onAction(a.id); }}>{planning === a.id ? "Reading…" : a.label}</button>
+          <ProxySqlChangeButton key={a.id} action={a} blocked={block} busy={busy} planning={planning}
+            ghost={matches} title={matches ? noOpTitle : a.description} onAction={() => onAction(a.id)} />
         );
       })}
     </div>

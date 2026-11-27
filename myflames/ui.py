@@ -1336,9 +1336,16 @@ def _replication_loop_start(payload, workspace, safety=None, identity=None):
                                      message=blocked[1], target=target)
             return {"schema_version": rp.LOOP_SCHEMA_VERSION, "job_id": None, "state": status, "channel": channel,
                     "message": blocked[1], "audit_id": audit_id}
+        expect = rp.check_loop_expect(payload.get("expect"))
+        target["expect"] = expect
+        consume = _review_tokens(workspace).consumer(payload.get("review_token"), "replication_skip_loop",
+                    identity, {"channel": channel, "expect": expect, "receiver_guard": receiver_guard})
         conn = dbops.TargetEvidenceConnection(_replication_open(payload, workspace, state))
         report = rp.read_status(conn)
         audit.server(report.get("engine"), report.get("server_version"))
+        problem = rp.loop_target_problem(report, expect)
+        if problem:
+            raise ValueError(problem)
         if not report.get("available") or not report.get("replica"):
             raise ValueError(report.get("message") or "This server is not a replica.")
         found = rp.find_channel(report, channel)
@@ -1346,7 +1353,9 @@ def _replication_loop_start(payload, workspace, safety=None, identity=None):
             raise ValueError("This server has no asynchronous replication channel named %r." % (channel,))
         loop = rp.SkipLoop(conn, channel, codes, max_skips, max_duration_s=minutes * 60 if minutes else None,
                            poll_s=poll_s, decision=decision, audit_factory=factory, close_conn=True,
-                           decision_reader=state["decision_reader"], receiver_required=receiver_guard == "on")
+                           decision_reader=state["decision_reader"], receiver_required=receiver_guard == "on",
+                           expect=expect)
+        consume()
         return _replication_loops(workspace).start(identity, loop)
     except (Exception, KeyboardInterrupt) as exc:
         _replication_preflight_error(audit, state, exc, target)
@@ -1400,6 +1409,8 @@ def _replication_response(path, payload, workspace):
                                     if store is None:
                                         raise ValueError('Workspace store unavailable.')
                                     review_identity = _review_identity(payload.get("connection"), workspace)
+                                    loop_expect = rp.check_loop_expect({"engine": plan.get("engine"),
+                                        "server_identity": plan.get("identity", {}).get("server_identity")})
                                 except (AttributeError, ValueError, OSError, sqlite3.Error):
                                     # The status remains readable when optional local
                                     # storage fails. No write token bypass is allowed.
@@ -1409,6 +1420,9 @@ def _replication_response(path, payload, workspace):
                                     plan["review_token"] = _review_tokens(workspace).issue("replication_skip",
                                         review_identity,
                                         {"channel": plan["channel"], "expect": plan["identity"], "statements": plan["statements"]})
+                                    plan["loop_review_token"] = _review_tokens(workspace).issue("replication_skip_loop",
+                                        review_identity, {"channel": plan["channel"], "expect": loop_expect,
+                                                          "receiver_guard": guard["receiver_guard"]})
                 return report
         except (ValueError, ConnectorError) as exc:
             _reraise_redacted(exc, options.get("password"))
