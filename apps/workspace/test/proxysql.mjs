@@ -850,6 +850,46 @@ try {
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "", "another connection is not muted by this read");
   await refreshTo(R.lab);
 
+  // An unverified digest report (no readable instance UUID, for example
+  // ProxySQL before 2.4.0): labelled, no routing claims, and its details keep
+  // to the digest read's own evidence (proxysql_digests.read_digests).
+  const UNVERIFIED_MESSAGE = "Unverified read-only report: a valid ProxySQL instance UUID could not be read, " +
+    "so these separate reads may have reached different instances.";
+  const unverifiedDigests = structuredClone(R["digests-time"]);
+  unverifiedDigests.message = UNVERIFIED_MESSAGE;
+  unverifiedDigests.notes = [UNVERIFIED_MESSAGE];
+  unverifiedDigests.routing = { ...(unverifiedDigests.routing || {}), evaluated: false, note: UNVERIFIED_MESSAGE };
+  for (const d of unverifiedDigests.digests) {
+    d.routing = { observed: d.hostgroup ?? null, expected: null, source: null, rules: [], decisive: null,
+      approximate: false, possible: [], unknown_rules: [], default_hostgroup: null, verdict: "unknown",
+      text: UNVERIFIED_MESSAGE, why: [UNVERIFIED_MESSAGE] };
+  }
+  digestOverride = unverifiedDigests;
+  await tab("Query digests");
+  await refreshTo(R.lab);
+  await page.waitForFunction((sel) => /Not verified against one ProxySQL instance/.test(
+    document.querySelector(`${sel} .proxysql-digest-summary`)?.textContent || ""), {}, view);
+  const unverifiedSummary = (await visible(`${view} .proxysql-digest-summary`))[0];
+  assert.match(unverifiedSummary, /Not verified against one ProxySQL instance: a valid ProxySQL instance UUID could not be read/);
+  assert.doesNotMatch(unverifiedSummary, /on another hostgroup than the rules send to/);
+  const unverifiedRoutes = await page.$$eval(`${view} tbody tr[data-row-key] td[data-col="route"]`, (els) => els.map((e) => e.textContent.trim()));
+  assert.ok(unverifiedRoutes.length > 0 && unverifiedRoutes.every((t) => t === "Not evaluated"),
+    `an unverified read claims no routing: ${JSON.stringify(unverifiedRoutes)}`);
+  assert.equal(await page.$(`${view} tbody tr.proxysql-mismatch`), null, "no mismatch flag on an unverified read");
+  await shot("proxysql-digests-unverified-1440.png");
+  // A digest's details keep to their own read: no hostgroup roles or rule
+  // texts from the separately read status report beside them.
+  await selectRow(digestKey(32, "0xA8027DF9CE26E2FF"));
+  const unverifiedInspector = await h.inspector();
+  assert.match(unverifiedInspector, /Not verified against one ProxySQL instance/);
+  assert.doesNotMatch(unverifiedInspector, /Group Replication|Galera/, "no hostgroup roles from another read");
+  assert.match(unverifiedInspector, /Executions/, "the digest's own counters still show");
+  assert.equal(await page.$(".view-inspector .proxysql-links .proxysql-link"), null, "no rule links on an unverified read");
+  await backToList();
+  digestOverride = null;
+  await tab("Servers");
+  await refreshTo(R.lab);
+
   // The 720x520 window: no sideways scroll, the table starts above the fold.
   await page.setViewport({ width: 720, height: 520 });
   await pause(400);

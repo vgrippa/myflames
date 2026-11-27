@@ -14,7 +14,9 @@
 // checked here: each digest shows where the active rules send it, evaluated
 // here, next to the hostgroup it ran on, with a mismatch flagged; each rule
 // shows its hits and the digests it applies to. Selecting one jumps to the
-// other.
+// other. A digest read that cannot verify one ProxySQL instance (no readable
+// UUID) is labelled Not verified against one ProxySQL instance and claims no
+// routing.
 //
 // Changes are reviewed (ActionReview.tsx): a server's status, weight or
 // hostgroup, or a rule's active flag, is changed in memory and loaded to
@@ -286,13 +288,14 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
   const chosenGroup = tab === "hostgroups" ? hostgroups.find((h) => `hg:${h.id}` === selection.key) : undefined;
   const chosenRule = tab === "rules" ? rules.find((r) => `rule:${r.rule_id}` === selection.key) : undefined;
   // A digest opened from a rule shows at once from the report while its own read runs.
-  const chosenDigest = tab === "digests" ? digests.find((d) => d.key === selection.key)
-    || (isProxy ? report!.query_digests.find((d) => d.key === selection.key) : undefined) : undefined;
+  const tabDigest = tab === "digests" ? digests.find((d) => d.key === selection.key) : undefined;
+  const chosenDigest = tab === "digests"
+    ? tabDigest || (isProxy ? report!.query_digests.find((d) => d.key === selection.key) : undefined) : undefined;
   const content: InspectorContent | null = !report ? null
     : chosenServer ? serverInspector(chosenServer, report, buttons(chosenServer.actions || [], chosenServer.config_key ? { config: chosenServer.config_key } : null, addr(chosenServer)))
       : chosenGroup ? hostgroupInspector(chosenGroup, report)
         : chosenRule ? ruleInspector(chosenRule, report, go, buttons(chosenRule.actions || [], { rule_id: chosenRule.rule_id }, `rule ${chosenRule.rule_id}`))
-          : chosenDigest ? digestInspector(chosenDigest, report, go) : null;
+          : chosenDigest ? digestInspector(chosenDigest, report, go, tabDigest ? digestsReport : null) : null;
 
   const serverColumns: Column<ProxySqlServer>[] = [
     { key: "server", label: "Server", primary: true, flex: true, width: 170, minWidth: 140, sort: (s) => addr(s), render: (s) => addr(s) },
@@ -444,7 +447,8 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
             <DataTable key="proxysql.rules" id="proxysql.rules" label="ProxySQL query rules" columns={ruleColumns} rows={rules} rowKey={(r) => `rule:${r.rule_id}`} selection={selection}
               empty={<EmptyState icon="proxy" title="No query rules">Every query goes to its user's default hostgroup.</EmptyState>} />
           ) : <>
-            <DigestTools filters={filters} onFilters={onFilters} report={digestsReport || null} proxy={report!} disabled={stale || disabled} />
+            <DigestTools filters={filters} onFilters={onFilters} report={digestsReport || null} proxy={report!} disabled={stale || disabled}
+              unverified={!!digestsReport?.is_proxysql && !!digestsReport?.message} />
             <DigestSummary report={digestsReport} order={order.word} filters={filters} error={digestReads.error} proxy={report!} />
             {digestReads.error && !digestsCurrent ? (
               <EmptyState icon="proxy" title="Could not read the query digests" action={<ToolbarButton primary disabled={disabled || stale} onClick={() => { void loadDigests(true); }}>Retry</ToolbarButton>}>
@@ -714,6 +718,11 @@ function DigestLinks({ digests, go }: { digests: ProxySqlDigest[]; go: Go }) {
 /** How routing is evaluated here (the ⓘ beside Routing and Digests it applies to). */
 function RoutingInfo({ report }: { report: Pick<ProxySqlReport, "routing"> }) {
   const ctx = report.routing;
+  if (ctx && ctx.evaluated === false) {
+    // Never claim an evaluation the report does not carry (an unverified
+    // digest read, unread runtime rules or too many active rules).
+    return <p>{ctx.note || "Routing is not evaluated for this report."}</p>;
+  }
   const engine = ctx?.regex_engine ? `${ctx.regex_engine} (mysql-query_processor_regex = ${ctx.regex_variable})` : "PCRE or RE2 (mysql-query_processor_regex)";
   return <>
     <p>Evaluated here, not by ProxySQL: the active rules of runtime_mysql_query_rules in rule_id order, following flagIN, flagOUT and apply{ctx?.iterations ? ` (mysql-query_processor_iterations = ${ctx.iterations})` : ""}, then mysql_query_rules_fast_routing, then the user&apos;s default hostgroup.</p>
@@ -722,7 +731,19 @@ function RoutingInfo({ report }: { report: Pick<ProxySqlReport, "routing"> }) {
   </>;
 }
 
-function digestInspector(d: ProxySqlDigest, report: ProxySqlReport, go: Go): InspectorContent {
+/** The backend's lead on an unverified digest report (proxysql_digests.py),
+ * after which the plain reason follows. */
+const UNVERIFIED_PREFIX = "Unverified read-only report: ";
+const unverifiedDetail = (message: string) =>
+  message.startsWith(UNVERIFIED_PREFIX) ? message.slice(UNVERIFIED_PREFIX.length) : message;
+
+function digestInspector(d: ProxySqlDigest, report: ProxySqlReport, go: Go, source: ProxySqlDigestsReport | null): InspectorContent {
+  // *source* is the Query digests read the digest came from (null for a
+  // digest of the status report). Its evidence is bound to one instance UUID
+  // by the backend; without that UUID it is unverified, and then no detail
+  // from the status report (hostgroup roles, rule texts, routing context) may
+  // stand beside it: the two reads can have reached different instances.
+  const unverified = !!source?.message;
   const r = d.routing;
   const role = (id: number | null) => {
     if (id === null) return "—";
@@ -747,16 +768,22 @@ function digestInspector(d: ProxySqlDigest, report: ProxySqlReport, go: Go): Ins
     meta: <span className="hint">{d.digest || ""}</span>,
     body: <>
       <CopySql sql={d.digest_text} label="Digest text" />
-      <InspectorSection title="Routing" info={<RoutingInfo report={report} />}>
-        <div className="proxysql-route" data-verdict={r.verdict}>{routeMark(r)}<span>{r.approximate ? "Approximate, evaluated here" : "Evaluated here"}</span></div>
-        <Fields rows={[["Ran on", role(r.observed)], ["Rules send it to", r.expected === null ? "Unknown" : `${role(r.expected)}${sourceWord(r) ? `, ${sourceWord(r)}` : ""}`]]} />
-        <p className="proxysql-route-text">{r.text}</p>
-        {r.why.length > 0 && <ul className="proxysql-why">{r.why.map((w, i) => <li key={i}>{w}</li>)}</ul>}
-        {(r.rules.length > 0 || r.possible.length > 0) && (
-          <ul className="proxysql-links" aria-label="Rules">
-            {r.rules.map((id) => ruleButton(id, id === r.decisive ? "sets the hostgroup" : "applies"))}
-            {r.possible.map((id) => ruleButton(id, "may apply"))}
-          </ul>
+      <InspectorSection title="Routing" info={<RoutingInfo report={source?.routing ? source : report} />}>
+        {unverified ? (
+          <p className="hint">{`Not verified against one ProxySQL instance: ${unverifiedDetail(source!.message || "")}`}</p>
+        ) : (
+          <>
+            <div className="proxysql-route" data-verdict={r.verdict}>{routeMark(r)}<span>{r.approximate ? "Approximate, evaluated here" : "Evaluated here"}</span></div>
+            <Fields rows={[["Ran on", role(r.observed)], ["Rules send it to", r.expected === null ? "Unknown" : `${role(r.expected)}${sourceWord(r) ? `, ${sourceWord(r)}` : ""}`]]} />
+            <p className="proxysql-route-text">{r.text}</p>
+            {r.why.length > 0 && <ul className="proxysql-why">{r.why.map((w, i) => <li key={i}>{w}</li>)}</ul>}
+            {(r.rules.length > 0 || r.possible.length > 0) && (
+              <ul className="proxysql-links" aria-label="Rules">
+                {r.rules.map((id) => ruleButton(id, id === r.decisive ? "sets the hostgroup" : "applies"))}
+                {r.possible.map((id) => ruleButton(id, "may apply"))}
+              </ul>
+            )}
+          </>
         )}
       </InspectorSection>
       <InspectorSection title="Executions">
@@ -810,8 +837,10 @@ function filtered(f: DigestFilters) {
 }
 
 /** The orders, Top N and filters of Query digests (each change reads again). */
-function DigestTools({ filters, onFilters, report, proxy, disabled }: {
+function DigestTools({ filters, onFilters, report, proxy, disabled, unverified }: {
   filters: DigestFilters; onFilters: (f: DigestFilters) => void; report: ProxySqlDigestsReport | null; proxy: ProxySqlReport; disabled: boolean;
+  /** An unverified digest read never borrows hostgroup roles from the status report. */
+  unverified: boolean;
 }) {
   const [text, setText] = useState(filters.text || "");
   // The filters as they are when the pause ends: another choice made while
@@ -832,6 +861,7 @@ function DigestTools({ filters, onFilters, report, proxy, disabled }: {
   const facets = report?.facets;
   const unavailable = new Map((report?.orders || []).filter((o) => !o.available).map((o) => [o.id, o.why || ""]));
   const groupWord = (id: number) => {
+    if (unverified) return id === -1 ? "-1 (query cache)" : String(id);
     const hg = proxy.hostgroups.find((h) => h.id === id);
     const words = hg ? roleText(hg.role, hg.monitor) : "";
     return id === -1 ? "-1 (query cache)" : `${id}${words ? ` (${words})` : ""}`;
@@ -891,14 +921,21 @@ function DigestSummary({ report, order, filters, error, proxy }: {
 }) {
   if (!report) return null;
   const shown = report.digests.length;
+  const unverified = !!report.is_proxysql && !!report.message;
   const parts = [`Top ${filters.limit} by ${order}`, `${plural(shown, "digest")} listed${report.more ? ", more match" : ""}`];
   if (report.scanned !== null && report.scanned !== undefined) parts.push(`rule ${filters.rule_id} applies to these of the ${report.scanned.toLocaleString()} read in this order`);
   if (report.totals) parts.push(`${plural(report.totals.digests, "digest")} and ${compactCount(report.totals.executions)} executions in all`);
   if (report.window?.first_seen) parts.push(`since ${new Date(report.window.first_seen * 1000).toLocaleString()}`);
-  const mismatches = report.digests.filter((d) => d.routing.verdict === "mismatch").length;
+  const mismatches = unverified ? 0 : report.digests.filter((d) => d.routing.verdict === "mismatch").length;
   return (
     <div className="proxysql-digest-summary">
       <span>{parts.join(" · ")}</span>
+      {unverified && <StatusPill tone="unknown" label="Not verified" />}
+      {unverified && (
+        <span className="proxysql-digest-unverified" role="note">
+          {`Not verified against one ProxySQL instance: ${unverifiedDetail(report.message || "")}`}
+        </span>
+      )}
       {mismatches > 0 && <StatusPill tone="watch" label={`${mismatches} on another hostgroup than the rules send to`} />}
       {error && <span className="error">{error}</span>}
       <InfoPopover label="How routing is evaluated"><RoutingInfo report={report.routing ? report : proxy} /></InfoPopover>
