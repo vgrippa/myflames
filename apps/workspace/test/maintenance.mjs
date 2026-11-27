@@ -87,12 +87,24 @@ const dumpInfoDefault = { status: 200, body: {
 } };
 /** What the mocked server answers next, per path. */
 const next = { upgrade: native, prepare: [], start: [], reveal: [] };
-/** The jobs myflames holds, by id, as the status endpoint would return them,
- * and the endpoint each belongs to (the jobs list answers by endpoint). */
+/** Registry-only replies include the immutable start address and how this
+ * request matched the owner. Database endpoints remain intercepted below. */
 const held = new Map();
+const cancelFailures = new Map();
 const owners = new Map();
+const savedEndpoints = new Map();
 const endpoint = (c) => JSON.stringify([c?.profile_id || "", c?.host, c?.port, c?.user, c?.ssl_mode || "", c?.ssl_ca || ""]);
-const listed = (c) => [...held.values()].filter((j) => owners.get(j.id) === endpoint(c));
+const ownerMatch = (id, c) => {
+  const owner = owners.get(id);
+  if (!owner) return null;
+  if (owner === endpoint(c)) return "endpoint";
+  return c?.profile_id && JSON.parse(owner)[0] === c.profile_id && savedEndpoints.get(c.profile_id) === endpoint(c) ? "saved_connection" : null;
+};
+const snapshot = (j, c) => {
+  const owner = JSON.parse(owners.get(j.id));
+  return { ...j, started_on: j.started_on || { host: owner[1], port: owner[2] }, owner_match: ownerMatch(j.id, c) };
+};
+const listed = (c) => [...held.values()].filter((j) => ownerMatch(j.id, c)).map((j) => snapshot(j, c));
 const job = (base, id, extra = {}) => ({ ...structuredClone(base), id, ...extra });
 // The list of views docked, as a person who docked it: this suite asserts
 // the list's markers and keys (server-nav covers the floating default).
@@ -110,17 +122,18 @@ const h = await open("/api/lifecycle/tools", "maintenance", {
   [START]: (body) => {
     const reply = next.start.shift();
     if (reply?.job) {
-      held.set(reply.job.id, reply.job);
+      held.set(reply.job.id, { ...reply.job, started_on: { host: body.connection.host, port: body.connection.port } });
       owners.set(reply.job.id, endpoint(body.connection));
     }
-    return reply?.status ? reply : { status: 200, body: reply.job };
+    return reply?.status ? reply : { status: 200, body: held.get(reply.job.id) };
   },
-  [STATUS]: (body) => (held.has(body.id) && owners.get(body.id) === endpoint(body.connection) ? { status: 200, body: held.get(body.id) } : { status: 400, body: { error: "No such job." } }),
+  [STATUS]: (body) => (held.has(body.id) && ownerMatch(body.id, body.connection) ? { status: 200, body: snapshot(held.get(body.id), body.connection) } : { status: 400, body: { error: "No such job." } }),
   [CANCEL]: (body) => {
-    if (!held.has(body.id) || owners.get(body.id) !== endpoint(body.connection)) return { status: 400, body: { error: "No such job." } };
+    if (cancelFailures.has(body.id)) return cancelFailures.get(body.id);
+    if (!held.has(body.id) || !ownerMatch(body.id, body.connection)) return { status: 400, body: { error: "No such job." } };
     const after = job(cancelled, body.id, { operation: held.get(body.id)?.operation || "dump" });
     held.set(body.id, after);
-    return { status: 200, body: after };
+    return { status: 200, body: snapshot(after, body.connection) };
   },
   [JOBS]: (body) => ({ status: 200, body: { schema_version: "lifecycle-jobs-1.0", jobs: listed(body.connection) } }),
   "/api/live/schemas": { status: 200, body: schemas },
@@ -501,18 +514,28 @@ try {
   await pause(2000);
   assert.equal(calls(STATUS).length, polls, "a finished job is not polled");
 
-  // A lost Start reply: the job is found in myflames' job list, never started twice.
+  // JB2: an older job returned only by saved-id ownership is not evidence
+  // that this Start succeeded. It precedes the actual endpoint-matched job.
+  const originalOwner = calls(START)[0].body.connection;
+  savedEndpoints.set(originalOwner.profile_id, endpoint(originalOwner));
+  held.set("job-prior-endpoint", job(running, "job-prior-endpoint"));
+  owners.set("job-prior-endpoint", endpoint({ ...originalOwner, host: "prior-primary.test", port: 3308 }));
+  // A lost Start reply: the endpoint-matched job is found, never started twice.
   held.set("job-2", job(running, "job-2"));
-  owners.set("job-2", endpoint(calls(START)[0].body.connection));
+  owners.set("job-2", endpoint(originalOwner));
   next.start.push({ status: 502, body: { error: "The reply was lost." } });
   await preflight();
   await page.waitForSelector(sheet);
   await page.click(confirmButton);
   await settle(START, 2);
   await page.waitForSelector(`${view} .ops-job[data-job=job-2]`);
+  assert.equal(await page.$(`${view} .ops-job[data-job=job-prior-endpoint]`), null,
+    "JB2 recovery skips a saved-connection-only match from an earlier endpoint");
   assert.match(await text(`${view} .ops-note`), /The Start reply was lost, but the dump is in myflames' job list.*It was not started again\./);
   await pause(500);
   assert.equal(calls(START).length, 2, "Start is sent once");
+  held.delete("job-prior-endpoint");
+  owners.delete("job-prior-endpoint");
   // Completion is followed even after leaving Dump for another section.
   await section("Restore");
   held.set("job-2", job(done, "job-2", { elapsed_s: 91 }));
@@ -743,10 +766,67 @@ try {
   await page.waitForSelector(sheet);
   await page.click(confirmButton);
   await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=running]`);
+  await closedSheet();
+  // Round 2: a banner Cancel reply can fail after the user has opened
+  // Maintenance. Its failure must stay visible even on a different task.
+  await h.view("health");
+  const cancelBanner = '.server-content > .ops-loop[data-maintenance-job="job-3"]';
+  await page.waitForSelector(cancelBanner, { visible: true });
+  cancelFailures.set("job-3", { status: 502, body: { error: "Cancellation reply was lost after navigation." }, delay: 1800 });
+  const bannerCancels = calls(CANCEL).length;
+  await page.$eval(`${cancelBanner} button.action-button`, button => button.click());
+  await settle(CANCEL, bannerCancels + 1, "the banner sent Cancel before opening Maintenance");
+  await page.$$eval(`${cancelBanner} button`, buttons => buttons.find(b => b.textContent.trim() === "Open Maintenance").click());
+  await page.waitForSelector(view, { visible: true });
+  // The Start reply focused/scrolled its job card. Use the control directly
+  // so a moving sticky header cannot intercept this navigation probe.
+  const cancelTask = async label => {
+    await page.$$eval(`${view} [aria-label="Maintenance task"] button`, (buttons, wanted) => {
+      const button = buttons.find(b => b.textContent.trim() === wanted);
+      if (!button || button.disabled) throw new Error(`Maintenance task ${wanted} is unavailable`);
+      button.click();
+    }, label);
+    await page.waitForFunction((v, wanted) => document.querySelector(`${v} .segmented [aria-pressed=true]`)?.textContent === wanted, {}, view, label);
+  };
+  await cancelTask("Tools");
+  await page.waitForFunction(v => [...document.querySelectorAll(`${v} [role=alert]`)]
+    .some(e => e.getClientRects().length && /Outcome unknown.*Cancellation reply was lost after navigation/s.test(e.textContent)), {}, view);
+  await cancelTask("Dump");
+  assert.match(await text(`${view} .ops-job[data-job=job-3] [role=alert]`), /Outcome unknown.*Cancellation reply was lost after navigation/s,
+    "the banner Cancel failure follows its job into Maintenance");
+  await pause(1700);
+  assert.match(await text(`${view} .ops-job[data-job=job-3] [role=alert]`), /Outcome unknown/,
+    "successful status polling does not erase a banner Cancel failure");
+  cancelFailures.delete("job-3");
+  // R3b: retrying from Maintenance clears the shared banner failure for
+  // this job, including the card kept mounted under another task.
+  const retryCancels = calls(CANCEL).length;
+  await page.locator(`${view} .ops-job[data-job=job-3] button ::-p-text(Cancel)`).click();
+  await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=cancelled]`);
+  assert.equal(calls(CANCEL).length, retryCancels + 1, "Maintenance retries Cancel once");
+  assert.equal(await page.$(`${view} .ops-job[data-job=job-3] [role=alert]`), null,
+    "a successful Maintenance retry clears the job's shared Cancel error");
+  await cancelTask("Tools");
+  assert.equal(await page.$$eval(`${view} [role=alert]`, alerts => alerts.some(e =>
+    e.getClientRects().length && /Cancellation reply was lost after navigation/.test(e.textContent))), false,
+    "the cleared Cancel error stays cleared on other tasks");
+  await h.view("health");
+  assert.equal(await page.$(`${cancelBanner} .ops-loop-error`), null,
+    "the banner has no stale Cancel failure after the retry succeeds");
+  await h.view("maintenance");
+  await cancelTask("Dump");
+
+  // Keep the connection-switch and reload probes on their own running job.
+  next.start.push({ job: job(running, "job-switch") });
+  await preflight();
+  await page.waitForSelector(sheet);
+  await page.click(confirmButton);
+  await page.waitForSelector(`${view} .ops-job[data-job=job-switch][data-state=running]`);
+  await closedSheet();
   await connect("Archive");
-  await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-other-connection]`);
-  assert.match(await text(`${view} .ops-job[data-job=job-3]`), /Switch back to that connection to manage this job\./);
-  assert.equal(await page.$eval(`${view} .ops-job[data-job=job-3] .ops-job-head button`, (e) => e.disabled), true);
+  await page.waitForSelector(`${view} .ops-job[data-job=job-switch][data-other-connection]`);
+  assert.match(await text(`${view} .ops-job[data-job=job-switch]`), /Switch back to that connection to manage this job\./);
+  assert.equal(await page.$eval(`${view} .ops-job[data-job=job-switch] .ops-job-head button`, (e) => e.disabled), true);
   await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection]`), {}, view);
   assert.equal(state.seen.filter(r => r.connection.host === "archive.test").length, 1, "tool discovery follows the new connection automatically");
   const quiet = calls(STATUS).length;
@@ -767,13 +847,13 @@ try {
   // Back on Primary the running job is found again and followed.
   const before = calls(STATUS).length;
   await connect("Primary");
-  await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=running]`);
+  await page.waitForSelector(`${view} .ops-job[data-job=job-switch][data-state=running]`);
   await settle(STATUS, before + 1, "the found job is polled");
   await page.waitForSelector(`${view} .ops-job[data-job=job-2][data-state=done] .ops-job-folder button`);
   await pause(1700);
   assert.equal(calls(REVEAL).length, revealsBeforeAdoption, 'a completed dump adopted on mount never auto-reveals');
-  await page.locator(`${view} .ops-job[data-job=job-3] button ::-p-text(Cancel)`).click();
-  await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=cancelled]`);
+  await page.locator(`${view} .ops-job[data-job=job-switch] button ::-p-text(Cancel)`).click();
+  await page.waitForSelector(`${view} .ops-job[data-job=job-switch][data-state=cancelled]`);
   assert.equal(calls(START).length, starts, "a restored workspace never starts a job");
 
   for (const call of [...calls(STATUS), ...calls(CANCEL)])
@@ -958,6 +1038,39 @@ try {
   state.queue.push({ status: 200, body: tools });
   await section("Tools");
   await h.refresh(); await h.idle(view);
+
+  // JB2: editing the saved owner does not move a running job to the new
+  // server. The saved-owner request can still list, poll and cancel it.
+  held.set("job-edited-owner", job(running, "job-edited-owner"));
+  owners.set("job-edited-owner", endpoint(originalOwner));
+  await connect("Archive");
+  const primaryProfile = (await api("/api/profiles/list", {})).items.find(p => p.id === originalOwner.profile_id);
+  assert.ok(primaryProfile, "the owning saved connection still exists");
+  const savedEdit = await api("/api/profiles/save", {
+    id: primaryProfile.id, value: { ...primaryProfile, host: "replacement.test", port: 3310 },
+  });
+  assert.equal(savedEdit.error, undefined, "the endpoint edit was saved");
+  savedEndpoints.set(primaryProfile.id, endpoint({ ...primaryProfile, profile_id: primaryProfile.id, host: "replacement.test", port: 3310 }));
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await connect("Primary");
+  await section("Dump");
+  const editedOwnerCard = `${view} .ops-job[data-job=job-edited-owner]`;
+  await page.waitForSelector(`${editedOwnerCard}[data-state=running]`);
+  assert.match(await text(`${editedOwnerCard} .ops-job-head`), /started on primary\.test:3306/,
+    "JB2 the adopted card identifies the immutable start endpoint");
+  assert.doesNotMatch(await text(`${editedOwnerCard} .ops-job-head`), /replacement\.test/,
+    "JB2 the job never takes the saved owner's replacement address as its target");
+  for (let i = 0; i < 100 && !calls(STATUS).some(o => o.body.id === "job-edited-owner"); i++) await pause(25);
+  const editedStatus = calls(STATUS).find(o => o.body.id === "job-edited-owner");
+  assert.ok(editedStatus, "the adopted job is polled");
+  assert.equal(editedStatus.body.connection.host, "replacement.test", "status uses the current saved owner");
+  assert.equal(editedStatus.body.connection.port, 3310);
+  await page.locator(`${editedOwnerCard} button ::-p-text(Cancel)`).click();
+  await page.waitForSelector(`${editedOwnerCard}[data-state=cancelled]`);
+  assert.equal(calls(CANCEL).at(-1).body.connection.host, "replacement.test", "Cancel uses the current saved owner");
+  assert.match(await text(`${editedOwnerCard} .ops-job-head`), /started on primary\.test:3306/,
+    "a cancellation reply preserves the original execution target");
+  await section("Tools");
 
   await h.narrow("maintenance-390.png");
   await page.screenshot({ path: path.join(h.shots, "maintenance-1440.png") });

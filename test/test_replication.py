@@ -1717,6 +1717,66 @@ class TestEndpoints(ReplicationCase):
         self.assertEqual([(r['status'], r['outcome']) for r in self.records()],
                          [('refused', 'unsent'), ('refused', 'read_only'), ('refused', 'needs_confirmation')])
 
+    def test_loop_registry_rechecks_current_group_before_status_or_stop(self):
+        profile = self.store.save('profile', {'name': 'replica', 'host': 'db', 'port': 3306, 'user': 'u'})
+        self.store.save_connection_group('before', [profile['id']])
+        plain = dict(self.connection, profile_id=profile['id'])
+        grouped = dict(plain, group_name='before')
+        registry = ui._replication_loops(self.workspace)
+        loop = rp.SkipLoop(NoConn(), '', [1062], 2, poll_s=60)
+        # Register the real loop without starting its worker or touching a server.
+        with mock.patch.object(loop, 'start'):
+            registry.start(dbops.connection_identity(plain), loop)
+
+        def call(route, connection, job_id=None):
+            body = {'connection': connection}
+            if job_id is not None:
+                body['job_id'] = job_id
+            return ui.api_response('/api/live/replication/skip-loop/' + route, body, self.workspace)
+
+        with mock.patch('myflames.connector.MySQLConnection',
+                        side_effect=AssertionError('registry must not connect')), \
+                mock.patch.object(self.store, 'connection_with_saved_password',
+                                  side_effect=AssertionError('registry must not load credentials')), \
+                mock.patch.object(loop, 'stop', wraps=loop.stop) as stop:
+            self.assertEqual([j['job_id'] for j in call('status', grouped)['loops']], [loop.job_id])
+            # An external store edit leaves the caller's endpoint unchanged.
+            # Endpoint equality must not authorize its revoked group claim.
+            self.store.save_connection_group('after', [profile['id']])
+            for claim in ('before', '', 'unrelated', 17, {}, 'bad\x00group'):
+                stale = dict(plain, group_name=claim)
+                with self.subTest(claim=claim):
+                    listing = call('status', stale)
+                    self.assertEqual(listing['schema_version'], 'replication-skip-loop-1.0')
+                    self.assertEqual(listing['loops'], [])
+                    for route in ('status', 'stop'):
+                        with self.assertRaises(ValueError):
+                            call(route, stale, loop.job_id)
+            stop.assert_not_called()
+            self.assertFalse(loop._stop_event.is_set())
+
+            # Both the new group and a plain open still own this endpoint.
+            for allowed in (dict(plain, group_name='after'), plain):
+                with self.subTest(allowed=allowed):
+                    self.assertEqual([j['job_id'] for j in call('status', allowed)['loops']], [loop.job_id])
+                    self.assertEqual(call('status', allowed, loop.job_id)['job_id'], loop.job_id)
+                    self.assertEqual(call('stop', allowed, loop.job_id)['job_id'], loop.job_id)
+            self.assertEqual(stop.call_count, 2)
+
+            # Deletion revokes the group route, but keeps plain cancellation
+            # available just as it was before group consent was enforced.
+            self.store.delete('profile', profile['id'])
+            stop.reset_mock()
+            deleted = dict(plain, group_name='after')
+            self.assertEqual(call('status', deleted)['loops'], [])
+            for route in ('status', 'stop'):
+                with self.assertRaises(ValueError):
+                    call(route, deleted, loop.job_id)
+            stop.assert_not_called()
+            self.assertEqual(call('status', plain, loop.job_id)['job_id'], loop.job_id)
+            self.assertEqual(call('stop', plain, loop.job_id)['job_id'], loop.job_id)
+            stop.assert_called_once_with()
+
 
 class TestLoopReviewBinding(ReplicationCase):
     """Review tokens bind the replica before startup adopts any baseline."""

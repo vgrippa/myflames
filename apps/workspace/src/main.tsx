@@ -526,33 +526,35 @@ function App() {
   } | null>(null);
   const conflictRef = useRef<() => void>(() => {});
   const saverRef = useRef<SessionSaver | null>(null);
+  const saveStatusRef = useRef(saveStatus);
+  saveStatusRef.current = saveStatus;
+  const setSave = (next: SaveStatus) => {
+    const prev = saveStatusRef.current as SaveStatus & { at?: string; reason?: string };
+    const cand = next as SaveStatus & { at?: string; reason?: string };
+    if (prev.kind === cand.kind && prev.at === cand.at && prev.reason === cand.reason) return;
+    saveStatusRef.current = next;
+    setSaveStatus(next);
+  };
   if (!saverRef.current)
-    saverRef.current = new SessionSaver(
-      (next) =>
-        setSaveStatus((prev) =>
-          prev.kind === next.kind &&
-          ("at" in prev ? prev.at : "") === ("at" in next ? next.at : "") &&
-          ("message" in prev ? prev.message : "") === ("message" in next ? next.message : "")
-            ? prev
-            : next,
-        ),
-      () => conflictRef.current(),
-    );
+    saverRef.current = new SessionSaver(setSave, () => conflictRef.current());
   const saver = saverRef.current;
+  const updateLab = (change: (current: LabState) => LabState, patchTabs?: boolean) =>
+    setLabState((current) => {
+      const next = normalizeLab(change(current));
+      return sameLab(current, next) ? current : patchTabs ? next : { ...next, tabs: current.tabs };
+    });
   /** Merge part of the restorable lab state (editor, Server tabs, or the
    * connection in use); unchanged state keeps its identity. */
-  const patchLab = useCallback((patch: Partial<LabState>) => {
-    setLabState((current) => {
-      const next = normalizeLab({ ...current, ...patch });
-      return sameLab(current, next) ? current : next;
-    });
-  }, []);
+  const patchLab = useCallback(
+    (patch: Partial<LabState>) => updateLab((current) => ({ ...current, ...patch }), "tabs" in patch),
+    [],
+  );
   const reportEditor = useCallback(
     (editor: EditorState) => patchLab(editor),
     [patchLab],
   );
   const reportSlow = useCallback(
-    (slow: SlowState) => setLabState((current) => {
+    (slow: SlowState) => updateLab((current) => {
       const members = current.slow?.replication_loop_active
         ? loopMemberIds(current.slow.replication_loop_members, current.slow.replication_loop_member)
         : [];
@@ -563,13 +565,12 @@ function App() {
           ? { replication_loop_members: members, replication_loop_member: members[0] }
           : {}),
       };
-      const next = normalizeLab({ ...current, slow: merged });
-      return sameLab(current, next) ? current : next;
+      return { ...current, slow: merged };
     }),
     [],
   );
   const syncLoopSession = useCallback((active: boolean, members: string[] = []) => {
-    setLabState((current) => {
+    updateLab((current) => {
       const slow: SlowState = { ...(current.slow || { kind: "health" }) };
       if (active) {
         const ids = [...new Set(members.map((id) => id.slice(0, 200)).filter(Boolean))].slice(0, 64);
@@ -586,8 +587,7 @@ function App() {
         delete slow.replication_loop_members;
         delete slow.replication_loop_member;
       }
-      const next = normalizeLab({ ...current, slow });
-      return sameLab(current, next) ? current : next;
+      return { ...current, slow };
     });
   }, []);
   // Column widths and hidden columns of the workspace's tables by table id
@@ -597,12 +597,11 @@ function App() {
   const [columnLayouts, setColumnLayouts] = useState<Record<string, ColumnPrefs>>({});
   const columnStore = useColumnStore(columnLayouts, setColumnLayouts);
   useEffect(() => {
-    setLabState((current) => {
+    updateLab((current) => {
       const slow = { ...current.slow };
       if (Object.keys(columnLayouts).length) slow.columns_v1 = columnLayouts;
       else delete slow.columns_v1;
-      const next = normalizeLab({ ...current, slow });
-      return sameLab(current, next) ? current : next;
+      return { ...current, slow };
     });
   }, [columnLayouts]);
   // Saved connections and the connection in use. Its non-secret settings
@@ -1087,7 +1086,7 @@ function App() {
       .catch((e) => {
         // Without the stored revision, saving could overwrite newer work.
         saver.disable("");
-        setSaveStatus({
+        setSave({
           kind: "error",
           reason: `could not read the saved workspace (${message(e)})`,
         });
@@ -1602,7 +1601,7 @@ function App() {
       })
       .catch((e) => {
         saver.failed = true;
-        setSaveStatus({ kind: "error", reason: message(e) });
+        setSave({ kind: "error", reason: message(e) });
       });
   };
   async function toggleRestore(on: boolean) {
@@ -2351,7 +2350,9 @@ function App() {
     }
     return parts.join(" ");
   }, [unreachedLoopMembers, failedRestoreMembers, restoreMemberPending, profilesFailed, restoredOtherMembers.length, loopPollingFailed]);
-  const mountServer = visited.current.server || restoredLoop;
+  // Restored maintenance-job member ids make Server mount too: it lists each
+  // same-group member's job registry after reload (S14).
+  const mountServer = visited.current.server || restoredLoop || !!labInitial?.slow?.lifecycle_job_members;
   const mountReplication = visited.current.replication || restoredLoop;
   // When a restored workspace had skip loops on other members, poll each
   // same-group member's loop registry once saved connections load (no database
