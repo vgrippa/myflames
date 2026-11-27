@@ -15,8 +15,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from myflames import proxysql, proxysql_digests as pd, reviewed_writes, ui
-from test_proxysql import DIGESTS, Factory, Home, NotProxy
+from myflames import dbops, proxysql, proxysql_digests as pd, reviewed_writes, ui
+from myflames.connector import ConnectorError
+from test_proxysql import ADMIN_UUID, DIGESTS, Factory, Home, IDENTITY_SQL, NotProxy, OTHER_ADMIN_UUID
 
 ROOT = Path(__file__).resolve().parent.parent
 DIGEST_SCHEMA = json.loads((ROOT / 'docs' / 'schemas' / 'proxysql-digests-1.0.json').read_text(encoding='utf-8'))
@@ -431,6 +432,105 @@ class TestDigests(Home):
         self.assertEqual(selected['routing']['verdict'], 'unknown')
         self.assertIn('mysql-query_processor_regex', ' '.join(selected['routing']['why']))
 
+    def test_identification_and_every_digest_evidence_login_are_uuid_bound(self):
+        conn = self.admin()
+        out = pd.read_digests(conn)
+        self.assertTrue(out['digests'])
+        self.assertIsNone(out['message'])
+        self.assertEqual(out['server_identity'], {'uuid': ADMIN_UUID})
+        batches = [(sql, flags) for sql, flags in conn.read_flags if sql != IDENTITY_SQL]
+        self.assertTrue(any('SELECT @@version' in sql for sql, _ in batches))
+        self.assertTrue(any('SELECT * FROM stats_mysql_query_digest ORDER BY' in sql for sql, _ in batches))
+        for sql, flags in batches:
+            with self.subTest(sql=sql):
+                statements = [unit['text'].strip().rstrip(';') for unit in dbops.split_statements(sql)]
+                if statements[0] == proxysql._ADMIN_VERSION_SQL:
+                    self.assertEqual(statements, [proxysql._ADMIN_VERSION_SQL, IDENTITY_SQL],
+                                     'discover the UUID in the version login, without another login')
+                else:
+                    self.assertEqual(len(statements), 3)
+                    self.assertEqual((statements[0], statements[-1]), (IDENTITY_SQL, IDENTITY_SQL))
+                self.assertIn('--xml', flags)
+                self.assertIn('--skip-reconnect', flags)
+        self.assertEqual(conn.writes, [])
+
+    def test_verified_report_returns_its_own_instance_uuid(self):
+        from test_chart_data import validate
+        for uuid in (ADMIN_UUID, OTHER_ADMIN_UUID):
+            with self.subTest(uuid=uuid):
+                conn = self.admin(server_uuid=uuid)
+                out = pd.read_digests(conn)
+                validate(out, DIGEST_SCHEMA)
+                self.assertEqual(out['server_identity'], {'uuid': uuid})
+                self.assertIsNone(out['message'])
+                self.assertTrue(out['digests'])
+                self.assertEqual(conn.writes, [])
+
+    def test_other_instance_in_any_digest_batch_refuses_instead_of_mixing_evidence(self):
+        queries = (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version', 'FROM runtime_global_variables',
+                   'SELECT * FROM runtime_mysql_query_rules', 'SELECT * FROM runtime_mysql_query_rules_fast_routing',
+                   'FROM runtime_mysql_users', 'SELECT * FROM stats_mysql_query_rules',
+                   'GROUP BY hostgroup, schemaname, username', 'SELECT * FROM stats_mysql_query_digest ORDER BY')
+        for query in queries:
+            with self.subTest(query=query):
+                conn = self.admin()
+                with self.other_instance_read(conn, query), self.assertRaises(ConnectorError) as caught:
+                    pd.read_digests(conn)
+                self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
+                self.assertEqual(conn.rows(IDENTITY_SQL), [(ADMIN_UUID,)])
+                self.assertEqual(conn.writes, [])
+
+        # Identity failure takes precedence over a rule filter's validation.
+        conn = self.admin()
+        with self.other_instance_read(conn, 'SELECT * FROM runtime_mysql_query_rules'), \
+                self.assertRaises(ConnectorError) as caught:
+            pd.read_digests(conn, rule_id=30)
+        self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
+
+    def test_incomplete_or_wrong_uuid_framing_on_final_digest_query_refuses(self):
+        for mode in ('missing_prefix', 'missing_suffix', 'different_suffix', 'malformed'):
+            with self.subTest(mode=mode):
+                conn = self.admin()
+                original = conn.run
+
+                def corrupt(sql, *args, **kwargs):
+                    output = original(sql, *args, **kwargs)
+                    if 'SELECT * FROM stats_mysql_query_digest ORDER BY' not in sql:
+                        return output
+                    documents = re.findall(r'(?:<\?xml[^>]*>\s*)?<resultset\b[^>]*>.*?</resultset>', output, re.S)
+                    if mode.startswith('missing_'):
+                        documents.pop(0 if mode.endswith('prefix') else -1)
+                    elif mode == 'different_suffix':
+                        documents[-1] = conn._xml(IDENTITY_SQL, [['variable_value'], [OTHER_ADMIN_UUID]])
+                    else:
+                        documents[-1] = '<resultset><row></resultset>'
+                    return '\n'.join(documents)
+
+                with mock.patch.object(conn, 'run', side_effect=corrupt), self.assertRaises(ConnectorError) as caught:
+                    pd.read_digests(conn)
+                self.assertEqual(str(caught.exception), proxysql._EVIDENCE_IDENTITY_BLOCK)
+
+    def test_missing_or_invalid_uuid_retains_labelled_read_only_digests(self):
+        from test_chart_data import validate
+        for options in ({'version': '2.3.2', 'server_uuid': None}, {'server_uuid': None},
+                        {'server_uuid': 'not-a-uuid'}, {'missing': ('disk.global_settings',)}):
+            with self.subTest(options=options):
+                conn = self.admin(**options)
+                out = pd.read_digests(conn)
+                validate(out, DIGEST_SCHEMA)
+                self.assertTrue(out['available'])
+                self.assertTrue(out['digests'])
+                self.assertIn('unverified read-only', out['message'].lower())
+                self.assertNotIn('server_identity', out)
+                self.assertIn('different instances', out['message'])
+                self.assertFalse(out['routing']['evaluated'])
+                self.assertEqual(out['routing']['note'], out['message'])
+                self.assertTrue(all(d['routing']['verdict'] == 'unknown' and
+                                    d['routing']['text'] == out['message'] for d in out['digests']))
+                with self.assertRaisesRegex(ValueError, 'identity is unverified'):
+                    pd.read_digests(conn, rule_id=30)
+                self.assertEqual(conn.writes, [])
+
     def test_digest_keys_encode_the_identity_without_delimiter_collisions(self):
         identities = [('a|b', 'c', ''), ('a', 'b|c', ''), ('a', 'b', 'c|'),
                       ('a', 'b|', 'c'), ('a"\\\u00e7', 'b', '\n')]
@@ -463,7 +563,9 @@ class TestDigests(Home):
                 validate(out, DIGEST_SCHEMA)
                 self.assertEqual(out['filters']['order'], order)
                 self.assertEqual(out['digests'][0]['digest'], expected[order], order)
-                sql = [c for c in conn.calls if 'ORDER BY' in c and 'GROUP BY' not in c][0]
+                sql = next(unit['text'].strip().rstrip(';') for batch in conn.calls
+                           for unit in dbops.split_statements(batch)
+                           if 'ORDER BY' in unit['text'] and 'GROUP BY' not in unit['text'])
                 self.assertTrue(sql.endswith('LIMIT %d' % (limit + 1)), sql)
                 self.assertLessEqual(len(out['digests']), limit)
         out, _ = self.read(order='rate')
@@ -516,7 +618,8 @@ class TestDigests(Home):
         self.assertEqual(len(out['digests']), 5)
         self.assertTrue(all(30 in d['routing']['rules'] for d in out['digests']))
         self.assertEqual(out['scanned'], 10)
-        self.assertTrue([c for c in conn.calls if c.endswith('LIMIT %d' % pd.RULE_SCAN)])
+        self.assertTrue([unit for batch in conn.calls for unit in dbops.split_statements(batch)
+                         if unit['text'].strip().rstrip(';').endswith('LIMIT %d' % pd.RULE_SCAN)])
         with self.assertRaises(ValueError):
             pd.read_digests(self.admin(), rule_id=99)
 
@@ -543,6 +646,7 @@ class TestDigests(Home):
     def test_not_proxysql(self):
         out = pd.read_digests(NotProxy())
         self.assertEqual((out['is_proxysql'], out['digests']), (False, []))
+        self.assertNotIn('server_identity', out)
         self.assertIn('not a ProxySQL Admin interface', out['message'])
 
 

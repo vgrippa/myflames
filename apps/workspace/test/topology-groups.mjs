@@ -31,6 +31,10 @@ const healthBase = await load("health-mysql-8.4.json");
 const lifecycleTools = await load("lifecycle-tools-mysql.json");
 const lifecycleJobRunning = await load("lifecycle-job-dump-running.json");
 const lifecycleJobCancelled = await load("lifecycle-job-dump-cancelled.json");
+const lifecycleJobDone = await load("lifecycle-job-dump-done.json");
+const lifecycleDumpPlan = await load("lifecycle-plan-dump.json");
+lifecycleDumpPlan.review_token = "round2-dump-review";
+lifecycleTools.default_dump_parent = "/tmp/myflames-browser-dumps";
 
 const profiles = [
   {
@@ -110,6 +114,10 @@ const proxysqlReads = [];
 let groupError = "";
 let profilesFail = false;
 let holdNav3LoopFailure = false;
+let failNav2JobsList = false;
+let lifecycleListReply = null;
+let nextLifecycleStart = null;
+let navGroupMemberIds = null;
 let profilesListCalls = 0;
 let onGroupSuccess = null;
 let replicationReport = structuredClone(replicationBase);
@@ -126,10 +134,36 @@ const loopRegistry = new Map();
 const loopStarts = [];
 const loopStatusReads = [];
 const loopStops = [];
+let loopReviewBody, skipReviewBody;
 const lifecycleJobs = new Map();
+const lifecycleJobLists = [];
 const lifecycleStatusReads = [];
 const lifecycleCancels = [];
 const loopEndpoint = (c) => `${c?.host}:${c?.port}:${c?.user}`;
+// Lifecycle ownership can survive a saved endpoint edit. Capture the original
+// owner and start address before an edit, as the backend does at job creation.
+const lifecycleOwners = new Map();
+const lifecycleStatusFailures = new Set();
+const lifecycleCancelFailures = new Map();
+function matchingLifecycleJobs(connection) {
+  const current = profiles.find(p => p.id === connection?.profile_id && loopEndpoint(p) === loopEndpoint(connection));
+  const matches = [];
+  for (const [ep, jobs] of lifecycleJobs) {
+    for (const job of jobs) {
+      let owner = lifecycleOwners.get(job.id);
+      if (!owner) {
+        const profile = profiles.find(p => loopEndpoint(p) === ep);
+        const start = job.started_on || { host: profile?.host || connection.host, port: profile?.port || connection.port };
+        owner = { profileId: profile?.id || "", started_on: { ...start } };
+        lifecycleOwners.set(job.id, owner);
+      }
+      const owner_match = ep === loopEndpoint(connection) ? "endpoint"
+        : current && owner.profileId === current.id ? "saved_connection" : null;
+      if (owner_match) matches.push({ ep, job: { ...job, started_on: { ...owner.started_on }, owner_match } });
+    }
+  }
+  return matches;
+}
 const loopRunning = await load("replication-loop-running.json");
 const loopStopped = await load("replication-loop-stopped.json");
 function navMember(over) {
@@ -263,7 +297,21 @@ const h = await open("/api/live/cluster", "topology-groups", {
     replicationReads.push(body);
     return { status: 200, body: replicationReportFor ? replicationReportFor(body) : replicationReport };
   },
+  "/api/live/replication/skip-loop/review": (body) => {
+    loopReviewBody = structuredClone(body);
+    assert.ok(body.first_failure && body.statements.length, "Loop review binds the displayed first failure and SQL");
+    assert.ok(body.codes.length, "Loop review is requested only after choosing errors");
+    return { status: 200, body: { review_token: "review-loop" } };
+  },
+  "/api/live/replication/skip/review": (body) => {
+    skipReviewBody = structuredClone(body);
+    assert.ok(body.expect && body.statements.length, "Skip review binds the displayed failed transaction and SQL");
+    return { status: 200, body: { review_token: "review-skip" } };
+  },
   "/api/live/replication/skip-loop/start": (body) => {
+    assert.equal(body.review_token, "review-loop", "Start passes the loop review token");
+    const { review_token, confirmed, ...details } = body;
+    assert.deepEqual(details, loopReviewBody, "Start exactly echoes the on-demand review");
     loopStarts.push(body);
     const running = structuredClone(loopRunning);
     loopRegistry.set(loopEndpoint(body.connection), [running]);
@@ -283,21 +331,49 @@ const h = await open("/api/live/cluster", "topology-groups", {
     return { status: 200, body: structuredClone(loopStopped) };
   },
   "/api/lifecycle/tools": () => ({ status: 200, body: lifecycleTools }),
-  "/api/lifecycle/jobs": (body) => ({
-    status: 200,
-    body: { schema_version: "lifecycle-jobs-1.0", jobs: lifecycleJobs.get(loopEndpoint(body.connection)) || [] },
-  }),
+  "/api/files/local/list": body => ({ status: 200, body: {
+    path: body.path || "/tmp/myflames-browser-dumps", home: "/tmp", entries: [], transfers: false,
+  } }),
+  "/api/lifecycle/jobs": (body) => {
+    assert.ok(!body.connection.password, "registry listing never carries a typed password");
+    lifecycleJobLists.push(body);
+    const reply = lifecycleListReply?.(body);
+    if (reply) return reply;
+    if (failNav2JobsList && body.connection?.profile_id === "p-nav-2") {
+      return { status: 500, body: { error: "The workspace is busy." } };
+    }
+    return {
+      status: 200,
+      body: { schema_version: "lifecycle-jobs-1.0", jobs: matchingLifecycleJobs(body.connection).map(m => m.job) },
+    };
+  },
   "/api/lifecycle/status": (body) => {
+    assert.ok(!body.connection.password, "registry status never carries another member's typed password");
     lifecycleStatusReads.push(body);
-    const list = lifecycleJobs.get(loopEndpoint(body.connection)) || [];
-    return { status: 200, body: list.find((j) => j.id === body.id) || structuredClone(lifecycleJobCancelled) };
+    if (lifecycleStatusFailures.has(body.id)) return { status: 500, body: { error: "Synthetic registry status failure." } };
+    const match = matchingLifecycleJobs(body.connection).find(m => m.job.id === body.id);
+    return match ? { status: 200, body: match.job } : { status: 400, body: { error: "No such job." } };
+  },
+  "/api/lifecycle/prepare": () => ({ status: 200, body: lifecycleDumpPlan }),
+  "/api/lifecycle/start": (body) => {
+    assert.ok(nextLifecycleStart, "the test explicitly queued a reviewed start");
+    const started = { ...nextLifecycleStart, started_on: { host: body.connection.host, port: body.connection.port } };
+    nextLifecycleStart = null;
+    const ep = loopEndpoint(body.connection);
+    lifecycleJobs.set(ep, [...(lifecycleJobs.get(ep) || []), started]);
+    lifecycleOwners.set(started.id, { profileId: body.connection.profile_id, started_on: { ...started.started_on } });
+    return { status: 200, body: started };
   },
   "/api/lifecycle/cancel": (body) => {
     assert.equal(body.connection.password, "", "Maintenance cancel never carries another member's typed password");
     lifecycleCancels.push(body);
-    const cancelled = { ...structuredClone(lifecycleJobCancelled), id: body.id };
-    const ep = loopEndpoint(body.connection);
-    lifecycleJobs.set(ep, (lifecycleJobs.get(ep) || []).map((j) => (j.id === body.id ? cancelled : j)));
+    const failure = lifecycleCancelFailures.get(body.id);
+    if (failure) return failure;
+    const match = matchingLifecycleJobs(body.connection).find(m => m.job.id === body.id);
+    if (!match) return { status: 400, body: { error: "No such job." } };
+    const cancelled = { ...match.job, ...structuredClone(lifecycleJobCancelled), id: body.id,
+      started_on: match.job.started_on, owner_match: match.job.owner_match };
+    lifecycleJobs.set(match.ep, (lifecycleJobs.get(match.ep) || []).map((j) => (j.id === body.id ? cancelled : j)));
     return { status: 200, body: cancelled };
   },
   "/api/live/proxysql": (body) => {
@@ -307,7 +383,7 @@ const h = await open("/api/live/cluster", "topology-groups", {
   "/api/connect": (body) => {
     connectCalls.push(body);
     const name = typeof body.group_name === "string" ? body.group_name.trim() : "";
-    const grouped = profiles.filter((p) => (p.group || "") === name);
+    const grouped = profiles.filter((p) => (p.group || "") === name && (!navGroupMemberIds || name !== "mf-nav" || navGroupMemberIds.includes(p.id)));
     if (!grouped.length) return { status: 400, body: { error: "No saved connection belongs to this connection group." } };
     const active = grouped.find((m) => m.id === body.active_member_profile_id) || grouped[0];
     return { status: 200, body: {
@@ -1526,14 +1602,14 @@ try {
   await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
   await h.view("maintenance");
   await page.waitForSelector('.server-view[data-view="maintenance"] .group-server-select, .server-view[data-view="maintenance"] .group-server-segmented', { visible: true });
-  const chooseMaintServer = async (id) => {
+  const chooseMaintServer = async (id, label) => {
     const sel = await page.$('.server-view[data-view="maintenance"] .group-server-select');
     if (sel) await page.select('.server-view[data-view="maintenance"] .group-server-select', id);
     else await page.evaluate((target) => {
       const m = [...document.querySelectorAll('.server-view[data-view="maintenance"] .group-server-segmented button')]
         .find((b) => b.title.includes(target));
       m?.click();
-    }, id === "p-nav-2" ? "nav-db-2" : "nav-db-3");
+    }, label || (id === "p-nav-2" ? "nav-db-2" : "nav-db-3"));
   };
   await chooseMaintServer("p-nav-2");
   await page.evaluate(() => {
@@ -1792,7 +1868,7 @@ try {
   await page.waitForSelector('.replication-place .ops-note', { visible: true });
   assert.equal(loopStatusReads.slice(statusBeforeLeft).some((b) => b.connection.profile_id === "p-nav-2"), false,
     "S10 never polls a saved loop member that left its group");
-  const noGroupPattern = /nav-db-2, which is no longer in a connection group\. Open nav-db-2 to check or stop it\./;
+  const noGroupPattern = /nav-db-2, which is not in a connection group\. Open nav-db-2 to check or stop it\./;
   assert.match(await page.$eval('.replication-place .ops-note', (e) => e.textContent.trim()), noGroupPattern,
     "S10 Replication note names the member with the no-group wording after reload");
   await page.click('.main-nav button[data-place="server"]');
@@ -1849,7 +1925,7 @@ try {
   await page.waitForSelector('.main-nav button[data-place="server"].active');
   await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
   await page.waitForSelector('.server-content > .ops-note', { visible: true });
-  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()), noGroupPattern,
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()), /nav-db-2, which is no longer in a connection group\. Open nav-db-2 to check or stop it\./,
     "S10 in-window refresh moves the removed member's running loop into the no-group note");
   const pollsAfterInWindowLeave = loopStatusReads.length;
   await pause(2500);
@@ -1997,6 +2073,62 @@ try {
     { timeout: 6000 });
   await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_members);
 
+  // H3: a restored member that rejoins its group while its reads fail moves
+  // from the outside-group note into the failed list ("Status not refreshed");
+  // once a read succeeds the banner comes back and the note clears.
+  loopRegistry.clear();
+  loopRegistry.set("10.0.1.13:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-h3" }]);
+  const nav3Profile = profiles.find((p) => p.id === "p-nav-3");
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-3"]', { visible: true });
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-3"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  // After reload every status read for p-nav-3 fails: "Status not refreshed".
+  holdNav3LoopFailure = true;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-note', { visible: true });
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()),
+    /Status not refreshed.*nav-db-3/, "H3 failed restore read shows Status not refreshed");
+  // Move p-nav-3 to another saved group: the outside-group wording applies.
+  nav3Profile.group = "other-group";
+  await focusProfilesRefresh();
+  await page.waitForFunction(() =>
+    /outside the active connection's group/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""),
+    { timeout: 6000 });
+  // Rejoin while the reads still fail: back to "Status not refreshed", never
+  // "outside the active connection's group".
+  nav3Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+  await page.waitForFunction(() =>
+    /Status not refreshed/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""),
+    { timeout: 6000 });
+  const h3Note = await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim());
+  assert.match(h3Note, /Status not refreshed.*nav-db-3/, "H3 rejoined member with failing reads is Status not refreshed");
+  assert.doesNotMatch(h3Note, /outside the active connection's group/, "H3 never calls the rejoined member outside the group");
+  // Reads succeed again: the banner returns and the note clears.
+  holdNav3LoopFailure = false;
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true, timeout: 6000 });
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-note'), { timeout: 6000 });
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-3"));
+  loopRegistry.clear();
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'),
+    { timeout: 6000 });
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_members);
+
   // S13 + H2 (list failing): a running maintenance job whose member leaves the
   // group moves into a note in Server's status area with zero polls or cancels,
   // adjusts wording while the profiles list fails, and drops only when its
@@ -2057,6 +2189,598 @@ try {
   await page.waitForFunction(() => !document.querySelector('.server-content > .ops-note'));
   profiles.splice(nav2Pos, 0, nav2Profile);
   nav2Profile.group = "mf-nav";
+  lifecycleJobs.clear();
+  await focusProfilesRefresh();
+
+  // S14: a running maintenance job on another member survives View > Reload:
+  // the running jobs' member ids are saved next to the loop member ids, and on
+  // restore each same-group member's job registry is listed again through the
+  // member resolver (registry read only, no password).
+  lifecycleJobs.clear();
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: "job-s14" }]);
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Refresh group connection mf-nav"]', { visible: true });
+  const connectsBeforeS14 = connectCalls.length;
+  await page.click('button[aria-label="Refresh group connection mf-nav"]');
+  for (let i = 0; i < 120 && connectCalls.length === connectsBeforeS14; i++) await pause(25);
+  assert.ok(connectCalls.length > connectsBeforeS14, "S14 opened the group connection");
+  await pause(400);
+  await h.view("maintenance");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .group-server-select, .server-view[data-view="maintenance"] .group-server-segmented', { visible: true });
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .ops-job[data-job="job-s14"][data-state="running"]');
+  await chooseMaintServer("p-nav-3");
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-s14"]', { visible: true });
+  await h.savedSlow((s) => Array.isArray(s.lifecycle_job_members) && s.lifecycle_job_members.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const listsBeforeS14Reload = lifecycleJobLists.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-s14"]', { visible: true, timeout: 8000 });
+  assert.match(await page.$eval('.server-content > .ops-loop[data-maintenance-job="job-s14"] strong', (e) => e.textContent),
+    /Dump on nav-db-2/, "S14 names the running dump on nav-db-2 after reload");
+  const s14RestoredLists = lifecycleJobLists.slice(listsBeforeS14Reload);
+  assert.ok(s14RestoredLists.some((b) => b.connection.profile_id === "p-nav-2"),
+    "S14 lists nav-db-2's job registry again after reload");
+  assert.equal(s14RestoredLists.every((b) => !b.connection.password), true,
+    "S14 restore lists carry no password");
+  // S14 outside variant (g2): nav-db-2 leaves its group; after reload the
+  // running job is still named in a note and gets no registry read, and the
+  // id is dropped only when its saved connection is deleted.
+  nav2Profile.group = "";
+  await focusProfilesRefresh();
+  await h.savedSlow((s) => Array.isArray(s.lifecycle_job_members) && s.lifecycle_job_members.includes("p-nav-2"));
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-note', { visible: true, timeout: 8000 });
+  const s14Note = await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim());
+  assert.match(s14Note, /maintenance job was running on nav-db-2, which is not in a connection group\. Open nav-db-2 to check or cancel it\./,
+    "S14 names the outside member's running job after reload");
+  const listsBeforeS14Leave = lifecycleJobLists.length;
+  await pause(2500);
+  assert.equal(lifecycleJobLists.slice(listsBeforeS14Leave).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "S14 never lists an outside member's registry");
+  const nav2DelPos = profiles.indexOf(nav2Profile);
+  profiles.splice(nav2DelPos, 1);
+  await focusProfilesRefresh();
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-note'));
+  await h.savedSlow((s) => !Array.isArray(s.lifecycle_job_members) || !s.lifecycle_job_members.includes("p-nav-2"));
+  profiles.splice(nav2DelPos, 0, nav2Profile);
+  nav2Profile.group = "mf-nav";
+  lifecycleJobs.clear();
+  await focusProfilesRefresh();
+
+  // JB2/JB3/JB7: a job's immutable target survives a saved endpoint edit,
+  // while status and banner Cancel use the verified current saved owner.
+  // A failed Cancel remains visible even after successful status polling.
+  const openMaintenanceGroup = async () => {
+    // Reload restores a saved member, not the live Group connection. Open
+    // the group explicitly before using its Server picker in this setup.
+    await page.click('.main-nav button[data-place="home"]');
+    const opener = 'button[aria-label="Open group connection mf-nav"], button[aria-label="Refresh group connection mf-nav"]';
+    await page.waitForSelector(opener, { visible: true });
+    const before = connectCalls.length;
+    await page.click(opener);
+    for (let i = 0; i < 120 && connectCalls.length === before; i++) await pause(25);
+    assert.ok(connectCalls.length > before, "the test explicitly opened its group connection");
+    await h.view("maintenance");
+    await page.waitForSelector('.server-view[data-view="maintenance"] .group-server-select, .server-view[data-view="maintenance"] .group-server-segmented', { visible: true });
+    await page.evaluate(() => {
+      [...document.querySelectorAll('.server-view[data-view="maintenance"] [aria-label="Maintenance task"] button')]
+        .find(b => b.textContent.trim() === "Dump")?.click();
+    });
+  };
+  const editedJobId = "job-jb3-edited-owner";
+  const editedJobBanner = `.server-content > .ops-loop[data-maintenance-job="${editedJobId}"]`;
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: editedJobId,
+    started_on: { host: "10.0.1.12", port: 3306 } }]);
+  await openMaintenanceGroup();
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector(`.server-view[data-view="maintenance"] .ops-job[data-job="${editedJobId}"][data-state="running"]`);
+  await chooseMaintServer("p-nav-3");
+  await h.view("health");
+  await page.waitForSelector(editedJobBanner, { visible: true });
+  lifecycleStatusFailures.add(editedJobId);
+  nav2Profile.host = "10.0.1.99";
+  nav2Profile.port = 3310;
+  await focusProfilesRefresh();
+  assert.match(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /10\.0\.1\.12:3306/,
+    "JB2 the banner retains the start address before a new status reply arrives");
+  assert.doesNotMatch(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /10\.0\.1\.99/);
+  for (let i = 0; i < 200 && !lifecycleStatusReads.some(b => b.id === editedJobId && b.connection.host === "10.0.1.99"); i++) await pause(25);
+  const editedStatus = lifecycleStatusReads.find(b => b.id === editedJobId && b.connection.host === "10.0.1.99");
+  assert.ok(editedStatus, "JB3 status is requested after the saved endpoint edit");
+  assert.equal(editedStatus.connection.profile_id, "p-nav-2");
+  assert.equal(editedStatus.connection.port, 3310);
+  assert.ok(!editedStatus.connection.password);
+  await page.waitForSelector(`${editedJobBanner} .ops-loop-stale`, { visible: true });
+  // Round 2 consent: the open group retains its old member snapshot while
+  // the saved profile moves out. Neither that snapshot nor a saved-owner
+  // endpoint fallback authorizes polling or Cancel from this group.
+  nav2Profile.group = "other-group";
+  await focusProfilesRefresh();
+  await page.waitForSelector(editedJobBanner, { hidden: true });
+  const outStatus = lifecycleStatusReads.filter(b => b.id === editedJobId).length;
+  const outCancels = lifecycleCancels.length;
+  await pause(1900);
+  assert.equal(lifecycleStatusReads.filter(b => b.id === editedJobId).length, outStatus,
+    "a stale open-group snapshot cannot poll an edited saved owner outside its group");
+  assert.equal(lifecycleCancels.length, outCancels);
+  assert.match(await page.$eval('.server-content > .ops-note', e => e.textContent), /other-group.*outside the active connection's group/);
+  nav2Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+  await page.waitForSelector(editedJobBanner, { visible: true });
+  profilesFail = true;
+  await focusProfilesRefresh();
+  await page.waitForSelector(editedJobBanner, { hidden: true });
+  const unreadStatus = lifecycleStatusReads.filter(b => b.id === editedJobId).length;
+  await pause(1900);
+  assert.equal(lifecycleStatusReads.filter(b => b.id === editedJobId).length, unreadStatus,
+    "a failed current profiles read cannot use the open group's stale member list");
+  profilesFail = false;
+  await focusProfilesRefresh();
+  await page.waitForSelector(editedJobBanner, { visible: true });
+  await page.waitForSelector(`${editedJobBanner} .ops-loop-stale`, { visible: true });
+  lifecycleCancelFailures.set(editedJobId, { status: 502, body: { error: "Synthetic cancellation reply was lost." } });
+  const cancelsBeforeJB7 = lifecycleCancels.length;
+  await page.click(`${editedJobBanner} button.action-button`);
+  await page.waitForSelector(`${editedJobBanner} .ops-loop-error[role="alert"]`, { visible: true });
+  assert.equal(lifecycleCancels.length, cancelsBeforeJB7 + 1, "JB3 banner Cancel sends one request");
+  assert.equal(lifecycleCancels.at(-1).connection.host, "10.0.1.99");
+  assert.equal(lifecycleCancels.at(-1).connection.port, 3310);
+  assert.equal(lifecycleCancels.at(-1).connection.profile_id, "p-nav-2");
+  assert.match(await page.$eval(`${editedJobBanner} .ops-loop-error`, e => e.textContent),
+    /Outcome unknown\..*Synthetic cancellation reply was lost\./,
+    "JB7 the failed Cancel preserves its unknown-outcome message");
+  const statusBeforeJB7Recovery = lifecycleStatusReads.length;
+  lifecycleStatusFailures.delete(editedJobId);
+  await page.waitForFunction(s => !document.querySelector(`${s} .ops-loop-stale`), { timeout: 8000 }, editedJobBanner);
+  assert.ok(lifecycleStatusReads.slice(statusBeforeJB7Recovery).some(b => b.id === editedJobId), "a later status request succeeds");
+  assert.match(await page.$eval(`${editedJobBanner} .ops-loop-error`, e => e.textContent), /Outcome unknown/,
+    "JB7 successful polling and owner rebinding do not erase a failed Cancel");
+  assert.match(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /Dump started on 10\.0\.1\.12:3306 is running\./,
+    "JB2 a saved-owner status reply still names the original server");
+
+  // Restore the same job from a saved-connection-only registry match. The
+  // edited address is used for access, never as the job's execution target.
+  await h.savedSlow(s => s.kind === "health" && s.lifecycle_job_members?.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const listsBeforeJB2 = lifecycleJobLists.length;
+  const connectsBeforeJB2 = connectCalls.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector(editedJobBanner, { visible: true, timeout: 8000 });
+  assert.ok(lifecycleJobLists.slice(listsBeforeJB2).some(b => b.connection.profile_id === "p-nav-2" && b.connection.host === "10.0.1.99"),
+    "JB2 reload lists the current saved owner without connecting to it");
+  assert.equal(connectCalls.length, connectsBeforeJB2, "registry restore never opens a saved connection");
+  assert.match(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /Dump started on 10\.0\.1\.12:3306 is running\./);
+  assert.doesNotMatch(await page.$eval(`${editedJobBanner} strong`, e => e.textContent), /10\.0\.1\.99/);
+  lifecycleCancelFailures.delete(editedJobId);
+  await page.click(`${editedJobBanner} button.action-button`);
+  await page.waitForFunction(s => !document.querySelector(s), {}, editedJobBanner);
+  assert.equal(lifecycleCancels.at(-1).connection.host, "10.0.1.99", "JB3 Cancel works after saved-owner adoption");
+  nav2Profile.host = "10.0.1.12";
+  nav2Profile.port = 3306;
+  lifecycleJobs.clear();
+  await focusProfilesRefresh();
+
+  // JB9: Health restores a job on its active member before Maintenance has
+  // mounted. Server owns the polling, stale feedback and completion cleanup.
+  const activeJobId = "job-jb9-active-health";
+  const activeJobBanner = `.server-content > .ops-loop[data-maintenance-job="${activeJobId}"]`;
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: activeJobId,
+    started_on: { host: "10.0.1.12", port: 3306 } }]);
+  await openMaintenanceGroup();
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector(`.server-view[data-view="maintenance"] .ops-job[data-job="${activeJobId}"][data-state="running"]`);
+  await h.view("health");
+  await h.savedSlow(s => s.kind === "health" && s.lifecycle_job_members?.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  lifecycleStatusFailures.add(activeJobId);
+  const statusBeforeJB9 = lifecycleStatusReads.length;
+  const connectsBeforeJB9 = connectCalls.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.server-view[data-view="health"]', { visible: true });
+  assert.equal(await page.$('.server-view[data-view="maintenance"]'), null, "JB9 Maintenance is not mounted after the Health reload");
+  await page.waitForSelector(`${activeJobBanner} .ops-loop-stale`, { visible: true, timeout: 8000 });
+  const activePolls = lifecycleStatusReads.slice(statusBeforeJB9).filter(b => b.id === activeJobId);
+  assert.ok(activePolls.length, "JB9 Server polls its active member without Maintenance");
+  assert.equal(activePolls.every(b => b.connection.profile_id === "p-nav-2" && b.connection.host === "10.0.1.12" && !b.connection.password), true);
+  assert.equal(connectCalls.length, connectsBeforeJB9, "JB9 restore and polling never open a saved connection");
+  const maintenanceBadgeText = async () => {
+    const floating = await h.floating();
+    if (floating) await h.openViews();
+    const label = await page.$eval('#server-nav-maintenance', e => e.textContent);
+    if (floating) await page.keyboard.press("Escape");
+    return label;
+  };
+  assert.match(await maintenanceBadgeText(), /1 running/, "JB9 the badge reflects the restored running job");
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: activeJobId,
+    started_on: { host: "10.0.1.12", port: 3306 } }]);
+  lifecycleStatusFailures.delete(activeJobId);
+  await page.waitForFunction(s => !document.querySelector(s), { timeout: 8000 }, activeJobBanner);
+  assert.doesNotMatch(await maintenanceBadgeText(), /running/, "JB9 completed status clears the Maintenance running badge");
+  await h.savedSlow(s => !s.lifecycle_job_members?.includes("p-nav-2"));
+  assert.equal(await page.$('.server-view[data-view="maintenance"]'), null, "JB9 completion was noticed without mounting Maintenance");
+  lifecycleJobs.clear();
+
+  // The active connection saved in the session, polled like savedSlow.
+  async function savedConnectionHost(host) {
+    for (let i = 0; i < 100; i++) {
+      const saved = await page.evaluate(async () => {
+        const t = (await (await fetch("/api/auth/session", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "" }, body: "{}" })).json()).token;
+        return (await fetch("/api/session/load", { method: "POST", headers: { "Content-Type": "application/json", "X-Myflames-Token": t }, body: "{}" })).json();
+      });
+      if (saved.state?.query_lab?.connection?.host === host) return;
+      await pause(100);
+    }
+    assert.fail(`the session never saved the active connection ${host}`);
+  }
+  // Home's group button reads "Open" after a reload and "Refresh" while the
+  // group connection is active: take either, and wait for the connect.
+  async function openOrRefreshNavGroup() {
+    await page.click('.main-nav button[data-place="home"]');
+    const both = 'button[aria-label="Refresh group connection mf-nav"], button[aria-label="Open group connection mf-nav"]';
+    await page.waitForSelector(both, { visible: true });
+    const before = connectCalls.length;
+    await page.click(both);
+    for (let i = 0; i < 120 && connectCalls.length === before; i++) await pause(25);
+    assert.ok(connectCalls.length > before, "opened the group connection mf-nav");
+    await pause(400);
+  }
+
+  // JB4: an outside restored member is rechecked when the active connection or
+  // group changes into its scope, and its note follows the saved connection's
+  // current name and group instead of the fields snapshot at reload.
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: "job-jb4" }]);
+  await openOrRefreshNavGroup();
+  await h.view("maintenance");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .group-server-select, .server-view[data-view="maintenance"] .group-server-segmented', { visible: true });
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .ops-job[data-job="job-jb4"][data-state="running"]');
+  await chooseMaintServer("p-nav-3");
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb4"]', { visible: true });
+  await h.savedSlow((s) => Array.isArray(s.lifecycle_job_members) && s.lifecycle_job_members.includes("p-nav-2"));
+  // Reload with solo-db (no group) active: p-nav-2 restores as outside.
+  const soloOptJB4 = await connectionOption(page, "solo-db");
+  await page.keyboard.press("Escape");
+  await chooseConnection(page, soloOptJB4);
+  await page.waitForFunction(() => /10\.0\.0\.99/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  await savedConnectionHost("10.0.0.99");
+  await h.savedSlow((s) => Array.isArray(s.lifecycle_job_members) && s.lifecycle_job_members.includes("p-nav-2"));
+  const listsBeforeJB4Reload = lifecycleJobLists.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-note', { visible: true, timeout: 8000 });
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()),
+    /maintenance job was running on nav-db-2 \(group mf-nav\), which is outside the active connection's group\./,
+    "JB4 names the outside member with its group after reload");
+  await pause(2000);
+  assert.equal(lifecycleJobLists.slice(listsBeforeJB4Reload).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "JB4 never lists an outside member's registry");
+  // A rename while outside updates the note (no stale snapshot fields).
+  nav2Profile.name = "nav-db-2-renamed";
+  await focusProfilesRefresh();
+  await page.waitForFunction(() =>
+    /nav-db-2-renamed \(group mf-nav\)/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""),
+    { timeout: 4000 });
+  // Switching the active connection into the member's group rechecks it.
+  const nav1OptJB4 = await connectionOption(page, "nav-db-1");
+  await page.keyboard.press("Escape");
+  await chooseConnection(page, nav1OptJB4);
+  await page.waitForFunction(() => /10\.0\.1\.11/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb4"]', { visible: true, timeout: 8000 });
+  assert.ok(lifecycleJobLists.slice(listsBeforeJB4Reload).some((b) => b.connection.profile_id === "p-nav-2"),
+    "JB4 lists the member's registry once the active connection enters its group");
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-note'), { timeout: 6000 });
+  nav2Profile.name = "nav-db-2";
+  await focusProfilesRefresh();
+
+  // JB6: a restored member whose registry read keeps failing and which then
+  // leaves the group moves to the outside note once and stops retrying.
+  await savedConnectionHost("10.0.1.11");
+  await h.savedSlow((s) => Array.isArray(s.lifecycle_job_members) && s.lifecycle_job_members.includes("p-nav-2"));
+  failNav2JobsList = true;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-note', { visible: true, timeout: 8000 });
+  await page.waitForFunction(() =>
+    /Status not refreshed/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""),
+    { timeout: 8000 });
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()),
+    /Status not refreshed for nav-db-2/, "JB6 names the failed restore member with Status not refreshed");
+  nav2Profile.group = "";
+  await focusProfilesRefresh();
+  await page.waitForFunction(() => {
+    const t = document.querySelector('.server-content > .ops-note')?.textContent || "";
+    return /no longer in a connection group/.test(t) && !/Status not refreshed/.test(t);
+  }, { timeout: 8000 });
+  const jb6ListCount = lifecycleJobLists.filter((b) => b.connection.profile_id === "p-nav-2").length;
+  await pause(4000);
+  assert.equal(lifecycleJobLists.filter((b) => b.connection.profile_id === "p-nav-2").length, jb6ListCount,
+    "JB6 stops retrying a member that left the group");
+  failNav2JobsList = false;
+  nav2Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb4"]', { visible: true, timeout: 8000 });
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: "job-jb4" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job]'), { timeout: 6000 });
+  lifecycleJobs.clear();
+
+  // JB5: when the first saved-connections read after reload fails, remembered
+  // job members are named in the list-failure note (no registry reads) instead
+  // of staying pending in silence.
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: "job-jb5" }]);
+  await openOrRefreshNavGroup();
+  await h.view("maintenance");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .group-server-select, .server-view[data-view="maintenance"] .group-server-segmented', { visible: true });
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .ops-job[data-job="job-jb5"][data-state="running"]');
+  await h.savedSlow((s) => Array.isArray(s.lifecycle_job_members) && s.lifecycle_job_members.includes("p-nav-2"));
+  profilesFail = true;
+  const listsBeforeJB5Reload = lifecycleJobLists.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-note', { visible: true, timeout: 8000 });
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()),
+    /maintenance job was running on p-nav-2, and the saved connections list could not be read/,
+    "JB5 names the remembered member in the list-failure note");
+  await pause(2000);
+  assert.equal(lifecycleJobLists.slice(listsBeforeJB5Reload).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "JB5 issues no registry reads for remembered members while the saved-connections list fails");
+  profilesFail = false;
+  await pause(1100);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb5"]', { visible: true, timeout: 8000 });
+  assert.ok(lifecycleJobLists.slice(listsBeforeJB5Reload).some((b) => b.connection.profile_id === "p-nav-2"),
+    "JB5 lists the member's registry once the saved-connections list recovers");
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: "job-jb5" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job]'), { timeout: 6000 });
+  lifecycleJobs.clear();
+
+  // JB8: a saved member id containing a comma survives the restore encoding
+  // (JSON, not a comma-joined list) and is listed again after reload.
+  profiles.push({
+    id: "p-comma,2",
+    name: "comma-db",
+    host: "10.0.1.17",
+    port: 3306,
+    user: "dba",
+    database: "",
+    ssl_mode: "PREFERRED",
+    ssl_ca: "",
+    type: "production",
+    read_only: false,
+    group: "mf-nav",
+    remember_password: true,
+    has_saved_password: true,
+    secret_backend: "vault",
+    secret_backend_label: "myflames encrypted vault",
+  });
+  await focusProfilesRefresh();
+  lifecycleJobs.set("10.0.1.17:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: "job-jb8" }]);
+  await openOrRefreshNavGroup();
+  await h.view("maintenance");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .group-server-select, .server-view[data-view="maintenance"] .group-server-segmented', { visible: true });
+  await chooseMaintServer("p-comma,2", "comma-db");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .ops-job[data-job="job-jb8"][data-state="running"]');
+  await h.savedSlow((s) => Array.isArray(s.lifecycle_job_members) && s.lifecycle_job_members.includes("p-comma,2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const listsBeforeJB8Reload = lifecycleJobLists.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-jb8"]', { visible: true, timeout: 8000 });
+  assert.ok(lifecycleJobLists.slice(listsBeforeJB8Reload).some((b) => b.connection.profile_id === "p-comma,2"),
+    "JB8 restores a member id containing a comma");
+  lifecycleJobs.set("10.0.1.17:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: "job-jb8" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job]'), { timeout: 6000 });
+  lifecycleJobs.clear();
+  profiles.splice(profiles.findIndex((p) => p.id === "p-comma,2"), 1);
+  await focusProfilesRefresh();
+  await h.savedSlow((s) => !Array.isArray(s.lifecycle_job_members) || !s.lifecycle_job_members.includes("p-comma,2"));
+
+  // Round 2 restores use controlled registry replies and the real saved
+  // session. No database or saved-connection login is part of restoration.
+  async function selectPlainMember(name, host) {
+    const option = await connectionOption(page, name);
+    await page.keyboard.press("Escape");
+    await chooseConnection(page, option);
+    await page.waitForFunction(wanted => document.querySelector(".window-toolbar .picker-target")?.textContent.includes(wanted), {}, host);
+    await h.view("health");
+    await savedConnectionHost(host);
+  }
+  async function restoreJobMembers(ids, waitUntil = "networkidle0") {
+    await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+    await page.evaluate(async memberIds => {
+      const token = (await (await fetch("/api/auth/session", { method: "POST", headers: {
+        "Content-Type": "application/json", "X-Myflames-Bootstrap": "1", "X-Myflames-Token": localStorage.getItem("myflames.session-proof") || "",
+      }, body: "{}" })).json()).token;
+      const call = async (route, body) => (await fetch(`/api/session/${route}`, { method: "POST", headers: {
+        "Content-Type": "application/json", "X-Myflames-Token": token,
+      }, body: JSON.stringify(body) })).json();
+      const saved = await call("load", {});
+      saved.state.query_lab.slow.lifecycle_job_members = memberIds;
+      const result = await call("save", { state: saved.state, revision: saved.revision, client_id: `round2-${Date.now()}`, seq: 1 });
+      if (result.error || result.stale) throw new Error("Could not seed the restored job member ids");
+    }, ids);
+    await page.reload({ waitUntil });
+    await page.waitForSelector('.main-nav button[data-place="server"]', { visible: true });
+    await page.click('.main-nav button[data-place="server"]');
+    await page.waitForSelector('.main-nav button[data-place="server"].active');
+  }
+  const maintView = '.server-view[data-view="maintenance"]';
+  console.log("topology-groups: round-2 consent checks passed; checking restore races");
+
+  // R2-2: a new job on an edited saved endpoint cannot erase a failed
+  // restore of an older job belonging to that same saved connection id.
+  await selectPlainMember("nav-db-1", "10.0.1.11");
+  const oldRestoreJob = "job-r2-old-endpoint";
+  const newRestoreJob = "job-r2-new-endpoint";
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: oldRestoreJob }]);
+  lifecycleOwners.set(oldRestoreJob, { profileId: "p-nav-2", started_on: { host: "10.0.1.12", port: 3306 } });
+  nav2Profile.host = "10.0.1.98";
+  await focusProfilesRefresh();
+  failNav2JobsList = true;
+  await restoreJobMembers(["p-nav-2"]);
+  await page.waitForFunction(() => /Status not refreshed for nav-db-2/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""));
+  await openMaintenanceGroup();
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector(`${maintView} .ops-actions button`, { visible: true });
+  nextLifecycleStart = { ...structuredClone(lifecycleJobRunning), id: newRestoreJob };
+  await page.waitForFunction(v => [...document.querySelectorAll(`${v} .ops-actions button`)]
+    .some(b => /Start dump/.test(b.textContent) && !b.disabled), {}, maintView);
+  await page.$$eval(`${maintView} .ops-actions button`, buttons => buttons.find(b => /Start dump/.test(b.textContent)).click());
+  await page.waitForSelector('dialog.ops-confirm[open]');
+  await page.click('dialog.ops-confirm .sheet-actions button:last-of-type');
+  await page.waitForSelector(`${maintView} .ops-job[data-job="${newRestoreJob}"][data-state="running"]`);
+  assert.match(await page.$eval('.server-content > .ops-note', e => e.textContent), /Status not refreshed for nav-db-2/,
+    "starting a new job with the same profile id does not clear the failed restore");
+  lifecycleJobs.set("10.0.1.98:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: newRestoreJob }]);
+  await page.waitForSelector(`${maintView} .ops-job[data-job="${newRestoreJob}"][data-state="done"]`);
+  await h.savedSlow(s => s.lifecycle_job_members?.includes("p-nav-2"));
+  const failedListsBefore = lifecycleJobLists.filter(b => b.connection.profile_id === "p-nav-2").length;
+  await pause(1900);
+  assert.ok(lifecycleJobLists.filter(b => b.connection.profile_id === "p-nav-2").length > failedListsBefore,
+    "the unresolved older registry keeps retrying after the new job finishes");
+  failNav2JobsList = false;
+  await page.waitForSelector(`${maintView} .ops-job[data-job="${oldRestoreJob}"][data-state="running"]`, { visible: true, timeout: 8000 });
+  await page.waitForFunction(() => !/Status not refreshed/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""));
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: oldRestoreJob }]);
+  await page.waitForSelector(`${maintView} .ops-job[data-job="${oldRestoreJob}"][data-state="done"]`);
+  lifecycleJobs.clear();
+  nav2Profile.host = "10.0.1.12";
+  await focusProfilesRefresh();
+  console.log("topology-groups: failed restore survives a new job on the same saved id");
+
+  // R2-3: A is classified outside while B's registry reply is delayed. A
+  // connection switch into A's group must abort/requeue that old batch.
+  await selectPlainMember("solo-db", "10.0.0.99");
+  const scopeJobId = "job-r2-scope-race";
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: scopeJobId }]);
+  lifecycleListReply = body => body.connection.profile_id === "p-solo"
+    ? { status: 200, body: { schema_version: "lifecycle-jobs-1.0", jobs: [] }, delay: 6500 } : null;
+  const beforeScopeLists = lifecycleJobLists.length;
+  await restoreJobMembers(["p-nav-2", "p-solo"], "domcontentloaded");
+  for (let i = 0; i < 160 && !lifecycleJobLists.slice(beforeScopeLists).some(b => b.connection.profile_id === "p-solo"); i++) await pause(25);
+  assert.ok(lifecycleJobLists.slice(beforeScopeLists).some(b => b.connection.profile_id === "p-solo"), "B's registry read is in flight");
+  const scopeConnects = connectCalls.length;
+  await selectPlainMember("nav-db-1", "10.0.1.11");
+  await page.waitForSelector(`.server-content > .ops-loop[data-maintenance-job="${scopeJobId}"]`, { visible: true, timeout: 5000 });
+  await pause(6700);
+  assert.equal(await page.$(`.server-content > .ops-loop[data-maintenance-job="${scopeJobId}"]`) !== null, true,
+    "B's late empty reply cannot leave the now-reachable A in the outside note");
+  assert.doesNotMatch(await page.$$eval('.server-content > .ops-note', es => es.map(e => e.textContent).join(" ")), /nav-db-2.*outside/);
+  assert.equal(connectCalls.length, scopeConnects, "scope reconciliation only reads registries");
+  lifecycleListReply = null;
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: scopeJobId }]);
+  await page.waitForFunction(id => !document.querySelector(`[data-maintenance-job="${id}"]`), {}, scopeJobId);
+  lifecycleJobs.clear();
+  console.log("topology-groups: scope changes requeue an in-flight restore batch");
+
+  // R3a: the store can revoke a group after the page's profiles read. A
+  // successful HTTP reply denying that scope is not an empty registry.
+  await selectPlainMember("nav-db-1", "10.0.1.11");
+  const deniedRestoreJob = "job-r3-scope-denied";
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: deniedRestoreJob }]);
+  lifecycleListReply = body => {
+    if (body.connection.profile_id !== "p-nav-2") return null;
+    assert.equal(body.connection.group_name, "mf-nav", "the restore still carries its last known group");
+    nav2Profile.group = "r3-outside";
+    return { status: 200, body: { schema_version: "lifecycle-jobs-1.0", jobs: [], scope_denied: true } };
+  };
+  const beforeDeniedConnects = connectCalls.length;
+  await restoreJobMembers(["p-nav-2"]);
+  await page.waitForFunction(() => /Status not refreshed for nav-db-2/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""));
+  await h.savedSlow(s => s.lifecycle_job_members?.includes("p-nav-2"));
+  assert.equal(await page.$(`[data-maintenance-job="${deniedRestoreJob}"]`), null,
+    "a scope-denied reply adopts no job");
+  await focusProfilesRefresh();
+  await page.waitForFunction(() => /nav-db-2.*r3-outside.*outside/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""));
+  await h.savedSlow(s => s.lifecycle_job_members?.includes("p-nav-2"));
+  const deniedLists = lifecycleJobLists.filter(b => b.connection.profile_id === "p-nav-2").length;
+  await pause(1800);
+  assert.equal(lifecycleJobLists.filter(b => b.connection.profile_id === "p-nav-2").length, deniedLists,
+    "a denied member reclassified outside stops registry retries");
+  lifecycleListReply = null;
+  nav2Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+  await page.waitForSelector(`.server-content > .ops-loop[data-maintenance-job="${deniedRestoreJob}"]`, { visible: true, timeout: 8000 });
+  assert.equal(connectCalls.length, beforeDeniedConnects, "scope denial and recovery never open a saved connection");
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: deniedRestoreJob }]);
+  await page.waitForFunction(id => !document.querySelector(`[data-maintenance-job="${id}"]`), {}, deniedRestoreJob);
+  lifecycleJobs.clear();
+  console.log("topology-groups: scope-denied restore retains the member until group consent recovers");
+
+  // R2-5: equal database host/port through a different SSH destination is
+  // still a different execution target. Both banner and card keep the route.
+  const sshJobId = "job-r2-ssh-route";
+  nav2Profile.ssh_host = "old-bastion.example";
+  nav2Profile.ssh_port = 2222;
+  nav2Profile.ssh_user = "private-ssh-user";
+  await focusProfilesRefresh();
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: sshJobId,
+    started_on: { host: "10.0.1.12", port: 3306, ssh_host: "old-bastion.example", ssh_port: 2222 } }]);
+  await openMaintenanceGroup();
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector(`${maintView} .ops-job[data-job="${sshJobId}"]`);
+  await chooseMaintServer("p-nav-3");
+  await h.view("health");
+  nav2Profile.ssh_host = "new-bastion.example";
+  nav2Profile.ssh_port = 2200;
+  await focusProfilesRefresh();
+  const sshBanner = `.server-content > .ops-loop[data-maintenance-job="${sshJobId}"]`;
+  await page.waitForSelector(sshBanner, { visible: true });
+  for (let i = 0; i < 160 && !lifecycleStatusReads.some(b => b.id === sshJobId && b.connection.ssh_host === "new-bastion.example"); i++) await pause(25);
+  assert.ok(lifecycleStatusReads.some(b => b.id === sshJobId && b.connection.ssh_host === "new-bastion.example"));
+  assert.match(await page.$eval(`${sshBanner} strong`, e => e.textContent), /started on 10\.0\.1\.12:3306 via old-bastion\.example:2222/);
+  await h.view("maintenance");
+  assert.match(await page.$eval(`${maintView} .ops-job[data-job="${sshJobId}"] strong`, e => e.textContent), /via old-bastion\.example:2222/);
+  assert.doesNotMatch(await page.$eval(`${maintView} .ops-job[data-job="${sshJobId}"] strong`, e => e.textContent), /new-bastion|private-ssh-user/);
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: sshJobId,
+    started_on: { host: "10.0.1.12", port: 3306, ssh_host: "old-bastion.example", ssh_port: 2222 } }]);
+  await page.waitForSelector(`${maintView} .ops-job[data-job="${sshJobId}"][data-state="done"]`);
+  lifecycleJobs.clear();
+  delete nav2Profile.ssh_host;
+  delete nav2Profile.ssh_port;
+  delete nav2Profile.ssh_user;
+  await focusProfilesRefresh();
+  console.log("topology-groups: job labels preserve the original public SSH destination");
+
+  // R2-6: [a, b,c, owner] and [a,b, c, owner] have the same comma-joined
+  // text. Only the group snapshot changes, not the successful profiles value.
+  const commaProfiles = ["a", "b,c", "a,b", "c"].map((id, i) => ({ ...profiles.find(p => p.id === "p-nav-1"),
+    id, name: `scope-${id}`, host: `10.0.2.${i + 1}`, group: "mf-nav" }));
+  profiles.push(...commaProfiles);
+  await focusProfilesRefresh();
+  await selectPlainMember("nav-db-1", "10.0.1.11");
+  const commaJobId = "job-r2-comma-scope";
+  lifecycleJobs.set("10.0.2.3:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: commaJobId }]);
+  lifecycleListReply = body => body.connection.profile_id === "a,b"
+    ? { status: 500, body: { error: "Hold the restored member until its group opens." } } : null;
+  await restoreJobMembers(["a,b"]);
+  await page.waitForFunction(() => /Status not refreshed/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""));
+  navGroupMemberIds = ["a", "b,c", "p-nav-1"];
+  await openOrRefreshNavGroup();
+  await h.view("health");
+  await page.waitForFunction(() => /scope-a,b.*outside/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""));
+  lifecycleListReply = null;
+  navGroupMemberIds = ["a,b", "c", "p-nav-1"];
+  await openOrRefreshNavGroup();
+  await h.view("health");
+  await page.waitForSelector(`.server-content > .ops-loop[data-maintenance-job="${commaJobId}"]`, { visible: true, timeout: 8000 });
+  assert.ok(lifecycleJobLists.some(b => b.connection.profile_id === "a,b" && b.connection.group_name === "mf-nav"),
+    "unambiguous group scope encoding requeues the newly reachable comma id");
+  lifecycleJobs.set("10.0.2.3:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: commaJobId }]);
+  await page.waitForFunction(id => !document.querySelector(`[data-maintenance-job="${id}"]`), {}, commaJobId);
+  navGroupMemberIds = null;
+  for (const p of commaProfiles) profiles.splice(profiles.indexOf(p), 1);
   lifecycleJobs.clear();
   await focusProfilesRefresh();
 

@@ -150,6 +150,9 @@ def run_one(part_sql):
     elif "variable_name = 'admin-version'" in lower:
         rows = [[variables['version']]] if cfg.get('proxy') == 'proxysql' else []
         emit(['variable_value'], rows)
+    elif 'from disk.global_settings' in lower:
+        rows = [[cfg.get('proxy_uuid', 'aaaaaaaa-0000-4000-8000-000000000001')]] if cfg.get('proxy') == 'proxysql' else []
+        emit(['variable_value'], rows)
     elif lower == 'show readyset version':
         emit(['name', 'value'], [['release version', 'stable-test']])
     elif lower == 'show readyset status':
@@ -320,7 +323,9 @@ def run_one(part_sql):
     else:
         fail('ERROR 1064 (42000): unexpected synthetic read')
 
-for part in sql.split('\n;\n'):
+# ProxySQL identity/version batches use ordinary semicolon-terminated lines.
+parts = re.split(r';\s*\n', sql) if sql.startswith('SELECT variable_value FROM ') else sql.split('\n;\n')
+for part in parts:
     if part.strip():
         run_one(part)
 '''

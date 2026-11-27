@@ -22,6 +22,7 @@ const bundle = await build({
   import { KillResultNote, type KillNote } from "./Locks";
   import { PrivilegeConfirmLabel, privilegeButtonProps, privilegeResult } from "./privileges";
   import { WhyDisabledHost } from "./WhyDisabled";
+  import { useReviewedActions, type ReviewedPlan, type ReviewedResult } from "./ActionReview";
   function Act({ id, done, failed, fail }: { id: string; done?: (n: number) => string; failed?: (e: unknown) => string; fail?: boolean }) {
     const action = useAction();
     const [runs, setRuns] = useState(0);
@@ -136,6 +137,85 @@ const bundle = await build({
       )}
     </div>;
   }
+  function ActionReviewProbe() {
+    const conn = { host: "127.0.0.1", port: 6032, user: "radmin", database: "", ssl_mode: "PREFERRED", ssl_ca: "", type: "development" as const };
+    const resolverRef = useRef<((value: ReviewedResult) => void) | null>(null);
+    const actions = useReviewedActions({
+      connection: conn,
+      operation: "proxysql_action",
+      send: (_c, plan) => new Promise<ReviewedResult>((resolve) => {
+        (window as unknown as { __reviewResolve?: (r: ReviewedResult) => void }).__reviewResolve = resolve;
+        (window as unknown as { __lastSentPlan?: ReviewedPlan }).__lastSentPlan = plan;
+        resolverRef.current = resolve;
+      }),
+    });
+    const guardedPlan: ReviewedPlan = {
+      schema_version: "proxysql-action-1.0",
+      action: "server_offline_soft",
+      eyebrow: "UPDATE",
+      title: "Set mf-ic-2:3306 to OFFLINE_SOFT?",
+      confirm_label: "Set OFFLINE_SOFT",
+      description: "No new traffic goes to mf-ic-2:3306.",
+      target_text: "mf-ic-2:3306 (hostgroup 30)",
+      session_guard: [
+        "INSERT INTO global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE (SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '11111111-2222-3333-4444-555555555555';",
+      ],
+      statements: [
+        "/*myflames:proxysql_op*/ UPDATE mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostgroup_id = 30 AND hostname = 'mf-ic-2' AND port = 3306;",
+        "LOAD MYSQL SERVERS TO RUNTIME;",
+      ],
+      facts: [["ProxySQL", "3.0.11"]],
+      warnings: [],
+      typed_guard: null,
+      undo: "UPDATE mysql_servers SET status = 'ONLINE' WHERE hostgroup_id = 30 AND hostname = 'mf-ic-2' AND port = 3306; then LOAD MYSQL SERVERS TO RUNTIME;",
+      expect: { server_identity: { uuid: "11111111-2222-3333-4444-555555555555" } },
+      timeout_s: 60,
+      policy: { action: "confirm", tone: "danger", title: "Risky write", text: "Development connection.", connection_type: "development", read_only: false },
+      review_token: "unit-token-guarded",
+    };
+    const unguardedPlan: ReviewedPlan = {
+      ...guardedPlan,
+      schema_version: "readyset-action-1.0",
+      action: "flush_cache",
+      eyebrow: "FLUSH CACHE",
+      title: "Flush shallow cache c_orders?",
+      confirm_label: "Flush cache",
+      target_text: "Shallow cache c_orders",
+      session_guard: [],
+      statements: ["FLUSH CACHE \`c_orders\`;"],
+      undo: "Entries repopulate automatically.",
+      review_token: "unit-token-unguarded",
+    };
+    // A SQL Cluster action: the backend DELIMITER-frames this guard into the
+    // same packet as each statement (dbops.target_guarded_script).
+    const clusterGuardedPlan: ReviewedPlan = {
+      schema_version: "cluster-action-1.1",
+      action: "switchover",
+      eyebrow: "SELECT group_replication_set_as_primary",
+      title: "Make mf-ic-1:3306 the primary?",
+      confirm_label: "Make mf-ic-1:3306 primary",
+      description: "The current primary becomes a read-only secondary.",
+      target_text: "mf-ic-1:3306",
+      session_guard: [
+        "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '1062e681-cc92-11f1-83dd-b6daec340a27');",
+      ],
+      statements: ["/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('1062e681-cc92-11f1-83dd-b6daec340a27');"],
+      facts: [["Server", "MySQL 8.4.11"]],
+      warnings: [],
+      typed_guard: null,
+      undo: "SELECT group_replication_set_as_primary('10a527c5-cc92-11f1-956e-2a01c1402350'); makes mf-ic-2:3306 the primary again.",
+      expect: { engine: "mysql", server: { server_uuid: "1062e681-cc92-11f1-83dd-b6daec340a27" } },
+      timeout_s: 120,
+      policy: { action: "confirm", tone: "danger", title: "Risky write", text: "Development connection.", connection_type: "development", read_only: false },
+      review_token: "unit-token-cluster",
+    };
+    return <div id="action-review-probe">
+      <button id="ar-open-guarded" type="button" onClick={() => { void actions.review("guarded", async () => guardedPlan); }}>Open guarded</button>
+      <button id="ar-open-unguarded" type="button" onClick={() => { void actions.review("unguarded", async () => unguardedPlan); }}>Open unguarded</button>
+      <button id="ar-open-cluster" type="button" onClick={() => { void actions.review("cluster", async () => clusterGuardedPlan); }}>Open cluster</button>
+      {actions.sheet}
+    </div>;
+  }
   function Demo() {
     const [resetKey, setResetKey] = useState(0);
     return <WhyDisabledHost resetKey={String(resetKey)}>
@@ -149,6 +229,7 @@ const bundle = await build({
       <WhyProbe />
       <CommandsProbe />
       <Round2Probe onResetKey={() => setResetKey((n) => n + 1)} />
+      <ActionReviewProbe />
     </WhyDisabledHost>;
   }
   createRoot(document.getElementById("root")!).render(<Demo />);
@@ -157,14 +238,38 @@ const bundle = await build({
   bundle: true, platform: "browser", format: "iife", write: false, jsx: "automatic", loader: { ".css": "empty" },
   define: { "process.env.NODE_ENV": '"production"' },
 });
-const css = (await Promise.all(["style.css", "kit.css", "catalog-actions.css"].map((file) => readFile(path.join(here, "../src", file), "utf8")))).join("\n");
+const css = (await Promise.all(["style.css", "kit.css", "catalog-actions.css", "ops.css"].map((file) => readFile(path.join(here, "../src", file), "utf8")))).join("\n");
 const browser = await puppeteer.launch({ headless: "shell", pipe: true });
 try {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.setRequestInterception(true);
-  page.on("request", (request) => request.respond({ status: 200, contentType: "text/html", body: `<style>${css}</style><div id="root"></div>` }));
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === "/api/auth/session") {
+      return request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ token: "unit-token" }) });
+    }
+    if (pathname === "/api/live/action/progress") {
+      return request.respond({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema_version: "action-progress-1.0",
+          phase: "sending",
+          states: ["sent", "sent"],
+          status: null,
+          elapsed_s: 0.4,
+          waiting_s: 0.4,
+          timeout_s: 60,
+        }),
+      });
+    }
+    if (pathname === "/api/audit/declined") {
+      return request.respond({ status: 200, contentType: "application/json", body: JSON.stringify({ audit_id: "declined-1", status: "declined" }) });
+    }
+    return request.respond({ status: 200, contentType: "text/html", body: `<style>${css}</style><div id="root"></div>` });
+  });
   await page.goto("http://feedback.test/");
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   await page.waitForSelector("#plain button");
@@ -489,8 +594,108 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet[open]"));
 
+  // 8. WB6: ActionReview shows and copies plan.session_guard lines first,
+  // labelled as the identity check sent before the statements, while progress
+  // states still map to plan.statements alone.
+  await page.evaluate(() => {
+    window.__arCopied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: (t) => { window.__arCopied.push(t); return Promise.resolve(); } },
+    });
+  });
+  await page.click("#ar-open-guarded");
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  const guardLine = "INSERT INTO global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE (SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '11111111-2222-3333-4444-555555555555';";
+  const stmts = [
+    "/*myflames:proxysql_op*/ UPDATE mysql_servers SET status = 'OFFLINE_SOFT' WHERE hostgroup_id = 30 AND hostname = 'mf-ic-2' AND port = 3306;",
+    "LOAD MYSQL SERVERS TO RUNTIME;",
+  ];
+  const expectedGuarded = [guardLine, ...stmts].join("\n");
+  const guardedView = await page.$eval("dialog.action-review[open]", (d) => ({
+    note: d.querySelector(".action-guard-note")?.textContent || "",
+    preLabel: d.querySelector(".ops-pre")?.getAttribute("aria-label") || "",
+    copyLabel: d.querySelector(".ops-commands button")?.getAttribute("aria-label") || "",
+    code: d.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(guardedView.note, /Identity check sent first.*before the statements/i);
+  assert.match(guardedView.preLabel, /Identity check sent first, before the statements/i);
+  assert.match(guardedView.copyLabel, /Identity check sent first, before the statements/i);
+  assert.equal(guardedView.code, expectedGuarded, "review sheet shows session_guard lines before statements");
+  await page.click("dialog.action-review[open] .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector("dialog.action-review[open] .ops-commands [role=status]")?.textContent || ""));
+  assert.equal(await page.evaluate(() => window.__arCopied.at(-1)), expectedGuarded, "Copy includes session_guard lines before statements");
+  await page.click("dialog.action-review[open] .sheet-actions button:last-child");
+  await page.waitForFunction(() => /Sent\. Waiting for the server's answer/.test(document.querySelector("dialog.action-review[open] .action-phase")?.textContent || ""));
+  const sendingSteps = await page.$$eval("dialog.action-review[open] .action-steps li", (els) =>
+    els.map((li) => ({ state: li.dataset.state, code: li.querySelector("code")?.textContent || "" })));
+  assert.deepEqual(sendingSteps, stmts.map((s) => ({ state: "sent", code: s })), "progress states map 1:1 to reviewed statements without session_guard");
+  await page.evaluate((statements) => {
+    window.__reviewResolve({
+      schema_version: "proxysql-action-1.0",
+      action: "server_offline_soft",
+      status: "done",
+      message: "Changed and loaded to runtime.",
+      statements,
+      sent: statements,
+      not_sent: [],
+      error: null,
+      after: null,
+      undo: null,
+      next: null,
+      audit_id: "audit-wb6",
+      states: ["done", "done"],
+    });
+  }, stmts);
+  await page.waitForSelector("dialog.action-review[open] .action-outcome");
+  const doneSteps = await page.$$eval("dialog.action-review[open] .action-steps li", (els) =>
+    els.map((li) => ({ state: li.dataset.state, code: li.querySelector("code")?.textContent || "" })));
+  assert.deepEqual(doneSteps, stmts.map((s) => ({ state: "done", code: s })), "final states map 1:1 to reviewed statements");
+  await page.click("dialog.action-review[open] .sheet-actions button:last-child");
+  await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+
+  // Unguarded plans omit the guard note and show/copy only statements.
+  await page.click("#ar-open-unguarded");
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(await page.$("dialog.action-review[open] .action-guard-note"), null, "no guard note when session_guard is empty");
+  assert.equal(await page.$eval("dialog.action-review[open] .ops-pre code", (e) => e.textContent), "FLUSH CACHE `c_orders`;");
+  await page.click("dialog.action-review[open] .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector("dialog.action-review[open] .ops-commands [role=status]")?.textContent || ""));
+  assert.equal(await page.evaluate(() => window.__arCopied.at(-1)), "FLUSH CACHE `c_orders`;");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+
+  // 9. WB round 2 #4: a MySQL/MariaDB guard travels DELIMITER-framed in the
+  // same packet as each statement (dbops.target_guarded_script), so the
+  // joined text cannot reproduce the send. The sheet shows and copies the
+  // check first, labelled as the reviewed statements for reading, never
+  // "exactly as sent" and never a script to paste.
+  await page.click("#ar-open-cluster");
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  const clusterGuardLine = "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE @@global.server_uuid <> '1062e681-cc92-11f1-83dd-b6daec340a27');";
+  const clusterStmt = "/*myflames:cluster_op*/ SELECT group_replication_set_as_primary('1062e681-cc92-11f1-83dd-b6daec340a27');";
+  const expectedCluster = [clusterGuardLine, clusterStmt].join("\n");
+  const clusterView = await page.$eval("dialog.action-review[open]", (d) => ({
+    note: d.querySelector(".action-guard-note")?.textContent || "",
+    preLabel: d.querySelector(".ops-pre")?.getAttribute("aria-label") || "",
+    copyLabel: d.querySelector(".ops-commands button")?.getAttribute("aria-label") || "",
+    code: d.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(clusterView.note, /Identity check \(first line below\): the backend sends it in the same packet as each statement/i);
+  assert.match(clusterView.note, /not a script to paste/i);
+  assert.match(clusterView.preLabel, /not a script to paste/i);
+  assert.match(clusterView.copyLabel, /not a script to paste/i);
+  assert.doesNotMatch([clusterView.note, clusterView.preLabel, clusterView.copyLabel].join(" "), /exactly as sent/i,
+    "a packet-framed guard never claims the shown text is exactly as sent");
+  assert.equal(clusterView.code, expectedCluster, "the packet-framed sheet still shows the check before the statements");
+  await page.click("dialog.action-review[open] .ops-commands button");
+  await page.waitForFunction(() => /Copied\./.test(document.querySelector("dialog.action-review[open] .ops-commands [role=status]")?.textContent || ""));
+  assert.equal(await page.evaluate(() => window.__arCopied.at(-1)), expectedCluster, "Copy still puts the reviewed text on the clipboard");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+
   assert.deepEqual(errors, [], "no page errors");
-  console.log("action-feedback-unit: 7 checks passed");
+  console.log("action-feedback-unit: 9 checks passed");
 } finally {
   await browser.close();
 }

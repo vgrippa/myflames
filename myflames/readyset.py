@@ -3416,6 +3416,12 @@ def _done_text(plan, after):
 def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None):
     """Re-read Readyset, verify reviewed expectations, execute, and verify post-state
     (including after single-statement server errors that may have partially mutated state)."""
+    # This re-read is not an in-login instance guard. Readyset's MySQL
+    # interface exposes SHOW READYSET RSA PUBLIC KEY (query_handler.rs),
+    # but that SHOW result cannot be used in a conditional SQL expression.
+    # The batch sender cannot inspect it before supplying the changes.
+    # In particular, a proxied @@server_uuid identifies the upstream only.
+    # Keep this limitation explicit until a read/check/send session exists.
     from . import reviewed_writes
     reviewed = reviewed_writes.check_reviewed(reviewed)
     if audit is not None:

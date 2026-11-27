@@ -907,6 +907,13 @@ class LifecycleJob(object):
         self.created = time.monotonic()
         self.operation, self.work = operation, work
         self.connection, self.factory = copy.deepcopy(connection or {}), factory
+        # Keep the starting endpoint for display even after the saved profile
+        # changes. Only these public fields belong in a snapshot.
+        self.started_on = {'host': str(self.connection.get('host') or '127.0.0.1'),
+                           'port': int(self.connection.get('port') or 3306)}
+        if self.connection.get('ssh_host'):
+            self.started_on.update(ssh_host=str(self.connection['ssh_host']),
+                                   ssh_port=int(self.connection.get('ssh_port') or 22))
         self.passwords = tuple(passwords) + (self.connection.get('password'),)
         self.state, self.error, self.result = 'queued', '', None
         self.progress = None
@@ -976,6 +983,7 @@ class LifecycleJob(object):
                 elapsed = round((self.ended if self.ended is not None else time.monotonic()) - self.began, 1)
             return _report_safe({'schema_version': 'lifecycle-job-1.0', 'id': self.id,
                           'operation': self.operation, 'state': self.state,
+                          'started_on': dict(self.started_on),
                           'progress': self.progress, 'detail': copy.deepcopy(self.detail),
                           'events': list(self.events), 'phase': self.phase, 'elapsed_s': elapsed,
                           'output': copy.deepcopy(self.output),

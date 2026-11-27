@@ -350,17 +350,35 @@ class ReplicationScopeTests(unittest.TestCase):
         self.assertEqual(router.writes, [])
 
     def test_ui_start_passes_the_status_scope_into_the_loop(self):
-        reader, _ = replica_fixtures.replay('replication', 'mysql-8.4-gtid-error')
         workspace = types.SimpleNamespace(store=self.store)
+        connection = {'host': 'db', 'user': 'u'}
+        review_reader, _ = replica_fixtures.replay('replication', 'mysql-8.4-gtid-error')
+        # The recording predates receiver coverage; supply its synthetic reply
+        # through the evidence-aware transport, keeping the real reader active.
+        review_reader.answers[replication.REPLICATION_TAG + replication._RECEIVER_SQL] = [
+            '7\tYES\tWaiting for source to send event\tstage/sql/Checking source version\t1\tYES\tYES\tYES\n']
+        # Status never issues tokens. Confirm requests one for the selected
+        # options and displayed failure, keeping the real policy/token checks.
+        with mock.patch('myflames.connector.MySQLConnection', replica_fixtures.FakeFactory(review_reader)):
+            report = ui.api_response('/api/live/replication', {'connection': connection}, workspace)
+        plan = next(c['skip_plan'] for c in report['channels'] if (c.get('skip_plan') or {}).get('available'))
+        expect = {'engine': plan['engine'], 'server_identity': dict(plan['identity']['server_identity'])}
+        body = {'connection': connection, 'channel': plan['channel'], 'codes': [1062], 'max_skips': 1,
+                'confirmed': True, 'expect': expect, 'first_failure': plan['identity'],
+                'statements': plan['statements'], 'receiver_guard': plan['receiver_guard']}
+        with mock.patch('myflames.connector.MySQLConnection', replica_fixtures.FakeFactory(review_reader)):
+            body.update(ui.api_response('/api/live/replication/skip-loop/review', body, workspace))
+        reader, _ = replica_fixtures.replay('replication', 'mysql-8.4-gtid-error')
         registry = mock.Mock()
-        registry.start.side_effect = lambda identity, loop: loop
+        registry.start.side_effect = lambda identity, loop, before_start=None: loop
         with mock.patch.object(ui, '_replication_open', return_value=reader), \
                 mock.patch.object(ui, '_replication_loops', return_value=registry), \
                 mock.patch.object(replication, 'read_status', wraps=replication.read_status) as status:
-            loop = ui._replication_loop_start({'connection': {'host': 'db', 'user': 'u'},
-                'channel': '', 'codes': [1062], 'max_skips': 1, 'confirmed': True}, workspace)
+            loop = ui._replication_loop_start(body, workspace)
         self.assertIs(loop.conn, status.call_args[0][0])
         self.assertIsInstance(loop.conn, dbops.TargetEvidenceConnection)
+        self.assertEqual(loop.expect, expect)
+        self.assertTrue(loop._receiver_required)
         self.assertIsNone(loop._thread)
 
     def test_cli_preserves_advertised_receiver_coverage_and_scope(self):

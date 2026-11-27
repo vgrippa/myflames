@@ -1452,6 +1452,17 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(ct.first_contact_client(self.discovered, keys)['installation'], expected['key'])
         self.assertIsNone(ct.first_contact_client(dict(installations=[], shells=[]), {}))
 
+    def test_proxysql_guidance_selects_mariadb_after_resetting_mysql_to_automatic(self):
+        from myflames import proxysql
+
+        maria = self.group('11.4.2', 3, engine='mariadb')
+        self.groups.append(maria)
+        keys = dict(mysql=self.groups[2]['key'], mariadb=maria['key'])
+        self.assertEqual(ct.first_contact_client(self.discovered, keys)['engine'], 'mysql')
+        self.assertIn('set the MySQL client to Automatic', proxysql._DOLLAR_QUOTE_SYNC_MESSAGE)
+        keys['mysql'] = None
+        self.assertEqual(ct.first_contact_client(self.discovered, keys)['installation'], maria['key'])
+
     def test_other_engine_prefers_newest_client_including_bundle(self):
         result = self.choose('11.4.5-MariaDB', engine='mariadb')
         self.assertEqual(result['client']['version'], '8.4.13')

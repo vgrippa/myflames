@@ -190,6 +190,20 @@
         "null"
       ]
     },
+    "server_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Persisted ProxySQL instance identity read from disk.global_settings. Present when this is ProxySQL; empty when the UUID row cannot be read. Actions require a valid UUID.",
+      "properties": {
+        "uuid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The UUID row's value as read; missing, null or malformed values refuse action planning."
+        }
+      }
+    },
     "uptime_s": {
       "type": [
         "integer",

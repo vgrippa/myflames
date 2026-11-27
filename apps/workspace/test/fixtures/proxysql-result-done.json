@@ -78,5 +78,7 @@
   "If memory changed and runtime did not, the UPDATE ran and LOAD MYSQL SERVERS TO RUNTIME did not: the Configuration line then says a change is not loaded to runtime. Load servers to runtime, or undo.",
   "The Audit log keeps this attempt as Outcome unknown; nothing is sent again."
  ],
- "session_guard": []
+ "session_guard": [
+  "INSERT INTO main.global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE (SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '11111111-2222-3333-4444-555555555555';"
+ ]
 }

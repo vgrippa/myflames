@@ -11,7 +11,8 @@ interface (port 6032 by default). It reads, never writes:
   @@version``, which Admin answers with the same version (Admin_Handler.cpp
   ``SELECT @@version`` interception; the ``version`` admin variable exists
   in 2.0.0, 2.7.3 and 3.0). A MySQL or MariaDB server, even one with a
-  ``mysql_servers`` table, has neither, so it is "not ProxySQL".
+  ``mysql_servers`` table, has neither, so it is "not ProxySQL". Reviewed
+  changes also bind the persisted UUID in ``disk.global_settings``.
 * the configuration in memory (``main.mysql_servers``, the monitor
   hostgroup tables, ``main.mysql_query_rules``), what ProxySQL runs
   (``runtime_*``), what is saved (``disk.*``), the connection pool
@@ -80,11 +81,13 @@ live on 3.0.11). They are sent exactly as shown and audited as sent; the
 UPDATE before them, which Admin passes to SQLite, carries the tag.
 """
 import hashlib
+import inspect
 import json
 import re
+import unicodedata
 
 from .connection_groups import grouped_read
-from .connector import ConnectorError
+from .connector import ConnectorError, PartialReadError
 from .perf_common import named_rows, now
 
 SCHEMA_VERSION = "proxysql-1.0"
@@ -163,6 +166,28 @@ def select(conn, sql):
 #: SQLite's error for a table this ProxySQL does not have, which Admin passes
 #: on ("ProxySQL Admin Error: no such table: main.x", seen live on 3.0.11).
 _NO_SUCH_TABLE = "no such table:"
+_IDENTITY_SQL = "SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'"
+_ADMIN_VERSION_SQL = "SELECT variable_value FROM global_variables WHERE variable_name = 'admin-version'"
+_VERSION_SQL = "SELECT @@version"
+_EVIDENCE_IDENTITY_BLOCK = (
+    "The ProxySQL instance identity could not be verified for the whole report: the UUID changed or could not "
+    "be checked between evidence reads. Refresh and review again before changing it here.")
+_XML_DOCUMENT = re.compile(r"(?:<\?xml[^>]*>\s*)?<resultset\b[^>]*?(?:/>|>[\s\S]*?</resultset>)")
+
+
+class _IdentityReadError(ConnectorError):
+    """A successful evidence response did not carry the expected identity."""
+
+
+def _evidence_results(text, count):
+    """Exactly the client's XML result documents, with no unframed output."""
+    documents = list(_XML_DOCUMENT.finditer(text))
+    if len(documents) != count or _XML_DOCUMENT.sub("", text).strip():
+        raise _IdentityReadError(_EVIDENCE_IDENTITY_BLOCK)
+    try:
+        return [named_rows(document.group()) for document in documents]
+    except ValueError:
+        raise _IdentityReadError(_EVIDENCE_IDENTITY_BLOCK) from None
 
 
 class _Reads(object):
@@ -175,17 +200,119 @@ class _Reads(object):
         self.statements = []
         self.missing = []
         self.absent = set()
+        self.uuid = None
+        self.identity_problem = None
+        self._admin_rows = None
+        self._admin_error = None
+        self._identity = None
+
+    def bind_identity(self):
+        """Read the version and UUID in one login, without retrying failures.
+
+        The optional UUID is last: older Admin versions can fail there while
+        retaining the completed version result. Identification consumes that
+        result instead of opening another login to repeat it.
+        """
+        if self._admin_error is not None:
+            raise self._admin_error
+        if self._identity is not None:
+            return self._identity
+        script = "%s;\n%s;" % (_ADMIN_VERSION_SQL, _IDENTITY_SQL)
+        try:
+            text = self._xml(script)
+        except ConnectorError as exc:
+            from . import dbops, reviewed_writes
+            diagnostic = dbops.target_error_text(exc)
+            code = reviewed_writes.error_number(diagnostic)
+            # A failed login or transport is never evidence of an old Admin
+            # version. In particular, do not try another login after it.
+            if code is None or reviewed_writes.client_error(code) or "access denied" in diagnostic.lower():
+                message = client_compatibility_message(self.conn, exc)
+                self._admin_error = ConnectorError(message) if message else exc
+                raise self._admin_error
+            if isinstance(exc, PartialReadError) and reviewed_writes.failed_line(diagnostic) == 2 \
+                    and not dbops.may_have_run(exc):
+                self._admin_rows, = _evidence_results(exc.stdout, 1)
+                rows = None
+                self.missing.append(("disk.global_settings", _short(exc)))
+                if _NO_SUCH_TABLE in diagnostic:
+                    self.absent.add("disk.global_settings")
+            else:
+                # identify() interprets a server SQL error as not ProxySQL.
+                # Preserve it without repeating the failed version query.
+                self._admin_error = exc
+                return {}
+        else:
+            self._admin_rows, rows = _evidence_results(text, 2)
+        self.statements.append(_ADMIN_VERSION_SQL)
+        if rows is not None:
+            self.statements.append(_IDENTITY_SQL)
+        identity = {"uuid": rows[0].get("variable_value")} if rows and len(rows) == 1 else {}
+        uuid = identity.get("uuid")
+        self.uuid = uuid if _valid_uuid(uuid) else None
+        self._identity = identity
+        return identity
+
+    def _xml(self, script):
+        # Some connection wrappers expose no partial-output argument.
+        try:
+            params = inspect.signature(self.conn.run).parameters
+            partial = "retain_partial_stdout" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        except (TypeError, ValueError):
+            partial = True
+        options = {"extra_flags": ["--xml", "--skip-reconnect"]}
+        if partial:
+            options["retain_partial_stdout"] = True
+        return self.conn.run(script, **options)
+
+    def _bound_table(self, sql):
+        # Each run is a separate client login. Bracket its evidence with
+        # UUID reads in that same non-reconnecting login, so an A/B/A change
+        # between logins cannot mix configuration from two Admin instances.
+        script = "%s;\n%s;\n%s;" % (_IDENTITY_SQL, sql.rstrip(";"), _IDENTITY_SQL)
+        expected = [{"variable_value": self.uuid}]
+        try:
+            text = self._xml(script)
+        except ConnectorError as exc:
+            from . import dbops, reviewed_writes
+            diagnostic = dbops.target_error_text(exc)
+            code = reviewed_writes.error_number(diagnostic)
+            # Only an error on the evidence statement after a verified UUID
+            # can establish that an optional table is absent. Prefix errors,
+            # lost replies and failed suffixes cannot authorize a fallback.
+            if isinstance(exc, PartialReadError) and reviewed_writes.failed_line(diagnostic) == 2 \
+                    and code is not None and not reviewed_writes.client_error(code) \
+                    and not dbops.may_have_run(exc):
+                prefix, = _evidence_results(exc.stdout, 1)
+                if prefix == expected:
+                    raise
+            raise _IdentityReadError(_EVIDENCE_IDENTITY_BLOCK) from None
+        before, rows, after = _evidence_results(text, 3)
+        if before != expected or after != expected:
+            raise _IdentityReadError(_EVIDENCE_IDENTITY_BLOCK)
+        return rows
+
+    def required(self, sql):
+        """Read a required result without hiding its SQL or identity error."""
+        if self.identity_problem:
+            raise _IdentityReadError(self.identity_problem)
+        rows = self._bound_table(sql) if self.uuid is not None else select(self.conn, sql)
+        self.statements.append(sql)
+        return rows
 
     def table(self, sql, label=None):
+        if self.identity_problem:
+            return None
         try:
-            rows = select(self.conn, sql)
+            return self.required(sql)
         except ConnectorError as exc:
+            if isinstance(exc, _IdentityReadError):
+                self.identity_problem = _EVIDENCE_IDENTITY_BLOCK
             self.missing.append((label or sql, _short(exc)))
             if _NO_SUCH_TABLE in str(exc):
                 self.absent.add(label or sql)
             return None
-        self.statements.append(sql)
-        return rows
 
 
 def _short(exc):
@@ -195,28 +322,85 @@ def _short(exc):
     return text[:160]
 
 
-def identify(conn):
+#: Startup sync error from MySQL 8.1+ clients (mysql-server/client/mysql.cc:1288-1292,1550
+#: unconditionally sends ``select $$`` without freeing a non-error result set;
+#: ProxySQL Admin before 2.6.0 returns a 1-row NULL result set for it).
+_DOLLAR_QUOTE_SYNC_ERROR = re.compile(
+    r"^(?:mysql client exited \d+:\s*)?ERROR 2014(?: \([^)]*\))? at line 1: Commands out of sync\b",
+    re.I | re.M,
+)
+_DOLLAR_QUOTE_SYNC_MESSAGE = (
+    "ERROR 2014 (Commands out of sync): a MySQL 8.1+ client (including the bundled MySQL 8.4 client) "
+    "can fail this way with ProxySQL Admin before 2.6.0 because of its startup 'select $$' check. "
+    "If this is a ProxySQL Admin connection, upgrade ProxySQL to 2.6.0 or later, or install and "
+    "choose a MySQL 8.0 client in Settings > Client tools. To use MariaDB instead, set the MySQL "
+    "client to Automatic and choose a MariaDB client there. Use TLS Disabled for MariaDB 11.4+ "
+    "when Admin has no TLS; otherwise configure a trusted certificate."
+)
+
+
+def client_compatibility_message(conn, exc):
+    """Conditional startup guidance, using only existing client metadata.
+
+    First contact can fail before ``_client_use`` is published. Unknown
+    metadata permits a possible cause, never a claim about server identity.
+    Do not probe a cached path here: its program may have changed since login.
+    """
+    text = str(exc).replace("\r\n", "\n")
+    if re.search(r"^--------------(?:\n|\Z)", text, re.M):
+        return None
+    if _DOLLAR_QUOTE_SYNC_ERROR.search(text) is None:
+        return None
+    used = getattr(conn, "_client_use", None)
+    if isinstance(used, dict):
+        engine = used.get("engine")
+        version = used.get("version_tuple")
+        if engine and engine != "mysql":
+            return None
+        if engine == "mysql" and version and tuple(version) < (8, 1, 0):
+            return None
+    return _DOLLAR_QUOTE_SYNC_MESSAGE
+
+
+def identify(conn, reads=None):
     """``(True, version)`` for ProxySQL Admin, ``(False, reason)`` otherwise.
     Connection failures raise ConnectorError."""
+    if reads is None:
+        reads = _Reads(conn)
     try:
-        rows = select(conn, "SELECT variable_value FROM global_variables WHERE variable_name = 'admin-version'")
+        reads.bind_identity()
+        if reads._admin_error is not None:
+            raise reads._admin_error
+        rows = reads._admin_rows
     except ConnectorError as exc:
+        if isinstance(exc, _IdentityReadError):
+            raise
         from .reviewed_writes import client_error, error_number
         code = error_number(str(exc))
         # A client error (2000 to 2999), a refused login or no answer is a
         # connection failure; a server's SQL error means "not ProxySQL".
-        if code is None or client_error(code) or "Access denied" in str(exc):
+        if code is None or client_error(code) or "access denied" in str(exc).lower():
+            message = client_compatibility_message(conn, exc)
+            if message:
+                raise ConnectorError(message) from None
             raise
         return False, "the server has no ProxySQL admin variables (%s)" % _short(exc)
     version = (rows[0].get("variable_value") if rows else None) or None
     if not version:
         return False, "the server has no admin-version variable"
     try:
-        echoed = conn.run("SELECT @@version").strip()
+        if reads and reads.uuid is not None:
+            echoed_rows = reads.required(_VERSION_SQL)
+            # Admin intercepts this exact statement, so do not add an alias.
+            echoed = next(iter(echoed_rows[0].values())) if len(echoed_rows) == 1 and len(echoed_rows[0]) == 1 else None
+        else:
+            echoed = conn.run(_VERSION_SQL).strip()
     except ConnectorError as exc:
+        if isinstance(exc, _IdentityReadError):
+            raise
         return False, "SELECT @@version failed (%s)" % _short(exc)
     if echoed != version:
-        return False, "@@version (%s) is not the admin-version (%s)" % (echoed[:60], version[:60])
+        return False, "@@version (%s) is not the admin-version (%s)" % (str(echoed or "")[:60], version[:60])
     return True, version
 
 
@@ -267,9 +451,11 @@ def _summary(servers):
 
 
 @grouped_read
-def read_status(conn, profiles=(), open_profile=None, reached_host=None, current_profile_id=None):
+def read_status(conn, profiles=(), open_profile=None, reached_host=None, current_profile_id=None, _evidence=None):
     """The ``proxysql-1.0`` report. Read-only; see the module docstring."""
-    ok, detail = identify(conn)
+    reads = _Reads(conn)
+    ok, detail = identify(conn, reads)
+    identity = reads._identity or {}
     if not ok:
         try:
             from . import readyset
@@ -283,10 +469,10 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                 version=rs_ver, readyset_hint=True)
         return _not_proxysql("This connection is not a ProxySQL Admin interface: %s. ProxySQL Admin listens on "
                              "port 6032 unless admin-mysql_ifaces says otherwise." % detail)
-    reads = _Reads(conn)
     report = _not_proxysql(None, detail)
     report.update({"available": True, "is_proxysql": True, "message": None, "status_why": []})
-    report["statements"] = ["SELECT admin-version", "SELECT @@version"]
+    report["statements"] = [] if reads.uuid is not None else ["SELECT admin-version", "SELECT @@version"]
+    report["server_identity"] = identity
 
     globals_rows = reads.table("SELECT * FROM stats_mysql_global", "stats_mysql_global") or []
     values = dict((r.get("Variable_Name"), r.get("Variable_Value")) for r in globals_rows)
@@ -315,6 +501,20 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                             "runtime_global_variables")
     users = reads.table("SELECT username, active, default_hostgroup, transaction_persistent, frontend FROM "
                         "runtime_mysql_users", "runtime_mysql_users")
+    if reads.uuid is not None and not reads.identity_problem:
+        # A failed optional table read yields no evidence. Still recheck the
+        # final identity, including when that failed read was the last batch.
+        final_identity = reads.table(_IDENTITY_SQL, "disk.global_settings (after evidence)")
+        if final_identity != [{"variable_value": reads.uuid}]:
+            reads.identity_problem = _EVIDENCE_IDENTITY_BLOCK
+    if reads.identity_problem:
+        raise _IdentityReadError(reads.identity_problem)
+    else:
+        # Old versions and unreadable UUIDs retain their readable catalog,
+        # with one shared reason on every disabled change.
+        report["message"] = _identity_block(report)
+    if _evidence is not None and reads.uuid is not None:
+        _evidence(config, runtime, disk, reads.absent)
     routing = proxysql_digests.Routing(runtime.get("mysql_query_rules"), runtime.get("mysql_query_rules_fast_routing"),
                                        users, dict((r.get("variable_name"), r.get("variable_value"))
                                                    for r in variables or ()))
@@ -354,9 +554,9 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
         report["notes"].append("The configuration tables could not be read with this account (a stats-only "
                                "account reads the stats schema only), so no change is offered.")
     report["statements"] += reads.statements
-    report["actions"] = available_actions(report)
+    report["actions"] = action_catalog(report)
     for server in report["servers"]:
-        server["actions"] = available_actions(report, {"config": server.get("config_key")}) \
+        server["actions"] = action_catalog(report, {"config": server.get("config_key")}) \
             if server.get("config_key") else []
         server["action_notes"] = []
         if server.get("monitor") == "galera" and server.get("config_key"):
@@ -368,7 +568,7 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                 "Move to hostgroup is not offered: a row moved out of the %s monitor's hostgroups stays in its "
                 "runtime hostgroups (seen live on ProxySQL 3.0.11)." % MONITOR_WORD[server["monitor"]])
     for rule in report["query_rules"]:
-        rule["actions"] = available_actions(report, {"rule_id": rule["rule_id"]})
+        rule["actions"] = action_catalog(report, {"rule_id": rule["rule_id"]})
     from .replication import reached_host as _reached_host
     from .topology_links import classify_proxysql_topology
     obs_host = reached_host if reached_host is not None else _reached_host(conn)
@@ -580,6 +780,7 @@ def _rules(config_rows, runtime_rows, hits_rows):
         if rid is None:
             continue
         rt = runtime.get(rid)
+        runtime_active = _int(rt.get("active")) if rt is not None else None
         out.append({
             "rule_id": rid, "active": _int(row.get("active")) == 1, "username": row.get("username"),
             "schemaname": row.get("schemaname"), "match_digest": row.get("match_digest"),
@@ -587,7 +788,8 @@ def _rules(config_rows, runtime_rows, hits_rows):
             "destination_hostgroup": _int(row.get("destination_hostgroup")), "apply": _int(row.get("apply")) == 1,
             "comment": row.get("comment") or "", "hits": hits.get(rid) if hits_rows is not None else None,
             # Runtime holds only active rules: one absent from it is not active there.
-            "runtime_active": None if runtime_rows is None else (False if rt is None else _int(rt.get("active")) == 1),
+            "runtime_active": (None if runtime_rows is None else False if rt is None else
+                               runtime_active == 1 if runtime_active in (0, 1) else None),
             "fields": dict(row),
         })
     out.sort(key=lambda r: r["rule_id"])
@@ -837,8 +1039,17 @@ def _compared(report, module, kind):
 
 
 def available_actions(report, target=None):
+    """The catalog entries executable now, including the instance guard."""
+    if _identity_block(report):
+        return []
+    return action_catalog(report, target)
+
+
+def action_catalog(report, target=None):
     """The changes offered for *target* ({"config": [hg, host, port]},
     {"rule_id": n}, or None for the place's own Load and Save actions).
+    A missing instance UUID keeps these entries listed, disabled together
+    by the report's message. :func:`available_actions` filters that block.
     Nothing without a readable configuration, and nothing for a module whose
     memory-versus-runtime comparison (and, to save, memory versus disk) is
     unknown: its LOAD or SAVE would copy rows nobody reviewed."""
@@ -953,8 +1164,54 @@ def _identity(report, *copies):
     the module copies the statements depend on (never runtime servers, which
     the pool and the monitors change on their own)."""
     prints = report.get("fingerprints") or {}
-    return {"proxysql_version": report.get("version"),
+    return {"proxysql_version": report.get("version"), "server_identity": dict(report.get("server_identity") or {}),
             "fingerprints": dict((name, prints.get(name)) for name in copies)}
+
+
+def _valid_uuid(value):
+    return isinstance(value, str) and re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value) is not None
+
+
+def _identity_block(report):
+    """One reason and fix for all changes, using the guard's UUID rules.
+
+    Version only explains the fix. A version string never substitutes for
+    the persisted identity, including on a new release with unreadable disk.
+    """
+    if not report or not report.get("is_proxysql"):
+        return None
+    if report.get("message") == _EVIDENCE_IDENTITY_BLOCK:
+        return _EVIDENCE_IDENTITY_BLOCK
+    identity = report.get("server_identity")
+    if isinstance(identity, dict) and _valid_uuid(identity.get("uuid")):
+        return None
+    version = re.match(r"^(\d+)\.(\d+)\.(\d+)", str(report.get("version") or ""))
+    if version and tuple(int(n) for n in version.groups()) < (2, 4, 0):
+        return ("This ProxySQL does not report an instance UUID (available in ProxySQL 2.4.0 or later), "
+                "so myflames cannot check it is the server you reviewed. Upgrade ProxySQL to change it here.")
+    return ("A valid ProxySQL instance UUID could not be read, so myflames cannot check it is the server you "
+            "reviewed. Check that this admin account can read a valid UUID in disk.global_settings, then "
+            "refresh to change it here.")
+
+
+def _session_guard(expect):
+    """An Admin-local guard that fails before the reviewed changes.
+
+    ProxySQL 2.4.0+ ProxySQL_Admin.cpp load_or_update_global_settings persists
+    its UUID in the config database attached as disk. A matching UUID inserts
+    no rows; a missing or different UUID hits global_variables.variable_name's
+    NOT NULL constraint. Admin reports this DML error, stopping the batch;
+    SELECT runtime errors can be swallowed. Neither outcome changes a row.
+    Admin commands cannot use the MySQL server-variable packet guard.
+    """
+    identity = (expect or {}).get("server_identity") or {}
+    uuid = identity.get("uuid") if isinstance(identity, dict) else None
+    if not _valid_uuid(uuid):
+        raise ValueError("The ProxySQL instance UUID could not be read. Nothing was sent. "
+                         "Refresh and review again; this change requires disk.global_settings to expose its UUID.")
+    return ["INSERT INTO main.global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE "
+            "(SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '%s';" % uuid]
 
 
 def _pending_block(report, module, kind):
@@ -974,8 +1231,12 @@ def plan_action(report, action, target=None, value=None):
         raise ValueError("This connection is not a ProxySQL Admin interface.")
     if not isinstance(action, str):
         raise ValueError("Choose an action.")
-    offered = [a["id"] for a in available_actions(report, target)]
-    if action not in offered:
+    blocked = _identity_block(report)
+    if blocked:
+        from .reviewed_writes import ActionUnavailable
+        raise ActionUnavailable(blocked)
+    catalog = [a["id"] for a in action_catalog(report, target)]
+    if action not in catalog:
         raise ValueError("That change is not offered for this target now. Refresh and try again.")
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "target": target,
             "value": value if action in ("server_weight", "server_hostgroup") else None,
@@ -989,6 +1250,8 @@ def plan_action(report, action, target=None, value=None):
     else:
         plan = _plan_server(report, plan, action, target, value)
     plan["checks"] = _checks(plan)
+    plan["session_guard"] = _session_guard(plan["expect"])
+    plan["verified"].append("ProxySQL instance UUID")
     return plan
 
 
@@ -1214,9 +1477,112 @@ def _after(report, plan):
     elif action.startswith("rule_"):
         rid = plan["target"]["rule_id"]
         rule = next((r for r in report["query_rules"] if r["rule_id"] == rid), None)
-        out["rule"] = None if rule is None else {"rule_id": rid, "active": rule["active"],
-                                                 "runtime_active": rule["runtime_active"]}
+        raw_active = _int(rule["fields"].get("active")) if rule is not None else None
+        out["rule"] = None if rule is None else {
+            "rule_id": rid, "active": rule["active"] if raw_active in (0, 1) else None,
+            "runtime_active": rule["runtime_active"]}
     return out
+
+
+def _evidence_columns(plan, config, runtime, disk):
+    """Remember columns observed in each module before the reviewed send."""
+    action = plan["action"]
+    module = "query_rules" if action.startswith(("rule_", "query_rules")) else "servers"
+    return {table: set(key for copy in (config, runtime, disk) for row in copy.get(table) or () for key in row)
+            for table, _ in MODULES[module]}
+
+
+def _expected_memory_fingerprint(plan, config):
+    """Project the reviewed change onto the pre-send memory rows."""
+    action = plan["action"]
+    module = "query_rules" if action.startswith(("rule_", "query_rules")) else "servers"
+    tables = {table: None if config.get(table) is None else [dict(row) for row in config[table]]
+              for table, _ in MODULES[module]}
+    if action.startswith("server_"):
+        cfg = plan["expect"]["config"]
+        rows = [row for row in tables["mysql_servers"] or () if
+                (_int(row.get("hostgroup_id")), row.get("hostname"), _int(row.get("port"))) ==
+                (cfg["hostgroup_id"], cfg["hostname"], cfg["port"])]
+        if len(rows) != 1:
+            return None
+        if action == "server_weight":
+            rows[0]["weight"] = str(plan["value"])
+        elif action == "server_hostgroup":
+            rows[0]["hostgroup_id"] = str(plan["value"])
+        else:
+            rows[0]["status"] = {"server_online": "ONLINE", "server_offline_soft": "OFFLINE_SOFT",
+                                 "server_offline_hard": "OFFLINE_HARD"}[action]
+    elif action.startswith("rule_"):
+        rows = [row for row in tables["mysql_query_rules"] or () if
+                _int(row.get("rule_id")) == plan["target"]["rule_id"]]
+        if len(rows) != 1:
+            return None
+        rows[0]["active"] = "1" if action == "rule_enable" else "0"
+    return _fingerprint(module, tables)
+
+
+def _verify_readback_tables(plan, config, runtime, disk, absent, before_columns, before_absent):
+    """Check required raw fields before report normalization can hide them."""
+    action = plan["action"]
+    module = "query_rules" if action.startswith(("rule_", "query_rules")) else "servers"
+    for index, (table, primary_key) in enumerate(MODULES[module]):
+        copies = (config.get(table), runtime.get(table), disk.get(table))
+        labels = ("main.%s" % table, "runtime_%s" % table, "disk.%s" % table)
+        if index and set(labels) <= absent:
+            if set(labels) <= before_absent:
+                continue
+            raise ValueError("A previously present ProxySQL table could not be read after the change.")
+        if any(rows is None for rows in copies):
+            raise ValueError("The ProxySQL configuration copies could not be read.")
+        # XML carries fields only for returned rows. Remember fields seen
+        # before the send as well as in every readback copy, so a field that
+        # disappears from all three cannot look like an equal comparison.
+        columns = set(before_columns.get(table) or ())
+        columns.update(key for rows in copies for row in rows for key in row)
+        if any(copies) and not before_columns.get(table):
+            raise ValueError("The prior ProxySQL table columns were not observed.")
+        for copy_index, rows in enumerate(copies):
+            for row in rows:
+                if not columns.issubset(row):
+                    raise ValueError("A ProxySQL configuration copy has unreadable fields.")
+                if any(key not in row or row[key] is None for key in primary_key):
+                    raise ValueError("A ProxySQL configuration row has an unreadable key.")
+                if table == "mysql_query_rules" and _int(row.get("active")) not in (0, 1):
+                    raise ValueError("A ProxySQL query rule has an unreadable active state.")
+                if table in ("mysql_galera_hostgroups", "mysql_group_replication_hostgroups",
+                             "mysql_aws_aurora_hostgroups") and _int(row.get("active")) not in (0, 1):
+                    raise ValueError("A ProxySQL monitor has an unreadable active state.")
+                if table == "mysql_servers":
+                    weight = _int(row.get("weight"))
+                    hostgroup = _int(row.get("hostgroup_id"))
+                    port = _int(row.get("port"))
+                    valid_statuses = STATUSES + (("SHUNNED_REPLICATION_LAG",) if copy_index == 1 else ())
+                    if ((row.get("status") or "").upper() not in valid_statuses or weight is None or
+                            not 0 <= weight <= WEIGHT_MAX or hostgroup is None or
+                            not 0 <= hostgroup <= HOSTGROUP_MAX or port is None or not 0 <= port <= 65535 or
+                            not row.get("hostname")):
+                        raise ValueError("A ProxySQL server row has unreadable state.")
+
+
+def _expected_after(plan, after):
+    """A continuation is appropriate only when the reviewed change is visible."""
+    action = plan["action"]
+    if action.endswith("_save"):
+        return True
+    if after["pending_runtime"]:
+        return False
+    if action == "server_weight":
+        return after["config"]["weight"] == plan["value"]
+    if action in ("server_online", "server_offline_soft", "server_offline_hard"):
+        expected = {"server_online": "ONLINE", "server_offline_soft": "OFFLINE_SOFT",
+                    "server_offline_hard": "OFFLINE_HARD"}[action]
+        return after["config"]["status"] == expected
+    if action == "server_hostgroup":
+        return after["config"]["hostgroup_id"] == plan["value"]
+    if action in ("rule_enable", "rule_disable"):
+        expected = action == "rule_enable"
+        return after["rule"]["active"] == expected and after["rule"]["runtime_active"] == expected
+    return True
 
 
 def _done_text(plan, after):
@@ -1284,6 +1650,81 @@ def _effect(plan, before, after):
     return rows
 
 
+def _without_controls(text):
+    """Remove terminal controls and Unicode formatting/line controls."""
+    if text is None:
+        return None
+    return "".join(ch for ch in text if unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp"))
+
+
+class _IdentityBoundAdmin(object):
+    """Keep the Admin guard and changes in one non-reconnecting batch login.
+
+    Preserve the reviewed action's line numbers for the shared result logic.
+    A server error on the guard means none of the changes were sent. A lost
+    reply remains unknown, just as it does for the regular sender.
+    """
+
+    def __init__(self, conn, guard, password=None):
+        self.conn, self.guard = conn, guard
+        self._password = password
+
+    @property
+    def password(self):
+        return getattr(self.conn, "password", None) or self._password
+
+    def run_write(self, sql, extra_flags=None, timeout=None):
+        from . import dbops, reviewed_writes
+        try:
+            return self.conn.run_write("\n".join(self.guard + [sql]), extra_flags=extra_flags, timeout=timeout)
+        except ConnectorError as exc:
+            # MariaDB may echo the submitted SQL before its ERROR line. Only
+            # the actual server diagnostic can identify the guard constraint.
+            text = dbops.target_error_text(exc)
+            if dbops.target_guard_failed(exc) and not dbops.may_have_run(exc):
+                diagnostic = re.match(
+                    r"^(?:mysql client exited \d+:\s*)?ERROR\s+(\d+)"
+                    r"(?:\s+\([^\r\n)]*\))?\s+at line (\d+):\s*([^\r\n]*)", text)
+                mismatch = bool(diagnostic and diagnostic.group(1, 2, 3) == (
+                    "1045", "1", "ProxySQL Admin Error: NOT NULL constraint failed: global_variables.variable_name"))
+                reason = diagnostic.group(3) if diagnostic else reviewed_writes.server_message(text)
+                # Redact before and after stripping controls: a password can
+                # itself contain a control, or one can split a secret marker.
+                reason = dbops.redact(dbops.redact(reason, self.password), self._password)
+                reason = _without_controls(reason)
+                reason = dbops.redact(dbops.redact(reason, _without_controls(self.password)),
+                                      _without_controls(self._password)).strip()[:240].rstrip(".")
+                raise reviewed_writes.Refusal(
+                    "The ProxySQL instance is not the one you reviewed. Nothing was sent; refresh and review again."
+                    if mismatch else "The ProxySQL instance identity could not be checked: %s. Nothing was sent; "
+                                     "refresh and review again." % (reason or "no server reason was reported"),
+                    "identity_mismatch" if mismatch else "identity_unavailable") from None
+            raise dbops.shift_guard_error(exc) from None
+
+
+class _IdentityAudit(object):
+    """Record the same Admin guard that the sender prepends to the script."""
+
+    def __init__(self, audit, guard):
+        self.audit, self.guard = audit, guard
+
+    @property
+    def password(self):
+        return getattr(self.audit, "password", None)
+
+    def attempt(self, statements, **kwargs):
+        return self.audit.attempt(self.guard + list(statements), **kwargs)
+
+    def outcome(self, statements, *args, **kwargs):
+        return self.audit.outcome(self.guard + list(statements), *args, **kwargs)
+
+    def complete(self, *args, **kwargs):
+        return self.audit.complete(*args, **kwargs)
+
+    def fail(self, exc, statements=()):
+        return self.audit.fail(exc, self.guard + list(statements))
+
+
 def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None):
     """Send a reviewed plan (see :mod:`myflames.reviewed_writes`): read the
     target again, refuse with nothing sent when it changed, then send the
@@ -1293,18 +1734,87 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
     reviewed = reviewed_writes.check_reviewed(reviewed, single_line=True)
     if audit is not None:
         audit.server("proxysql", (reviewed.get("expect") or {}).get("proxysql_version"))
+    try:
+        guard = _session_guard(reviewed.get("expect"))
+    except ValueError as exc:
+        return reviewed_writes.refused(reviewed_writes.result(ACTION_SCHEMA_VERSION, reviewed), str(exc),
+                                       "identity_unavailable", audit, reviewed.get("expect"), progress)
     state = {}
 
     def fresh():
-        report = read_status(conn)
+        def remember(config, runtime, disk, absent):
+            state["before_columns"] = _evidence_columns(reviewed, config, runtime, disk)
+            state["before_absent"] = set(absent)
+            state["expected_memory"] = _expected_memory_fingerprint(reviewed, config)
+
+        try:
+            report = read_status(conn, _evidence=remember)
+        except _IdentityReadError as exc:
+            # Shared reviewed writes audits ValueError preflight refusals.
+            raise ValueError(str(exc)) from None
         if not report.get("is_proxysql"):
             raise ValueError("This connection is no longer a ProxySQL Admin interface.")
         plan = plan_action(report, reviewed["action"], reviewed.get("target"), reviewed.get("value"))
         state["before"] = _after(report, reviewed)
         return plan
 
-    return reviewed_writes.execute(conn, reviewed, fresh, ACTION_SCHEMA_VERSION, audit=audit, typed=typed,
-                                   before_send=before_send, read_after=lambda: _after(read_status(conn), reviewed),
-                                   timeout=ACTION_TIMEOUT, partial_text=_partial_text, done_text=_done_text,
+    def read_after():
+        # The write reply proves what was sent. An independent readback can
+        # describe its effect only when it still answers from that instance.
+        try:
+            report = read_status(conn, _evidence=lambda config, runtime, disk, absent:
+                                 _verify_readback_tables(reviewed, config, runtime, disk, absent,
+                                                         state.get("before_columns") or {},
+                                                         state.get("before_absent") or set()))
+            if not report.get("is_proxysql"):
+                problem = "reached a server that is not ProxySQL Admin"
+            elif report.get("message") == _EVIDENCE_IDENTITY_BLOCK:
+                problem = "did not come from one identified ProxySQL instance"
+            elif _identity_block(report):
+                problem = "could not verify a valid ProxySQL instance UUID"
+            elif report.get("server_identity") != reviewed["expect"]["server_identity"]:
+                problem = "reached a different ProxySQL instance"
+            else:
+                after = _after(report, reviewed)
+                action = reviewed["action"]
+                if after["pending_runtime"] is None or after["pending_disk"] is None:
+                    problem = "could not verify the configuration and its runtime and disk copies"
+                elif action.startswith("server_") and (
+                        after.get("config") is None or
+                        after["config"].get("weight" if action == "server_weight" else "status") is None):
+                    problem = "could not verify the changed server configuration"
+                elif action.startswith("rule_") and (
+                        after.get("rule") is None or after["rule"].get("active") is None or
+                        after["rule"].get("runtime_active") is None):
+                    problem = "could not verify the changed query rule"
+                else:
+                    module = "query_rules" if action.startswith(("rule_", "query_rules")) else "servers"
+                    actual_memory = (report.get("fingerprints") or {}).get("%s_memory" % module)
+                    if not _expected_after(reviewed, after) or state.get("expected_memory") != actual_memory:
+                        state["followup_problem"] = (
+                            "The read after the change does not confirm the expected configuration and runtime "
+                            "state. Refresh this connection before another change.")
+                    return after
+        except (ConnectorError, ValueError, TypeError, KeyError):
+            problem = "failed before the ProxySQL instance and its state could be verified"
+        state["after_problem"] = ("The read after the change %s; after-state and effect are not shown. "
+                                  "Refresh this connection before another change." % problem)
+        return None
+
+    def done_text(plan, after):
+        problem = state.get("after_problem") or state.get("followup_problem")
+        if problem:
+            return "ProxySQL acknowledged the statements. " + problem
+        return _done_text(plan, after)
+
+    out = reviewed_writes.execute(_IdentityBoundAdmin(conn, guard, getattr(audit, "password", None)),
+                                   reviewed, fresh, ACTION_SCHEMA_VERSION,
+                                   audit=_IdentityAudit(audit, guard) if audit is not None else None, typed=typed,
+                                   before_send=before_send, read_after=read_after,
+                                   timeout=ACTION_TIMEOUT, partial_text=_partial_text, done_text=done_text,
                                    progress=progress,
                                    effect=lambda plan, after: _effect(plan, state.get("before") or {}, after))
+    if state.get("after_problem") or state.get("followup_problem"):
+        out["next"] = None
+    out["session_guard"] = guard
+    return out

@@ -31,11 +31,11 @@ export type SkipIdentity = {
   gtid: string | null;
   position: Facts;
   source: Facts;
+  server_identity: Facts;
 };
 /** The product family: Percona Server and Percona XtraDB Cluster are MySQL builds (engine "mysql"). */
 export type Flavor = "mysql" | "percona" | "mariadb";
 export type SkipPlan = Partial<ReceiverGuard> & {
-  review_token?: string;
   channel: string; engine: string; server_version: string | null;
   available: boolean; message: string | null; method: string | null;
   statements: string[]; identity: SkipIdentity; skip: Facts;
@@ -128,10 +128,14 @@ export function loopActive(loop: SkipLoop) {
   return loop.state === "starting" || loop.state === "running" || loop.state === "stopping";
 }
 export const readReplication = (connection: Connection, signal?: AbortSignal) => api<ReplicationReport>("live/replication", { connection }, signal);
-export const skipTransaction = (connection: Connection, plan: SkipPlan) => api<SkipResult>("live/replication/skip", {
-  connection, channel: plan.channel, expect: plan.identity, statements: plan.statements, review_token: plan.review_token, confirmed: true,
+export const skipTransaction = (connection: Connection, plan: SkipPlan, review_token: string) => api<SkipResult>("live/replication/skip", {
+  connection, channel: plan.channel, expect: plan.identity, statements: plan.statements, review_token, confirmed: true,
 });
-export const startSkipLoop = (connection: Connection, channel: string, options: LoopOptions) => api<SkipLoop>("live/replication/skip-loop/start", { connection, channel, ...options, confirmed: true });
+export const startSkipLoop = (connection: Connection, plan: SkipPlan, options: LoopOptions, review_token: string) => api<SkipLoop>("live/replication/skip-loop/start", {
+  connection, channel: plan.channel, ...options, receiver_guard: plan.receiver_guard,
+  expect: { engine: plan.engine, server_identity: plan.identity.server_identity },
+  first_failure: plan.identity, statements: plan.statements, review_token, confirmed: true,
+});
 export const readSkipLoops = (connection: Connection, signal?: AbortSignal) => api<{ schema_version: string; loops: SkipLoop[] }>("live/replication/skip-loop/status", { connection }, signal);
 export const stopSkipLoop = (connection: Connection, job_id: string) => api<SkipLoop>("live/replication/skip-loop/stop", { connection, job_id });
 
@@ -229,6 +233,12 @@ export type LifecycleResult = {
 };
 export type LifecycleJob = {
   schema_version: "lifecycle-job-1.0"; id: string | null; operation: LifecycleOperation;
+  /** Where the job was started (non-secret): stays the truth when the owning
+   * saved connection's endpoint is edited afterwards. */
+  started_on?: { host: string; port: number; ssh_host?: string; ssh_port?: number };
+  /** How this caller owns the job: the endpoint it runs on, or the saved
+   * connection it started from (survives an endpoint edit). */
+  owner_match?: "endpoint" | "saved_connection";
   state: "queued" | "running" | "done" | "failed" | "refused" | "cancelled";
   progress: number | null; detail: CloneProgress | null;
   phase?: string | null; elapsed_s?: number | null;
@@ -260,7 +270,7 @@ export const cancelLifecycleJob = (connection: Connection, id: string) => api<Li
 /** The jobs this myflames holds for the connection's endpoint (no database
  * read): how a reloaded page, or one whose Start reply was lost, finds them. */
 export const listLifecycleJobs = (connection: Connection, signal?: AbortSignal) =>
-  api<{ schema_version: "lifecycle-jobs-1.0"; jobs: LifecycleJob[] }>("lifecycle/jobs", { connection }, signal);
+  api<{ schema_version: "lifecycle-jobs-1.0"; jobs: LifecycleJob[]; scope_denied: boolean }>("lifecycle/jobs", { connection }, signal);
 
 /** Write replies cannot be cancelled as if that undid the operation. Ignore
  * obsolete replies instead. The revision also rejects switch A → B → A and

@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -75,6 +76,38 @@ class Isolated(unittest.TestCase):
             except SystemExit as exc:
                 code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2)
         return code, out.getvalue(), err.getvalue(), connected
+
+
+class JobSnapshots(Isolated):
+    def test_started_on_keeps_only_the_original_public_destination(self):
+        for operation in ('dump', 'restore', 'clone'):
+            with self.subTest(operation=operation):
+                connection = {'host': 'original.example', 'port': 3310, 'user': 'private-user',
+                              'password': PASSWORD, 'ssh_host': 'original-bastion', 'ssh_port': 2222,
+                              'ssh_user': 'private-ssh-user', 'ssh_key': '/private/key',
+                              'ssh_password': 'private-ssh-password', 'profile_id': 'private-profile'}
+                job = lc.LifecycleJob(operation, lambda unused: {'status': 'completed'}, connection)
+                # Neither editing the caller's connection nor a returned
+                # snapshot may change the endpoint shown by later snapshots.
+                connection.update(host='edited.example', port=3311, ssh_host='edited-bastion', ssh_port=2200)
+                snapshot = job.snapshot()
+                expected = {'host': 'original.example', 'port': 3310,
+                            'ssh_host': 'original-bastion', 'ssh_port': 2222}
+                self.assertEqual(snapshot['started_on'], expected)
+                self.assertIsInstance(snapshot['started_on']['host'], str)
+                self.assertIsInstance(snapshot['started_on']['port'], int)
+                for private in (PASSWORD, 'private-user', '/private/key', 'private-ssh-password',
+                                'private-ssh-user', 'private-profile', 'edited-bastion'):
+                    self.assertNotIn(private, json.dumps(snapshot))
+                snapshot['started_on'].update(host='spoofed.example', port=3312, ssh_host='spoofed-bastion')
+                self.assertEqual(job.run()['started_on'], expected)
+
+    def test_started_on_plain_connection_and_default_ssh_port(self):
+        for connection, expected in (({}, {'host': '127.0.0.1', 'port': 3306}),
+                                     ({'ssh_host': 'bastion'}, {'host': '127.0.0.1', 'port': 3306,
+                                                               'ssh_host': 'bastion', 'ssh_port': 22})):
+            with self.subTest(connection=connection):
+                self.assertEqual(lc.LifecycleJob('dump', lambda unused: None, connection).snapshot()['started_on'], expected)
 
 
 class UpgradeCheckCli(Isolated):
@@ -664,6 +697,363 @@ class Endpoints(Isolated):
             cancel.assert_called_once_with()
             password.assert_not_called()
 
+    def _running_job(self, operation='restore'):
+        started = threading.Event()
+        def work(job):
+            started.set()
+            job.cancelled.wait(5)
+            job.check_cancel()
+            return {'status': 'completed', 'verification': []}
+        job = lc.LifecycleJob(operation, work, self.connection)
+        return job, started
+
+    def test_unsaved_draft_cannot_use_the_owners_profile_id_until_its_endpoint_is_saved(self):
+        store = self.workspace.store
+        owner = store.save('profile', {'name': 'primary', 'host': '127.0.0.1', 'port': 3306, 'user': 'u'},
+                           password=PASSWORD, remember=True)
+        start_conn = {'profile_id': owner['id'], 'host': '127.0.0.1', 'port': 3306, 'user': 'u'}
+        running, began = self._running_job('dump')
+        with mock.patch.object(lc, 'dump_job', return_value=running):
+            started = self.call('/api/lifecycle/start', {'operation': 'dump', 'plan': fake_plan('dump'),
+                                                         'connection': start_conn, 'confirmed': True})
+        self.addCleanup(running.close)
+        self.assertTrue(began.wait(5))
+        self.assertEqual(started['started_on'], {'host': '127.0.0.1', 'port': 3306})
+
+        draft = dict(start_conn, host='192.0.2.9', port=3307, user='other')
+        drafts = (draft, dict(start_conn, user='other'), dict(start_conn, ssl_mode='REQUIRED'),
+                  dict(start_conn, ssh_host='bastion.example', ssh_user='ops', ssh_port=2222),
+                  dict(start_conn, host=['invalid'], port='invalid'),
+                  dict(start_conn, profile_id={'invalid': owner['id']}))
+        with mock.patch.object(running, 'cancel', wraps=running.cancel) as cancel, \
+                mock.patch.object(lc, '_connect', side_effect=AssertionError('must not connect')), \
+                mock.patch.object(store, 'connection_with_saved_password',
+                                  side_effect=AssertionError('must not load passwords')):
+            for unsaved in drafts:
+                with self.subTest(draft=unsaved):
+                    self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': unsaved})['jobs'], [])
+                    for route in ('status', 'cancel'):
+                        with self.assertRaisesRegex(ValueError, '^No such job\\.$'):
+                            self.call('/api/lifecycle/' + route, {'id': running.id, 'connection': unsaved})
+            cancel.assert_not_called()
+            self.assertFalse(running.cancelled.is_set())
+
+            # Saving the endpoint, rather than merely carrying its profile id,
+            # makes the same draft an authorized saved-connection owner.
+            store.save('profile', dict(draft, name='primary'), owner['id'], remember=False)
+            listed = self.call('/api/lifecycle/jobs', {'connection': draft})['jobs']
+            self.assertEqual([job['id'] for job in listed], [running.id])
+            self.assertEqual(listed[0]['owner_match'], 'saved_connection')
+            self.assertEqual(listed[0]['started_on'], {'host': '127.0.0.1', 'port': 3306})
+            status = self.call('/api/lifecycle/status', {'id': running.id, 'connection': draft})
+            self.assertEqual(status['owner_match'], 'saved_connection')
+            self.assertEqual(status['started_on'], {'host': '127.0.0.1', 'port': 3306})
+            self.call('/api/lifecycle/cancel', {'id': running.id, 'connection': draft})
+            cancel.assert_called_once_with()
+        running.wait(5)
+        self.assertEqual(running.snapshot()['state'], 'cancelled')
+
+    def test_stale_group_cannot_list_check_or_cancel_even_with_a_matching_owner(self):
+        store = self.workspace.store
+        owner = store.save('profile', {'name': 'member', 'host': '127.0.0.1', 'port': 3306, 'user': 'u'})
+        store.save_connection_group('before', [owner['id']])
+        original = dict(self.connection, profile_id=owner['id'])
+        job = lc.LifecycleJob('dump', lambda unused: {'status': 'completed'}, original)
+        ui._lifecycle_add(self.workspace, job, 'target', original)
+        job.wait(5)
+        store.save('profile', dict(owner, host='edited.example'), owner['id'])
+        store.save_connection_group('after', [owner['id']])
+        edited = dict(original, host='edited.example')
+        with mock.patch.object(job, 'cancel', wraps=job.cancel) as cancel, \
+                mock.patch.object(lc, '_connect', side_effect=AssertionError('registry must not connect')), \
+                mock.patch.object(store, 'connection_with_saved_password',
+                                  side_effect=AssertionError('registry must not load passwords')):
+            # Both the old endpoint match and the edited saved-owner match
+            # must fail under a revoked group claim. A plain open still works.
+            for connection in (original, edited):
+                for group in ('before', '', 'missing'):
+                    stale = dict(connection, group_name=group)
+                    with self.subTest(connection=connection, group=group):
+                        denied = self.call('/api/lifecycle/jobs', {'connection': stale})
+                        self.assertEqual(denied['jobs'], [])
+                        self.assertIs(denied['scope_denied'], True)
+                        for route in ('status', 'cancel'):
+                            with self.assertRaisesRegex(ValueError, 'No such job'):
+                                self.call('/api/lifecycle/' + route, {'connection': stale, 'id': job.id})
+            cancel.assert_not_called()
+            for connection in (original, edited, dict(edited, group_name='after')):
+                allowed = self.call('/api/lifecycle/jobs', {'connection': connection})
+                self.assertIs(allowed['scope_denied'], False)
+                self.assertEqual(allowed['jobs'][0]['id'], job.id)
+                self.assertEqual(self.call('/api/lifecycle/status', {'connection': connection, 'id': job.id})['id'], job.id)
+            self.call('/api/lifecycle/cancel', {'connection': dict(edited, group_name='after'), 'id': job.id})
+            cancel.assert_called_once_with()
+
+    def test_saved_connection_owner_can_check_list_and_cancel_after_endpoint_edit(self):
+        store = self.workspace.store
+        owner = store.save('profile', {'name': 'primary', 'host': '127.0.0.1', 'port': 3306, 'user': 'u'},
+                           password=PASSWORD, remember=True)
+        other_old = store.save('profile', {'name': 'same-old', 'host': '127.0.0.1', 'port': 3306, 'user': 'u'},
+                               password='other-old-pw', remember=True)
+        new_fields = {'host': '10.0.0.2', 'port': 3307, 'user': 'u2', 'ssl_mode': 'REQUIRED',
+                      'ssh_host': 'bastion.example', 'ssh_user': 'ops', 'ssh_port': 2222}
+        other_new = store.save('profile', dict(new_fields, name='same-new'),
+                               password='other-new-pw', remember=True)
+        store.save_connection_group('G1', [owner['id'], other_new['id']])
+
+        start_conn = {'profile_id': owner['id'], 'host': '127.0.0.1', 'port': 3306, 'user': 'u', 'group_name': 'G1'}
+        running, began = self._running_job('dump')
+        with mock.patch.object(lc, 'dump_job', return_value=running):
+            started = self.call('/api/lifecycle/start', {'operation': 'dump', 'plan': fake_plan('dump'),
+                                                         'connection': start_conn, 'confirmed': True,
+                                                         'typed_target': '127.0.0.1:3306'})
+        self.assertTrue(began.wait(5))
+        job = self.workspace.lifecycle.get(started['id'])
+        self.addCleanup(job.close)
+
+        # Edit the owner's saved endpoint and rename its connection group.
+        store.save('profile', dict(new_fields, name='primary'), owner['id'],
+                   password='new-owner-pw', remember=True)
+        store.save_connection_group('G2', [owner['id'], other_new['id']], previous_name='G1')
+
+        edited_owner_group = dict(new_fields, profile_id=owner['id'], group_name='G2')
+        edited_owner_plain = dict(new_fields, profile_id=owner['id'])
+        same_start_renamed_group = dict(start_conn, group_name='G2', type='development', read_only=True)
+        strangers = (
+            dict(new_fields, profile_id=other_new['id'], group_name='G2'),
+            dict(new_fields, profile_id=other_new['id']),
+            {'profile_id': other_old['id'], 'host': '127.0.0.1', 'port': 3306, 'user': 'u'},
+            dict(new_fields, group_name='G2'),
+            dict(new_fields),
+            dict(new_fields, profile_id=''),
+            {'host': '127.0.0.1', 'port': 3306, 'user': 'u', 'group_name': 'G2'},
+            {'host': '127.0.0.1', 'port': 3306, 'user': 'u', 'profile_id': ''},
+            dict(new_fields, profile_id=123),
+            dict(new_fields, profile_id=[owner['id']]),
+            dict(new_fields, profile_id='x' * 201),
+        )
+        with mock.patch.object(job, 'cancel', wraps=job.cancel) as cancel, \
+                mock.patch.object(lc, '_connect', side_effect=AssertionError('cancel/status must not connect')), \
+                mock.patch.object(store, 'connection_with_saved_password',
+                                  side_effect=AssertionError('cancel/status must not load passwords')):
+            # Abuse cases: another saved connection with the same new/old
+            # endpoint, an unsaved connection, and malformed profile ids are
+            # all refused without calling cancel.
+            for stranger in strangers:
+                with self.subTest(stranger=stranger):
+                    self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': stranger})['jobs'], [])
+                    for route in ('status', 'cancel'):
+                        with self.assertRaisesRegex(ValueError, 'No such job'):
+                            self.call('/api/lifecycle/' + route, {'id': job.id, 'connection': stranger})
+            cancel.assert_not_called()
+            self.assertFalse(job.cancelled.is_set())
+
+            # Endpoint-equal requests (including after a group rename or policy
+            # edit) and the owner's edited saved connection keep access.
+            for allowed, expected_match in ((same_start_renamed_group, 'endpoint'),
+                                            (edited_owner_group, 'saved_connection'),
+                                            (edited_owner_plain, 'saved_connection')):
+                with self.subTest(allowed=allowed):
+                    listed = self.call('/api/lifecycle/jobs', {'connection': allowed})['jobs']
+                    self.assertEqual([j['id'] for j in listed], [job.id])
+                    self.assertEqual(listed[0]['owner_match'], expected_match)
+                    self.assertEqual(listed[0]['started_on'], {'host': '127.0.0.1', 'port': 3306})
+                    status = self.call('/api/lifecycle/status', {'id': job.id, 'connection': allowed})
+                    self.assertEqual(status['id'], job.id)
+                    self.assertEqual(status['state'], 'running')
+                    self.assertEqual(status['owner_match'], expected_match)
+                    self.assertEqual(status['started_on'], {'host': '127.0.0.1', 'port': 3306})
+
+            # Owner cancels the running job using its edited saved connection.
+            cancelled = self.call('/api/lifecycle/cancel', {'id': job.id, 'connection': edited_owner_group})
+            self.assertEqual(cancelled['id'], job.id)
+            cancel.assert_called_once_with()
+        job.wait(5)
+        self.assertEqual(job.snapshot()['state'], 'cancelled')
+
+    def test_saved_connection_owner_can_cancel_running_restore_and_clone_after_endpoint_edit(self):
+        store = self.workspace.store
+        owner = store.save('profile', {'name': 'recipient', 'host': '127.0.0.1', 'port': 3306,
+                                       'user': 'u', 'ssl_mode': 'REQUIRED'},
+                           password=PASSWORD, remember=True)
+        owner_conn = {'profile_id': owner['id'], 'host': '127.0.0.1', 'port': 3306,
+                      'user': 'u', 'ssl_mode': 'REQUIRED'}
+        edited_conn = {'profile_id': owner['id'], 'host': '10.0.0.9', 'port': 3308,
+                       'user': 'u2', 'ssl_mode': 'VERIFY_CA'}
+        for operation in ('restore', 'clone'):
+            with self.subTest(operation=operation):
+                running, began = self._running_job(operation)
+                if operation == 'restore':
+                    payload = {'operation': 'restore', 'plan': fake_plan('restore'),
+                               'connection': owner_conn, 'confirmed': True,
+                               'typed_target': '127.0.0.1:3306'}
+                    patch_target = 'restore_job'
+                else:
+                    saved_conn = self.connection
+                    self.connection = dict(owner_conn)
+                    try:
+                        payload = self.clone_payload()
+                    finally:
+                        self.connection = saved_conn
+                    patch_target = 'clone_job'
+                with mock.patch.object(lc, patch_target, return_value=running):
+                    started = self.call('/api/lifecycle/start', payload)
+                self.assertTrue(began.wait(5))
+                job = self.workspace.lifecycle.get(started['id'])
+                self.addCleanup(job.close)
+                store.save('profile', dict(edited_conn, name='recipient'), owner['id'],
+                           password='new-pw', remember=True)
+                with mock.patch.object(lc, '_connect', side_effect=AssertionError('must not connect')), \
+                        mock.patch.object(store, 'connection_with_saved_password',
+                                          side_effect=AssertionError('must not load passwords')):
+                    status = self.call('/api/lifecycle/status', {'id': job.id, 'connection': edited_conn})
+                    self.assertEqual(status['state'], 'running')
+                    self.assertEqual(status['owner_match'], 'saved_connection')
+                    self.assertEqual(status['started_on'], {'host': '127.0.0.1', 'port': 3306})
+                    self.call('/api/lifecycle/cancel', {'id': job.id, 'connection': edited_conn})
+                job.wait(5)
+                self.assertEqual(job.snapshot()['state'], 'cancelled')
+                # Restore saved profile endpoint for the next iteration.
+                store.save('profile', dict(owner_conn, name='recipient'), owner['id'],
+                           password=PASSWORD, remember=True)
+
+    def test_owner_isolation_when_two_saved_connections_share_new_endpoint(self):
+        store = self.workspace.store
+        first = store.save('profile', {'name': 'first', 'host': '10.0.0.1', 'port': 3306, 'user': 'u'},
+                           password='pw1', remember=True)
+        second = store.save('profile', {'name': 'second', 'host': '10.0.0.2', 'port': 3306, 'user': 'u'},
+                            password='pw2', remember=True)
+        first_start = {'profile_id': first['id'], 'host': '10.0.0.1', 'port': 3306, 'user': 'u'}
+        second_start = {'profile_id': second['id'], 'host': '10.0.0.2', 'port': 3306, 'user': 'u'}
+        job1, began1 = self._running_job('dump')
+        job2, began2 = self._running_job('dump')
+        ui._lifecycle_add(self.workspace, job1, 'target-1', first_start)
+        ui._lifecycle_add(self.workspace, job2, 'target-2', second_start)
+        self.addCleanup(job1.close)
+        self.addCleanup(job2.close)
+        self.assertTrue(began1.wait(5))
+        self.assertTrue(began2.wait(5))
+
+        # Edit first to the exact same endpoint as second.
+        store.save('profile', {'name': 'first', 'host': '10.0.0.2', 'port': 3306, 'user': 'u'},
+                   first['id'], password='pw1-new', remember=True)
+        first_edited = {'profile_id': first['id'], 'host': '10.0.0.2', 'port': 3306, 'user': 'u'}
+
+        self.assertEqual([j['id'] for j in self.call('/api/lifecycle/jobs', {'connection': first_edited})['jobs']],
+                         [job1.id])
+        self.assertEqual([j['id'] for j in self.call('/api/lifecycle/jobs', {'connection': second_start})['jobs']],
+                         [job2.id])
+        for route in ('status', 'cancel'):
+            with self.assertRaisesRegex(ValueError, 'No such job'):
+                self.call('/api/lifecycle/' + route, {'id': job2.id, 'connection': first_edited})
+            with self.assertRaisesRegex(ValueError, 'No such job'):
+                self.call('/api/lifecycle/' + route, {'id': job1.id, 'connection': second_start})
+        self.call('/api/lifecycle/cancel', {'id': job1.id, 'connection': first_edited})
+        self.call('/api/lifecycle/cancel', {'id': job2.id, 'connection': second_start})
+        job1.wait(5)
+        job2.wait(5)
+        self.assertEqual((job1.snapshot()['state'], job2.snapshot()['state']), ('cancelled', 'cancelled'))
+
+    def test_unsaved_or_unknown_profile_start_keeps_strict_endpoint_ownership(self):
+        ghost_conn = dict(self.connection, profile_id='not-in-store')
+        job = finished_job('dump')
+        with mock.patch.object(lc, 'dump_job', return_value=job):
+            started = self.call('/api/lifecycle/start', {'operation': 'dump', 'plan': fake_plan('dump'),
+                                                         'connection': ghost_conn, 'confirmed': True,
+                                                         'typed_target': '127.0.0.1:3306'})
+        self.workspace.lifecycle.get(started['id']).wait(5)
+        # Exact start endpoint still works (endpointKey-equal).
+        self.assertEqual(self.call('/api/lifecycle/status', {'id': started['id'], 'connection': ghost_conn})['id'],
+                         started['id'])
+        # A nonexistent profile_id is not a saved connection: endpoint edits do not match.
+        moved_ghost = dict(ghost_conn, host='10.0.0.2')
+        self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': moved_ghost})['jobs'], [])
+        for route in ('status', 'cancel'):
+            with self.assertRaisesRegex(ValueError, 'No such job'):
+                self.call('/api/lifecycle/' + route, {'id': started['id'], 'connection': moved_ghost})
+        # A saved profile_id whose endpoint already did not match at start time
+        # does not grant saved-connection ownership across other endpoints either.
+        saved = self.workspace.store.save('profile', {'name': 'real', 'host': '10.0.0.1', 'port': 3306, 'user': 'u'},
+                                          password='saved-pw', remember=True)
+        mismatched_start = dict(self.connection, profile_id=saved['id'])
+        job2 = finished_job('dump')
+        with mock.patch.object(lc, 'dump_job', return_value=job2):
+            started2 = self.call('/api/lifecycle/start', {'operation': 'dump', 'plan': fake_plan('dump'),
+                                                          'connection': mismatched_start, 'confirmed': True,
+                                                          'typed_target': '127.0.0.1:3306'})
+        self.workspace.lifecycle.get(started2['id']).wait(5)
+        self.assertEqual(self.call('/api/lifecycle/status',
+                                   {'id': started2['id'], 'connection': mismatched_start})['id'], started2['id'])
+        saved_endpoint = {'profile_id': saved['id'], 'host': '10.0.0.1', 'port': 3306, 'user': 'u'}
+        self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': saved_endpoint})['jobs'], [])
+        for route in ('status', 'cancel'):
+            with self.assertRaisesRegex(ValueError, 'No such job'):
+                self.call('/api/lifecycle/' + route, {'id': started2['id'], 'connection': saved_endpoint})
+
+    def test_owner_match_and_started_on_are_reported_per_job(self):
+        store = self.workspace.store
+        owner = store.save('profile', {'name': 'primary', 'host': '127.0.0.1', 'port': 3306, 'user': 'u'})
+        original = dict(self.connection, profile_id=owner['id'])
+        edited = dict(original, host='192.0.2.9', port=3307)
+        jobs = []
+        for connection in (original, edited):
+            store.save('profile', dict(connection, name='primary'), owner['id'])
+            job = lc.LifecycleJob('dump', lambda unused: {'status': 'completed', 'verification': []}, connection)
+            with mock.patch.object(lc, 'dump_job', return_value=job):
+                started = self.call('/api/lifecycle/start', {'operation': 'dump', 'plan': fake_plan('dump'),
+                                                             'connection': connection, 'confirmed': True})
+            job.wait(5)
+            self.assertEqual(started['started_on'], {'host': connection['host'], 'port': connection['port']})
+            jobs.append(job)
+
+        listed = self.call('/api/lifecycle/jobs', {'connection': edited})['jobs']
+        self.assertEqual([job['id'] for job in listed], [job.id for job in jobs])
+        self.assertEqual([job['owner_match'] for job in listed], ['saved_connection', 'endpoint'])
+        self.assertEqual([job['started_on'] for job in listed],
+                         [{'host': '127.0.0.1', 'port': 3306}, {'host': '192.0.2.9', 'port': 3307}])
+        for job, expected in zip(jobs, listed):
+            status = self.call('/api/lifecycle/status', {'id': job.id, 'connection': edited})
+            self.assertEqual(status['owner_match'], expected['owner_match'])
+            self.assertEqual(status['started_on'], expected['started_on'])
+        # Both the endpoint and saved id match the newest job. Endpoint wins
+        # so lost-reply recovery can distinguish it from the old endpoint's job.
+        current = self.call('/api/lifecycle/status', {'id': jobs[1].id, 'connection': edited})
+        self.assertEqual(current['owner_match'], 'endpoint')
+
+    def test_unreadable_or_deleted_profile_keeps_only_endpoint_ownership(self):
+        store = self.workspace.store
+        owner = store.save('profile', {'name': 'primary', 'host': '127.0.0.1', 'port': 3306, 'user': 'u'})
+        original = dict(self.connection, profile_id=owner['id'])
+        edited = dict(original, host='192.0.2.9', port=3307)
+        job = lc.LifecycleJob('dump', lambda unused: {'status': 'completed', 'verification': []}, original)
+        with mock.patch.object(lc, 'dump_job', return_value=job):
+            self.call('/api/lifecycle/start', {'operation': 'dump', 'plan': fake_plan('dump'),
+                                                'connection': original, 'confirmed': True})
+        job.wait(5)
+        store.save('profile', dict(edited, name='primary'), owner['id'])
+        for unavailable in ('invalid record', 'deleted'):
+            if unavailable == 'deleted':
+                store.delete('profile', owner['id'])
+            # A malformed stored record may raise ValueError; a deleted one
+            # returns None. Neither may authenticate the claimed profile id.
+            with self.subTest(profile=unavailable), \
+                    mock.patch.object(store, 'get', side_effect=ValueError('Invalid saved profile')
+                                      if unavailable == 'invalid record' else None, wraps=store.get), \
+                    mock.patch.object(job, 'cancel') as cancel, \
+                    mock.patch.object(lc, '_connect', side_effect=AssertionError('must not connect')), \
+                    mock.patch.object(store, 'connection_with_saved_password',
+                                      side_effect=AssertionError('must not load passwords')):
+                self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': edited})['jobs'], [])
+                for route in ('status', 'cancel'):
+                    with self.assertRaisesRegex(ValueError, '^No such job\\.$'):
+                        self.call('/api/lifecycle/' + route, {'id': job.id, 'connection': edited})
+                cancel.assert_not_called()
+                listed = self.call('/api/lifecycle/jobs', {'connection': original})['jobs']
+                self.assertEqual([entry['id'] for entry in listed], [job.id])
+                self.assertEqual(listed[0]['owner_match'], 'endpoint')
+                status = self.call('/api/lifecycle/status', {'id': job.id, 'connection': original})
+                self.assertEqual(status['owner_match'], 'endpoint')
+
     def clone_payload(self, ssl_mode=None):
         value = {'name': 'donor', 'host': '127.0.0.1', 'port': 3308, 'user': 'd',
                  'type': 'development', 'read_only': True}
@@ -851,7 +1241,9 @@ class Endpoints(Isolated):
         self.assertIn('/api/lifecycle/jobs', ui._LIFECYCLE_PATHS)
         self.assertNotIn('/api/lifecycle/jobs', ui._CONNECTION_PATHS)
         self.assertNotIn('/api/lifecycle/jobs', ui._WRITE_PATHS)
-        self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': self.connection})['jobs'], [])
+        empty = self.call('/api/lifecycle/jobs', {'connection': self.connection})
+        self.assertEqual(empty['jobs'], [])
+        self.assertIs(empty['scope_denied'], False)
         with mock.patch.object(lc, 'restore_job', return_value=finished_job('restore')):
             started = self.call('/api/lifecycle/start', {'operation': 'restore', 'plan': fake_plan(),
                                                          'connection': self.connection, 'confirmed': True,
