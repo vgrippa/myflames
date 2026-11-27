@@ -38,7 +38,6 @@ import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, endpointKey, keyProfileId, type Bound } from "./binding";
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { useSchemaCatalog } from "./PerfShared";
-import { showCreateSql } from "./sqlHighlight";
 import { LOOP_POLL_MS, loopActive, NOT_A_REPLICA, readSkipLoops, replicationNav, stopSkipLoop, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
@@ -2885,7 +2884,7 @@ function App() {
       if (kind === "procedure" || kind === "function" || kind === "trigger" || kind === "event")
         // Open the tab in the same update as finishLink: deferring this until
         // after history records the destination loses a same-place Back stop.
-        lab.openSql(showCreateSql(kind, o.schema, o.name));
+        lab.openShowCreate(kind, o.schema, o.name);
       else lab.revealInSchemaBrowser(o.schema, kind === "schema" ? null : o.name);
       finishLink(back);
     });

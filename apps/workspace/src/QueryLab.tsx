@@ -78,6 +78,7 @@ import { createsTemporaryTable } from "./editor/problems";
 import { EDITOR_SETTING_LABELS, useEditorSettings } from "./editorSettings";
 import { ResultsPane, rowResults, duration as resultDuration } from "./ResultsPane";
 import { SchemaBrowser, type SchemaReveal } from "./SchemaBrowser";
+import { showCreateSql } from "./sqlHighlight";
 import { HistoryPanel, type SidePanelTab } from "./HistoryPanel";
 import { SaveQuerySheet } from "./SavedQueries";
 import { FillParametersSheet } from "./FillParameters";
@@ -170,6 +171,10 @@ export type QueryLabHandle = {
   /** Open a statement in a new tab (or append to the current tab when
    * *options.append* is set, as for Parameters' SET SESSION), selected and not run. */
   openSql: (sql: string, options?: SqlOpenOptions) => void;
+  /** Open an object's SHOW CREATE statement in a new tab (the palette's object
+   * search), selected and not run. The statement text is built here so the
+   * shell does not pull the SQL highlighter into the entry chunk. */
+  openShowCreate: (kind: "procedure" | "function" | "trigger" | "event", schema: string, name: string) => void;
   /** Request closing a query tab, verifying uncommitted transactions first. */
   closeTab: (id: string) => void;
   /** Start renaming the current tab (the palette's Rename query tab). */
@@ -998,6 +1003,8 @@ export const QueryLab = forwardRef<
     openSql: (sql: string, options?: SqlOpenOptions) =>
       options?.append && !options.indexOrigin && (!options.from || options.from === connectionKey(tabConnection))
         ? appendStatement(sql) : openStatement(sql, options?.indexOrigin, options?.from),
+    openShowCreate: (kind: "procedure" | "function" | "trigger" | "event", schema: string, name: string) =>
+      openStatement(showCreateSql(kind, schema, name)),
     closeTab: (id: string) => {
       void requestClose(id);
     },
