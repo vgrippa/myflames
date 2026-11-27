@@ -2082,6 +2082,28 @@ literals intact. Every character replaced with a space is counted in `removed`
 appends a plain-language count (for example
 `Copied. Removed 2 control characters.`) to the caller's status confirmation.
 
+A SQL copy a view builds from server-reported names (`Tables.tsx` Copy table
+name, Copy SELECT query and Copy SELECT COUNT(*); `Indexes.tsx` Copy index
+name and Copy DROP INDEX SQL; the named-statement copy in `PerfShared.tsx`)
+is offered only when every name the statement is built from passes the
+printable-ASCII-without-backslash allowlist (`sqlPasteSafety.isPasteSafeName`,
+the same rule as `privileges._UNSAFE_GRANT_SQL`): without a UTF-8 locale the
+mysql client's libedit line editor reads bytes `0x80`–`0xFF` as editing keys,
+and a backslash can start a client command. Otherwise the action is disabled
+with `unsafeNamesReason` as its reason. When copied SQL contains a mysql
+client command (`\!`, `\.`, `\G`, ...) outside strings, quoted identifiers and
+non-executable comments (`sqlPasteSafety.findMysqlClientCommand`, mirroring
+the client's `add_line` in `client/mysql.cc`; commands stay live inside
+executable `/*! ... */` and hint `/*+ ... */` comments, which the client still
+scans), the copy confirmation appends `clientCommandNote` naming the command
+and saying the mysql client would run it itself instead of sending it to the
+server (`copyNote` combines the base text and the note). Every copy of SQL
+that can hold server-controlled text appends the note: the statement copies
+above, `TableStructure.tsx` Copy CREATE TABLE, the `SchemaVersions.tsx`
+definition, source, target and script copies, the **Locks** `CopyCommand`
+(KILL and XA commands) and the **Compare servers** grants-export Copy.
+Contracts: `apps/workspace/test/sql-paste-safety-unit.mjs`.
+
 ### Reviewed actions and session ownership
 
 Kill preparation, single replication skips, and lifecycle plans

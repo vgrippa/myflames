@@ -11,6 +11,7 @@ import { Icon } from "./components";
 import { ComparisonBadge, ComparisonSetup } from "./compareShared";
 import { ViewOnScreenContext, useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { copyFeedback, copyToClipboardResult } from "./clipboard";
+import { copyNote } from "./sqlPasteSafety";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, DataTable, Disclosure, EmptyState, FormGrid, FormRow,
   Pill, SearchField, Segmented, Select, SummaryLine, ToolbarSelect, ViewLayout, ViewSwitcherContext, useAction, useInspector,
   type Column, type InspectorContent, type ViewSwitcherShared } from "./kit";
@@ -438,7 +439,7 @@ function ServerCompare({ kind, connection, disabled, controls, onBack, snapshots
         {sql && <div className="server-compare-sql-block">
           <pre className="server-compare-sql" tabIndex={0} aria-label="SQL export">{sql.text}</pre>
           <div className="server-compare-export-tools">
-            <ActionButton icon="copy" busy={copying.pending} busyLabel="Copying…" onClick={() => void copying.run(async () => { const res = await copyToClipboardResult(sql.text); if (!res.ok) throw new Error("Could not copy. Select the SQL text and copy it."); return res; }, { pending: "Copying SQL…", done: (res) => copyFeedback("Copied the SQL.", res.removed) })}>Copy</ActionButton>
+            <ActionButton icon="copy" busy={copying.pending} busyLabel="Copying…" onClick={() => void copying.run(async () => { const res = await copyToClipboardResult(sql.text); if (!res.ok) throw new Error("Could not copy. Select the SQL text and copy it."); return res; }, { pending: "Copying SQL…", done: (res) => copyFeedback(copyNote("Copied the SQL.", sql.text), res.removed) })}>Copy</ActionButton>
             <button type="button" className="button" onClick={() => { downloadSql(sql); copying.show("done", `Downloaded ${sql.filename}.`); }}>Download .sql</button>
             <ActionStatus state={copying} onDismiss={copying.reset} />
           </div>

@@ -38,6 +38,7 @@ import { PriorityTable, CompactNumber, Duration } from "./PerfShared";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { ConnectionTypeBand, useWritePolicy, type WritePolicy } from "./Connections";
 import { copyFeedback, copyToClipboardResult } from "./clipboard";
+import { clientCommandNote } from "./sqlPasteSafety";
 import {
   ActionStatus,
   AutoRefresh,
@@ -137,7 +138,7 @@ export function CopyCommand({ command, onCopied }: { command: string; onCopied: 
           void copyToClipboardResult(command).then((res) =>
             onCopied(
               res.ok
-                ? copyFeedback(`Copied ${res.text}. Run it yourself in a SQL client if you decide to.`, res.removed)
+                ? copyFeedback(`Copied ${res.text}. Run it yourself in a SQL client if you decide to.${clientCommandNote(res.text)}`, res.removed)
                 : `Select ${res.text} to copy it.`,
             ),
           );
