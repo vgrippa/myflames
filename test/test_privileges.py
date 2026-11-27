@@ -630,6 +630,47 @@ class AdvisoryGrants(unittest.TestCase):
                         self.assertIsNone(p.grant_sql(req, 'app@%', partial, engine))
                         self.assertIsNone(cluster._grant_sql(req, 'app@%', partial))
 
+    def test_non_ascii_and_unicode_format_chars_return_null(self):
+        from myflames import cluster
+        payloads = [
+            '\u00c8' * 6 + 'DROP DATABASE prod;#',
+            '\u0e08DROP DATABASE prod;#',
+            'sales' + '\u0308' * 4 + 'DROP DATABASE prod;#',
+            'caf\u00e9',
+            'a\u00a0b',
+            'a\u00adb',
+            'a\u200bb',
+            'a\u202eb',
+        ]
+        missing = [(('PROCESS',), None, False)]
+        for engine in ('mysql', 'mariadb'):
+            dump_action = 'dump_mariadb' if engine == 'mariadb' else 'dump_mysqldump'
+            dump_opts = {'single_transaction': True, 'triggers': False, 'source_data': engine == 'mariadb'}
+            for payload in payloads:
+                for partial in (False, True, None):
+                    for account in (payload + '@%', 'app@' + payload):
+                        with self.subTest(engine=engine, account=account, partial_revokes=partial):
+                            answer = p.can(self.model(engine, account=account, partial_revokes=partial), 'innodb_status')
+                            self.assertEqual(answer['state'], 'denied')
+                            self.assertIsNone(answer['grant_sql'])
+                            self.assertIsNone(p.grant_sql(missing, account, partial, engine))
+                            self.assertIsNone(cluster._grant_sql(missing, account, partial))
+                    for db in (payload, payload + '_%'):
+                        with self.subTest(engine=engine, database=db, partial_revokes=partial):
+                            answer = p.can(self.model(engine, partial_revokes=partial), dump_action,
+                                           database=db, **dump_opts)
+                            self.assertTrue(answer['available'])
+                            self.assertEqual(answer['state'], 'denied')
+                            self.assertIsNone(answer['grant_sql'])
+                            req = [(('SELECT',), db, False)]
+                            self.assertIsNone(p.grant_sql(req, 'app@%', partial, engine))
+                            self.assertIsNone(cluster._grant_sql(req, 'app@%', partial))
+        # Boundary: printable ASCII without backslash stays allowed; control, backslash, DEL and non-ASCII are unsafe.
+        for cp in range(0x00, 0x100):
+            ch = chr(cp)
+            allowed = 0x20 <= cp <= 0x7e and cp != 0x5c
+            self.assertEqual(p._UNSAFE_GRANT_SQL.search(ch) is None, allowed, hex(cp))
+
     def test_read_privileges_preserves_unknown_partial_revokes_on_mysql_8016_plus(self):
         rest = ("VERSION(); " + p.TAG + "SHOW GRANTS; " + p.TAG +
                 "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)" % ', '.join("'%s'" % v for v in p._VARIABLES))

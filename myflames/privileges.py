@@ -293,9 +293,10 @@ def quote_account(name, host='%', role=False, engine='mysql'):
     return quote_identifier(name) + '@' + quote_identifier(host)
 
 
-# Control characters (U+0000-U+001F, U+007F-U+009F), Unicode line/paragraph
-# separators (U+2028, U+2029), and backslashes cannot enter advisory GRANT text.
-_UNSAFE_GRANT_SQL = re.compile('[\x00-\x1f\x7f-\x9f\u2028\u2029\\\\]')
+# Printable ASCII except backslash: anything outside 0x20-0x7E (control chars,
+# DEL, non-ASCII bytes that libedit maps to editing keys in non-UTF-8 locales,
+# Unicode format/separator chars) or a backslash cannot enter advisory GRANT text.
+_UNSAFE_GRANT_SQL = re.compile(r'[^\x20-\x5b\x5d-\x7e]')
 
 
 def grant_sql(missing, account, partial_revokes=None, engine='mysql'):
@@ -305,8 +306,8 @@ def grant_sql(missing, account, partial_revokes=None, engine='mysql'):
     requirements. As in the Cluster catalog, choose the first privilege of
     each alternative and group requirements by scope and grant option.
     Callers supply catalog-verified names and a known CURRENT_USER() account.
-    Returns None when the account or any database name contains a control
-    character (U+0000-U+001F, U+007F-U+009F), U+2028, U+2029 or a backslash.
+    Returns None when the account or any database name contains anything outside
+    printable ASCII (0x20-0x7E) or a backslash.
     """
     if not isinstance(account, str) or _UNSAFE_GRANT_SQL.search(account):
         return None

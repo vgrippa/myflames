@@ -1,7 +1,7 @@
 // First: the stylesheets, in cascade order (styles.ts).
 import "./styles";
 import { setUnsavedWorkCheck } from "./unsavedWork";
-import { PrivilegesProvider, PrivilegeWhyHost } from "./privileges";
+import { PrivilegesProvider, PrivilegeWhyHost, preloadWhyDisabled } from "./privileges";
 import { ConnectionInUseProvider } from "./connectionInUse";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { createRoot } from "react-dom/client";
@@ -1953,7 +1953,7 @@ function App() {
     // A session restored on Plans or Compare gets its chunks now (all three
     // together), not when the idle queue reaches them.
     if (mode === "inspect" || mode === "compare") void PlanScreen.preload().catch(() => {});
-    if (ready) preloadWhenIdle([CommandPalette, Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => import("./WhyDisabled") }, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
+    if (ready) preloadWhenIdle([CommandPalette, Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: preloadWhyDisabled }, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);

@@ -1,11 +1,11 @@
 // A .ts module deliberately uses createElement so consumers need no JSX
 // wrapper. Server answers own privilege semantics; no grants are parsed here.
-import { Fragment, Suspense, createContext, createElement, lazy, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type PropsWithChildren } from "react";
+import { Component, Fragment, Suspense, createContext, createElement, lazy, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ComponentType, type PropsWithChildren } from "react";
 import { api, type Connection } from "./api";
 import { connectionKey, sharedRead } from "./binding";
 import { useWritePolicy } from "./Connections";
 import type { ActionPrivilege, PrivilegesReport, PrivilegeState } from "./accountsApi";
-import { closeWhyDisabled, onWhyDemand, openWhyDisabled } from "./whyDisabledBus";
+import { clearPendingWhyDisabled, closeWhyDisabled, onWhyDemand, openWhyDisabled } from "./whyDisabledBus";
 
 // The same read as accountsApi.readPrivileges, spelled out here: gating
 // write actions is shell code, so this one endpoint stays in the entry chunk
@@ -267,23 +267,103 @@ export function targetPrivilege(generic: PrivilegeGateResult, hint?: {
     reason: hint.note || (allowed === false && !need ? "The server report denies this action." : ""), grey_out: true, grant_sql });
 }
 
-const LazyWhyDisabledHost = lazy(() => import("./WhyDisabled").then((m) => ({ default: m.WhyDisabledHost })));
+type WhyDisabledHostComponent = ComponentType<{ resetKey?: string }>;
+let loadedWhyDisabledHost: WhyDisabledHostComponent | null = null;
+let inFlightWhyDisabledHost: Promise<WhyDisabledHostComponent> | null = null;
+let whyDisabledHostFailures = 0;
+let nextWhyHostMount = 0;
+
+function importWhyDisabledHost(attempt: number): Promise<WhyDisabledHostComponent> {
+  if (attempt > 0) {
+    try {
+      // A failed module fetch is cached for the window, so each retry reads its
+      // own cache-busted copy of the chunk (same pattern as updateStatus.ts).
+      const retries = [
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry", import: "WhyDisabledHost" }),
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry=2", import: "WhyDisabledHost" }),
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry=3", import: "WhyDisabledHost" }),
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry=4", import: "WhyDisabledHost" }),
+        import.meta.glob("./WhyDisabled.tsx", { query: "?why-retry=5", import: "WhyDisabledHost" }),
+      ];
+      const loader = Object.values(retries[Math.min(attempt, retries.length) - 1])[0] as
+        (() => Promise<WhyDisabledHostComponent>) | undefined;
+      if (loader) return loader();
+    } catch {
+      // Non-Vite bundlers (esbuild in unit tests) fall back to direct import.
+    }
+  }
+  return import("./WhyDisabled").then((m) => m.WhyDisabledHost);
+}
+
+/** Preload WhyDisabledHost during idle time using the same failure tracking as
+ * on-demand opens so a failed idle preload cannot poison the first click. */
+export function preloadWhyDisabled(): Promise<WhyDisabledHostComponent> {
+  if (loadedWhyDisabledHost) return Promise.resolve(loadedWhyDisabledHost);
+  if (!inFlightWhyDisabledHost) {
+    const attempt = whyDisabledHostFailures;
+    inFlightWhyDisabledHost = importWhyDisabledHost(attempt).then(
+      (component) => {
+        loadedWhyDisabledHost = component;
+        inFlightWhyDisabledHost = null;
+        return component;
+      },
+      (error) => {
+        whyDisabledHostFailures += 1;
+        inFlightWhyDisabledHost = null;
+        throw error;
+      },
+    );
+  }
+  return inFlightWhyDisabledHost;
+}
+
+class WhyDisabledErrorBoundary extends Component<PropsWithChildren<{ onError: () => void }>, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onError();
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 /** App-level WhyDisabled host so privilege-disabled buttons show their reason
  * and backend-supplied advisory GRANT on click. Loads WhyDisabled on first use
- * so the entry chunk stays small. */
+ * so the entry chunk stays small; a failed chunk renders nothing inside its
+ * own error boundary (never unmounting the workspace) and retries on the next
+ * open. */
 export function PrivilegeWhyHost({ resetKey, children }: PropsWithChildren<{ resetKey?: string }>) {
-  const [needed, setNeeded] = useState(false);
+  const [host, setHost] = useState<{ id: number; Component: WhyDisabledHostComponent } | null>(null);
   const prevReset = useRef(resetKey);
-  useEffect(() => onWhyDemand(() => setNeeded(true)), []);
+  useEffect(() => onWhyDemand(() => {
+    setHost((current) => {
+      if (current) return current;
+      const Component = loadedWhyDisabledHost ??
+        lazy(() => preloadWhyDisabled().then((c) => ({ default: c })));
+      return { id: ++nextWhyHostMount, Component };
+    });
+  }), []);
   useEffect(() => {
     if (prevReset.current !== resetKey) {
       prevReset.current = resetKey;
       closeWhyDisabled();
     }
   }, [resetKey]);
+  const onHostError = useCallback((failedId: number) => {
+    clearPendingWhyDisabled();
+    setHost((current) => (current?.id === failedId ? null : current));
+  }, []);
   return createElement(Fragment, null, children,
-    needed ? createElement(Suspense, { fallback: null }, createElement(LazyWhyDisabledHost, { resetKey })) : null);
+    host
+      ? createElement(
+          WhyDisabledErrorBoundary,
+          { key: host.id, onError: () => onHostError(host.id) },
+          createElement(Suspense, { fallback: null }, createElement(host.Component, { resetKey })),
+        )
+      : null);
 }
 
 const CONFIRM_MANAGED_ATTRS = [

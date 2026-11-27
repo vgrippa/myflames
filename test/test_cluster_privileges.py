@@ -438,6 +438,51 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
         self.assertEqual(action['why_not'], 'Needs GROUP_REPLICATION_ADMIN or SUPER.')
         self.assertNotIn('partial_revokes', action['fix'])
 
+    def test_non_ascii_current_user_and_database_fall_back_to_grant_unavailable(self):
+        payloads = [
+            '\u00c8' * 6 + 'DROP DATABASE prod;#',
+            '\u0e08DROP DATABASE prod;#',
+            'sales' + '\u0308' * 4 + 'DROP DATABASE prod;#',
+            'caf\u00e9',
+            'a\u00a0b',
+            'a\u00adb',
+            'a\u200bb',
+            'a\u202eb',
+        ]
+        for payload in payloads:
+            for partial in (False, True, None):
+                for account in (payload + '@%', 'monitor@' + payload):
+                    with self.subTest(direct_account=account, partial=partial):
+                        self.assertIsNone(m._grant_sql([(('GROUP_REPLICATION_ADMIN',), None, False)], account, partial))
+                for db in (payload, payload + '_%'):
+                    with self.subTest(direct_db=db, partial=partial):
+                        self.assertIsNone(m._grant_sql([(('INSERT',), db, False)], ACCOUNT, partial))
+        for scenario, aid, expected_need in (
+                ('gr-8.4-two-members', 'switch_to_multi_primary', 'Needs GROUP_REPLICATION_ADMIN or SUPER.'),
+                ('galera-11.8-healthy', 'desync_node', 'Needs SUPER.')):
+            report = F.report(scenario)
+            for payload in payloads:
+                for account in (payload + '@%', 'monitor@' + payload):
+                    with self.subTest(scenario=scenario, account=account):
+                        action = self.action(report, aid, self.checks([statement(['USAGE'])], account))
+                        self.assertFalse(action['enabled'])
+                        self.assertFalse(action['privileges_unreadable'])
+                        self.assertIsNone(action['grant_sql'])
+                        self.assertEqual(action['why_not'], expected_need)
+                        self.assertEqual(action['fix'], m._GRANT_UNAVAILABLE)
+        # Even when partial_revokes is None and a schema requirement has '_', an unsafe account still gets _GRANT_UNAVAILABLE.
+        ic_report = self.report((8, 4, 11), 'ic-8.4-healthy')
+        for payload in payloads:
+            for account in (payload + '@%', 'monitor@' + payload):
+                with self.subTest(scenario='ic-8.4-healthy', account=account):
+                    checks = {'shell': SHELL, 'grants': {'checked': True, 'account': account,
+                                                         'grants': [statement(['SUPER'])], 'partial_revokes': None}}
+                    action = self.action(ic_report, 'switch_to_multi_primary', checks)
+                    self.assertFalse(action['enabled'])
+                    self.assertFalse(action['privileges_unreadable'])
+                    self.assertIsNone(action['grant_sql'])
+                    self.assertEqual(action['fix'], m._GRANT_UNAVAILABLE)
+
     def test_unreadable_empty_unparsed_or_unknown_account_is_not_a_denial(self):
         report = F.report('gr-8.4-two-members')
         for raw in ({'checked': False}, {'checked': True, 'account': ACCOUNT, 'grants': []},

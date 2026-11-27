@@ -60,3 +60,9 @@ export function closeWhyDisabled(): void {
   pendingRequest = null;
   registeredHost?.close();
 }
+
+/** Drop an unsatisfied pending request after a lazy host load failure so the
+ * next click on the same button retries instead of toggling it off. */
+export function clearPendingWhyDisabled(): void {
+  pendingRequest = null;
+}

@@ -1277,6 +1277,13 @@
       "timeout": 180,
       "reason": "Waits view on waits-1.0 reports replayed from live captures; mocked live endpoint."
     },
+    "why-disabled-chunk.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 180,
+      "safety": "A blocked WhyDisabled chunk never unmounts the workspace or lets a privilege-disabled Kill button prepare or send a write; retrying once allowed opens the message with 0 prepares and 0 kills.",
+      "reason": "no npm script; offline perf-harness failAssets regression for the lazy WhyDisabledHost error boundary and retry."
+    },
     "zoom.mjs": {
       "kind": "suite",
       "script": "test:zoom",

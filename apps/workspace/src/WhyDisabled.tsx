@@ -317,8 +317,13 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
     explicitCloseRef.current = true;
     const el = pop.current;
     const button = resolve();
-    hidePopover(el);
-    restoreFocus(el, button);
+    if (!isAnchorDisabled(button)) {
+      restoreFocus(el, button);
+      hidePopover(el);
+    } else {
+      hidePopover(el);
+      restoreFocus(el, button);
+    }
     onCloseRef.current();
   };
 
@@ -411,7 +416,10 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
     if (!open) {
       if (el.matches(":popover-open")) {
         const hadFocus = el.contains(document.activeElement);
-        if (hadFocus) focusInsideRef.current = true;
+        if (hadFocus) {
+          focusInsideRef.current = true;
+          if (!isAnchorDisabled(button)) restoreFocus(el, button);
+        }
         hidePopover(el);
         if (hadFocus && button && document.activeElement === button && !isAnchorDisabled(button)) {
           restoreFocus(el, button);
@@ -452,6 +460,7 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       window.removeEventListener("scroll", update, true);
       if (el.contains(document.activeElement)) {
         focusInsideRef.current = true;
+        if (!isAnchorDisabled(button)) restoreFocus(el, button);
       }
       hidePopover(el);
     };
@@ -549,6 +558,9 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       const dismissedByOutside = outsidePointerRef.current;
       outsidePointerRef.current = false;
 
+      if (hadFocus && !wasExplicit && !dismissedByOutside && !isAnchorDisabled(button)) {
+        restoreFocus(el, button);
+      }
       hidePopover(el);
 
       if (wasExplicit || !hadFocus || dismissedByOutside) return;

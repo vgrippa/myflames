@@ -375,16 +375,30 @@ try {
   await page.click("dialog.r2-sheet .why-disabled:popover-open .ops-commands button");
   await page.waitForFunction(() => /Copied\./.test(document.querySelector("dialog.r2-sheet .why-disabled:popover-open .ops-commands [role=status]")?.textContent || ""));
   assert.equal(await page.evaluate(() => window.__r2Copied.at(-1)), "GRANT SYSTEM_USER ON *.* TO 'dba'@'%';", "V9: Copy works inside ConfirmSheet modal");
-  // S1: focus on GRANT text, gate flips to allowed -> focus lands on Cancel, Enter sends 0 confirms.
+  // S1 + H-1: focus on GRANT text, gate flips to allowed -> focus lands on Cancel,
+  // never even transiently hits the enabled confirm during hidePopover, and Enter sends 0 confirms.
   await page.focus("dialog.r2-sheet .why-disabled:popover-open .ops-pre");
+  await page.evaluate((s) => {
+    window.__h1EnabledFocus = [];
+    const onFocusIn = (e) => {
+      if (e.target instanceof HTMLElement && e.target.matches(s) && e.target.getAttribute("aria-disabled") !== "true") {
+        window.__h1EnabledFocus.push("s1");
+      }
+    };
+    window.__h1Cleanup = () => document.removeEventListener("focusin", onFocusIn, true);
+    document.addEventListener("focusin", onFocusIn, true);
+  }, r2Confirm);
   await page.evaluate(() => document.getElementById("r2-sheet-allowed").click());
   await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet .why-disabled:popover-open"));
+  assert.deepEqual(await page.evaluate(() => { window.__h1Cleanup(); return window.__h1EnabledFocus; }), [],
+    "H-1 S1: enabled confirm never receives even transient focusin during hidePopover");
   assert.equal(await page.evaluate((s) => document.activeElement?.matches(s), r2Confirm), false, "S-F1 S1: focus never lands on enabled confirm");
   assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Cancel", "S-F1 S1: focus moves to Cancel");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet[open]"));
   assert.equal(await page.$eval("#r2-confirms", (e) => e.textContent), "0", "S-F1 S1: Enter after gate opened sends 0 confirms");
-  // S2: focus on Close while review pending, review arrives -> focus lands on Cancel, Space sends 0 confirms.
+  // S2 + H-1: focus on Close while review pending, review arrives -> focus lands on Cancel,
+  // never transiently hits enabled confirm, and Space sends 0 confirms.
   await page.click("#r2-open-sheet");
   await page.waitForSelector("dialog.r2-sheet[open]", { visible: true });
   await page.evaluate(() => document.getElementById("r2-sheet-pending").click());
@@ -392,13 +406,52 @@ try {
   await page.keyboard.press("Enter");
   await page.waitForSelector("dialog.r2-sheet .why-disabled:popover-open", { visible: true });
   await page.focus("dialog.r2-sheet .why-disabled:popover-open .why-disabled-close");
+  await page.evaluate((s) => {
+    window.__h1EnabledFocus = [];
+    const onFocusIn = (e) => {
+      if (e.target instanceof HTMLElement && e.target.matches(s) && e.target.getAttribute("aria-disabled") !== "true") {
+        window.__h1EnabledFocus.push("s2");
+      }
+    };
+    window.__h1Cleanup = () => document.removeEventListener("focusin", onFocusIn, true);
+    document.addEventListener("focusin", onFocusIn, true);
+  }, r2Confirm);
   await page.evaluate(() => document.getElementById("r2-sheet-allowed").click());
   await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet .why-disabled:popover-open"));
+  assert.deepEqual(await page.evaluate(() => { window.__h1Cleanup(); return window.__h1EnabledFocus; }), [],
+    "H-1 S2: enabled confirm never receives even transient focusin during hidePopover");
   assert.equal(await page.evaluate((s) => document.activeElement?.matches(s), r2Confirm), false, "S-F1 S2: focus never lands on enabled confirm");
   assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Cancel", "S-F1 S2: focus moves to Cancel");
   await page.keyboard.press("Space");
   await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet[open]"));
   assert.equal(await page.$eval("#r2-confirms", (e) => e.textContent), "0", "S-F1 S2: Space after review arrives sends 0 confirms");
+  // H-1 closeToAnchor: if the anchor is already enabled when Close runs (before
+  // the observer dismisses), focus moves to Cancel before hidePopover so the
+  // enabled confirm never receives focusin.
+  await page.click("#r2-open-sheet");
+  await page.waitForSelector("dialog.r2-sheet[open]", { visible: true });
+  await page.focus(r2Confirm);
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.r2-sheet .why-disabled:popover-open", { visible: true });
+  await page.focus("dialog.r2-sheet .why-disabled:popover-open .why-disabled-close");
+  const closeToAnchorResult = await page.evaluate((s) => {
+    const confirmBtn = document.querySelector(s);
+    const closeBtn = document.querySelector("dialog.r2-sheet .why-disabled:popover-open .why-disabled-close");
+    const enabledFocus = [];
+    const onFocusIn = (e) => {
+      if (e.target === confirmBtn && confirmBtn.getAttribute("aria-disabled") !== "true") enabledFocus.push("close");
+    };
+    document.addEventListener("focusin", onFocusIn, true);
+    confirmBtn.setAttribute("aria-disabled", "false");
+    closeBtn.click();
+    document.removeEventListener("focusin", onFocusIn, true);
+    return { enabledFocus, activeText: (document.activeElement?.textContent || "").trim() };
+  }, r2Confirm);
+  await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet .why-disabled:popover-open"));
+  assert.deepEqual(closeToAnchorResult, { enabledFocus: [], activeText: "Cancel" },
+    "H-1 closeToAnchor: moves focus to Cancel before hidePopover when anchor is no longer disabled");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.r2-sheet[open]"));
   // V6: unmounting PrivilegeConfirmLabel restores all attributes it set on the confirm button.
   await page.click("#r2-open-sheet");
   await page.waitForSelector("dialog.r2-sheet[open]", { visible: true });
