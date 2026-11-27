@@ -67,6 +67,12 @@
       "safety": "Kill sessions re-checks the connection policy after Confirm; a refused or failed check means KILL was never requested (scenario kill-sessions-policy, action-feedback-lib.mjs:1038).",
       "reason": "Runs every converted action (batches B/C plus operations scenarios) against a seeded throwaway server with held replies; long tour with per-action waits, parallel only via ACTION_FEEDBACK_WORKERS."
     },
+    "action-output.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 300,
+      "reason": "Live MySQL Shell progress and completed Shell output in ActionReview and ActionResult (retained-tail truncation, check_clusterset summary, server text rendered as text); real build and Python server on a throwaway HOME with /api/live/cluster*, /api/live/proxysql* and /api/live/action/progress intercepted."
+    },
     "analysis-projection.mjs": {
       "kind": "suite",
       "script": "test:analysis-projection",
@@ -144,6 +150,13 @@
       "timeout": 180,
       "safety": "Cluster switchover sends only from the review sheet; Cancel is recorded as declined with the reviewed statements (line 231).",
       "reason": "Cluster place on mocked /api/live/cluster with backend-computed reports and the real Python server for sessions; no cluster contacted."
+    },
+    "clusterset-forms.mjs": {
+      "kind": "suite",
+      "script": null,
+      "timeout": 300,
+      "safety": "A disabled Confirm sends no plan (line 196); removal, failover and dissolve without an explicit force or invalidation choice send no parameters (lines 247, 313, 367).",
+      "reason": "ClusterSet action forms: routing maps a stored target_cluster group UUID back to the cluster name, and force or invalidation is offered only for members the report shows unreachable; real build and Python server on a throwaway HOME with /api/live/cluster* intercepted."
     },
     "compare-text.mjs": {
       "kind": "suite",
