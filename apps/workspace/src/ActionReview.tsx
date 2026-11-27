@@ -1,8 +1,9 @@
-// Reviewed changes that the backend plans from a fresh read (the ProxySQL
-// and Cluster places; myflames/reviewed_writes.py, db-operations skill
-// section 6). Planning reads only. The sheet shows the statements exactly as
-// they will be sent, the target, the connection and its write policy, the
-// facts and warnings, the undo, and a typed name for destructive changes.
+// Reviewed changes that the backend plans from a fresh read (the ProxySQL,
+// Cluster and Readyset places; myflames/reviewed_writes.py, db-operations
+// skill section 6). Planning reads only. The sheet shows any identity check
+// (`session_guard`) and the statements exactly as they will be sent, the
+// target, the connection and its write policy, the facts and warnings, the
+// undo, and a typed name for destructive changes.
 // Cancel and Escape record a declined attempt in the Audit log. Confirm reads
 // the saved connections again (useWritePolicy) and sends the reviewed plan
 // with its token; the backend reads the target again and sends nothing when
@@ -44,6 +45,7 @@ export type ReviewedPlan = {
   description: string;
   target_text: string;
   statements: string[];
+  session_guard?: string[];
   facts: [string, string][];
   warnings: string[];
   typed_guard: string | null;
@@ -75,6 +77,7 @@ export type ReviewedResult = {
   audit_id: string | null;
   /** Each statement's final state, in order. */
   states?: StatementState[];
+  session_guard?: string[];
   /** What changed: what, before, now (read again after the write). */
   effect?: [string, string, string][] | null;
   checks?: string[];
@@ -437,6 +440,11 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
       : plan.statements.map(() => "waiting");
   const [tone, word] = r ? RESULT_TONE[r.status] || RESULT_TONE.unknown : ["unknown", ""];
   const checks = r?.checks?.length ? r.checks : plan.checks || [];
+  const guard = (plan.session_guard || []).filter((line): line is string => typeof line === "string" && line.trim().length > 0);
+  const sentLines = guard.length > 0 ? [...guard, ...plan.statements] : plan.statements;
+  const commandsLabel = guard.length > 0
+    ? "Identity check sent first, before the statements, and statements to send, exactly as sent"
+    : "Statements to send, exactly as sent";
   return (
     <ConfirmSheet className="ops-confirm action-review"
       band={<ConnectionTypeBand connection={p.connection} label={p.label} type={type} readOnly={readOnly} />}
@@ -477,7 +485,12 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
           </p>
         )}
       </> : <>
-        <Commands label="Statements to send, exactly as sent" text={plan.statements.join("\n")} />
+        {guard.length > 0 && (
+          <p className="hint ops-plan-note action-guard-note">
+            {`Identity check sent first (first ${guard.length === 1 ? "line" : `${guard.length.toLocaleString()} lines`} below), before the ${plan.statements.length === 1 ? "statement" : "statements"}.`}
+          </p>
+        )}
+        <Commands label={commandsLabel} text={sentLines.join("\n")} />
         <Fields rows={[
           ["Connection", p.label.includes(endpoint) ? p.label : `${p.label} (${endpoint})`],
           ["Type", `${TYPE_LABEL[type]}${readOnly ? ", read-only" : ""}`],

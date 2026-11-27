@@ -85,7 +85,7 @@ import json
 import re
 
 from .connection_groups import grouped_read
-from .connector import ConnectorError
+from .connector import ConnectorError, PartialReadError
 from .perf_common import named_rows, now
 
 SCHEMA_VERSION = "proxysql-1.0"
@@ -164,6 +164,26 @@ def select(conn, sql):
 #: SQLite's error for a table this ProxySQL does not have, which Admin passes
 #: on ("ProxySQL Admin Error: no such table: main.x", seen live on 3.0.11).
 _NO_SUCH_TABLE = "no such table:"
+_IDENTITY_SQL = "SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'"
+_EVIDENCE_IDENTITY_BLOCK = (
+    "The ProxySQL instance identity could not be verified for the whole report: the UUID changed or could not "
+    "be checked between evidence reads. Refresh and review again before changing it here.")
+_XML_DOCUMENT = re.compile(r"(?:<\?xml[^>]*>\s*)?<resultset\b[^>]*?(?:/>|>[\s\S]*?</resultset>)")
+
+
+class _IdentityReadError(ConnectorError):
+    """A successful evidence response did not carry the expected identity."""
+
+
+def _evidence_results(text, count):
+    """Exactly the client's XML result documents, with no unframed output."""
+    documents = list(_XML_DOCUMENT.finditer(text))
+    if len(documents) != count or _XML_DOCUMENT.sub("", text).strip():
+        raise _IdentityReadError(_EVIDENCE_IDENTITY_BLOCK)
+    try:
+        return [named_rows(document.group()) for document in documents]
+    except ValueError:
+        raise _IdentityReadError(_EVIDENCE_IDENTITY_BLOCK) from None
 
 
 class _Reads(object):
@@ -176,11 +196,44 @@ class _Reads(object):
         self.statements = []
         self.missing = []
         self.absent = set()
+        self.uuid = None
+        self.identity_problem = None
+
+    def _bound_table(self, sql):
+        # Each run is a separate client login. Bracket its evidence with
+        # UUID reads in that same non-reconnecting login, so an A/B/A change
+        # between logins cannot mix configuration from two Admin instances.
+        script = "%s;\n%s;\n%s;" % (_IDENTITY_SQL, sql.rstrip(";"), _IDENTITY_SQL)
+        expected = [{"variable_value": self.uuid}]
+        try:
+            text = self.conn.run(script, extra_flags=["--xml", "--skip-reconnect"], retain_partial_stdout=True)
+        except ConnectorError as exc:
+            from . import dbops, reviewed_writes
+            diagnostic = dbops.target_error_text(exc)
+            code = reviewed_writes.error_number(diagnostic)
+            # Only an error on the evidence statement after a verified UUID
+            # can establish that an optional table is absent. Prefix errors,
+            # lost replies and failed suffixes cannot authorize a fallback.
+            if isinstance(exc, PartialReadError) and reviewed_writes.failed_line(diagnostic) == 2 \
+                    and code is not None and not reviewed_writes.client_error(code) \
+                    and not dbops.may_have_run(exc):
+                prefix, = _evidence_results(exc.stdout, 1)
+                if prefix == expected:
+                    raise
+            raise _IdentityReadError(_EVIDENCE_IDENTITY_BLOCK) from None
+        before, rows, after = _evidence_results(text, 3)
+        if before != expected or after != expected:
+            raise _IdentityReadError(_EVIDENCE_IDENTITY_BLOCK)
+        return rows
 
     def table(self, sql, label=None):
+        if self.identity_problem:
+            return None
         try:
-            rows = select(self.conn, sql)
+            rows = self._bound_table(sql) if self.uuid is not None else select(self.conn, sql)
         except ConnectorError as exc:
+            if isinstance(exc, _IdentityReadError):
+                self.identity_problem = _EVIDENCE_IDENTITY_BLOCK
             self.missing.append((label or sql, _short(exc)))
             if _NO_SUCH_TABLE in str(exc):
                 self.absent.add(label or sql)
@@ -288,14 +341,11 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
     report = _not_proxysql(None, detail)
     report.update({"available": True, "is_proxysql": True, "message": None, "status_why": []})
     report["statements"] = ["SELECT admin-version", "SELECT @@version"]
-    identity_rows = reads.table("SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'",
-                                "disk.global_settings")
+    identity_rows = reads.table(_IDENTITY_SQL, "disk.global_settings")
     report["server_identity"] = {"uuid": identity_rows[0].get("variable_value")} if identity_rows and \
         len(identity_rows) == 1 else {}
-    # Keep the report and its action catalog readable when this instance
-    # cannot be bound to a reviewed change. The place opens this shared
-    # reason on each disabled action; it does not hide the catalog.
-    report["message"] = _identity_block(report)
+    uuid = report["server_identity"].get("uuid")
+    reads.uuid = uuid if _valid_uuid(uuid) else None
 
     globals_rows = reads.table("SELECT * FROM stats_mysql_global", "stats_mysql_global") or []
     values = dict((r.get("Variable_Name"), r.get("Variable_Value")) for r in globals_rows)
@@ -324,6 +374,19 @@ def read_status(conn, profiles=(), open_profile=None, reached_host=None, current
                             "runtime_global_variables")
     users = reads.table("SELECT username, active, default_hostgroup, transaction_persistent, frontend FROM "
                         "runtime_mysql_users", "runtime_mysql_users")
+    if reads.uuid is not None and not reads.identity_problem:
+        # A failed optional table read yields no evidence. Still recheck the
+        # final identity, including when that failed read was the last batch.
+        final_identity = reads.table(_IDENTITY_SQL, "disk.global_settings (after evidence)")
+        if final_identity != [{"variable_value": reads.uuid}]:
+            reads.identity_problem = _EVIDENCE_IDENTITY_BLOCK
+    if reads.identity_problem:
+        report["server_identity"] = {}
+        report["message"] = reads.identity_problem
+    else:
+        # Old versions and unreadable UUIDs retain their readable catalog,
+        # with one shared reason on every disabled change.
+        report["message"] = _identity_block(report)
     routing = proxysql_digests.Routing(runtime.get("mysql_query_rules"), runtime.get("mysql_query_rules_fast_routing"),
                                        users, dict((r.get("variable_name"), r.get("variable_value"))
                                                    for r in variables or ()))
@@ -988,6 +1051,8 @@ def _identity_block(report):
     """
     if not report or not report.get("is_proxysql"):
         return None
+    if report.get("message") == _EVIDENCE_IDENTITY_BLOCK:
+        return _EVIDENCE_IDENTITY_BLOCK
     identity = report.get("server_identity")
     if isinstance(identity, dict) and _valid_uuid(identity.get("uuid")):
         return None
@@ -1015,7 +1080,7 @@ def _session_guard(expect):
     if not _valid_uuid(uuid):
         raise ValueError("The ProxySQL instance UUID could not be read. Nothing was sent. "
                          "Refresh and review again; this change requires disk.global_settings to expose its UUID.")
-    return ["INSERT INTO global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE "
+    return ["INSERT INTO main.global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE "
             "(SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '%s';" % uuid]
 
 
@@ -1036,13 +1101,13 @@ def plan_action(report, action, target=None, value=None):
         raise ValueError("This connection is not a ProxySQL Admin interface.")
     if not isinstance(action, str):
         raise ValueError("Choose an action.")
-    catalog = [a["id"] for a in action_catalog(report, target)]
-    if action not in catalog:
-        raise ValueError("That change is not offered for this target now. Refresh and try again.")
     blocked = _identity_block(report)
     if blocked:
         from .reviewed_writes import ActionUnavailable
         raise ActionUnavailable(blocked)
+    catalog = [a["id"] for a in action_catalog(report, target)]
+    if action not in catalog:
+        raise ValueError("That change is not offered for this target now. Refresh and try again.")
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "target": target,
             "value": value if action in ("server_weight", "server_hostgroup") else None,
             "facts": [["ProxySQL", report.get("version") or "Unknown"]], "warnings": [], "typed_guard": None,
@@ -1360,24 +1425,34 @@ class _IdentityBoundAdmin(object):
     reply remains unknown, just as it does for the regular sender.
     """
 
-    def __init__(self, conn, guard):
+    def __init__(self, conn, guard, password=None):
         self.conn, self.guard = conn, guard
+        self._password = password
 
-    def __getattr__(self, name):
-        return getattr(self.conn, name)
+    @property
+    def password(self):
+        return getattr(self.conn, "password", None) or self._password
 
     def run_write(self, sql, extra_flags=None, timeout=None):
         from . import dbops, reviewed_writes
         try:
             return self.conn.run_write("\n".join(self.guard + [sql]), extra_flags=extra_flags, timeout=timeout)
         except ConnectorError as exc:
-            text = str(exc)
+            # MariaDB may echo the submitted SQL before its ERROR line. Only
+            # the actual server diagnostic can identify the guard constraint.
+            text = dbops.target_error_text(exc)
             if dbops.target_guard_failed(exc) and not dbops.may_have_run(exc):
-                mismatch = "NOT NULL constraint failed: global_variables.variable_name" in text
+                diagnostic = re.match(
+                    r"^(?:mysql client exited \d+:\s*)?ERROR\s+(\d+)"
+                    r"(?:\s+\([^\r\n)]*\))?\s+at line (\d+):\s*([^\r\n]*)", text)
+                mismatch = bool(diagnostic and diagnostic.group(1, 2, 3) == (
+                    "1045", "1", "ProxySQL Admin Error: NOT NULL constraint failed: global_variables.variable_name"))
+                reason = diagnostic.group(3) if diagnostic else reviewed_writes.server_message(text)
+                reason = dbops.redact(dbops.redact(reason, self.password), self._password).strip()[:240].rstrip(".")
                 raise reviewed_writes.Refusal(
                     "The ProxySQL instance is not the one you reviewed. Nothing was sent; refresh and review again."
-                    if mismatch else "The ProxySQL instance identity could not be checked. Nothing was sent; "
-                                     "refresh and review again.",
+                    if mismatch else "The ProxySQL instance identity could not be checked: %s. Nothing was sent; "
+                                     "refresh and review again." % (reason or "no server reason was reported"),
                     "identity_mismatch" if mismatch else "identity_unavailable") from None
             raise dbops.shift_guard_error(exc) from None
 
@@ -1388,14 +1463,21 @@ class _IdentityAudit(object):
     def __init__(self, audit, guard):
         self.audit, self.guard = audit, guard
 
-    def __getattr__(self, name):
-        return getattr(self.audit, name)
+    @property
+    def password(self):
+        return getattr(self.audit, "password", None)
 
     def attempt(self, statements, **kwargs):
         return self.audit.attempt(self.guard + list(statements), **kwargs)
 
     def outcome(self, statements, *args, **kwargs):
         return self.audit.outcome(self.guard + list(statements), *args, **kwargs)
+
+    def complete(self, *args, **kwargs):
+        return self.audit.complete(*args, **kwargs)
+
+    def fail(self, exc, statements=()):
+        return self.audit.fail(exc, self.guard + list(statements))
 
 
 def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, progress=None):
@@ -1422,10 +1504,38 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
         state["before"] = _after(report, reviewed)
         return plan
 
-    out = reviewed_writes.execute(_IdentityBoundAdmin(conn, guard), reviewed, fresh, ACTION_SCHEMA_VERSION,
+    def read_after():
+        # The write reply proves what was sent. An independent readback can
+        # describe its effect only when it still answers from that instance.
+        try:
+            report = read_status(conn)
+            if not report.get("is_proxysql"):
+                problem = "reached a server that is not ProxySQL Admin"
+            elif report.get("message") == _EVIDENCE_IDENTITY_BLOCK:
+                problem = "did not come from one identified ProxySQL instance"
+            elif _identity_block(report):
+                problem = "could not verify a valid ProxySQL instance UUID"
+            elif report.get("server_identity") != reviewed["expect"]["server_identity"]:
+                problem = "reached a different ProxySQL instance"
+            else:
+                return _after(report, reviewed)
+        except (ConnectorError, ValueError):
+            problem = "failed before the ProxySQL instance and its state could be verified"
+        state["after_problem"] = ("The read after the change %s; after-state and effect are not shown. "
+                                  "Refresh this connection before another change." % problem)
+        return None
+
+    def done_text(plan, after):
+        message = _done_text(plan, after)
+        if state.get("after_problem"):
+            message += " " + state["after_problem"]
+        return message
+
+    out = reviewed_writes.execute(_IdentityBoundAdmin(conn, guard, getattr(audit, "password", None)),
+                                   reviewed, fresh, ACTION_SCHEMA_VERSION,
                                    audit=_IdentityAudit(audit, guard) if audit is not None else None, typed=typed,
-                                   before_send=before_send, read_after=lambda: _after(read_status(conn), reviewed),
-                                   timeout=ACTION_TIMEOUT, partial_text=_partial_text, done_text=_done_text,
+                                   before_send=before_send, read_after=read_after,
+                                   timeout=ACTION_TIMEOUT, partial_text=_partial_text, done_text=done_text,
                                    progress=progress,
                                    effect=lambda plan, after: _effect(plan, state.get("before") or {}, after))
     out["session_guard"] = guard

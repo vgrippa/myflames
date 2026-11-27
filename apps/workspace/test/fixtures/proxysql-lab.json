@@ -1550,6 +1550,7 @@
  "statements": [
   "SELECT admin-version",
   "SELECT @@version",
+  "SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'",
   "SELECT * FROM stats_mysql_global",
   "SELECT * FROM main.mysql_servers",
   "SELECT * FROM main.runtime_mysql_servers",
@@ -1582,7 +1583,8 @@
   "SELECT * FROM stats_mysql_query_rules",
   "SELECT * FROM stats_mysql_query_digest ORDER BY sum_time DESC LIMIT 100",
   "SELECT variable_name, variable_value FROM runtime_global_variables WHERE variable_name IN ('mysql-query_processor_regex', 'mysql-query_processor_iterations', 'mysql-query_digests', 'mysql-query_digests_track_hostname', 'mysql-select_version_forwarding')",
-  "SELECT username, active, default_hostgroup, transaction_persistent, frontend FROM runtime_mysql_users"
+  "SELECT username, active, default_hostgroup, transaction_persistent, frontend FROM runtime_mysql_users",
+  "SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'"
  ],
  "routing": {
   "evaluated": true,
@@ -1903,6 +1905,9 @@
    }
   ],
   "notes": []
+ },
+ "server_identity": {
+  "uuid": "11111111-2222-3333-4444-555555555555"
  },
  "connection_group": {
   "name": "",

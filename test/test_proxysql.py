@@ -20,13 +20,15 @@ from pathlib import Path
 from unittest import mock
 
 from myflames import dbops, proxysql, reviewed_writes, ui
-from myflames.connector import ConnectorError
+from myflames.connector import ConnectorError, PartialReadError
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = json.loads((ROOT / 'docs' / 'schemas' / 'proxysql-1.0.json').read_text(encoding='utf-8'))
 VERSION = '3.0.11-797-g7c91137'
 # Synthetic persisted instance identity. The lab recording predates this read.
 ADMIN_UUID = '11111111-2222-3333-4444-555555555555'
+OTHER_ADMIN_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+IDENTITY_SQL = "SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid'"
 # Exact diagnostic from ProxySQL 3.0.11 Admin and the mysql 8.4 batch client.
 GUARD_MISMATCH_ERROR = ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
                         'NOT NULL constraint failed: global_variables.variable_name')
@@ -263,7 +265,7 @@ class FakeAdmin(object):
         return ''.join(out)
 
     # -- the connection API proxysql.py uses -------------------------------------------------
-    def run(self, sql, extra_flags=None, timeout=None):
+    def run(self, sql, extra_flags=None, timeout=None, retain_partial_stdout=False):
         self.calls.append(sql)
         hook = getattr(self, 'on_read', None)
         if hook is not None:
@@ -273,7 +275,19 @@ class FakeAdmin(object):
             return self.version + '\n'
         if '--xml' not in (extra_flags or ()):
             raise AssertionError('Admin tables are read as XML, which tells NULL from the text NULL: %s' % sql)
-        return self._xml(sql, self._execute(sql))
+        # Each Admin evidence batch carries its UUID reads in the same
+        # client login. Like mysql --xml, emit one document per SELECT.
+        statements = dbops.split_statements(sql)
+        output = []
+        for index, unit in enumerate(statements, 1):
+            try:
+                rows = self._execute(unit['text'], index)
+            except ConnectorError as exc:
+                if retain_partial_stdout:
+                    raise PartialReadError(str(exc), ''.join(output)) from None
+                raise
+            output.append(self._xml(unit['text'], rows))
+        return ''.join(output)
 
     def run_write(self, sql, extra_flags=None, timeout=None):
         self.writes.append(sql)
@@ -285,7 +299,7 @@ class FakeAdmin(object):
         for line, statement in enumerate(sql.split('\n'), 1):
             # Existing failure fixtures name reviewed actions, while client
             # errors must retain physical input lines including the guard.
-            guard = statement.startswith('INSERT INTO global_variables ') and 'disk.global_settings' in statement
+            guard = statement.startswith('INSERT INTO main.global_variables ') and 'disk.global_settings' in statement
             if not guard:
                 action_line += 1
             if not guard and self.timeout_line == action_line:
@@ -360,6 +374,60 @@ class Home(unittest.TestCase):
         self.addCleanup(conn.db.close)
         return conn
 
+    def other_instance_read(self, conn, evidence):
+        """Route one whole read login to B, then return the endpoint to A.
+
+        The surrounding UUID logins both see A. Only an identity inside
+        the evidence batch catches this switch, including optional reads.
+        """
+        original = conn.run
+
+        def run(sql, *args, **kwargs):
+            if evidence not in sql:
+                return original(sql, *args, **kwargs)
+            conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                            (OTHER_ADMIN_UUID,))
+            try:
+                return original(sql, *args, **kwargs)
+            finally:
+                conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                                (ADMIN_UUID,))
+        return mock.patch.object(conn, 'run', side_effect=run)
+
+    def unidentified_optional_read(self, conn, mode):
+        """Fail all copies of an existing optional table in an unbound login.
+
+        A missing identity table is not proof that the module table is
+        absent. Completed stdout is separate from the server diagnostic,
+        matching the real connector's PartialReadError contract.
+        """
+        original = conn.run
+
+        def run(sql, *args, **kwargs):
+            if 'mysql_hostgroup_attributes' not in sql:
+                return original(sql, *args, **kwargs)
+            prefix = conn._xml(IDENTITY_SQL, [['variable_value'], [ADMIN_UUID]])
+            line, reason, output = 2, 'no such table: main.mysql_hostgroup_attributes', prefix
+            if mode == 'missing_identity_prefix':
+                line, reason, output = 1, 'no such table: disk.global_settings', ''
+            elif mode == 'missing_identity_suffix':
+                evidence = next(unit['text'] for unit in dbops.split_statements(sql)
+                                if 'mysql_hostgroup_attributes' in unit['text'])
+                line, reason = 3, 'no such table: disk.global_settings'
+                output += conn._xml(evidence, conn._execute(evidence))
+            elif mode == 'different_prefix':
+                output = conn._xml(IDENTITY_SQL, [['variable_value'], [OTHER_ADMIN_UUID]])
+            elif mode == 'empty_prefix':
+                output = conn._xml(IDENTITY_SQL, [])
+            elif mode == 'missing_prefix':
+                output = ''
+            if mode == 'transport':
+                error = 'mysql client exited 1: ERROR 2013 (HY000) at line 2: Lost connection to server'
+            else:
+                error = str(conn._error(line, 'ProxySQL Admin Error: ' + reason))
+            raise PartialReadError(error, output)
+        return mock.patch.object(conn, 'run', side_effect=run)
+
 
 class TestFixtureCleanup(unittest.TestCase):
     def test_admin_databases_close_at_test_cleanup(self):
@@ -409,6 +477,108 @@ class TestRead(Home):
         self.assertFalse(conn.writes, 'reading sends no write')
         for sql in conn.calls:
             self.assertTrue(sql.startswith('SELECT'), sql)
+
+    def test_every_evidence_batch_reads_its_instance_identity(self):
+        conn = self.admin()
+        report = proxysql.read_status(conn)
+        self.assertIsNone(report['message'])
+        evidence = [sql for sql in conn.calls if 'SELECT * FROM' in sql or
+                    'runtime_global_variables' in sql or 'runtime_mysql_users' in sql]
+        self.assertTrue(evidence)
+        for batch in evidence:
+            with self.subTest(batch=batch):
+                statements = dbops.split_statements(batch)
+                self.assertEqual(len(statements), 3, 'UUID and evidence must share one client login')
+                self.assertEqual(statements[0]['text'].strip().rstrip(';'), IDENTITY_SQL)
+                self.assertEqual(statements[-1]['text'].strip().rstrip(';'), IDENTITY_SQL)
+
+    def test_an_alternating_evidence_instance_invalidates_the_report(self):
+        # Exercise config, runtime, disk, optional statistics and routing
+        # inputs. Identical version/configuration cannot substitute for UUID.
+        evidence = ('SELECT * FROM main.mysql_servers', 'SELECT * FROM main.runtime_mysql_servers',
+                    'SELECT * FROM disk.mysql_servers', 'SELECT * FROM main.mysql_query_rules',
+                    'SELECT * FROM stats_mysql_global', 'SELECT * FROM stats_mysql_connection_pool',
+                    'SELECT * FROM stats_mysql_query_rules', 'SELECT * FROM stats_mysql_query_digest',
+                    'FROM runtime_global_variables', 'FROM runtime_mysql_users')
+        for query in evidence:
+            with self.subTest(query=query):
+                conn = self.admin()
+                with self.other_instance_read(conn, query):
+                    report = proxysql.read_status(conn)
+                self.assertEqual(conn.rows(IDENTITY_SQL), [(ADMIN_UUID,)], 'the endpoint returned to A')
+                self.assertEqual(report['server_identity'], {})
+                self.assertRegex(report['message'].lower(), r'(uuid|identity|identified)')
+                self.assertEqual(proxysql.available_actions(report), [])
+                with self.assertRaises(reviewed_writes.ActionUnavailable):
+                    proxysql.plan_action(report, 'servers_load')
+                self.assertEqual(conn.writes, [])
+
+    def test_incomplete_or_invalid_identity_result_sets_invalidate_the_report(self):
+        cases = ('missing_prefix', 'missing_suffix', 'empty_prefix', 'empty_suffix', 'different_suffix',
+                 'malformed_suffix', 'duplicate_prefix', 'invalid_xml')
+        for case in cases:
+            with self.subTest(case=case):
+                conn = self.admin()
+                original = conn.run
+
+                def corrupt(sql, *args, **kwargs):
+                    output = original(sql, *args, **kwargs)
+                    if 'SELECT * FROM stats_mysql_global' not in sql:
+                        return output
+                    # Real clients emit separate XML result documents.
+                    documents = re.findall(r'(?:<\?xml[^>]*>\s*)?<resultset\b[^>]*>.*?</resultset>',
+                                           output, re.S)
+                    if len(documents) != 3:
+                        return output
+                    if case.startswith('missing_'):
+                        documents.pop(0 if case.endswith('prefix') else -1)
+                    elif case.startswith('empty_'):
+                        documents[0 if case.endswith('prefix') else -1] = conn._xml(IDENTITY_SQL, [])
+                    elif case == 'different_suffix':
+                        documents[-1] = conn._xml(IDENTITY_SQL, [['variable_value'], [OTHER_ADMIN_UUID]])
+                    elif case == 'malformed_suffix':
+                        documents[-1] = conn._xml(IDENTITY_SQL, [['variable_value'], ['not-a-uuid']])
+                    elif case == 'duplicate_prefix':
+                        documents[0] = conn._xml(IDENTITY_SQL,
+                                                 [['variable_value'], [ADMIN_UUID], [ADMIN_UUID]])
+                    else:
+                        documents[-1] = '<resultset><row></resultset>'
+                    return '\n'.join(documents)
+
+                with mock.patch.object(conn, 'run', side_effect=corrupt):
+                    report = proxysql.read_status(conn)
+                self.assertEqual(report['server_identity'], {})
+                self.assertTrue(report['message'])
+                with self.assertRaises(reviewed_writes.ActionUnavailable):
+                    proxysql.plan_action(report, 'servers_load')
+                self.assertEqual(conn.writes, [])
+
+    def test_optional_table_errors_cannot_hide_an_unidentified_evidence_login(self):
+        modes = ('missing_identity_prefix', 'missing_identity_suffix', 'different_prefix', 'empty_prefix',
+                 'missing_prefix', 'transport')
+        for mode in modes:
+            with self.subTest(mode=mode):
+                conn = self.admin()
+                # This table exists on A. A failed UUID read on B must not
+                # mark all copies absent and omit it from LOAD/SAVE review.
+                conn.db.execute("INSERT INTO main.mysql_hostgroup_attributes VALUES (30, 2, 'unreviewed')")
+                with self.unidentified_optional_read(conn, mode):
+                    report = proxysql.read_status(conn)
+                self.assertEqual(conn.rows(IDENTITY_SQL), [(ADMIN_UUID,)])
+                self.assertEqual(report['server_identity'], {})
+                self.assertTrue(report['message'])
+                with self.assertRaises(reviewed_writes.ActionUnavailable):
+                    proxysql.plan_action(report, 'servers_load')
+                self.assertEqual(conn.writes, [])
+
+    def test_a_valid_partial_identity_prefix_preserves_optional_table_fallback(self):
+        conn = self.admin(missing=('mysql_hostgroup_attributes',))
+        report = proxysql.read_status(conn)
+        self.assertEqual(report['server_identity'], {'uuid': ADMIN_UUID})
+        self.assertIsNone(report['message'])
+        self.assertEqual(report['pending']['servers']['runtime'], [])
+        self.assertEqual(proxysql.plan_action(report, 'servers_load')['statements'], [proxysql.LOAD['servers']])
+        self.assertEqual(conn.writes, [])
 
     def test_missing_tables_and_columns_are_unknown_not_a_crash(self):
         # 2.x without mysql_servers_ssl_params, a stats-only account, an older pool.
@@ -997,6 +1167,137 @@ class Endpoints(Home):
         (record,) = self.audit()
         self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
 
+    def test_a_mixed_instance_fresh_read_refuses_without_a_write_login(self):
+        for query in ('SELECT * FROM main.mysql_servers', 'SELECT * FROM disk.mysql_query_rules',
+                      'SELECT * FROM stats_mysql_query_rules', 'FROM runtime_mysql_users'):
+            with self.subTest(query=query):
+                self.conn = self.admin()
+                plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+                previous_audits = len(self.audit())
+                with self.other_instance_read(self.conn, query):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(result['sent'], [])
+                self.assertEqual(result['states'], ['not_sent'] * len(plan['statements']))
+                self.assertRegex(result['message'].lower(), r'(uuid|identity|identified)')
+                self.assertEqual(self.conn.writes, [])
+                self.assertEqual(self.conn.rows("SELECT weight FROM main.mysql_servers WHERE hostname='mf-ic-2'"),
+                                 [(100,)])
+                records = self.audit()
+                self.assertEqual(len(records), previous_audits + 1)
+                self.assertEqual(records[0]['status'], 'refused')
+
+    def test_optional_table_errors_with_unbound_prefix_refuse_the_fresh_apply_read(self):
+        for mode in ('missing_identity_prefix', 'missing_identity_suffix', 'different_prefix', 'empty_prefix',
+                     'missing_prefix', 'transport'):
+            with self.subTest(mode=mode):
+                self.conn = self.admin()
+                plan = self.plan('servers_load')
+                with self.unidentified_optional_read(self.conn, mode):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(result['sent'], [])
+                self.assertEqual(result['states'], ['not_sent'])
+                self.assertEqual(self.conn.writes, [])
+                self.assertEqual(self.audit()[0]['status'], 'refused')
+
+    def test_after_state_requires_the_same_valid_instance_uuid(self):
+        for identity in (OTHER_ADMIN_UUID, None, 'not-a-uuid', 'unreadable'):
+            with self.subTest(identity=identity):
+                self.conn = self.admin()
+                plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+                original = self.conn.run_write
+
+                def switch_after_write(sql, *args, **kwargs):
+                    answer = original(sql, *args, **kwargs)
+                    if identity == 'unreadable':
+                        self.conn.missing.add('disk.global_settings')
+                    elif identity is None:
+                        self.conn.db.execute("DELETE FROM disk.global_settings WHERE variable_name = 'uuid'")
+                    else:
+                        self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? "
+                                             "WHERE variable_name = 'uuid'", (identity,))
+                    return answer
+
+                with mock.patch.object(self.conn, 'run_write', side_effect=switch_after_write):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertEqual(result['states'], ['done'] * len(plan['statements']))
+                self.assertEqual(result['sent'], plan['statements'])
+                self.assertIsNone(result['after'], 'another instance must not be shown as the after-state')
+                self.assertIsNone(result['effect'], 'an unbound readback proves no effect')
+                self.assertRegex(result['message'].lower(), r'(read|after)')
+                self.assertRegex(result['message'].lower(), r'(uuid|identity|instance)')
+                self.assertEqual(self.conn.rows("SELECT weight FROM main.mysql_servers WHERE hostname='mf-ic-2'"),
+                                 [(50,)], 'the acknowledged write remains applied')
+                record = self.audit()[0]
+                self.assertEqual((record['status'], record['outcome']), ('ok', 'applied'))
+                self.assertIsNone(record['after'])
+                self.assertEqual(record['message'], result['message'])
+
+    def test_a_failed_or_non_admin_readback_keeps_the_acknowledged_write_result(self):
+        for mode in ('not_proxy', 'connection_failure'):
+            with self.subTest(mode=mode):
+                self.conn = self.admin()
+                plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+                original_read, original_write = self.conn.run, self.conn.run_write
+                wrote = [False]
+                other = NotProxy()
+
+                def write(sql, *args, **kwargs):
+                    answer = original_write(sql, *args, **kwargs)
+                    wrote[0] = True
+                    return answer
+
+                def read(sql, *args, **kwargs):
+                    if not wrote[0]:
+                        return original_read(sql, *args, **kwargs)
+                    if mode == 'not_proxy':
+                        return other.run(sql, *args, **kwargs)
+                    raise ConnectorError('mysql client exited 1: ERROR 2013 (HY000): Lost connection to server')
+
+                with mock.patch.object(self.conn, 'run_write', side_effect=write), \
+                        mock.patch.object(self.conn, 'run', side_effect=read):
+                    result = self.send(plan)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertEqual(result['sent'], plan['statements'])
+                self.assertIsNone(result['after'])
+                self.assertIsNone(result['effect'])
+                self.assertIn('read after', result['message'].lower())
+                self.assertEqual(len(self.conn.writes), 1, 'a failed readback must never retry the write')
+                self.assertEqual(self.audit()[0]['message'], result['message'])
+
+    def test_a_mixed_instance_after_read_cannot_claim_an_effect(self):
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+        original_read = self.conn.run
+        original_write = self.conn.run_write
+        wrote = [False]
+
+        def write(sql, *args, **kwargs):
+            answer = original_write(sql, *args, **kwargs)
+            wrote[0] = True
+            return answer
+
+        def read(sql, *args, **kwargs):
+            if wrote[0] and 'SELECT * FROM main.mysql_servers' in sql:
+                self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                                     (OTHER_ADMIN_UUID,))
+                try:
+                    return original_read(sql, *args, **kwargs)
+                finally:
+                    self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? "
+                                         "WHERE variable_name = 'uuid'", (ADMIN_UUID,))
+            return original_read(sql, *args, **kwargs)
+
+        with mock.patch.object(self.conn, 'run_write', side_effect=write), \
+                mock.patch.object(self.conn, 'run', side_effect=read):
+            result = self.send(plan)
+        self.assertEqual(result['status'], 'done', result)
+        self.assertIsNone(result['after'])
+        self.assertIsNone(result['effect'])
+        self.assertRegex(result['message'].lower(), r'(uuid|identity|instance)')
+        self.assertIsNone(self.audit()[0]['after'])
+
     def test_instance_swapped_after_reread_refuses_every_action_before_any_change(self):
         actions = [('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]}),
                    ('rule_disable', {'rule_id': 30}), ('servers_load', None), ('query_rules_load', None),
@@ -1060,7 +1361,7 @@ class Endpoints(Home):
     def test_guard_stops_the_batch_with_the_exact_live_constraint_error(self):
         plan = self.plan('server_offline_soft', {'config': [30, 'mf-ic-2', 3306]})
         self.assertEqual(plan['session_guard'], [
-            "INSERT INTO global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE "
+            "INSERT INTO main.global_variables (variable_name, variable_value) SELECT NULL, NULL WHERE "
             "(SELECT variable_value FROM disk.global_settings WHERE variable_name = 'uuid') IS NOT '%s';"
             % ADMIN_UUID])
         self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
@@ -1075,12 +1376,31 @@ class Endpoints(Home):
 
     def test_guard_error_text_distinguishes_mismatch_from_unavailable_identity(self):
         errors = ((GUARD_MISMATCH_ERROR, 'identity_mismatch', 'not the one you reviewed'),
+                  ('--------------\nSELECT \'NOT NULL constraint failed: global_variables.variable_name\';\n'
+                   '--------------\n' + GUARD_MISMATCH_ERROR,
+                   'identity_mismatch', 'not the one you reviewed'),
                   ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: integer overflow',
                    'identity_unavailable', 'identity could not be checked'),
                   ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
                    'NOT NULL constraint failed: global_variables.variable_value',
                    'identity_unavailable', 'identity could not be checked'),
                   ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: no such table: disk.global_settings',
+                   'identity_unavailable', 'identity could not be checked'),
+                  ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
+                   'NOT NULL constraint failed: global_variables.variable_name_suffix',
+                   'identity_unavailable', 'identity could not be checked'),
+                  ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
+                   'NOT NULL constraint failed: global_variables.variable_name (different diagnostic)',
+                   'identity_unavailable', 'identity could not be checked'),
+                  ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: unrelated reason: '
+                   'NOT NULL constraint failed: global_variables.variable_name',
+                   'identity_unavailable', 'identity could not be checked'),
+                  ('ERROR 1064 (28000) at line 1: ProxySQL Admin Error: '
+                   'NOT NULL constraint failed: global_variables.variable_name',
+                   'identity_unavailable', 'identity could not be checked'),
+                  ('--------------\nSELECT \'NOT NULL constraint failed: global_variables.variable_name\';\n'
+                   '--------------\nERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
+                   'attempt to write a readonly database',
                    'identity_unavailable', 'identity could not be checked'))
         for text, outcome, message in errors:
             with self.subTest(error=text):
@@ -1097,6 +1417,72 @@ class Endpoints(Home):
                 self.assertIn(message, result['message'])
                 record = self.audit()[0]
                 self.assertEqual((record['status'], record['outcome']), ('refused', outcome))
+
+    def test_admin_readonly_mode_explains_why_the_matching_guard_cannot_run(self):
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+        variables = self.conn.rows('SELECT * FROM main.global_variables')
+        self.conn.on_write = lambda: self.conn.db.execute('PRAGMA query_only = 1')
+        try:
+            result = self.send(plan)
+        finally:
+            self.conn.db.execute('PRAGMA query_only = 0')
+        self.assertEqual((result['status'], result['outcome'], result['sent']),
+                         ('refused', 'identity_unavailable', []))
+        self.assertIn('attempt to write a readonly database', result['message'])
+        self.assertEqual(result['not_sent'], plan['statements'])
+        self.assertEqual(result['states'], ['not_sent'] * len(plan['statements']))
+        self.assertEqual(self.conn.rows('SELECT * FROM main.global_variables'), variables)
+        self.assertEqual(self.conn.rows("SELECT weight FROM main.mysql_servers WHERE hostname='mf-ic-2'"), [(100,)])
+        record = self.audit()[0]
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_unavailable'))
+        self.assertIn('attempt to write a readonly database', record['message'])
+
+    def test_identity_unavailable_reason_redacts_connection_and_audit_passwords(self):
+        for password_source in ('connection', 'audit', 'different_passwords'):
+            with self.subTest(password_source=password_source):
+                self.conn = self.admin()
+                if password_source == 'connection':
+                    self.conn.password = self.connection['password']
+                elif password_source == 'different_passwords':
+                    self.conn.password = 'connection-only-secret'
+                plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+
+                def fail_guard():
+                    raise ConnectorError('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
+                                         'attempt to write a readonly database; password pw-secret; '
+                                         'other connection-only-secret; '
+                                         "SOURCE_PASSWORD='replica-secret'")
+                self.conn.on_write = fail_guard
+                result = self.send(plan)
+                self.assertEqual((result['status'], result['outcome']), ('refused', 'identity_unavailable'))
+                self.assertIn('attempt to write a readonly database', result['message'])
+                for value in (result, self.audit()[0]):
+                    text = json.dumps(value)
+                    self.assertNotIn('pw-secret', text)
+                    if password_source == 'different_passwords':
+                        self.assertNotIn('connection-only-secret', text)
+                    self.assertNotIn('replica-secret', text)
+                    self.assertIn('[redacted]', text)
+
+    def test_temp_global_variables_cannot_shadow_the_guard_target(self):
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+        variables = self.conn.rows('SELECT * FROM main.global_variables')
+
+        def shadow_and_switch():
+            # A permissive TEMP shadow would let an unqualified INSERT
+            # succeed and permit the reviewed changes on the wrong node.
+            self.conn.db.execute('CREATE TEMP TABLE global_variables (variable_name, variable_value)')
+            self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                                 (OTHER_ADMIN_UUID,))
+        self.conn.on_write = shadow_and_switch
+        result = self.send(plan)
+        self.assertEqual((result['status'], result['outcome'], result['sent']),
+                         ('refused', 'identity_mismatch', []))
+        self.assertEqual(result['states'], ['not_sent'] * len(plan['statements']))
+        self.assertEqual(self.conn.rows('SELECT * FROM temp.global_variables'), [])
+        self.assertEqual(self.conn.rows('SELECT * FROM main.global_variables'), variables)
+        self.assertEqual(self.conn.rows("SELECT weight FROM main.mysql_servers WHERE hostname='mf-ic-2'"), [(100,)])
+        self.assertEqual(self.audit()[0]['outcome'], 'identity_mismatch')
 
     def test_guard_constraint_error_after_line_one_is_an_action_failure(self):
         for action_line, status in ((1, 'failed'), (2, 'partial')):
@@ -1299,6 +1685,40 @@ class Endpoints(Home):
         (record,) = self.audit()
         self.assertEqual((record['status'], record['statements']), ('declined', plan['statements']))
         self.assertEqual(self.conn.writes, [])
+
+
+class TestIdentityWrappers(unittest.TestCase):
+    def test_admin_wrapper_exposes_only_the_guarded_send_and_password(self):
+        conn = mock.Mock(password='connection-secret')
+        conn.run_write.return_value = 'answered'
+        guard = ['INSERT INTO main.global_variables SELECT NULL, NULL WHERE 0;']
+        bound = proxysql._IdentityBoundAdmin(conn, guard)
+        self.assertEqual(bound.password, 'connection-secret')
+        self.assertEqual(bound.run_write('LOAD MYSQL SERVERS TO RUNTIME;', extra_flags=['--comments'], timeout=60),
+                         'answered')
+        conn.run_write.assert_called_once_with('\n'.join(guard + ['LOAD MYSQL SERVERS TO RUNTIME;']),
+                                               extra_flags=['--comments'], timeout=60)
+        for name in ('run', 'run_stdin', 'close', 'load', 'save', 'arbitrary_method', 'host'):
+            with self.subTest(name=name), self.assertRaises(AttributeError):
+                getattr(bound, name)
+
+    def test_audit_wrapper_forwards_an_explicit_guarded_lifecycle(self):
+        audit = mock.Mock(password='audit-secret')
+        guard, statements = ['SELECT guard;'], ['LOAD MYSQL SERVERS TO RUNTIME;']
+        bound = proxysql._IdentityAudit(audit, guard)
+        self.assertEqual(bound.password, 'audit-secret')
+        bound.attempt(statements, target={'uuid': ADMIN_UUID})
+        audit.attempt.assert_called_once_with(guard + statements, target={'uuid': ADMIN_UUID})
+        bound.outcome(statements, 'refused', outcome='changed')
+        audit.outcome.assert_called_once_with(guard + statements, 'refused', outcome='changed')
+        bound.complete('ok', outcome='applied', after=None)
+        audit.complete.assert_called_once_with('ok', outcome='applied', after=None)
+        error = ConnectorError('interrupted')
+        bound.fail(error, statements)
+        audit.fail.assert_called_once_with(error, guard + statements)
+        for name in ('run', 'run_write', 'run_stdin', 'store', 'arbitrary_method', 'purge'):
+            with self.subTest(name=name), self.assertRaises(AttributeError):
+                getattr(bound, name)
 
 
 class TestReviewedWrites(unittest.TestCase):

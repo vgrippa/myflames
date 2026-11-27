@@ -19,6 +19,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 - Fixed an issue where **Topology** > **Map** member cards did not name the destination place or restore keyboard focus on **Back to Topology**, and where a long member note in the top bar could squeeze the connection picker at the 720 px window width. Map cards now name the place in their accessible label and tooltip, move focus to the place heading and back to the card on return, and keep their own width in the top bar.
 - Fixed an issue where a **Skip until stopped** loop or a running dump, restore or clone on another server of a connection group lost its **Stop** or **Cancel** when you switched servers, and a reload could wrongly report the loop as stopped on the connection in use. The banner now lists running work from every server of the group, **Stop** and **Cancel** act on the server the work runs on, and after a reload myflames checks that server again (the loop itself still never resumes).
 - Fixed an issue where a running **Skip until stopped** loop could disappear after a failed status check on reload, or a running dump, restore or clone could disappear when its server left a connection group. Reload now keeps the server's loop tracked and retries its status until it responds, a running maintenance job whose server left the group is named in a status note until the next reload, and **Stop**, **Cancel** and status notes now report accurately when saved connections could not be read or when a server was never in a group.
+- Fixed an issue where review sheets in **Cluster** and **ProxySQL** did not display or copy the server identity check sent before the reviewed statements. The review sheet now labels and includes that check first in the statement box and **Copy**.
 
 ### Security fixes
 
@@ -27,4 +28,5 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Known issues
 
-- Readyset actions still recheck status in a separate login before sending changes. A target switch between that check and the send is not detected; same-login instance verification requires further connection support.
+- Readyset actions still recheck status in a separate login before sending changes, so a target switch between that check and the send is not detected.
+- ProxySQL Admin runs its same-login UUID check and the reviewed statements as separate statements in one session, so a statement-routing proxy in front of ProxySQL Admin could send them to different instances. Connect directly to ProxySQL Admin (or over SSH) rather than through a routing proxy.
