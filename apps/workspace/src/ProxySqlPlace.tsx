@@ -739,11 +739,14 @@ const unverifiedDetail = (message: string) =>
 
 function digestInspector(d: ProxySqlDigest, report: ProxySqlReport, go: Go, source: ProxySqlDigestsReport | null): InspectorContent {
   // *source* is the Query digests read the digest came from (null for a
-  // digest of the status report). Its evidence is bound to one instance UUID
-  // by the backend; without that UUID it is unverified, and then no detail
-  // from the status report (hostgroup roles, rule texts, routing context) may
-  // stand beside it: the two reads can have reached different instances.
-  const unverified = !!source?.message;
+  // digest of the status report). Separate verified reads can still reach
+  // different instances. Only join their evidence when both UUIDs are present
+  // and equal; old reports without identity remain readable without the join.
+  const sourceUuid = source?.server_identity?.uuid;
+  const statusUuid = report.server_identity?.uuid;
+  const unverified = !!source && (!!source.message || !sourceUuid || !statusUuid || sourceUuid !== statusUuid);
+  const unverifiedReason = source?.message ? unverifiedDetail(source.message)
+    : "The query digests and status reports do not carry the same verified ProxySQL instance UUID. Refresh both reports.";
   const r = d.routing;
   const role = (id: number | null) => {
     if (id === null) return "—";
@@ -768,9 +771,9 @@ function digestInspector(d: ProxySqlDigest, report: ProxySqlReport, go: Go, sour
     meta: <span className="hint">{d.digest || ""}</span>,
     body: <>
       <CopySql sql={d.digest_text} label="Digest text" />
-      <InspectorSection title="Routing" info={<RoutingInfo report={source?.routing ? source : report} />}>
+      <InspectorSection title="Routing" info={unverified ? undefined : <RoutingInfo report={source?.routing ? source : report} />}>
         {unverified ? (
-          <p className="hint">{`Not verified against one ProxySQL instance: ${unverifiedDetail(source!.message || "")}`}</p>
+          <p className="hint">{`Not verified against one ProxySQL instance: ${unverifiedReason}`}</p>
         ) : (
           <>
             <div className="proxysql-route" data-verdict={r.verdict}>{routeMark(r)}<span>{r.approximate ? "Approximate, evaluated here" : "Evaluated here"}</span></div>

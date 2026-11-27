@@ -41,6 +41,18 @@
         "null"
       ]
     },
+    "server_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uuid"],
+      "description": "Present only when every evidence batch was verified against this ProxySQL instance UUID. Omitted for unverified reports. Join status-derived routing context only when both reports carry the same UUID.",
+      "properties": {
+        "uuid": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      }
+    },
     "message": {
       "type": [
         "string",

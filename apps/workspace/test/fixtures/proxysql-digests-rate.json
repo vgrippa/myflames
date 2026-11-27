@@ -532,5 +532,8 @@
   "SELECT * FROM stats_mysql_query_rules",
   "SELECT hostgroup, schemaname, username, COUNT(*) AS digests, SUM(count_star) AS executions, SUM(sum_time) AS sum_time, MIN(first_seen) AS first_seen, MAX(last_seen) AS last_seen FROM stats_mysql_query_digest GROUP BY hostgroup, schemaname, username ORDER BY executions DESC LIMIT 201",
   "SELECT * FROM stats_mysql_query_digest ORDER BY CAST(count_star AS REAL) / MAX(last_seen - first_seen, 1) DESC, sum_time DESC, count_star DESC, digest LIMIT 26"
- ]
+ ],
+ "server_identity": {
+  "uuid": "11111111-2222-3333-4444-555555555555"
+ }
 }

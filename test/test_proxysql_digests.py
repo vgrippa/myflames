@@ -437,6 +437,7 @@ class TestDigests(Home):
         out = pd.read_digests(conn)
         self.assertTrue(out['digests'])
         self.assertIsNone(out['message'])
+        self.assertEqual(out['server_identity'], {'uuid': ADMIN_UUID})
         batches = [(sql, flags) for sql, flags in conn.read_flags if sql != IDENTITY_SQL]
         self.assertTrue(any('SELECT @@version' in sql for sql, _ in batches))
         self.assertTrue(any('SELECT * FROM stats_mysql_query_digest ORDER BY' in sql for sql, _ in batches))
@@ -448,6 +449,18 @@ class TestDigests(Home):
                 self.assertIn('--xml', flags)
                 self.assertIn('--skip-reconnect', flags)
         self.assertEqual(conn.writes, [])
+
+    def test_verified_report_returns_its_own_instance_uuid(self):
+        from test_chart_data import validate
+        for uuid in (ADMIN_UUID, OTHER_ADMIN_UUID):
+            with self.subTest(uuid=uuid):
+                conn = self.admin(server_uuid=uuid)
+                out = pd.read_digests(conn)
+                validate(out, DIGEST_SCHEMA)
+                self.assertEqual(out['server_identity'], {'uuid': uuid})
+                self.assertIsNone(out['message'])
+                self.assertTrue(out['digests'])
+                self.assertEqual(conn.writes, [])
 
     def test_other_instance_in_any_digest_batch_refuses_instead_of_mixing_evidence(self):
         queries = (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version', 'FROM runtime_global_variables',
@@ -504,6 +517,7 @@ class TestDigests(Home):
                 self.assertTrue(out['available'])
                 self.assertTrue(out['digests'])
                 self.assertIn('unverified read-only', out['message'].lower())
+                self.assertNotIn('server_identity', out)
                 self.assertIn('different instances', out['message'])
                 self.assertFalse(out['routing']['evaluated'])
                 self.assertEqual(out['routing']['note'], out['message'])
@@ -628,6 +642,7 @@ class TestDigests(Home):
     def test_not_proxysql(self):
         out = pd.read_digests(NotProxy())
         self.assertEqual((out['is_proxysql'], out['digests']), (False, []))
+        self.assertNotIn('server_identity', out)
         self.assertIn('not a ProxySQL Admin interface', out['message'])
 
 

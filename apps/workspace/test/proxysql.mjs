@@ -72,7 +72,7 @@ const R = {};
 for (const name of ["lab", "pending", "problem", "not", "plan-offline-soft", "plan-offline-hard", "plan-weight", "plan-rule-disable",
   "plan-read-only", "result-done", "plan-save", "digests-time", "digests-slowest", "digests-rate", "digests-hg10", "digests-digest",
   "digests-rule-30", "digests-mismatch", "progress-checking", "progress-sending", "progress-finished-unknown",
-  "rules-pending", "collisions", "digests-collisions"]) R[name] = await load(`proxysql-${name}.json`);
+  "rules-pending", "collisions", "digests-collisions", "digests-other-instance", "digests-unverified"]) R[name] = await load(`proxysql-${name}.json`);
 
 // Compute the compatibility cases with the backend under test, rather than
 // hand-writing the catalog or its shared disabled reason in a browser fixture.
@@ -850,21 +850,52 @@ try {
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "", "another connection is not muted by this read");
   await refreshTo(R.lab);
 
+  // Separate reports can each be UUID-verified yet come from different
+  // instances. Their routing context must never be joined by row/rule id.
+  assert.equal(R["digests-time"].server_identity.uuid, R.lab.server_identity.uuid);
+  assert.notEqual(R["digests-other-instance"].server_identity.uuid, R.lab.server_identity.uuid);
+  assert.equal(R["digests-other-instance"].message, null, "the other instance's report is itself verified");
+  await tab("Query digests");
+  const contextKey = digestKey(32, "0xA8027DF9CE26E2FF");
+  const contextCases = [{ label: "different verified instances", digest: R["digests-other-instance"], status: R.lab }];
+  for (const side of ["digest", "status"]) {
+    for (const identity of [undefined, {}, { uuid: null }, { uuid: "" }]) {
+      const digest = structuredClone(R["digests-time"]);
+      const status = structuredClone(R.lab);
+      const report = side === "digest" ? digest : status;
+      if (identity === undefined) delete report.server_identity;
+      else report.server_identity = identity;
+      contextCases.push({ label: `${side} UUID missing: ${JSON.stringify(identity)}`, digest, status });
+    }
+  }
+  for (const scenario of contextCases) {
+    digestOverride = scenario.digest;
+    await refreshTo(scenario.status);
+    await selectRow(contextKey);
+    const inspector = await h.inspector();
+    assert.match(inspector, /Not verified against one ProxySQL instance/, scenario.label);
+    assert.doesNotMatch(inspector, /Group Replication|Galera|Evaluated here|Rules send it to/, scenario.label);
+    assert.match(inspector, /Executions/, `${scenario.label}: own counters stay readable`);
+    assert.equal(await page.$(".view-inspector .proxysql-links .proxysql-link"), null, `${scenario.label}: no status rule links`);
+    assert.equal(await page.$('.view-inspector button[aria-label="About Routing"]'), null, `${scenario.label}: no routing-context popover`);
+    await backToList();
+  }
+  // Matching UUIDs restore the joined context, including the status rule's
+  // text and the monitor role for hostgroup 32.
+  digestOverride = R["digests-time"];
+  await refreshTo(R.lab);
+  await selectRow(contextKey);
+  const sameInstanceInspector = await h.inspector();
+  assert.doesNotMatch(sameInstanceInspector, /Not verified against one ProxySQL instance/);
+  assert.match(sameInstanceInspector, /Group Replication reader/);
+  assert.ok(await page.$(".view-inspector .proxysql-links .proxysql-link"), "matching UUIDs allow status rule links");
+  assert.ok(await page.$('.view-inspector button[aria-label="About Routing"]'), "matching UUIDs allow routing context");
+  await backToList();
+
   // An unverified digest report (no readable instance UUID, for example
   // ProxySQL before 2.4.0): labelled, no routing claims, and its details keep
   // to the digest read's own evidence (proxysql_digests.read_digests).
-  const UNVERIFIED_MESSAGE = "Unverified read-only report: a valid ProxySQL instance UUID could not be read, " +
-    "so these separate reads may have reached different instances.";
-  const unverifiedDigests = structuredClone(R["digests-time"]);
-  unverifiedDigests.message = UNVERIFIED_MESSAGE;
-  unverifiedDigests.notes = [UNVERIFIED_MESSAGE];
-  unverifiedDigests.routing = { ...(unverifiedDigests.routing || {}), evaluated: false, note: UNVERIFIED_MESSAGE };
-  for (const d of unverifiedDigests.digests) {
-    d.routing = { observed: d.hostgroup ?? null, expected: null, source: null, rules: [], decisive: null,
-      approximate: false, possible: [], unknown_rules: [], default_hostgroup: null, verdict: "unknown",
-      text: UNVERIFIED_MESSAGE, why: [UNVERIFIED_MESSAGE] };
-  }
-  digestOverride = unverifiedDigests;
+  digestOverride = R["digests-unverified"];
   await tab("Query digests");
   await refreshTo(R.lab);
   await page.waitForFunction((sel) => /Not verified against one ProxySQL instance/.test(

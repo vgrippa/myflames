@@ -227,6 +227,7 @@ export type ProxySqlReport = {
   available: boolean;
   is_proxysql: boolean;
   version: string | null;
+  server_identity?: { uuid?: string | null };
   uptime_s: number | null;
   message: string | null;
   status: "ok" | "watch" | "problem" | "unknown";
@@ -267,6 +268,7 @@ export type ProxySqlDigestsReport = {
   available: boolean;
   is_proxysql: boolean;
   version: string | null;
+  server_identity?: { uuid: string };
   message: string | null;
   filters: DigestFilters;
   orders: { id: DigestOrder; label: string; available: boolean; why: string | null }[];

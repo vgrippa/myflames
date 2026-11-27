@@ -997,6 +997,10 @@ def read_digests(conn, order=None, limit=None, hostgroup=None, schema=None, user
     else:
         out["more"] = len(shown) > filters["limit"]
     out["digests"] = shown[:filters["limit"]]
+    if not unverified:
+        # Publish only the UUID that bracketed every evidence batch, including
+        # the final digest query, so other reports can verify the same instance.
+        out["server_identity"] = {"uuid": reads.uuid}
     return out
 
 
