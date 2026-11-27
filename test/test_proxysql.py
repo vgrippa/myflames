@@ -505,7 +505,8 @@ class TestRead(Home):
             self.assertEqual(len(batches), 1)
             sql, flags = batches[0]
             statements = [s['text'].strip().rstrip(';') for s in dbops.split_statements(sql)]
-            self.assertEqual(statements, [IDENTITY_SQL, query, IDENTITY_SQL])
+            self.assertEqual(statements, [query, IDENTITY_SQL] if query == proxysql._ADMIN_VERSION_SQL
+                             else [IDENTITY_SQL, query, IDENTITY_SQL])
             self.assertIn('--xml', flags)
             self.assertIn('--skip-reconnect', flags)
 
@@ -519,11 +520,59 @@ class TestRead(Home):
                 self.assertEqual(conn.rows(IDENTITY_SQL), [(ADMIN_UUID,)])
         conn = self.admin()
         self.assertEqual(proxysql.identify(conn), (True, VERSION))
+        self.assertEqual(len(conn.calls), 2, 'UUID discovery must not add a client login')
         for query in (proxysql._ADMIN_VERSION_SQL, 'SELECT @@version'):
             sql, flags = next((sql, flags) for sql, flags in conn.read_flags if query in sql)
             self.assertEqual([s['text'].strip().rstrip(';') for s in dbops.split_statements(sql)],
-                             [IDENTITY_SQL, query, IDENTITY_SQL])
+                             [query, IDENTITY_SQL] if query == proxysql._ADMIN_VERSION_SQL
+                             else [IDENTITY_SQL, query, IDENTITY_SQL])
             self.assertIn('--skip-reconnect', flags)
+
+    def test_unavailable_or_invalid_uuid_adds_no_identification_login(self):
+        for options in ({'server_uuid': None}, {'server_uuid': ''}, {'server_uuid': 'invalid'},
+                        {'missing': ('disk.global_settings',)},
+                        {'missing': ('disk.global_settings',), 'missing_text': 'ProxySQL Admin Error: permission denied'}):
+            with self.subTest(options=options):
+                conn = self.admin(**options)
+                reads = proxysql._Reads(conn)
+                reads.bind_identity()
+                self.assertEqual(proxysql.identify(conn, reads), (True, VERSION))
+                self.assertIsNone(reads.uuid)
+                self.assertEqual(len(conn.calls), 2, 'consume the completed version result, never retry it')
+                self.assertIn(proxysql._ADMIN_VERSION_SQL, conn.calls[0])
+                self.assertIn(IDENTITY_SQL, conn.calls[0])
+                self.assertEqual(conn.calls[1], 'SELECT @@version')
+
+    def test_initial_version_and_uuid_login_failures_are_never_retried(self):
+        from myflames import proxysql_digests
+        failures = ('ERROR 2003 (HY000): Cannot connect', 'ERROR 2013 (HY000): Lost connection',
+                    'Query timed out after 30s.', 'ERROR 1045 (28000): Access denied for user operator',
+                    'ERROR 1227 (42000) at line 2: access denied for UUID')
+        for entry in ('bind_identity', 'identify', 'status', 'digests'):
+            for query in (proxysql._ADMIN_VERSION_SQL, IDENTITY_SQL):
+                for message in failures:
+                    with self.subTest(entry=entry, query=query, message=message):
+                        conn = self.admin()
+                        execute = conn._execute
+
+                        def fail(sql, line=1):
+                            if sql.strip().rstrip(';') == query:
+                                raise ConnectorError(message)
+                            return execute(sql, line)
+
+                        with mock.patch.object(conn, '_execute', side_effect=fail):
+                            with self.assertRaises(ConnectorError) as caught:
+                                if entry == 'bind_identity':
+                                    proxysql._Reads(conn).bind_identity()
+                                elif entry == 'identify':
+                                    proxysql.identify(conn)
+                                elif entry == 'status':
+                                    proxysql.read_status(conn)
+                                else:
+                                    proxysql_digests.read_digests(conn)
+                        self.assertEqual(str(caught.exception), message)
+                        self.assertEqual(len(conn.calls), 1, 'a failed login must not trigger another login')
+                        self.assertEqual(conn.writes, [])
 
     def test_connection_wrapper_without_partial_output_still_binds_identification(self):
         conn = self.admin()

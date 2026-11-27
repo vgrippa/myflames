@@ -5,17 +5,81 @@ review-token validation, loop registration and the skip guards remain real.
 No database, worker service or client subprocess is started.
 """
 import copy
+import json
 import threading
 import types
+import unicodedata
 from unittest import mock
 
 import test_replication as fixtures
-from myflames import privileges, replication as rp, ui
+from myflames import privileges, read_cancel, replication as rp, ui
 
 
 REVIEW = '/api/live/replication/skip-loop/review'
 START = '/api/live/replication/skip-loop/start'
 REAL_THREAD = threading.Thread
+
+
+class TestConfirmedReviewRefusals(fixtures.ReplicationCase):
+    def request(self, loop):
+        self.fresh_store()
+        workspace = types.SimpleNamespace(store=self.store)
+        report = fixtures.fake_report(1062)
+        plan = rp.plan_skip(report, '')
+        body = {'connection': {'host': 'db', 'port': 3306, 'user': 'u', 'password': 'hunter2-not-real'},
+                'channel': '', 'expect': plan['identity'], 'statements': plan['statements'], 'confirmed': True}
+        if loop:
+            body.update(first_failure=plan['identity'], codes=[1062], max_skips=2, poll_s=2,
+                        max_minutes=10, receiver_guard='off',
+                        expect={'engine': report['engine'], 'server_identity': plan['identity']['server_identity']})
+        path = REVIEW if loop else '/api/live/replication/skip/review'
+        return workspace, report, body, path
+
+    def test_cancelled_confirmed_reviews_audit_once_and_reraise_without_issuing_a_token(self):
+        for loop in (False, True):
+            with self.subTest(loop=loop):
+                workspace, _report, body, path = self.request(loop)
+                conn = fixtures.TestReviewGateSurfaces.connection()
+                cancelled = read_cancel.CancelledRead()
+                with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                        mock.patch.object(rp, 'read_status', side_effect=cancelled):
+                    with self.assertRaises(read_cancel.CancelledRead) as caught:
+                        ui.api_response(path, body, workspace)
+                self.assertIs(caught.exception, cancelled, 'HTTP cancellation must retain its original exception')
+                records = self.records()
+                self.assertEqual(len(records), 1)
+                self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'unsent'))
+                self.assertEqual(records[0]['operation'], rp.OPERATION_LOOP if loop else rp.OPERATION_SKIP)
+                self.assertIn('Cancelled before sending.', records[0]['message'])
+                self.assertEqual(records[0]['statements'], [rp.SKIP_TAG + sql for sql in body['statements']])
+                self.assertEqual(dict(ui._review_tokens(workspace).entries), {})
+                conn.run_write.assert_not_called()
+                conn.run.assert_not_called()
+                conn.__exit__.assert_called_once()
+
+    def test_audited_server_refusal_reasons_strip_controls_and_redact_split_secrets(self):
+        controls = ('\x1b', '\u200b', '\x1b]52;c;ZXZpbA==\x07', '\x9b31m\x9d52;c;ZXZpbA==\x9c',
+                    '\u202e\u200b\ufeff\u2028\u2029\x00\x7f')
+        for loop in (False, True):
+            for control in controls:
+                with self.subTest(loop=loop, control=repr(control)):
+                    workspace, report, body, path = self.request(loop)
+                    report['channels'][0]['sql']['error']['message'] = (
+                        'Changed failure %s hunter%s2-not-real.' % (control, control))
+                    conn = fixtures.TestReviewGateSurfaces.connection()
+                    with mock.patch('myflames.connector.MySQLConnection', return_value=conn), \
+                            mock.patch.object(rp, 'read_status', return_value=report):
+                        with self.assertRaisesRegex(ValueError, 'changed since you confirmed'):
+                            ui.api_response(path, body, workspace)
+                    records = self.records()
+                    self.assertEqual(len(records), 1)
+                    self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'unsent'))
+                    self.assertIn('Changed failure', records[0]['message'])
+                    self.assertFalse(any(unicodedata.category(ch) in ('Cc', 'Cf', 'Zl', 'Zp')
+                                         for ch in records[0]['message']))
+                    self.assertNotIn('hunter2-not-real', json.dumps(records))
+                    self.assertEqual(dict(ui._review_tokens(workspace).entries), {})
+                    conn.run_write.assert_not_called()
 
 
 class TestLoopReviewAbuse(fixtures.ReplicationCase):

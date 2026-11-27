@@ -250,6 +250,10 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, onScreen, disabled, isProxy, stale, reads.key, filtersKey, digestsCurrent, digestRevision]);
   const digestsReport = digestsBound && digestsBound.bound.key === reads.key ? digestsBound.bound.report : null;
+  // Separate reads may reach different Admin instances even at one endpoint.
+  // Only matching verified identities permit borrowing status context.
+  const sameInstance = !digestsReport?.message && !report?.message && !!digestsReport?.server_identity?.uuid &&
+    !!report?.server_identity?.uuid && digestsReport.server_identity.uuid === report.server_identity.uuid;
   // Changes only on the current report of the connection in use, with its
   // write policy known and not read-only.
   const changeBlock = !isProxy ? "Not a ProxySQL Admin interface."
@@ -295,7 +299,7 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
     : chosenServer ? serverInspector(chosenServer, report, buttons(chosenServer.actions || [], chosenServer.config_key ? { config: chosenServer.config_key } : null, addr(chosenServer)))
       : chosenGroup ? hostgroupInspector(chosenGroup, report)
         : chosenRule ? ruleInspector(chosenRule, report, go, buttons(chosenRule.actions || [], { rule_id: chosenRule.rule_id }, `rule ${chosenRule.rule_id}`))
-          : chosenDigest ? digestInspector(chosenDigest, report, go, tabDigest ? digestsReport : null) : null;
+          : chosenDigest ? digestInspector(chosenDigest, report, go, tabDigest ? digestsReport : null, sameInstance) : null;
 
   const serverColumns: Column<ProxySqlServer>[] = [
     { key: "server", label: "Server", primary: true, flex: true, width: 170, minWidth: 140, sort: (s) => addr(s), render: (s) => addr(s) },
@@ -448,8 +452,8 @@ function ProxySqlView({ connection, disabled, report: bound, onReport, failure, 
               empty={<EmptyState icon="proxy" title="No query rules">Every query goes to its user's default hostgroup.</EmptyState>} />
           ) : <>
             <DigestTools filters={filters} onFilters={onFilters} report={digestsReport || null} proxy={report!} disabled={stale || disabled}
-              unverified={!!digestsReport?.is_proxysql && !!digestsReport?.message} />
-            <DigestSummary report={digestsReport} order={order.word} filters={filters} error={digestReads.error} proxy={report!} />
+              sameInstance={sameInstance} />
+            <DigestSummary report={digestsReport} order={order.word} filters={filters} error={digestReads.error} proxy={report!} sameInstance={sameInstance} />
             {digestReads.error && !digestsCurrent ? (
               <EmptyState icon="proxy" title="Could not read the query digests" action={<ToolbarButton primary disabled={disabled || stale} onClick={() => { void loadDigests(true); }}>Retry</ToolbarButton>}>
                 {digestReads.error}
@@ -736,17 +740,16 @@ function RoutingInfo({ report }: { report: Pick<ProxySqlReport, "routing"> }) {
 const UNVERIFIED_PREFIX = "Unverified read-only report: ";
 const unverifiedDetail = (message: string) =>
   message.startsWith(UNVERIFIED_PREFIX) ? message.slice(UNVERIFIED_PREFIX.length) : message;
+const INSTANCE_CONTEXT_REASON = "The query digests and status reports do not carry the same verified ProxySQL instance UUID. Refresh both reports.";
 
-function digestInspector(d: ProxySqlDigest, report: ProxySqlReport, go: Go, source: ProxySqlDigestsReport | null): InspectorContent {
+function digestInspector(d: ProxySqlDigest, report: ProxySqlReport, go: Go, source: ProxySqlDigestsReport | null, sameInstance: boolean): InspectorContent {
   // *source* is the Query digests read the digest came from (null for a
   // digest of the status report). Separate verified reads can still reach
   // different instances. Only join their evidence when both UUIDs are present
   // and equal; old reports without identity remain readable without the join.
-  const sourceUuid = source?.server_identity?.uuid;
-  const statusUuid = report.server_identity?.uuid;
-  const unverified = !!source && (!!source.message || !sourceUuid || !statusUuid || sourceUuid !== statusUuid);
+  const unverified = !!source && !sameInstance;
   const unverifiedReason = source?.message ? unverifiedDetail(source.message)
-    : "The query digests and status reports do not carry the same verified ProxySQL instance UUID. Refresh both reports.";
+    : INSTANCE_CONTEXT_REASON;
   const r = d.routing;
   const role = (id: number | null) => {
     if (id === null) return "—";
@@ -840,10 +843,10 @@ function filtered(f: DigestFilters) {
 }
 
 /** The orders, Top N and filters of Query digests (each change reads again). */
-function DigestTools({ filters, onFilters, report, proxy, disabled, unverified }: {
+function DigestTools({ filters, onFilters, report, proxy, disabled, sameInstance }: {
   filters: DigestFilters; onFilters: (f: DigestFilters) => void; report: ProxySqlDigestsReport | null; proxy: ProxySqlReport; disabled: boolean;
-  /** An unverified digest read never borrows hostgroup roles from the status report. */
-  unverified: boolean;
+  /** Hostgroup roles can be borrowed only from the same verified instance. */
+  sameInstance: boolean;
 }) {
   const [text, setText] = useState(filters.text || "");
   // The filters as they are when the pause ends: another choice made while
@@ -864,7 +867,7 @@ function DigestTools({ filters, onFilters, report, proxy, disabled, unverified }
   const facets = report?.facets;
   const unavailable = new Map((report?.orders || []).filter((o) => !o.available).map((o) => [o.id, o.why || ""]));
   const groupWord = (id: number) => {
-    if (unverified) return id === -1 ? "-1 (query cache)" : String(id);
+    if (!sameInstance) return id === -1 ? "-1 (query cache)" : String(id);
     const hg = proxy.hostgroups.find((h) => h.id === id);
     const words = hg ? roleText(hg.role, hg.monitor) : "";
     return id === -1 ? "-1 (query cache)" : `${id}${words ? ` (${words})` : ""}`;
@@ -919,8 +922,9 @@ function exactOptions(values: string[], current: string | null): [string, string
 }
 
 /** One line above the digests: what is listed, out of what, since when. */
-function DigestSummary({ report, order, filters, error, proxy }: {
+function DigestSummary({ report, order, filters, error, proxy, sameInstance }: {
   report: ProxySqlDigestsReport | null; order: string; filters: DigestFilters; error: string; proxy: ProxySqlReport;
+  sameInstance: boolean;
 }) {
   if (!report) return null;
   const shown = report.digests.length;
@@ -941,7 +945,10 @@ function DigestSummary({ report, order, filters, error, proxy }: {
       )}
       {mismatches > 0 && <StatusPill tone="watch" label={`${mismatches} on another hostgroup than the rules send to`} />}
       {error && <span className="error">{error}</span>}
-      <InfoPopover label="How routing is evaluated"><RoutingInfo report={report.routing ? report : proxy} /></InfoPopover>
+      <InfoPopover label="How routing is evaluated">
+        {report.routing || sameInstance ? <RoutingInfo report={report.routing ? report : proxy} />
+          : <p>{`Not verified against one ProxySQL instance: ${unverifiedDetail(report.message || INSTANCE_CONTEXT_REASON)}`}</p>}
+      </InfoPopover>
     </div>
   );
 }

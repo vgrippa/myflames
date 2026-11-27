@@ -444,8 +444,12 @@ class TestDigests(Home):
         for sql, flags in batches:
             with self.subTest(sql=sql):
                 statements = [unit['text'].strip().rstrip(';') for unit in dbops.split_statements(sql)]
-                self.assertEqual(len(statements), 3)
-                self.assertEqual((statements[0], statements[-1]), (IDENTITY_SQL, IDENTITY_SQL))
+                if statements[0] == proxysql._ADMIN_VERSION_SQL:
+                    self.assertEqual(statements, [proxysql._ADMIN_VERSION_SQL, IDENTITY_SQL],
+                                     'discover the UUID in the version login, without another login')
+                else:
+                    self.assertEqual(len(statements), 3)
+                    self.assertEqual((statements[0], statements[-1]), (IDENTITY_SQL, IDENTITY_SQL))
                 self.assertIn('--xml', flags)
                 self.assertIn('--skip-reconnect', flags)
         self.assertEqual(conn.writes, [])

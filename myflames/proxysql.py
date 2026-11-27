@@ -202,14 +202,69 @@ class _Reads(object):
         self.absent = set()
         self.uuid = None
         self.identity_problem = None
+        self._admin_rows = None
+        self._admin_error = None
+        self._identity = None
 
     def bind_identity(self):
-        """Choose the UUID before reading any evidence, or leave reads unverified."""
-        rows = self.table(_IDENTITY_SQL, "disk.global_settings")
+        """Read the version and UUID in one login, without retrying failures.
+
+        The optional UUID is last: older Admin versions can fail there while
+        retaining the completed version result. Identification consumes that
+        result instead of opening another login to repeat it.
+        """
+        if self._admin_error is not None:
+            raise self._admin_error
+        if self._identity is not None:
+            return self._identity
+        script = "%s;\n%s;" % (_ADMIN_VERSION_SQL, _IDENTITY_SQL)
+        try:
+            text = self._xml(script)
+        except ConnectorError as exc:
+            from . import dbops, reviewed_writes
+            diagnostic = dbops.target_error_text(exc)
+            code = reviewed_writes.error_number(diagnostic)
+            # A failed login or transport is never evidence of an old Admin
+            # version. In particular, do not try another login after it.
+            if code is None or reviewed_writes.client_error(code) or "access denied" in diagnostic.lower():
+                message = client_compatibility_message(self.conn, exc)
+                self._admin_error = ConnectorError(message) if message else exc
+                raise self._admin_error
+            if isinstance(exc, PartialReadError) and reviewed_writes.failed_line(diagnostic) == 2 \
+                    and not dbops.may_have_run(exc):
+                self._admin_rows, = _evidence_results(exc.stdout, 1)
+                rows = None
+                self.missing.append(("disk.global_settings", _short(exc)))
+                if _NO_SUCH_TABLE in diagnostic:
+                    self.absent.add("disk.global_settings")
+            else:
+                # identify() interprets a server SQL error as not ProxySQL.
+                # Preserve it without repeating the failed version query.
+                self._admin_error = exc
+                return {}
+        else:
+            self._admin_rows, rows = _evidence_results(text, 2)
+        self.statements.append(_ADMIN_VERSION_SQL)
+        if rows is not None:
+            self.statements.append(_IDENTITY_SQL)
         identity = {"uuid": rows[0].get("variable_value")} if rows and len(rows) == 1 else {}
         uuid = identity.get("uuid")
         self.uuid = uuid if _valid_uuid(uuid) else None
+        self._identity = identity
         return identity
+
+    def _xml(self, script):
+        # Some connection wrappers expose no partial-output argument.
+        try:
+            params = inspect.signature(self.conn.run).parameters
+            partial = "retain_partial_stdout" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        except (TypeError, ValueError):
+            partial = True
+        options = {"extra_flags": ["--xml", "--skip-reconnect"]}
+        if partial:
+            options["retain_partial_stdout"] = True
+        return self.conn.run(script, **options)
 
     def _bound_table(self, sql):
         # Each run is a separate client login. Bracket its evidence with
@@ -218,19 +273,7 @@ class _Reads(object):
         script = "%s;\n%s;\n%s;" % (_IDENTITY_SQL, sql.rstrip(";"), _IDENTITY_SQL)
         expected = [{"variable_value": self.uuid}]
         try:
-            # Some connection wrappers expose no partial-output argument.
-            # Successful responses still carry both checks; failures without
-            # a verified prefix are refused rather than treated as absent.
-            try:
-                params = inspect.signature(self.conn.run).parameters
-                partial = "retain_partial_stdout" in params or any(
-                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
-            except (TypeError, ValueError):
-                partial = True
-            options = {"extra_flags": ["--xml", "--skip-reconnect"]}
-            if partial:
-                options["retain_partial_stdout"] = True
-            text = self.conn.run(script, **options)
+            text = self._xml(script)
         except ConnectorError as exc:
             from . import dbops, reviewed_writes
             diagnostic = dbops.target_error_text(exc)
@@ -324,9 +367,11 @@ def identify(conn, reads=None):
     Connection failures raise ConnectorError."""
     if reads is None:
         reads = _Reads(conn)
-        reads.bind_identity()
     try:
-        rows = reads.required(_ADMIN_VERSION_SQL) if reads and reads.uuid is not None else select(conn, _ADMIN_VERSION_SQL)
+        reads.bind_identity()
+        if reads._admin_error is not None:
+            raise reads._admin_error
+        rows = reads._admin_rows
     except ConnectorError as exc:
         if isinstance(exc, _IdentityReadError):
             raise
@@ -334,7 +379,7 @@ def identify(conn, reads=None):
         code = error_number(str(exc))
         # A client error (2000 to 2999), a refused login or no answer is a
         # connection failure; a server's SQL error means "not ProxySQL".
-        if code is None or client_error(code) or "Access denied" in str(exc):
+        if code is None or client_error(code) or "access denied" in str(exc).lower():
             message = client_compatibility_message(conn, exc)
             if message:
                 raise ConnectorError(message) from None
@@ -409,8 +454,8 @@ def _summary(servers):
 def read_status(conn, profiles=(), open_profile=None, reached_host=None, current_profile_id=None, _evidence=None):
     """The ``proxysql-1.0`` report. Read-only; see the module docstring."""
     reads = _Reads(conn)
-    identity = reads.bind_identity()
     ok, detail = identify(conn, reads)
+    identity = reads._identity or {}
     if not ok:
         try:
             from . import readyset

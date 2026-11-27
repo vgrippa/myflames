@@ -869,8 +869,20 @@ try {
     }
   }
   for (const scenario of contextCases) {
-    digestOverride = scenario.digest;
+    // No digest routing context means the summary would otherwise fall back
+    // to the independently read status report. That join also needs the UUID.
+    digestOverride = { ...scenario.digest, routing: null };
     await refreshTo(scenario.status);
+    const filterChoices = await page.$$eval(`${view} .proxysql-digest-filters select option`, (options) =>
+      options.map((option) => option.textContent).join(" "));
+    assert.doesNotMatch(filterChoices, /Group Replication|Galera/, `${scenario.label}: no borrowed filter roles`);
+    assert.match(filterChoices, /32/, `${scenario.label}: digest hostgroup choices stay readable`);
+    await page.click(`${view} .proxysql-digest-summary button[aria-label="How routing is evaluated"]`);
+    const routingPopover = '.popover[role="dialog"][aria-label="How routing is evaluated"]';
+    await page.waitForSelector(routingPopover);
+    assert.match(await page.$eval(routingPopover, (el) => el.textContent),
+      /Not verified against one ProxySQL instance/, `${scenario.label}: no borrowed routing context`);
+    await page.keyboard.press("Escape");
     await selectRow(contextKey);
     const inspector = await h.inspector();
     assert.match(inspector, /Not verified against one ProxySQL instance/, scenario.label);
@@ -884,6 +896,9 @@ try {
   // text and the monitor role for hostgroup 32.
   digestOverride = R["digests-time"];
   await refreshTo(R.lab);
+  assert.match(await page.$$eval(`${view} .proxysql-digest-filters select option`, (options) =>
+    options.map((option) => option.textContent).join(" ")), /Group Replication reader/,
+    "matching UUIDs allow status roles in hostgroup choices");
   await selectRow(contextKey);
   const sameInstanceInspector = await h.inspector();
   assert.doesNotMatch(sameInstanceInspector, /Not verified against one ProxySQL instance/);

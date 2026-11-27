@@ -1220,7 +1220,12 @@ def _replication_preflight_error(audit, state, exc, target, statements=()):
     if audit.pending:
         audit.fail(exc, statements)
     else:
-        text = str(exc) or "Cancelled before sending."
+        from .dbops import redact
+        from .proxysql import _without_controls
+        # Server error text can include terminal escapes, formatting controls
+        # and secrets split by those characters. Redact both representations.
+        text = _without_controls(redact(str(exc), state["password"]))
+        text = redact(text, _without_controls(state["password"])) or "Cancelled before sending."
         audit.outcome(list(statements), "refused", outcome="unsent", error=text,
                       message="Nothing was sent: %s" % text, target=target)
 
@@ -1380,6 +1385,9 @@ def _replication_review_response(payload, workspace, loop=False):
             if _review_identity(connection, workspace) != identity:
                 raise ValueError("The connection's write policy changed. Nothing was sent; review again.")
         return {"review_token": _review_tokens(workspace).issue(operation, identity, details)}
+    except read_cancel.CancelledRead as exc:
+        _replication_preflight_error(audit, state, exc, target, tagged)
+        raise
     except (Exception, KeyboardInterrupt) as exc:
         _replication_preflight_error(audit, state, exc, target, tagged)
         _reraise_redacted(exc, state["password"])
