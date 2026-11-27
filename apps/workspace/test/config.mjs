@@ -6,7 +6,6 @@ import { objectAuditFixture, assertObjectHistory } from "./object-changes-fixtur
 // Single-variable sheets retain engine-specific modes, exact reviewed facts,
 // NULL and Session SQL handoff, declined audits and connection binding.
 import assert from "node:assert/strict";
-import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { assertPrivilege, privilegeAnswer, load, open, pause } from "./perf-harness.mjs";
 
@@ -1537,8 +1536,6 @@ try {
   await pause(500);
   assert.equal(planned.length, beforeSecretPlans, "opening a hidden value sends no replacement plan");
   // Keep the untouched secret sheet visible in both appearances and window sizes.
-  const sensitiveShots = new URL("../../../local/vsql-screens/", import.meta.url);
-  await mkdir(sensitiveShots, { recursive: true });
   for (const appearance of ["light", "dark"]) for (const width of [1440, 720]) {
     await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: appearance }]);
     await page.setViewport({ width, height: width === 720 ? 600 : 1000 });
@@ -1549,7 +1546,6 @@ try {
     }), true, `sensitive hint fits at ${appearance} ${width}`);
     const name = `change-sheet-sensitive-${appearance}-${width}.png`;
     await page.screenshot({ path: path.join(h.shots, name) });
-    await copyFile(path.join(h.shots, name), new URL(name, sensitiveShots));
   }
   await page.setViewport({ width: 1440, height: 1000 });
   await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "light" }]);
@@ -1612,6 +1608,10 @@ try {
   assert.equal(planned.at(-1).value, "", "explicitly clearing a typed secret remains a reviewable change");
   await closeReview();
   planReply = null;
+  // Leave edit mode with nothing pending, as later steps select rows to open the inspector.
+  await page.click(`${view} [aria-label="Discard ${secretName}"]`);
+  await h.button("Cancel", `${view} .toolbar-controls `);
+  await page.waitForFunction(v => !document.querySelector(`${v} [id^="parameter-value-"]`), {}, view);
   const saved = await h.savedSlow(s => s.kind === "config");
   assert.equal(JSON.stringify(saved.state).includes("config-1.0"), false, "reports are not saved");
   assert.equal(JSON.stringify(saved.state).includes("variable-plan"), false, "plans are not saved");
