@@ -22,7 +22,7 @@ async function lazyPlanRegressions(browser, launchUrl) {
   const saveButton = '.topbar button[aria-label="Save investigation"]';
   const sheet = 'dialog.notebook-sheet[open]';
   const chunkOf = (request) => new URL(request.url()).pathname
-    .match(/^\/assets\/(PlanScreen|PlanChart|ContextPanel)-[^/]+\.js$/)?.[1];
+    .match(/^\/assets\/(PlanScreen|PlanChart|ContextPanel|ImportPlanDialog)-[^/]+\.js$/)?.[1];
   async function scenario({ plan = true, fail = [], hold = [], stripChartData = false, renderHtml = "" }, check) {
     const page = await browser.newPage();
     const failed = new Set(fail), delayed = new Set(hold), requested = new Set();
@@ -290,7 +290,75 @@ async function lazyPlanRegressions(browser, launchUrl) {
     assert.deepEqual(clip.pwCopy, { prevented: false, plain: "" });
     assert.deepEqual(clip.violations, []);
   });
-  console.log("Lazy Plans chunk failures, modal ownership and loading-area drops passed.");
+  // Import opens only after its form is ready. Escape cancels a pending open,
+  // and resolving the chunk later cannot steal focus or reopen the dialog.
+  await scenario({ hold: ["ImportPlanDialog"] }, async ({ page, chunkRequested, release }) => {
+    await chunkRequested("ImportPlanDialog");
+    await page.click('.topbar .plans-import');
+    await page.waitForFunction(() => [...document.querySelectorAll('#main [role="status"]')]
+      .some((el) => el.textContent.includes("Opening Import plan")));
+    assert.equal(await page.$('dialog.import-dialog'), null);
+    assert.equal(await page.$('.app > .view-status'), null, "loading never adds a column to the shell");
+    await page.keyboard.press("Escape");
+    await release("ImportPlanDialog");
+    await page.waitForNetworkIdle();
+    assert.equal(await page.$('dialog.import-dialog'), null, "Escape cancels the opening, including after the chunk arrives");
+    assert.equal(await page.$eval('.topbar .plans-import', (el) => document.activeElement === el), true);
+    await page.click('.topbar .plans-import');
+    await page.waitForSelector('dialog.import-dialog[open]');
+    assert.ok(await page.evaluate(() => document.querySelector('.import-dialog').contains(document.activeElement)));
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector('dialog.import-dialog'));
+    assert.equal(await page.$eval('.topbar .plans-import', (el) => document.activeElement === el), true);
+  });
+  // A dialog that opens while the Import chunk loads wins the screen: the
+  // pending open is cancelled instead of closing the newer notebook.
+  await scenario({ hold: ["ImportPlanDialog"] }, async ({ page, chunkRequested, release, expanded }) => {
+    await chunkRequested("ImportPlanDialog");
+    await page.click('.topbar .plans-import');
+    await page.waitForFunction(() => [...document.querySelectorAll('#main [role="status"]')]
+      .some((el) => el.textContent.includes("Opening Import plan")));
+    await page.click(saveButton);
+    await page.waitForSelector(sheet);
+    assert.equal(await expanded(), "true");
+    await release("ImportPlanDialog");
+    await page.waitForNetworkIdle();
+    assert.equal(await page.$$eval('dialog[open]', (els) => els.length), 1, "the notebook stays the only dialog");
+    assert.equal(await page.$('dialog.import-dialog'), null, "the pending Import open does not interrupt the notebook");
+    assert.equal(await page.$eval('.investigation-notes textarea', (el) => el.value), "Keep these notes");
+    await page.waitForFunction(() => ![...document.querySelectorAll('#main [role="status"]')]
+      .some((el) => el.textContent.includes("Opening Import plan")));
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector('dialog.notebook-sheet'));
+    assert.equal(await page.$('dialog.import-dialog'), null, "closing the notebook does not replay the pending open");
+    // A later press opens Import normally: the cancellation left no state.
+    await page.click('.topbar .plans-import');
+    await page.waitForSelector('dialog.import-dialog[open]');
+  });
+  await scenario({ fail: ["ImportPlanDialog"] }, async ({ page, expanded, failed }) => {
+    await page.click('.topbar .plans-import');
+    await page.waitForSelector('.import-open-error[role="alert"]');
+    assert.equal(await page.$('dialog.import-dialog'), null);
+    assert.equal(await page.$('.app > .view-status'), null, "a failed import never replaces the modal with a shell column");
+    await page.click(saveButton);
+    await page.waitForSelector(sheet);
+    assert.equal(await expanded(), "true", "a failed Import does not suppress Save investigation");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector('dialog.notebook-sheet'));
+    await page.locator('.import-open-error button ::-p-text(Dismiss)').click();
+    assert.equal(await page.$('.import-open-error'), null);
+    assert.equal(await page.$eval('.topbar .plans-import', (el) => document.activeElement === el), true);
+    await page.click('.topbar .plans-import');
+    await page.waitForSelector('.import-open-error[role="alert"]');
+    failed.delete("ImportPlanDialog");
+    await page.locator('.import-open-error button ::-p-text(Retry)').click();
+    await page.waitForSelector('dialog.import-dialog[open]');
+    assert.equal(await page.$('.import-open-error'), null, "Retry loads a fresh chunk after the original module fetch failed");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector('dialog.import-dialog'));
+    assert.equal(await page.$eval('.topbar .plans-import', (el) => document.activeElement === el), true);
+  });
+  console.log("Lazy Plans and Import failures, retries, modal ownership and loading-area drops passed.");
 }
 
 const server = spawn(

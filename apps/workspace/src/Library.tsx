@@ -3,7 +3,8 @@ import {
   api, download, getInvestigation, listInvestigations, safePreview,
   type Bundle, type Comparison, type InvestigationCursor, type InvestigationEvidence, type InvestigationSummary,
 } from "./api";
-import { Icon, ImportDialog } from "./components";
+import { Icon } from "./components";
+import { ImportDialog } from "./ImportPlanDialog";
 import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import {
   ActionButton, ActionStatus, ConfirmSheet, EmptyState, GroupedList, GroupedRow, Pill,
