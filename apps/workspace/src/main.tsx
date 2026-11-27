@@ -3507,7 +3507,8 @@ function App() {
                   failure={clusterFailure} onFailure={failCluster}
                   onOpenProxySql={() => go("proxysql")} onOpenReadyset={() => go("readyset")}
                   profiles={profiles} onSwitchConnection={switchConnection}
-                  onEditGroup={setGroupEditor} groupRevision={groupRevision} />
+                  onEditGroup={setGroupEditor} groupRevision={groupRevision}
+                  onZoomCluster={(id) => chooseMember("cluster", id)} />
               </ColumnStoreContext.Provider>
               </ViewOnScreenContext.Provider>
               </WritePolicyContext.Provider>

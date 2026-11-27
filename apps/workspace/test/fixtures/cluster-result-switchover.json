@@ -36,7 +36,9 @@
   "component": null,
   "topology": "single_primary",
   "desync": null,
-  "local_state": null
+  "local_state": null,
+  "cs_present": false,
+  "cs_metadata_server_uuid": "1062e681-cc92-11f1-83dd-b6daec340a27"
  },
  "undo": "SELECT group_replication_set_as_primary('10a527c5-cc92-11f1-956e-2a01c1402350'); makes mf-ic-2:3306 the primary again.",
  "next": null,

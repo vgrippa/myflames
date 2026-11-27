@@ -634,25 +634,16 @@
   white-space: nowrap;
 }
 
-/* ---- InnoDB ClusterSet band ---------------------------------------------- */
+/* ---- InnoDB ClusterSet map pieces ----------------------------------------- */
 
-/* Above the group: the primary cluster on the left, an arrow per replica
-   cluster (clusterset_replication flows that way), and the replica clusters.
-   An invalidated cluster: a dashed red edge, the word and the triangle, and a
+/* The primary cluster on the left, an arrow per replica cluster
+   (clusterset_replication flows that way), and the replica clusters. An
+   invalidated cluster: a dashed red edge, the word and the triangle, and a
    broken arrow, never color alone. */
-.clusterset-band {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  width: max-content;
-  min-width: 100%;
-  margin-bottom: var(--space-5);
-  padding-bottom: var(--space-4);
-  border-bottom: 1px dashed var(--line);
-}
-
 .clusterset-copy {
   color: var(--ink-muted);
+  font-size: inherit;
+  line-height: inherit;
   font-weight: 400;
 }
 
@@ -745,10 +736,6 @@
   border-color: var(--accent);
 }
 
-.clusterset-use {
-  font-size: var(--text-xs);
-}
-
 /* The arrow from the primary cluster to a replica cluster, with its label
    above the line. */
 .clusterset-link {
@@ -799,3 +786,184 @@
 
 .clusterset-link.is-problem .clusterset-link-label { color: var(--danger-text); }
 .clusterset-link.is-watch .clusterset-link-label { color: var(--warn-text); }
+
+/* ---- Zoomable ClusterSet map (ClusterSetMap) ------------------------------- */
+
+/* The map wraps instead of running off the right edge at the 720 px minimum
+   window: the arrow row folds under the primary cluster's card. */
+.clusterset-map {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.clusterset-map .clusterset-row {
+  flex-wrap: wrap;
+  row-gap: var(--space-3);
+}
+
+.clusterset-setline {
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+.clusterset-setline > .cluster-row-label {
+  margin-bottom: 0;
+  margin-inline-end: var(--space-2);
+}
+
+.clusterset-setline > .cluster-mark,
+.clusterset-setline > .cluster-finding-toggle {
+  margin-inline-end: var(--space-2);
+}
+
+.clusterset-setline > .clusterset-reason-text:not([hidden]) {
+  display: block;
+  margin-top: var(--space-1);
+}
+
+.clusterset-read-on {
+  color: var(--ink-muted);
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.clusterset-cluster.is-card {
+  cursor: pointer;
+}
+
+.clusterset-cluster.is-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.clusterset-status-word {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+/* The Shell term is secondary text beside the plain-words status. */
+.clusterset-shell {
+  color: var(--ink-faint);
+  font-size: var(--text-xs);
+}
+
+.clusterset-reason {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.clusterset-reason-text {
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+.clusterset-open {
+  margin-top: var(--space-1);
+}
+
+/* The breadcrumb over a zoomed cluster: the set, the cluster, the way back. */
+.clusterset-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.clusterset-crumb {
+  font-weight: 600;
+}
+
+.clusterset-zoom-out kbd {
+  margin-left: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+}
+
+.clusterset-pending {
+  color: var(--ink-muted);
+}
+
+.clusterset-metadata-only {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.clusterset-plain {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-sm);
+}
+
+/* Zooming in or out is a short scale and fade; the system's reduced motion
+   setting makes it instant. */
+.clusterset-zoom {
+  animation: clusterset-zoom 200ms ease-out;
+  transform-origin: 50% 0;
+}
+
+@keyframes clusterset-zoom {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clusterset-zoom {
+    animation: none;
+  }
+}
+
+/* ClusterSet action parameter sheets (ClusterSetActionForm.tsx): the choice
+   or form filled before the review sheet (removal variant, create replica
+   target/name/recovery, routing option and value). */
+.clusterset-form .clusterset-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.clusterset-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.clusterset-choice .button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.clusterset-choice .button[aria-disabled="true"] {
+  opacity: 0.6;
+}
+
+.clusterset-form .clusterset-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  border: 0;
+  padding: 0;
+}
+
+.clusterset-form .clusterset-field > span,
+.clusterset-form .clusterset-field > legend {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink-muted);
+  padding: 0;
+}
+
+.clusterset-form .clusterset-field input {
+  font: inherit;
+}

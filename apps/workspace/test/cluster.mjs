@@ -15,9 +15,14 @@
 // and the 720 px window.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-helpers.mjs";
+import { fileURLToPath } from "node:url";
+import { chooseConnection, connectionOption, openConnectionPicker, openRefreshMenu } from "./chrome-helpers.mjs";
 import { load, open, pause } from "./perf-harness.mjs";
+
+const csShots = fileURLToPath(new URL("../../../local/cs-shots/", import.meta.url));
+mkdirSync(csShots, { recursive: true });
 
 const R = {};
 for (const name of ["galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two-of-three", "galera-11.8-non-primary", "pxc-8.4-healthy",
@@ -26,19 +31,52 @@ for (const name of ["galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two
   "mariadb-11.8-standalone", "pxc-8.4-two-of-three", "galera-11.8-two-nodes", "galera-11.8-partial-seeds", "galera-mysql-8.4-healthy",
   "galera-11.8-wsrep-off", "ic-8.4-read-replica", "ic-8.4-read-replica-local", "plan-switchover", "result-switchover",
   "progress-sending", "ic-8.4-clusterset-primary", "ic-8.4-clusterset-replica", "ic-8.4-clusterset-replica-channel-off",
-  "ic-8.4-clusterset-invalidated", "ic-8.4-read-replica-clusterset"]) R[name] = await load(`cluster-${name}.json`);
+  "ic-8.4-clusterset-invalidated", "ic-8.4-read-replica-clusterset",
+  "ic-8.4-clusterset-primary-fenced", "ic-8.4-clusterset-primary-no-quorum"]) R[name] = await load(`cluster-${name}.json`);
 
 const view = '.server-view[data-view="cluster"]';
 const nav = '.main-nav button[data-place="cluster"]';
 const plans = [];
 const sends = [];
 const declined = [];
+const connectCalls = [];
 let planDelay = 0;
 const h = await open("/api/live/cluster", "cluster", {
-  "/api/live/cluster/plan": (body) => { plans.push(body); return { status: 200, body: R["plan-switchover"], delay: planDelay }; },
+  "/api/live/cluster/plan": (body) => {
+    plans.push(body);
+    const plan = body.action === "check_clusterset" ? {
+      ...R["plan-switchover"], action: "check_clusterset", title: "Check ClusterSet with MySQL Shell?", confirm_label: "Check ClusterSet",
+      typed_guard: null, review_token: "check-token", statements: ["print(JSON.stringify(myflamesClusterSet.status({extended: 1}), null, 2));"],
+      policy: { action: "allow", tone: "danger", title: "Read", text: "This check only reads.", connection_type: "production", read_only: true },
+    } : R["plan-switchover"];
+    return { status: 200, body: plan, delay: planDelay };
+  },
   "/api/live/cluster/action": (body) => { sends.push(body); return { status: 200, body: R["result-switchover"], delay: 1500 }; },
   "/api/live/action/progress": () => ({ status: 200, body: R["progress-sending"] }),
   "/api/audit/declined": (body) => { declined.push(body); return { status: 200, body: { audit_id: "x", status: "declined" } }; },
+  // The ClusterSet fixture's routes name the members of group "production":
+  // "local" (Local member, mf-ic-1) and "remote" (DR member, mf-dr-1).
+  "/api/connect": (body) => {
+    connectCalls.push(body);
+    const name = typeof body.group_name === "string" ? body.group_name.trim() : "";
+    if (name !== "production") return { status: 400, body: { error: "No saved connection belongs to this connection group." } };
+    const member = (id, profileName, host, role) => ({
+      profile_id: id, profile_name: profileName, host, port: 3306,
+      safety: { type: "production", read_only: false },
+      server_uuid: null, role, state: null, reachable: true,
+    });
+    return { status: 200, body: {
+      version: "8.4.3", engine: "mysql", flavor: "mysql", product: "MySQL",
+      databases: [], schemas: [],
+      group_connection: {
+        group_name: "production",
+        effective_safety: { type: "production", read_only: false },
+        active_member_profile_id: "local",
+        primary_profile_id: "local",
+        members: [member("local", "Local member", "mf-ic-1", "PRIMARY"), member("remote", "DR member", "mf-dr-1", "SECONDARY")],
+      },
+    } };
+  },
 });
 const { page, state } = h;
 const api = (route, body) =>
@@ -174,7 +212,7 @@ async function refreshTo(report, { preservePopover = false } = {}) {
   await page.waitForFunction((n, sel) => !document.querySelector(`${sel} .spinner`), {}, before, view);
   for (let i = 0; i < 50 && state.seen.length === before; i++) await pause(20);
   assert.equal(state.seen.length, before + 1, "Refresh sends one read");
-  await page.waitForFunction((sel) => !document.querySelector(`${sel} .spinner`) && document.querySelector(`${sel} .summary-line`), {}, view);
+  await page.waitForFunction((sel) => !document.querySelector(`${sel} .spinner`) && document.querySelector(`${sel} .summary-line, ${sel} .clusterset-map`), {}, view);
   await pause(150);
 }
 async function tab(label) {
@@ -191,6 +229,11 @@ try {
   await api("/api/profiles/save", { value: { name: "Node A", host: "node-a.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await api("/api/profiles/save", { value: { name: "Solo", host: "solo.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
   await api("/api/profiles/save", { value: { name: "cluster-galera-2", host: "192.168.80.3", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "" } });
+  // A saved connection at a drcluster member's address, in the group the
+  // ClusterSet fixture's routes name: the metadata-only zoom's fix names it
+  // ("Use DR member"), never a new connection, and the group opens as one
+  // Group connection for the routed zoom.
+  await api("/api/profiles/save", { value: { name: "DR member", host: "mf-dr-1", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", group: "production" } });
   await api("/api/profiles/save", { value: { name: "Read-only", host: "readonly.test", port: 3306, user: "dba", database: "", ssl_mode: "PREFERRED", ssl_ca: "", read_only: true } });
   await page.reload({ waitUntil: "networkidle0" });
 
@@ -896,64 +939,981 @@ try {
   assert.match(quorumTile.title, /^A read replica is not a group member/);
   assert.equal(await page.$eval(nav, (b) => b.dataset.muted || ""), "");
 
-  // InnoDB ClusterSet: a band above the group, the primary cluster first,
-  // an arrow to each replica cluster, the other clusters' instances from the
-  // shared metadata (never drawn as members), and the state as words.
+  // InnoDB ClusterSet: the Topology tab opens on the zoomable set map. One
+  // card per cluster: role, the status word with the Shell term as secondary
+  // text, member count and primary when read, and how it was read; an arrow
+  // from the primary cluster to each replica carries the channel state.
+  const csShot = (file) => page.screenshot({ path: path.join(csShots, file), fullPage: false });
+  const csCards = () => page.$$eval(`${view} .clusterset-map .clusterset-cluster`, (els) => els.map((e) => ({
+    name: e.dataset.cluster, local: e.classList.contains("is-local"), text: (e.innerText || e.textContent).replace(/\s+/g, " ") })));
+  const openCluster = async (name, how) => {
+    const sel = `${view} .clusterset-cluster[data-cluster="${name}"]`;
+    if (how === "button") await page.click(`${sel} .clusterset-open`);
+    else if (how === "double") await page.evaluate((s) => document.querySelector(s)
+      .dispatchEvent(new MouseEvent("dblclick", { bubbles: true })), sel);
+    else { await page.focus(sel); await page.keyboard.press("Enter"); }
+    await page.waitForSelector(`${view} .clusterset-breadcrumb`, { visible: true });
+    await pause(250);
+  };
+  const zoomOut = async (how) => {
+    if (how === "button") await page.click(`${view} .clusterset-zoom-out`);
+    else { await page.keyboard.down(MOD); await page.keyboard.press("ArrowUp"); await page.keyboard.up(MOD); await pause(100); }
+    await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+    await pause(250);
+  };
+  const pressZoomOut = async () => {
+    await page.keyboard.down(MOD); await page.keyboard.press("ArrowUp"); await page.keyboard.up(MOD);
+    await pause(100);
+  };
+  const waitForZoomRead = async (name) => {
+    await page.waitForFunction((sel, cluster) => !document.querySelector(`${sel} .clusterset-pending`)
+      && document.querySelector(`${sel} .summary-line`)?.textContent.includes(`InnoDB Cluster ${cluster}`), {}, view, name);
+  };
+  const holdZoomRead = (body, status = 200) => {
+    let release;
+    const wait = new Promise((resolve) => { release = resolve; });
+    state.queue.push({ status, body, wait });
+    return release;
+  };
+  // Every regenerated scenario carries the complete backend catalog. Removal
+  // has two catalog variants but one visible choice button: nine controls.
+  const setFamilies = ["set_primary_cluster", "force_primary_cluster", "rejoin_cluster", "repair_cluster",
+    "remove_cluster", "remove_cluster_keep", "set_routing_option", "create_replica_cluster",
+    "dissolve_clusterset", "check_clusterset"];
+  for (const [name, report] of Object.entries(R).filter(([, r]) => r.clusterset)) {
+    const entries = report.actions.filter((a) => a.scope === "clusterset");
+    assert.deepEqual(entries.map((a) => a.id.split(":")[0]), setFamilies, `${name}: all catalog families`);
+    assert.equal(new Set(report.actions.map((a) => a.id)).size, report.actions.length, `${name}: unique action IDs`);
+    assert.ok(entries.every((a) => a.enabled || (a.why_not && a.fix)), `${name}: every disabled entry explains why and how to proceed`);
+    await refreshTo(report);
+    const controls = await page.$$eval(`${view} .cluster-actions[aria-label="ClusterSet changes"] .review-actions > button`,
+      (buttons) => buttons.map((b) => ({ label: b.textContent.trim(), disabled: b.getAttribute("aria-disabled") === "true",
+        reason: document.getElementById(b.getAttribute("aria-describedby") || "")?.textContent || "" })));
+    // This connection is individual (no group): an action routed through
+    // another member's saved connection is disabled with the reason instead of
+    // being planned without its route (ClusterPlace.gateUngroupedRoutes).
+    const peerReadFamilies = new Set(["set_primary_cluster", "force_primary_cluster", "rejoin_cluster", "repair_cluster",
+      "remove_cluster", "remove_cluster_keep", "create_replica_cluster"]);
+    const gated = (a) => a.enabled && (peerReadFamilies.has(a.id.split(":")[0]) || (!a.target?.self && a.target?.profile_id))
+      ? { ...a, enabled: false, why_not: "only an open Group connection may use" } : a;
+    const gatedEntries = entries.map(gated);
+    const expected = gatedEntries.filter((a) => !a.id.startsWith("remove_cluster_keep:")).map((a) => {
+      if (!a.id.startsWith("remove_cluster:")) return a;
+      const pair = gatedEntries.filter((e) => e.id === a.id || e.id === a.id.replace("remove_cluster:", "remove_cluster_keep:"));
+      return { ...a, label: `Remove ${a.cluster_name} from the ClusterSet…`, enabled: pair.some((e) => e.enabled) };
+    });
+    assert.equal(controls.length, 9, `${name}: all nine set controls render`);
+    assert.deepEqual(controls.map((b) => b.label), expected.map((a) => a.label), `${name}: real catalog labels`);
+    for (const [i, action] of expected.entries()) {
+      assert.equal(controls[i].disabled, !action.enabled, `${name}: ${action.id} eligibility`);
+      if (!action.enabled) assert.ok(controls[i].reason.includes(action.why_not), `${name}: ${action.id} retains its disabled reason`);
+    }
+  }
+
   await refreshTo(R["ic-8.4-clusterset-primary"]);
-  await page.waitForSelector(`${view} .clusterset-band`, { visible: true });
-  assert.match(await h.text(`${view} .clusterset-band .cluster-row-label`), /ClusterSet mfcs/);
-  const boxes = await page.$$eval(`${view} .clusterset-cluster`, (els) => els.map((e) => ({
-    name: e.dataset.cluster, local: e.classList.contains("is-local"), text: e.textContent.replace(/\s+/g, " ") })));
-  assert.deepEqual(boxes.map((b) => [b.name, b.local]), [["mfcluster", true], ["drcluster", false]]);
-  assert.match(boxes[0].text, /Primary cluster.*This cluster/);
-  assert.match(boxes[1].text, /Replica cluster.*mf-dr-1:3306.*mf-dr-2:3306.*mf-dr-3:3306/);
-  assert.equal(await page.$$eval(`${view} .cluster-group .cluster-card`, (els) => els.length), 3, "other clusters are not members");
-  assert.match(await h.text(`${view} .clusterset-link-label`), /^clusterset_replication$/);
-  // The ClusterSet actions are cluster-wide, on the overview band (MySQL Shell
-  // installed): the named replica cluster gets its own enabled button, the bare
-  // placeholder keeps its reason.
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  const setLine = await h.text(`${view} .clusterset-setline`);
+  assert.match(setLine, /ClusterSet mfcs/);
+  assert.match(setLine, /Healthy/);
+  assert.match(setLine, /Read on Local member \(this connection\)/);
+  let csCardList = await csCards();
+  assert.deepEqual(csCardList.map((c) => [c.name, c.local]), [["mfcluster", true], ["drcluster", false]]);
+  assert.match(csCardList[0].text, /primary cluster/i);
+  assert.match(csCardList[0].text, /OK OK/, `the status word with the Shell term: ${csCardList[0].text}`);
+  assert.match(csCardList[0].text, /3 members · primary mf-ic-1:3306/);
+  assert.match(csCardList[0].text, /This connection/);
+  assert.match(csCardList[1].text, /replica cluster/i);
+  assert.match(csCardList[1].text, /3 members · primary mf-dr-1:3306/);
+  assert.match(csCardList[1].text, /Read through DR member/);
+  assert.match(csCardList[1].text, /Not checked/,
+    "running replica threads do not establish Shell's GTID consistency verdict");
+  assert.equal(await page.$(`${view} .clusterset-cluster[data-cluster="drcluster"] .clusterset-shell`), null,
+    "an unchecked replica has no Shell OK term");
+  assert.match(await page.$eval(`${view} .clusterset-cluster[data-cluster="drcluster"] .cluster-mark`,
+    (e) => e.className), /is-unknown/, "an unchecked replica never gets a green status mark");
+  assert.match(await h.text(`${view} .clusterset-link-label`), /clusterset_replication · receiver ON · applier ON/);
+  // The set status reason is on demand, the Findings Details pattern.
+  const setReason = `${view} .clusterset-setline .clusterset-reason-text`;
+  assert.equal(await page.$eval(setReason, (e) => e.hidden), true, "the set status reason is on demand");
+  await page.click(`${view} .clusterset-setline .cluster-finding-toggle`);
+  assert.equal(await page.$eval(setReason, (e) => e.hidden), false);
+  assert.match(await page.$eval(setReason, (e) => e.textContent), /Every cluster was read with quorum/);
+  await page.click(`${view} .clusterset-setline .cluster-finding-toggle`);
+  // The set level leads with the ClusterSet (set status line, set changes,
+  // map): the local cluster's own summary (status line, Quorum/Members/This
+  // member/Mode cards, group line) renders only when zoomed into it.
+  assert.equal(await page.$(`${view} .summary-line`), null, "no cluster status line at the ClusterSet level");
+  assert.equal(await page.$(`${view} .cluster-tiles`), null, "no cluster summary cards at the ClusterSet level");
+  assert.equal(await page.$(`${view} .cluster-identity`), null, "no group line at the ClusterSet level");
+  assert.ok(await page.$(`${view} .clusterset-setline`), "the ClusterSet header leads the set level");
+  const setFirst = await page.evaluate((sel) => {
+    const main = document.querySelector(`${sel} .view-main`);
+    const first = main.querySelector(".clusterset-setline, .summary-line, .cluster-tiles, .cluster-identity");
+    return first ? first.className : "";
+  }, view);
+  assert.match(setFirst, /clusterset-setline/, "the ClusterSet header comes before any cluster summary");
+  // The ClusterSet changes sit above the map: the named replica cluster gets
+  // its own button (disabled without group peer reads), and the bare
+  // placeholder keeps its original reason.
   const csAction = R["ic-8.4-clusterset-primary"].actions.find((a) => a.id === "set_primary_cluster:drcluster");
-  assert.ok(csAction && csAction.enabled, "the named ClusterSet action is an overview action, enabled");
+  assert.ok(csAction && csAction.enabled, "the named ClusterSet action is enabled");
   const csButtons = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
     label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true",
     reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })));
-  assert.equal(csButtons.find((b) => b.label === "Make drcluster the primary cluster…").disabled, false);
+  assert.equal(csButtons.find((b) => b.label === "Make drcluster the primary cluster…").disabled, true);
+  assert.match(csButtons.find((b) => b.label === "Make drcluster the primary cluster…").reason, /reads from other ClusterSet members/);
   const rejoinPlaceholder = csButtons.find((b) => b.label === "Rejoin cluster to the ClusterSet…");
   assert.equal(rejoinPlaceholder.disabled, true);
-  assert.match(rejoinPlaceholder.reason, /No invalidated cluster is recorded in this ClusterSet\./);
-  await shot("cluster-clusterset-primary-1440.png");
-  // From a replica cluster: its copy of the metadata, the channel on the arrow, the source marked.
+  assert.match(rejoinPlaceholder.reason, /No eligible target cluster is recorded in this ClusterSet\./);
+  // The zoom transition is a short scale and fade; reduced motion skips it.
+  const zoomAnim = () => page.$eval(`${view} .clusterset-zoom`, (e) => {
+    const style = getComputedStyle(e);
+    return { name: style.animationName, ms: parseFloat(style.animationDuration) * 1000 };
+  });
+  assert.equal((await zoomAnim()).name, "clusterset-zoom");
+  assert.ok((await zoomAnim()).ms < 250, `the transition stays under 250 ms: ${(await zoomAnim()).ms}`);
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "reduce" }]);
+  assert.equal((await zoomAnim()).name, "none", "reduced motion skips the zoom transition");
+  await page.emulateMediaFeatures([{ name: "prefers-reduced-motion", value: "no-preference" }]);
+
+  // Zoom into the local cluster with the Open button: today's cluster view,
+  // only this cluster's changes, and the breadcrumb with its shortcut.
+  await openCluster("mfcluster", "button");
+  assert.match(await h.text(`${view} .clusterset-crumb`), /ClusterSet mfcs › mfcluster/);
+  assert.match(await h.text(`${view} .clusterset-zoom-out`), /Zoom out/);
+  assert.equal(await h.text(`${view} .clusterset-zoom-out kbd`), process.platform === "darwin" ? "⌘↑" : "Ctrl+↑",
+    "the Zoom out button shows the shortcut");
+  // The zoomed cluster's own summary (status line and cards) returns.
+  assert.match((await visible(`${view} .summary-line`))[0], /InnoDB Cluster mfcluster/, "the zoomed cluster's status line returns");
+  assert.deepEqual(await visible(`${view} .tile-label`), ["Quorum", "Members", "This member", "Mode"], "the zoomed cluster's cards return");
+  assert.equal(await page.$$eval(`${view} .cluster-group .cluster-card`, (els) => els.length), 3, "the local cluster zooms into today's cluster view");
+  const zoomedActions = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => e.textContent.trim()));
+  assert.deepEqual(zoomedActions, ["Switch to single-primary…", "Switch to multi-primary…"], "the set changes stay on the map");
+  // Members and Routers tabs follow the zoomed cluster.
+  await tab("Members");
+  assert.equal((await visible(`${view} tbody tr`)).length, 3, "the Members tab shows the zoomed cluster");
+  await zoomOut("button");
+  assert.equal(await page.$eval(`${view} .segmented [aria-pressed="true"]`, (b) => b.textContent.trim()), "Topology",
+    "zoom out from Members returns to the Topology map");
+  await openCluster("mfcluster", "button");
+  await tab("Routers");
+  assert.match((await visible(`${view} tbody tr`))[0], /mf-ic-router/);
+  await zoomOut("keyboard");
+  assert.equal(await page.$eval(`${view} .segmented [aria-pressed="true"]`, (b) => b.textContent.trim()), "Topology",
+    "the shortcut from Routers returns to the Topology map");
+  await openCluster("mfcluster", "button");
+  // The selection survives a zoom out and back in (the inspector is the
+  // place's full-width detail, so it closes first, as elsewhere).
+  const secondMember = R["ic-8.4-clusterset-primary"].members[1];
+  await page.click(`${view} .cluster-card[data-row-key="${secondMember.key}"]`);
+  await page.waitForSelector(".view-inspector .inspector-title");
+  assert.match(await h.inspector(), new RegExp(secondMember.name.replace(/[.:]/g, "\\$&")));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  await zoomOut("button");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-cluster")), "mfcluster",
+    "zoom out focuses the cluster's card on the map");
+  assert.equal(await page.$$eval(`${view} .cluster-group .cluster-card`, (els) => els.length), 0, "the map replaces the member cards");
+  await openCluster("mfcluster", "double");
+  assert.equal(await page.$eval(`${view} .cluster-card[data-row-key="${secondMember.key}"]`, (e) => e.getAttribute("aria-pressed")), "true",
+    "the selection is kept across zooming");
+  // Enter on a focused card zooms in; the shortcut on the Zoom out button returns.
+  await zoomOut("button");
+  await openCluster("mfcluster", "enter");
+  await zoomOut("keyboard");
+  assert.equal(await page.$(`${view} .summary-line`), null, "back at the set level the cluster summary is gone again");
+  // Cmd/Ctrl+0 is the View menu's Actual Size: it never zooms out. Nor does
+  // the zoom-out shortcut fire while a text field has focus.
+  await openCluster("mfcluster", "button");
+  await page.keyboard.down(MOD); await page.keyboard.press("0"); await page.keyboard.up(MOD);
+  await pause(150);
+  assert.ok(await page.$(`${view} .clusterset-breadcrumb`), "Cmd/Ctrl+0 stays zoomed (Actual Size belongs to the View menu)");
+  await page.evaluate((sel) => {
+    const input = document.createElement("input");
+    input.type = "text";
+    document.querySelector(`${sel} .clusterset-breadcrumb`).append(input);
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", metaKey: true, ctrlKey: true, bubbles: true }));
+    input.remove();
+  }, view);
+  await pause(100);
+  assert.ok(await page.$(`${view} .clusterset-breadcrumb`), "the zoom-out shortcut is ignored in a text field");
+  // Native dialogs and modal sheets own their keys, including when focus is
+  // on a button rather than a text field. Hidden dialogs do not block zoom.
+  for (const native of [true, false]) {
+    await page.evaluate((native) => {
+      const modal = document.createElement(native ? "dialog" : "aside");
+      modal.id = "zoom-key-modal";
+      if (!native) { modal.setAttribute("role", "dialog"); modal.setAttribute("aria-modal", "true"); }
+      const button = document.createElement("button");
+      button.textContent = "Modal control";
+      modal.append(button);
+      document.body.append(modal);
+      if (native) modal.showModal();
+      button.focus();
+    }, native);
+    await pressZoomOut();
+    assert.ok(await page.$(`${view} .clusterset-breadcrumb`), `the shortcut stays inside ${native ? "a native dialog" : "a modal sheet"}`);
+    await page.evaluate(() => document.getElementById("zoom-key-modal").remove());
+  }
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector(view, { hidden: true });
+  await page.evaluate(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", metaKey: true, ctrlKey: true, bubbles: true })));
+  await page.click(nav);
+  await page.waitForSelector(view, { visible: true });
+  assert.ok(await page.$(`${view} .clusterset-breadcrumb`), "the shortcut does not change a hidden Cluster place");
+  await page.evaluate(() => {
+    const dialog = document.createElement("dialog");
+    dialog.id = "zoom-key-hidden";
+    document.body.append(dialog);
+  });
+  await zoomOut("keyboard");
+  await page.evaluate(() => document.getElementById("zoom-key-hidden").remove());
+  await openCluster("mfcluster", "button");
+  await zoomOut("button");
+
+  // Dissolving the ClusterSet (or removing this cluster from it) ends the
+  // navigation: the fresh report replaces the view, zoomed in or zoomed out,
+  // never the stale pre-dissolve snapshot.
+  const freshClusterView = async (when) => {
+    await page.waitForFunction((sel) => !document.querySelector(`${sel} .clusterset-breadcrumb`)
+      && !document.querySelector(`${sel} .clusterset-map`)
+      && !document.querySelector(`${sel} .clusterset-setline`)
+      && !!document.querySelector(`${sel} .cluster-topology`), {}, view);
+    assert.match((await visible(`${view} .summary-line`))[0], /MySQL InnoDB Cluster mfcluster/,
+      `the fresh report shows after the ClusterSet is gone (${when})`);
+    assert.deepEqual(await page.$$eval(`${view} .cluster-local`, (els) => els.map((e) => e.textContent)),
+      ["This connection"], `the fresh report is not greyed as the stale snapshot (${when})`);
+  };
+  await openCluster("mfcluster", "button");
+  await refreshTo(R["ic-8.4-healthy"]);
+  await freshClusterView("zoomed in");
+  await refreshTo(R["ic-8.4-clusterset-primary"]);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  await openCluster("mfcluster", "button");
+  await zoomOut("button");
+  await refreshTo(R["ic-8.4-healthy"]);
+  await freshClusterView("zoomed out");
+  await refreshTo(R["ic-8.4-clusterset-primary"]);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+
+  // A cluster with a saved route zooms through the per-place member routing
+  // (chooseMember, the mechanism the Topology map's cards use): the place
+  // moves to the route's group member, reads its report, and the top bar says
+  // which connection it uses. No myflames:cluster-zoom event fires.
+  await page.evaluate(() => { window.__zooms = []; window.addEventListener("myflames:cluster-zoom", (e) => window.__zooms.push(e.detail.profileId)); });
+  await openConnectionPicker(page);
+  await page.click('button[aria-label="Open group connection production"]');
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection production"));
+  // The group opens on its active member ("local"); Refresh makes its report
+  // the current one, and the set map renders again.
+  await refreshTo(R["ic-8.4-clusterset-primary"]);
+  assert.equal(state.seen.at(-1).connection.profile_id, "local", "the Group connection reads its active member");
+  assert.equal(state.seen.at(-1).connection.group_name, "production");
+  // Synthetic routed response: unlike the overview, its local topology and
+  // catalog belong to drcluster. A report from the old connection is never
+  // evidence that the requested cluster was read.
+  const routedDr = JSON.parse(JSON.stringify(R["ic-8.4-clusterset-primary"]).replaceAll("mf-ic", "mf-dr"));
+  routedDr.cluster.name = "drcluster";
+  routedDr.metadata.cluster_name = "drcluster";
+  routedDr.clusterset = structuredClone(R["ic-8.4-clusterset-primary"].clusterset);
+  routedDr.clusterset.local_cluster = "drcluster";
+  routedDr.clusterset.local_role = "REPLICA";
+  for (const cluster of routedDr.clusterset.clusters) {
+    cluster.local = cluster.name === "drcluster";
+    cluster.route.self = cluster.local;
+    cluster.read = cluster.local ? "this_connection" : "route";
+  }
+  const zoomReads = state.seen.length;
+  const finishFirstZoom = holdZoomRead(routedDr);
+  await openCluster("drcluster", "button");
+  assert.deepEqual(await page.evaluate(() => window.__zooms), [], "no myflames:cluster-zoom event: the zoom uses the member routing");
+  assert.match(await h.text(`${view} .clusterset-pending`), /Reading drcluster through DR member/);
+  assert.equal(await page.$(`${view} .summary-line`), null, "a pending route shows no old cluster summary");
+  assert.equal(await page.$(`${view} .cluster-actions`), null, "a pending route shows no old cluster actions");
+  // The place reads the route's member once, through the Group connection.
+  for (let i = 0; i < 100 && state.seen.length === zoomReads; i++) await pause(20);
+  assert.ok(state.seen.length > zoomReads, "the routed zoom reads the route's member");
+  const routedRead = state.seen.at(-1).connection;
+  assert.equal(routedRead.profile_id, "remote", "the zoomed cluster is read through its route's saved connection");
+  assert.equal(routedRead.group_name, "production");
+  assert.equal(routedRead.host, "mf-dr-1");
+  await page.waitForFunction(() => (document.querySelector(".nav-member-note")?.textContent || "").includes("Using DR member from group production."));
+  // The mock answers that member's report: the pending status clears and the
+  // zoomed view renders it.
+  finishFirstZoom();
+  await waitForZoomRead("drcluster");
+  assert.equal(await page.$$eval(`${view} .cluster-group .cluster-card`, (els) => els.length), 3);
+  assert.match(await h.text(`${view} .clusterset-crumb`), /› drcluster/);
+  assert.match(await h.text(`${view} .cluster-card.is-local`), /mf-dr-1/);
+  await zoomOut("button");
+  state.queue.push({ status: 200, body: R["ic-8.4-clusterset-primary"] });
+  await openCluster("mfcluster", "button");
+  await waitForZoomRead("mfcluster");
+  await zoomOut("button");
+
+  // A -> B while A is pending: hold both replies and release A first.
+  // Neither the breadcrumb, member inspector nor actions may adopt A's data.
+  const finishOldZoom = holdZoomRead(routedDr);
+  await openCluster("drcluster", "button");
+  await zoomOut("button");
+  const readsBeforeSecondZoom = state.seen.length;
+  const finishNewZoom = holdZoomRead(R["ic-8.4-clusterset-primary"]);
+  await openCluster("mfcluster", "button");
+  await page.waitForFunction((sel) => document.querySelector(`${sel} .clusterset-pending`)?.textContent.includes("mfcluster"), {}, view);
+  assert.equal(state.seen.length, readsBeforeSecondZoom + 1, "another zoom starts its own routed read");
+  assert.equal(state.seen.at(-1).connection.profile_id, "local", "the old map's local route belongs to the source connection");
+  finishOldZoom();
+  await pause(150);
+  assert.match(await h.text(`${view} .clusterset-crumb`), /› mfcluster/);
+  assert.equal(await page.$(`${view} .cluster-topology`), null, "an obsolete reply cannot populate another cluster's topology");
+  assert.equal(await page.$(`${view} .cluster-actions`), null, "an obsolete reply cannot populate another cluster's actions");
+  assert.equal(await page.$(`${view} .view-inspector .review-actions`), null, "an obsolete reply cannot expose member actions");
+  finishNewZoom();
+  await waitForZoomRead("mfcluster");
+  assert.match(await h.text(`${view} .cluster-card.is-local`), /mf-ic-1/);
+  await zoomOut("button");
+
+  // A failed route keeps the map and a usable way back. Reopening the same
+  // route starts a new read even though its connection key has not changed.
+  state.queue.push({ status: 400, body: { error: "Routed cluster read failed." } });
+  await openCluster("drcluster", "button");
+  await page.waitForFunction((sel) => document.querySelector(`${sel} .clusterset-pending`)?.textContent.includes("was not read"), {}, view);
+  assert.equal(await page.$(`${view} .cluster-topology`), null);
+  await zoomOut("button");
+  assert.equal((await csCards()).length, 2, "a failed route retains the ClusterSet map");
+  const readsBeforeRetry = state.seen.length;
+  state.queue.push({ status: 200, body: routedDr });
+  await openCluster("drcluster", "button");
+  await waitForZoomRead("drcluster");
+  assert.equal(state.seen.length, readsBeforeRetry + 1, "reopening a failed route retries it");
+  await zoomOut("button");
+
+  // An answered but unreadable report also keeps the source map. Refresh
+  // retries within the same zoom, without changing the breadcrumb.
+  state.queue.push({ status: 200, body: R["ic-8.4-clusterset-primary"] });
+  await openCluster("mfcluster", "button");
+  await waitForZoomRead("mfcluster");
+  await zoomOut("button");
+  state.queue.push({ status: 200, body: R["gr-8.4-denied"] });
+  await openCluster("drcluster", "button");
+  await page.waitForFunction((sel) => document.querySelector(`${sel} .clusterset-pending`)?.textContent.includes("was not read"), {}, view);
+  assert.match(await h.text(`${view} .clusterset-crumb`), /› drcluster/);
+  assert.equal(await page.$(`${view} .cluster-topology`), null, "an unreadable route never wipes the map with an unrelated report");
+  await zoomOut("button");
+  assert.equal((await csCards()).length, 2);
+  const finishWrongCluster = holdZoomRead(R["ic-8.4-clusterset-primary"]);
+  await openCluster("drcluster", "button");
+  finishWrongCluster();
+  await page.waitForFunction((sel) => document.querySelector(`${sel} .clusterset-pending`)?.textContent.includes("was not read"), {}, view);
+  assert.equal(await page.$(`${view} .summary-line`), null, "a current-key report of the wrong cluster is still rejected");
+  const inconsistentCluster = structuredClone(routedDr);
+  inconsistentCluster.cluster.name = "mfcluster";
+  const readsBeforeMismatch = state.seen.length;
+  await answer(inconsistentCluster);
+  await h.refresh();
+  for (let i = 0; i < 100 && state.seen.length === readsBeforeMismatch; i++) await pause(20);
+  assert.equal(state.seen.length, readsBeforeMismatch + 1, "the inconsistent topology was read on the requested connection");
+  await page.waitForFunction((sel) => !document.querySelector(`${sel} .spinner`), {}, view);
+  assert.equal(await page.$(`${view} .summary-line`), null, "the ClusterSet label cannot substitute for the topology's cluster identity");
+  await answer(routedDr);
+  await h.refresh();
+  await waitForZoomRead("drcluster");
+  assert.match(await h.text(`${view} .clusterset-crumb`), /› drcluster/);
+  await zoomOut("button");
+
+  // A connection switch ends the zoom before its delayed answer can arrive.
+  state.queue.push({ status: 200, body: R["ic-8.4-clusterset-primary"] });
+  await openCluster("mfcluster", "button");
+  await waitForZoomRead("mfcluster");
+  await zoomOut("button");
+  const finishAbandonedZoom = holdZoomRead(routedDr);
+  await openCluster("drcluster", "button");
+  await chooseConnection(page, await connectionOption(page, "Solo"));
+  await page.waitForFunction((sel) => !document.querySelector(`${sel} .clusterset-breadcrumb`), {}, view);
+  finishAbandonedZoom();
+  await pause(150);
+  assert.equal(await page.$(`${view} .clusterset-breadcrumb`), null, "an abandoned route never revives its breadcrumb");
+  assert.equal(await page.$(`${view} .cluster-topology`), null, "an abandoned route never replaces the retained map");
+  // Back to a plain connection for the rest of the suite.
+  await pause(200);
+
+  // A cluster without a route: the metadata members, every action disabled,
+  // and the fix (the saved connection for one of its members, never a new one).
+  const metaOnly = JSON.parse(JSON.stringify(R["ic-8.4-clusterset-primary"]));
+  const metaDr = metaOnly.clusterset.clusters.find((c) => c.name === "drcluster");
+  metaDr.route = null;
+  metaDr.read = "metadata_only";
+  metaDr.status = "NOT_READ";
+  metaDr.status_reason = "No saved connection in this group was verified as a route into this cluster.";
+  metaOnly.clusterset.status = "AVAILABLE";
+  metaOnly.clusterset.status_reason = "The primary cluster is OK; at least one other cluster is not OK or was not read.";
+  await refreshTo(metaOnly);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  assert.match((await csCards())[1].text, /Metadata only/);
+  assert.match((await csCards())[1].text, /Not read/);
+  assert.equal(await page.$(`${view} .clusterset-cluster[data-cluster="drcluster"] .clusterset-shell`), null,
+    "no saved route does not establish Shell UNKNOWN");
+  await openCluster("drcluster", "button");
+  assert.equal(await page.evaluate(() => window.__zooms.length), 0, "no route, no zoom request");
+  const metaText = await h.text(`${view} .clusterset-metadata-only`);
+  assert.match(metaText, /Metadata only/);
+  assert.match(metaText, /mf-dr-1:3306/);
+  assert.match(metaText, /This cluster was not read, so no change is offered/);
+  const metaButtons = await page.$$eval(`${view} .clusterset-metadata-only .review-actions > button`, (els) => els.map((e) => e.getAttribute("aria-disabled")));
+  assert.ok(metaButtons.length > 0 && metaButtons.every((d) => d === "true"), "every action is disabled on a metadata-only cluster");
+  assert.deepEqual(await page.$$eval(`${view} .clusterset-metadata-only .review-actions > button`, (els) => els.map((b) => b.textContent.trim())),
+    ["Make drcluster the primary cluster…", "Fail over to drcluster…", "Repair replication on drcluster…", "Remove drcluster from the ClusterSet…"],
+    "metadata-only zoom includes only its target's actions, with removal choices merged");
+  assert.equal(await h.text(`${view} .clusterset-metadata-only .cluster-use-node`), "Use DR member");
+  await tab("Members");
+  const metaRows = await visible(`${view} tbody tr`);
+  assert.equal(metaRows.length, 3, "the Members tab lists the metadata members");
+  assert.match(metaRows[0], /mf-dr-1:3306/);
+  await tab("Topology");
+  await zoomOut("button");
+
+  // An individual (non-group) connection cannot follow a saved route: the
+  // shell's member routing only moves an active Group connection, so the zoom
+  // never starts a wait that cannot end. It shows the metadata with the
+  // reason and the way to read the cluster (Use DR member) instead.
+  await refreshTo(R["ic-8.4-clusterset-primary"]);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  assert.match((await csCards())[1].text, /Read through DR member/, "the route is advertised on the card");
+  const readsBeforeSoloZoom = state.seen.length;
+  await openCluster("drcluster", "button");
+  assert.equal(await page.$(`${view} .clusterset-pending`), null, "an individual connection never waits on a routed read");
+  assert.equal(state.seen.length, readsBeforeSoloZoom, "no routed read starts without a Group connection");
+  assert.equal(await page.evaluate(() => window.__zooms.length), 0, "no zoom request the shell cannot honour");
+  const soloMeta = await h.text(`${view} .clusterset-metadata-only`);
+  assert.match(soloMeta, /Metadata only/);
+  assert.match(soloMeta, /This cluster was not read, so no change is offered/);
+  assert.equal(await h.text(`${view} .clusterset-metadata-only .cluster-use-node`), "Use DR member");
+  await zoomOut("button");
+
+  // The same individual connection never advertises an action whose route the
+  // plan would omit: it is disabled with the reason, and clicking it plans
+  // nothing.
   await refreshTo(R["ic-8.4-clusterset-replica"]);
-  assert.match(await h.text(`${view} .clusterset-band .cluster-row-label`), /metadata copy, may be behind/);
-  const link = await page.$eval(`${view} .clusterset-link`, (e) => ({ cls: e.className, text: e.textContent }));
-  assert.match(link.cls, /is-ok/);
-  assert.match(link.text, /receiver ON · applier ON/);
-  assert.match(await h.text(`${view} .clusterset-tag.is-source`), /Channel source/);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  const gateLabel = "Make mfcluster the primary cluster…";
+  const gatedButton = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
+    label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true",
+    reason: (document.getElementById(e.getAttribute("aria-describedby") || "")?.textContent || "").replace(/\s+/g, " ").trim() })))
+    .then((all) => all.find((b) => b.label === gateLabel));
+  assert.ok(gatedButton, `${gateLabel} is listed`);
+  assert.equal(gatedButton.disabled, true, "a route-requiring action is disabled without a Group connection");
+  assert.match(gatedButton.reason, /through their saved connections, which only an open Group connection may use\./);
+  assert.match(gatedButton.reason, /Open the server's connection group, then try again\./);
+  const plansBeforeGate = plans.length;
+  await page.evaluate((sel, text) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+    .find((b) => b.textContent.trim() === text).click(), view, gateLabel);
+  await page.waitForSelector(`${view} .cluster-action-why:popover-open`, { visible: true });
+  assert.match(await h.text(`${view} .cluster-action-why:popover-open`), /only an open Group connection may use/);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction((sel) => !document.querySelector(sel), {}, `${view} .cluster-action-why:popover-open`);
+  assert.equal(plans.length, plansBeforeGate, "a route-gated action plans nothing");
+  assert.equal(await page.$("dialog.clusterset-form[open]"), null, "a route-gated action opens no form");
+
+  // Open a saved member of production individually. The catalog can have
+  // discovered peers, but target.self only proves Shell's execution route.
+  await chooseConnection(page, await connectionOption(page, "DR member"));
+  await refreshTo(R["ic-8.4-clusterset-primary"]);
+  assert.equal(state.seen.at(-1).connection.group_name, undefined);
+  const selfActions = R["ic-8.4-clusterset-primary"].actions.filter((a) =>
+    ["set_primary_cluster:drcluster", "remove_cluster:drcluster", "remove_cluster_keep:drcluster"].includes(a.id));
+  assert.equal(selfActions.length, 3);
+  assert.ok(selfActions.every((a) => a.target.self), "all three variants use the local Shell route");
+  assert.ok(selfActions.filter((a) => a.id !== "remove_cluster_keep:drcluster").every((a) => a.enabled),
+    "the backend fixture reproduces the enabled self-route bypass");
+  assert.equal(selfActions.find((a) => a.id === "remove_cluster_keep:drcluster").enabled, false,
+    "the older Shell version's disabled removal variant keeps its original gate");
+  const selfButtons = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
+    label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true" })));
+  for (const label of ["Make drcluster the primary cluster…", "Remove drcluster from the ClusterSet…"]) {
+    assert.equal(selfButtons.find((b) => b.label === label)?.disabled, true, `${label} needs peers despite target.self`);
+  }
+  const localCheckLabel = R["ic-8.4-clusterset-primary"].actions.find((a) => a.id === "check_clusterset").label;
+  assert.equal(selfButtons.find((b) => b.label === localCheckLabel)?.disabled, false,
+    "the local read-only Check remains available on an individual connection");
+  const plansBeforeSelfGate = plans.length;
+  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+    .find((b) => b.textContent.trim() === "Make drcluster the primary cluster…").click(), view);
+  await page.waitForSelector(`${view} .cluster-action-why:popover-open`, { visible: true });
+  assert.match(await h.text(`${view} .cluster-action-why:popover-open`), /reads from other ClusterSet members/);
+  await page.keyboard.press("Escape");
+  assert.equal(plans.length, plansBeforeSelfGate, "a self-route peer action cannot start review individually");
+  assert.equal(await page.$("dialog.clusterset-form[open]"), null);
+
+  // Failover executes on the connected replica but still needs group routes
+  // to prove that every old-primary member is unreachable before review.
+  const localFailover = structuredClone(R["ic-8.4-clusterset-replica"]);
+  const failover = localFailover.actions.find((a) => a.id.startsWith("force_primary_cluster:"));
+  assert.equal(failover.target.self, true, "failover's Shell route is the local replica");
+  failover.enabled = true;
+  failover.why_not = null;
+  failover.fix = null;
+  await refreshTo(localFailover);
+  const failoverButton = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els, text) =>
+    els.find((e) => e.textContent.trim() === text)?.getAttribute("aria-disabled"), failover.label);
+  assert.equal(failoverButton, "true", "local failover still requires the Group connection's reachability checks");
+  // The same action is enabled again once the Group connection is active.
+  await openConnectionPicker(page);
+  await page.click('button[aria-label="Open group connection production"]');
+  await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection production"));
+  await refreshTo(R["ic-8.4-clusterset-replica"]);
+  assert.equal(state.seen.at(-1).connection.group_name, "production");
+  const ungated = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((e) => ({
+    label: e.textContent.trim(), disabled: e.getAttribute("aria-disabled") === "true" })))
+    .then((all) => all.find((b) => b.label === gateLabel));
+  assert.equal(ungated.disabled, false, "the Group connection carries the route the action needs");
+  // Back to the plain connection for the rest of the suite.
+  await chooseConnection(page, await connectionOption(page, "Solo"));
+  await pause(200);
+
+  // The status words, in plain words with the Shell term, across the states:
+  // a stopped channel, an invalidated cluster, an unread one.
   await refreshTo(R["ic-8.4-clusterset-replica-channel-off"]);
-  const off = await page.$eval(`${view} .clusterset-link`, (e) => ({ cls: e.className, text: e.textContent,
+  csCardList = await csCards();
+  const offCard = csCardList.find((c) => c.name === "mfcluster");
+  assert.match(offCard.text, /Not replicating OK_NOT_REPLICATING/, offCard.text);
+  assert.match(offCard.text, /This connection/);
+  const misconfPrimary = csCardList.find((c) => c.name === "maincluster");
+  assert.match(misconfPrimary.text, /Read through DR member/);
+  assert.match(misconfPrimary.text, /Misconfigured OK_MISCONFIGURED/, misconfPrimary.text);
+  assert.match(await page.$eval(`${view} .clusterset-cluster[data-cluster="maincluster"] .cluster-mark`,
+    (e) => e.className), /is-watch/, "OK_MISCONFIGURED never falls back to Not read or green OK");
+  assert.match(await h.text(`${view} .clusterset-setline`), /Available/);
+  assert.match(await h.text(`${view} .clusterset-setline`), /Read on DR member/);
+  const cardReason = `${view} .clusterset-cluster[data-cluster="mfcluster"] .clusterset-reason-text`;
+  assert.equal(await page.$eval(cardReason, (e) => e.hidden), true, "a card's status reason is on demand");
+  await page.click(`${view} .clusterset-cluster[data-cluster="mfcluster"] .cluster-finding-toggle`);
+  assert.equal(await page.$eval(cardReason, (e) => e.hidden), false);
+  assert.match(await page.$eval(cardReason, (e) => e.textContent), /clusterset_replication channel reports receiver OFF/);
+  const offLink = await page.$eval(`${view} .clusterset-link`, (e) => ({ cls: e.className, text: e.textContent,
     style: getComputedStyle(e.querySelector(".clusterset-arrow")).borderTopStyle }));
-  assert.match(off.cls, /is-problem/);
-  assert.match(off.text, /receiver OFF.*error 2003/);
-  assert.equal(off.style, "dashed", "a stopped channel is a broken arrow, not color alone");
+  assert.match(offLink.cls, /is-problem/);
+  assert.match(offLink.text, /receiver OFF.*error 2003/);
+  assert.equal(offLink.style, "dashed", "a stopped channel is a broken arrow, not color alone");
   // An invalidated replica cluster: the word, a dashed edge and a broken arrow.
   await refreshTo(R["ic-8.4-clusterset-invalidated"]);
   const dr = await page.$eval(`${view} .clusterset-cluster[data-cluster="drcluster"]`, (e) => ({
-    cls: e.className, text: e.textContent, border: getComputedStyle(e).borderTopStyle }));
+    cls: e.className, text: (e.innerText || e.textContent).replace(/\s+/g, " "), border: getComputedStyle(e).borderTopStyle }));
   assert.match(dr.cls, /is-invalidated/);
-  assert.match(dr.text, /Invalidated/);
+  assert.match(dr.text, /Invalidated INVALIDATED/);
   assert.equal(dr.border, "dashed");
   assert.match(await h.text(`${view} .clusterset-link-label`), /Invalidated · not replicating/);
   await shot("cluster-clusterset-invalidated-1440.png");
 
-  // Connected to a read replica of the ClusterSet's primary cluster: the band
+  // A fenced primary and a primary without quorum come from SQL answer
+  // variants through the real read model, including Shell's fence action.
+  await refreshTo(R["ic-8.4-clusterset-primary-fenced"]);
+  csCardList = await csCards();
+  const fencedCard = csCardList.find((c) => c.name === "mfcluster");
+  assert.match(fencedCard.text, /Writes fenced OK_FENCED_WRITES/, fencedCard.text);
+  assert.match(await page.$eval(`${view} .clusterset-cluster[data-cluster="mfcluster"] .cluster-mark`,
+    (e) => e.className), /is-watch/);
+  assert.match(csCardList.find((c) => c.name === "drcluster").text, /Not checked/,
+    "a replica's expected super_read_only does not make it Writes fenced");
+  await refreshTo(R["ic-8.4-clusterset-primary-no-quorum"]);
+  const notOkCard = (await csCards()).find((c) => c.name === "mfcluster");
+  assert.match(notOkCard.text, /Not OK NOT_OK/, notOkCard.text);
+  assert.match(await page.$eval(`${view} .clusterset-cluster[data-cluster="mfcluster"] .cluster-mark`,
+    (e) => e.className), /is-problem/);
+  assert.match(await h.text(`${view} .clusterset-setline`), /Unavailable/);
+
+  // Map status words and Shell terms (C8/G5): OK_MISCONFIGURED on a replica
+  // never falls back to Not read or draws a green channel arrow; MISSING maps
+  // to Shell's OK_MISCONFIGURED; CONNECTING never claims OK_NOT_REPLICATING;
+  // every Shell Cluster_global_status word is mapped; raw-SRO NOT_OK omits the
+  // Shell term; pinned target_cluster UUIDs resolve via clusters[].uuid.
+  const mapWords = structuredClone(R["ic-8.4-clusterset-primary"]);
+  mapWords.clusterset.clusters[0].status = "NOT_OK";
+  mapWords.clusterset.clusters[0].super_read_only = true;
+  mapWords.clusterset.clusters[1].uuid = "dddddddd-2222-11f0-8a00-0242ac130002";
+  mapWords.clusterset.clusters[1].status = "OK_MISCONFIGURED";
+  mapWords.clusterset.clusters[1].channel = {
+    present: true, receiver_state: "ON", applier_state: "ON", last_error_number: 0,
+    source: "other-primary:3306", source_uuid: "99999999-9999-11f0-8a00-0242ac130002",
+    status: "MISCONFIGURED", read_error: null, workers: [],
+  };
+  mapWords.clusterset.clusters.push(
+    {
+      ...structuredClone(mapWords.clusterset.clusters[1]),
+      name: "missingcluster", uuid: null, status: "NOT_REPLICATING",
+      channel: { present: false, status: "MISSING", read_error: null, workers: [] },
+    },
+    {
+      ...structuredClone(mapWords.clusterset.clusters[1]),
+      name: "conncluster", uuid: null, status: "NOT_REPLICATING",
+      channel: { present: true, receiver_state: "CONNECTING", applier_state: "ON", last_error_number: 0, status: "CONNECTING", read_error: null, workers: [] },
+    },
+    {
+      ...structuredClone(mapWords.clusterset.clusters[1]),
+      name: "errantcluster", uuid: null, status: "OK_NOT_CONSISTENT",
+      channel: { present: true, receiver_state: "ON", applier_state: "ON", last_error_number: 0, status: "OK", read_error: null, workers: [] },
+    },
+  );
+  mapWords.clusterset.routing_options = { stored_configuration: true, options: { target_cluster: "dddddddd-2222-11f0-8a00-0242ac130002" } };
+  await refreshTo(mapWords);
+  const wordChecks = await page.$$eval(`${view} .clusterset-map .clusterset-cluster`, (els) => Object.fromEntries(els.map((e) => [
+    e.dataset.cluster,
+    {
+      word: e.querySelector(".cluster-mark")?.textContent || "",
+      tone: e.querySelector(".cluster-mark")?.className || "",
+      shell: e.querySelector(".clusterset-shell")?.textContent || null,
+    },
+  ])));
+  assert.deepEqual(wordChecks.mfcluster, { word: "Not OK", tone: "cluster-mark is-problem", shell: null },
+    "raw-SRO primary NOT_OK omits Shell term");
+  assert.deepEqual(wordChecks.drcluster, { word: "Misconfigured", tone: "cluster-mark is-watch", shell: "OK_MISCONFIGURED" },
+    "OK_MISCONFIGURED maps to Misconfigured / OK_MISCONFIGURED");
+  assert.deepEqual(wordChecks.missingcluster, { word: "Not replicating", tone: "cluster-mark is-problem", shell: "OK_MISCONFIGURED" },
+    "missing channel uses Shell's OK_MISCONFIGURED, never OK_NOT_REPLICATING");
+  assert.deepEqual(wordChecks.conncluster, { word: "Connecting", tone: "cluster-mark is-watch", shell: null },
+    "CONNECTING channel never claims OK_NOT_REPLICATING");
+  assert.deepEqual(wordChecks.errantcluster, { word: "Not consistent", tone: "cluster-mark is-problem", shell: "OK_NOT_CONSISTENT" },
+    "Shell OK_NOT_CONSISTENT is mapped");
+  const replicaLinks = await page.$$eval(`${view} .clusterset-replica`, (els) => Object.fromEntries(els.map((li) => [
+    li.querySelector(".clusterset-cluster")?.dataset.cluster,
+    { cls: li.querySelector(".clusterset-link")?.className || "", text: li.querySelector(".clusterset-link-label")?.textContent || "" },
+  ])));
+  assert.match(replicaLinks.drcluster.cls, /is-problem/, "misconfigured replica channel never draws green");
+  assert.match(replicaLinks.drcluster.cls, /is-broken/, "misconfigured replica channel draws broken/dashed");
+  assert.doesNotMatch(replicaLinks.drcluster.cls, /is-ok/);
+  assert.match(replicaLinks.drcluster.text, /misconfigured/);
+  assert.match(replicaLinks.missingcluster.cls, /is-problem.*is-broken|is-broken.*is-problem/);
+  assert.match(replicaLinks.missingcluster.text, /missing/);
+  assert.match(replicaLinks.conncluster.cls, /is-watch/);
+  assert.match(await h.text(`${view} .clusterset-plain`), /Routing options → drcluster/,
+    "ClusterSet map resolves pinned target_cluster UUID via clusters[].uuid");
+
+  // Connected to a read replica of the ClusterSet's primary cluster: the map
   // still renders, from the replica's replicated copy of the metadata.
   await refreshTo(R["ic-8.4-read-replica-clusterset"]);
-  await page.waitForSelector(`${view} .clusterset-band`, { visible: true });
-  assert.match(await h.text(`${view} .clusterset-band .cluster-row-label`), /ClusterSet mfcs/);
-  assert.match(await h.text(`${view} .clusterset-band .clusterset-copy`), /this cluster's metadata copy, may be behind/);
-  assert.deepEqual(await page.$$eval(`${view} .clusterset-cluster`, (els) => els.map((e) => e.dataset.cluster)), ["mfcluster", "drcluster"]);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  const rrCards = await csCards();
+  assert.deepEqual(rrCards.map((c) => c.name), ["mfcluster", "drcluster"]);
+  assert.match(rrCards[0].text, /Not read/, rrCards[0].text);
+  assert.equal(await page.$(`${view} .clusterset-cluster[data-cluster="mfcluster"] .clusterset-shell`), null,
+    "an unread cluster has no Shell UNKNOWN term");
+  const rrLine = await h.text(`${view} .clusterset-setline`);
+  assert.match(rrLine, /Unknown/);
+  assert.match(rrLine, /this cluster's metadata copy, may be behind/);
+  // The read replica's own status line and notes stay for the zoom into its
+  // cluster: at the set level only the ClusterSet shows.
+  assert.equal(await page.$(`${view} .summary-line`), null, "the read replica's status line stays for the zoom");
+  await openCluster("mfcluster", "button");
   assert.match((await visible(`${view} .summary-line`))[0], /this server is a read replica/);
   assert.match(await h.notes(), /the ClusterSet read here is its replicated copy of the metadata and may be behind/);
+  await zoomOut("button");
+
+  // The set map and a zoomed cluster at the 720 px minimum window and at
+  // 1440 px, in both themes: no horizontal page scroll.
+  await refreshTo(R["ic-8.4-clusterset-primary"]);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    await page.setViewport({ width: 1440, height: 1000 });
+    await pause(200);
+    await csShot(`set-map-1440-${theme}.png`);
+    await page.setViewport({ width: 720, height: 520 });
+    await pause(300);
+    assert.ok((await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 0,
+      `horizontal page scroll on the set map at 720 px (${theme})`);
+    await csShot(`set-map-720-${theme}.png`);
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await openCluster("mfcluster", "button");
+  const scrollTop = () => page.evaluate((sel) => {
+    const main = document.querySelector(`${sel} .view-main`);
+    if (main) main.scrollTop = 0;
+    window.scrollTo(0, 0);
+  }, view);
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    await page.setViewport({ width: 720, height: 520 });
+    await scrollTop();
+    await pause(300);
+    assert.ok((await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 0,
+      `horizontal page scroll on a zoomed cluster at 720 px (${theme})`);
+    await csShot(`zoomed-cluster-720-${theme}.png`);
+    await page.setViewport({ width: 1440, height: 1000 });
+    await scrollTop();
+    await pause(200);
+    await csShot(`zoomed-cluster-1440-${theme}.png`);
+  }
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await zoomOut("button");
+
+  // ClusterSet action parameters: set-level entries that need a choice open a
+  // small form before the review, and the plan request carries `parameters`
+  // only when the form set them.
+  const openFormGroup = async () => {
+    if (await page.$eval(".window-toolbar .connection-pill", (e) => e.textContent.includes("Group connection production"))) return;
+    await openConnectionPicker(page);
+    await page.click('button[aria-label="Open group connection production"]');
+    await page.waitForFunction(() => document.querySelector(".window-toolbar .connection-pill")?.textContent.includes("Group connection production"));
+  };
+  await openFormGroup();
+  const csActionEntry = (id, label, extra = {}) => ({
+    schema_version: "cluster-action-1.1", id, label, scope: "clusterset", kind: "risky", via: "mysqlsh",
+    danger: true, description: label, member_key: null, member_name: null, member_uuid: null,
+    cluster_name: null, enabled: true, why_not: null, fix: null, missing_privileges: [], grant_sql: null,
+    privileges_unreadable: false, target: { self: true, member_name: "mf-ic-1:3306" }, ...extra,
+  });
+  const gate = { enabled: true, why_not: null, fix: null };
+  const paramReport = JSON.parse(JSON.stringify(R["ic-8.4-clusterset-primary"]));
+  paramReport.clusterset.routing_options = { stored_configuration: true, options: { target_cluster: "primary", invalidated_cluster_policy: "drop_all" } };
+  // These form-specific capabilities deliberately override the real entries
+  // (newer Shell and a spare), rather than leaving duplicate catalog IDs.
+  paramReport.actions = paramReport.actions.filter((a) => !/^(remove_cluster|remove_cluster_keep|create_replica_cluster|set_routing_option|dissolve_clusterset)(:|$)/.test(a.id));
+  paramReport.actions.push(
+    csActionEntry("remove_cluster:drcluster", "Remove and dissolve the cluster drcluster…"),
+    csActionEntry("remove_cluster_keep:drcluster", "Remove drcluster, keep the cluster running…"),
+    csActionEntry("create_replica_cluster:spare", "Create replica cluster on Spare server…"),
+    csActionEntry("set_routing_option", "Change ClusterSet routing defaults…", { danger: false, options: {
+      target_cluster: { ...gate }, invalidated_cluster_policy: { ...gate }, stats_updates_frequency: { ...gate },
+      use_replica_primary_as_rw: { ...gate }, read_only_targets: { ...gate },
+      tags: { enabled: false, why_not: "tags needs MySQL Shell 8.1.0 or later.", fix: null },
+      guideline: { enabled: false, why_not: "guideline needs MySQL Shell 9.2.0 or later.", fix: null } } }),
+    csActionEntry("dissolve_clusterset", "Dissolve ClusterSet…"),
+  );
+  const clickSetAction = (label) => page.evaluate((sel, text) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+    .find((b) => b.textContent.trim() === text)?.click(), view, label);
+  const formSelector = "dialog.clusterset-form[open]";
+  const formConfirm = () => page.$eval(formSelector, (d) => {
+    const b = [...d.querySelectorAll(".sheet-buttons button")].pop();
+    return { text: b.textContent.replace(/\s+/g, " ").trim(), disabled: b.disabled };
+  });
+  const clickFormConfirm = () => page.$eval(formSelector, (d) => [...d.querySelectorAll(".sheet-buttons button")].pop().click());
+  const closeReview = async () => {
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("dialog.action-review[open]"));
+  };
+  const setFormInput = (sel, value) => page.evaluate((s, v) => {
+    const input = document.querySelector(s);
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set.call(input, v);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, sel, value);
+  await refreshTo(paramReport);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  const removeEntries = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) =>
+    els.map((e) => e.textContent.trim()).filter((t) => /Remove.*drcluster|Remove drcluster/.test(t)));
+  assert.deepEqual(removeEntries, ["Remove drcluster from the ClusterSet…"], "one remove entry per replica cluster");
+
+  // Remove: the entry opens the chooser with the two variants, each with its
+  // consequence; choosing one starts the normal review with that action id.
+  let plansBeforeForm = plans.length;
+  await clickSetAction("Remove drcluster from the ClusterSet…");
+  await page.waitForSelector(formSelector, { visible: true });
+  assert.equal(plans.length, plansBeforeForm, "the remove chooser plans nothing");
+  const choices = await page.$$eval(`${formSelector} .clusterset-choice`, (els) => els.map((e) => ({
+    id: e.dataset.choice, text: (e.innerText || e.textContent).replace(/\s+/g, " "),
+    disabled: e.querySelector(".button").getAttribute("aria-disabled") === "true" })));
+  assert.deepEqual(choices.map((c) => c.id), ["dissolve", "keep"]);
+  assert.match(choices[0].text, /dissolves it into standalone instances/);
+  assert.match(choices[1].text, /standalone InnoDB Cluster/);
+  assert.ok(choices.every((c) => !c.disabled));
+  assert.equal((await formConfirm()).disabled, true, "the review waits for a choice");
+  await page.$eval(`${formSelector} .clusterset-choice[data-choice="dissolve"] .button`, (b) => b.click());
+  await clickFormConfirm();
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(plans.length, plansBeforeForm + 1, "choosing remove plans once");
+  assert.equal(plans.at(-1).action, "remove_cluster:drcluster");
+  assert.equal(plans.at(-1).connection.group_name, "production", "the removal review carries group consent");
+  assert.ok(!("parameters" in plans.at(-1)), "removal without options sends no parameters");
+  await closeReview();
+  await clickSetAction("Remove drcluster from the ClusterSet…");
+  await page.waitForSelector(formSelector, { visible: true });
+  await page.$eval(`${formSelector} .clusterset-choice[data-choice="keep"] .button`, (b) => b.click());
+  await clickFormConfirm();
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(plans.at(-1).action, "remove_cluster_keep:drcluster", "the keep choice plans remove_cluster_keep");
+  await closeReview();
+
+  // A catalog-disabled choice stays visible and shows its reason on click.
+  const keepOff = JSON.parse(JSON.stringify(paramReport));
+  keepOff.actions = keepOff.actions.map((a) => a.id === "remove_cluster_keep:drcluster"
+    ? { ...a, enabled: false, why_not: "removeCluster's dissolve option needs MySQL Shell 9.0.0 or later.", fix: "Install MySQL Shell 9.0.0 or later, then Refresh." }
+    : a);
+  await refreshTo(keepOff);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  plansBeforeForm = plans.length;
+  await clickSetAction("Remove drcluster from the ClusterSet…");
+  await page.waitForSelector(formSelector, { visible: true });
+  const keepChoice = await page.$eval(`${formSelector} .clusterset-choice[data-choice="keep"] .button`, (b) => b.getAttribute("aria-disabled"));
+  assert.equal(keepChoice, "true", "a disabled choice stays visible, disabled");
+  await page.click(`${formSelector} .clusterset-choice[data-choice="keep"] .button`);
+  await page.waitForFunction(() => /9\.0\.0/.test(document.querySelector("dialog.clusterset-form .why-disabled")?.textContent || ""));
+  assert.equal(plans.length, plansBeforeForm, "a disabled choice plans nothing");
+  await page.$eval(formSelector, (d) => [...d.querySelectorAll(".sheet-buttons button")][0].click());
+  await page.waitForFunction(() => !document.querySelector("dialog.clusterset-form[open]"));
+
+  // Create replica cluster: the target comes from the offered catalog entries
+  // (never typed), the name is pre-filled and validated, and recoveryMethod is
+  // a required explicit choice.
+  await refreshTo(paramReport);
+  await page.waitForSelector(`${view} .clusterset-map`, { visible: true });
+  await clickSetAction("Create replica cluster on Spare server…");
+  await page.waitForSelector(formSelector, { visible: true });
+  const targetOptions = await page.$eval(`${formSelector} select`, (s) => [...s.options].map((o) => o.textContent));
+  assert.deepEqual(targetOptions, ["Spare server"], "the target is chosen from the offered saved connections");
+  const suggested = await page.$eval(`${formSelector} input`, (i) => i.value);
+  assert.match(suggested, /^[A-Za-z_][A-Za-z0-9_.-]{0,62}$/, "the pre-filled name follows MySQL Shell's rule");
+  assert.ok(suggested.length > 0);
+  assert.equal((await formConfirm()).disabled, true, "create needs an explicit recoveryMethod");
+  await setFormInput(`${formSelector} input`, "1bad name");
+  await page.$eval(`${formSelector} .clusterset-choice[data-choice="incremental"] .button`, (b) => b.click());
+  assert.equal((await formConfirm()).disabled, true, "an invalid name holds the review back");
+  await setFormInput(`${formSelector} input`, "replica-dr-2");
+  assert.equal((await formConfirm()).disabled, false);
+  plansBeforeForm = plans.length;
+  await clickFormConfirm();
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(plans.length, plansBeforeForm + 1);
+  assert.equal(plans.at(-1).action, "create_replica_cluster:spare", "the target comes from the catalog entry");
+  assert.deepEqual(plans.at(-1).parameters, { name: "replica-dr-2", recoveryMethod: "incremental" });
+  await closeReview();
+
+  // Router routing: only the options the backend accepts, pre-filled with the
+  // stored values, and the plan carries option and value.
+  await clickSetAction("Change ClusterSet routing defaults…");
+  await page.waitForSelector(formSelector, { visible: true });
+  const routing = await page.$eval(formSelector, (d) => {
+    const selects = [...d.querySelectorAll("select")];
+    return { options: [...selects[0].options].map((o) => o.value), option: selects[0].value, value: selects[1]?.value ?? null };
+  });
+  assert.deepEqual(routing.options, ["target_cluster", "invalidated_cluster_policy", "stats_updates_frequency", "use_replica_primary_as_rw", "read_only_targets"],
+    "only the options the backend accepts");
+  assert.equal(routing.option, "target_cluster");
+  assert.equal(routing.value, "primary", "the routing form is pre-filled with the stored value");
+  await page.select(`${formSelector} select`, "invalidated_cluster_policy");
+  const policy = await page.$eval(formSelector, (d) => [...d.querySelectorAll("select")][1]?.value);
+  assert.equal(policy, "drop_all", "the stored policy pre-fills the value");
+  plansBeforeForm = plans.length;
+  await clickFormConfirm();
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(plans.length, plansBeforeForm + 1);
+  assert.equal(plans.at(-1).action, "set_routing_option");
+  assert.deepEqual(plans.at(-1).parameters, { option: "invalidated_cluster_policy", value: "drop_all" });
+  await closeReview();
+
+  // A set action whose form has nothing to offer (no unreachable replica to
+  // invalidate) goes straight to review; the request carries no `parameters`
+  // key.
+  plansBeforeForm = plans.length;
+  await clickSetAction("Make drcluster the primary cluster…");
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(plans.length, plansBeforeForm + 1);
+  assert.equal(plans.at(-1).action, "set_primary_cluster:drcluster");
+  assert.ok(!("parameters" in plans.at(-1)), "no invalidation choice applies, so no parameters");
+  await closeReview();
+
+  // Pre-review forms belong to one connection and one catalog generation.
+  // Refresh and connection changes can happen outside the sheet (Refresh all,
+  // saved profile edits or another window), so dispatch the real controls.
+  const refreshBehindForm = async (reply) => {
+    const before = state.seen.length;
+    state.queue.push(reply);
+    await page.$eval(`${view} [data-action="refresh"]`, (b) => b.click());
+    await page.waitForFunction((sel) => !document.querySelector(`${sel} .spinner`), {}, view);
+    for (let i = 0; i < 100 && state.seen.length === before; i++) await pause(20);
+    assert.equal(state.seen.length, before + 1, "the background refresh ran");
+    await page.waitForSelector(formSelector, { hidden: true });
+  };
+  const soloId = await connectionOption(page, "Solo");
+  const readOnlyId = await connectionOption(page, "Read-only");
+  const nodeId = await connectionOption(page, "Node A");
+  await page.keyboard.press("Escape");
+  const selectBehindForm = async (id) => {
+    await page.$eval(".window-toolbar .connection-pill", (b) => b.click());
+    await page.waitForSelector('.window-toolbar select[aria-label="Connection"]');
+    await page.select('.window-toolbar select[aria-label="Connection"]', id);
+    await page.waitForSelector(formSelector, { hidden: true });
+    await page.keyboard.press("Escape");
+  };
+  for (const kind of ["connection", "read-only", "failed read", "catalog"]) {
+    await openFormGroup();
+    await refreshTo(paramReport);
+    plansBeforeForm = plans.length;
+    await clickSetAction("Remove drcluster from the ClusterSet…");
+    await page.waitForSelector(formSelector, { visible: true });
+    await page.$eval(`${formSelector} .clusterset-choice[data-choice="keep"] .button`, (b) => b.click());
+    assert.equal((await formConfirm()).disabled, false, "the old form could review before invalidation");
+    if (kind === "connection") {
+      // A different endpoint, including a stale report, closes the form.
+      await selectBehindForm(nodeId);
+    } else if (kind === "read-only") await selectBehindForm(readOnlyId);
+    else if (kind === "failed read") await refreshBehindForm({ status: 400, body: { error: "Catalog refresh failed." } });
+    else {
+      const changedCatalog = structuredClone(paramReport);
+      for (const action of changedCatalog.actions.filter((a) => a.id.startsWith("remove_cluster"))) action.enabled = false;
+      await refreshBehindForm({ status: 200, body: changedCatalog });
+    }
+    assert.equal(await page.$(formSelector), null, `${kind} invalidates the parameter sheet`);
+    assert.equal(await page.$("dialog.action-review[open]"), null, `${kind} cannot open a review from an invalid form`);
+    assert.equal(plans.length, plansBeforeForm, `${kind} sends no stale plan`);
+  }
+
+  // A busy review cannot be bypassed by activating another pre-review action.
+  await refreshTo(paramReport);
+  planDelay = 600;
+  plansBeforeForm = plans.length;
+  await clickSetAction("Make drcluster the primary cluster…");
+  await page.waitForFunction((sel) => [...document.querySelectorAll(`${sel} .review-actions > button`)].some((b) => b.textContent === "Reading…"), {}, view);
+  await clickSetAction("Remove drcluster from the ClusterSet…");
+  assert.equal(await page.$(formSelector), null, "a busy action cannot open a parameter sheet");
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(plans.length, plansBeforeForm + 1, "busy action activation never starts a second plan");
+  planDelay = 0;
+  await closeReview();
+
+  // Only the fixed Check call gets the read-only exception. Every set change,
+  // whole-cluster change and member change retains its refusal and reason.
+  await chooseConnection(page, readOnlyId);
+  const checkReport = structuredClone(paramReport);
+  const checkLabel = checkReport.actions.find((a) => a.id === "check_clusterset").label;
+  await refreshTo(checkReport);
+  const checkButtons = await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((b) => ({
+    label: b.textContent.trim(), blocked: b.getAttribute("aria-disabled") === "true",
+  })));
+  assert.equal(checkButtons.find((b) => b.label === checkLabel).blocked, false, "Check is available on a Read-only connection");
+  assert.ok(checkButtons.filter((b) => b.label !== checkLabel).every((b) => b.blocked), "every set change stays blocked on Read-only");
+  plansBeforeForm = plans.length;
+  await clickSetAction("Remove drcluster from the ClusterSet…");
+  await page.waitForSelector(`${view} .cluster-action-why:popover-open`, { visible: true });
+  assert.match(await h.text(`${view} .cluster-action-why:popover-open`), /read-only in myflames/);
+  await page.keyboard.press("Escape");
+  assert.equal(plans.length, plansBeforeForm, "a read-only write activation plans nothing");
+  await clickSetAction(checkLabel);
+  await page.waitForSelector("dialog.action-review[open]", { visible: true });
+  assert.equal(plans.at(-1).action, "check_clusterset");
+  assert.equal(plans.at(-1).connection.read_only, true, "the Check plan retains the connection's read-only policy");
+  const checkConfirm = "dialog.action-review[open] .sheet-buttons button:last-child";
+  assert.deepEqual(await page.$eval(checkConfirm, (b) => ({ disabled: b.disabled, danger: b.classList.contains("danger-solid"), primary: b.classList.contains("primary") })),
+    { disabled: false, danger: false, primary: true }, "Check confirms as a read even when the production policy returned danger tone");
+  const sendsBeforeCheck = sends.length;
+  await page.click(checkConfirm);
+  await page.waitForFunction(() => [...document.querySelectorAll("dialog.action-review[open] .sheet-buttons button")].some((b) => b.textContent.trim() === "Close"));
+  assert.equal(sends.length, sendsBeforeCheck + 1);
+  assert.equal(sends.at(-1).plan.action, "check_clusterset");
+  assert.equal(sends.at(-1).review_token, "check-token", "the check keeps the server-issued review token");
+  assert.deepEqual(sends.at(-1).plan.statements, ["print(JSON.stringify(myflamesClusterSet.status({extended: 1}), null, 2));"],
+    "the read exception preserves the exact reviewed call");
+  assert.equal(sends.at(-1).connection.read_only, true, "confirm preserves Read-only rather than changing connection policy");
+  await closeReview();
+  await openCluster("mfcluster", "button");
+  assert.ok((await page.$$eval(`${view} .cluster-actions .review-actions > button`, (els) => els.map((b) => b.getAttribute("aria-disabled")))).every((value) => value === "true"),
+    "whole-cluster changes remain blocked on Read-only");
+  await page.click(`${view} .cluster-card[data-row-key="${secondMember.key}"]`);
+  await page.waitForSelector(".view-inspector .review-actions");
+  assert.ok((await page.$$eval(".view-inspector .review-actions > button", (els) => els.map((b) => b.getAttribute("aria-disabled")))).every((value) => value === "true"),
+    "member changes remain blocked on Read-only");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".view-inspector"));
+  await zoomOut("button");
+  await chooseConnection(page, soloId);
 
   // Multi-primary Group Replication without metadata: every member PRIMARY, no Routers tab.
   await refreshTo(R["gr-8.4-multi-primary"]);
@@ -1322,6 +2282,9 @@ try {
   // action, so the enabled transition must close it independently of text.
   await chooseConnection(page, await connectionOption(page, "Read-only"));
   const blockedReport = structuredClone(R["ic-8.4-healthy"]);
+  // This case exercises a uniformly blocked group of writes. The complete
+  // catalog's read-only Check exception is covered on the set map above.
+  blockedReport.actions = blockedReport.actions.filter((a) => a.id !== "check_clusterset");
   Object.assign(blockedReport.actions[2], {
     enabled: false, why_not: null, fix: null, privileges_unreadable: true,
   });

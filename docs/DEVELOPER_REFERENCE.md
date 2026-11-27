@@ -2325,9 +2325,15 @@ accepted statements after a later refusal. Cluster SQL and UDF actions are cover
 by `reviewed_writes`; MySQL Shell actions derive a JavaScript guard instead:
 the first line reads `@@global.server_uuid` through the Shell's global
 `session.runSql(...).fetchOne()`, before any `dba` or AdminAPI call. It then
-checks the returned AdminAPI object's extended status: a Cluster's group UUID,
-or a ClusterSet's name and complete member cluster/group UUID map, against the
-reviewed server's variable and metadata reads. The action reuses that object;
+checks the returned AdminAPI object's extended status: a Cluster's group UUID
+(`status({extended: 1})`), or a ClusterSet's `status({extended: 2})` (domain
+name, exact cluster-to-group UUID map, cluster roles, invalidation flags,
+primary cluster and `metadataServer` address against reviewed metadata), plus
+the global session's `view_id` (selected without SQL interpolation and compared
+in JavaScript) and, for `create_replica_cluster`, a short `shell.openSession`
+UUID check on the reviewed spare address (password from private 0600
+`MYFLAMES_SHELL_PASSWORD_FILE`) immediately before `createReplicaCluster`. The
+action reuses that checked `myflamesCluster` or `myflamesClusterSet` object;
 AdminAPI manages its own member connections. A different identity
 throws `MYFLAMES_IDENTITY_MISMATCH`; `ShellWriter` maps that first-line
 exception to a refusal with `sent: []`. Its guard is reviewed, token-bound and
@@ -7406,6 +7412,119 @@ Backend `myflames/replication.py` (contract and evidence: the replication skill 
 
 ### Cluster: Galera, Percona XtraDB Cluster, InnoDB Cluster
 
+ClusterSet execution (`clusterset_execution.py`, `clusterset_verify.py`) uses the
+shared review token and typed confirmation gate. Plan parameters, target cluster
+identity/role, route UUID, metadata `view_id` and (for switchover, failover,
+both removal choices and routing changes) stored global and per-Router
+`routing_configuration` are bound and rebuilt immediately before sending
+(routing configuration is compared with type-strict canonical JSON so booleans
+and integers never conflate). The derived Shell session guard checks the global
+session's UUID, then the AdminAPI object's own `status({extended: 2})` (domain,
+exact cluster/group UUID map, roles, invalidation, primary cluster and
+`metadataServer` address against reviewed metadata addresses), then the global
+session's `view_id` (selected without SQL name interpolation and compared in
+JavaScript), and for `create_replica_cluster` opens a short Shell session to the
+reviewed spare address to verify `@@global.server_uuid` right before creation.
+The sender executes the reviewed JavaScript unchanged; no dry-run provisioning is offered.
+Creation catalog entries need a known direct, non-Read-only saved group identity
+outside cluster metadata (unprobed members of any metadata cluster are excluded
+by UUID and endpoint); `prepare_action` enforces the catalog route, Shell/version
+and spare transport/Read-only gates before opening the spare for standalone SQL
+checks (including verifying that `report_host`/`report_port` matches the saved
+direct endpoint) and the read-only `dba.checkInstanceConfiguration()` check. A
+successful check must report `status: "ok"`; GTID subset, version, stopped GR,
+no existing cluster metadata and `super_read_only` are read separately through a
+UUID-bound `_ClusterSetReader`.
+`ShellWriter` parses `MYFLAMES_CONFIG` from its complete private stdout before
+redaction and retains only `configuration_ok` on the returned string. Exactly
+one marker with a JSON object and `status: "ok"` is required; malformed JSON,
+duplicate keys and non-JSON constants fail the check. The preflight consumes
+that boolean, never the display string. Status JSON and exception provenance
+also use raw private output before redaction, so passwords that overlap a
+marker, JSON key, value or punctuation cannot change the machine result.
+While any MySQL Shell action runs with a progress tracker, `ShellWriter.run_write`
+streams complete stdout and stderr lines (ANSI sequences stripped, connection
+passwords redacted, lines over 8,192 bytes replaced by `[Long MySQL Shell progress
+line omitted]`) through `Progress.emit` into the bounded `output` array (last 100
+`{stream, text}` chunks, each `text` capped at 2,048 characters) on
+`POST /api/live/action/progress`; `LiveShellOutput` (`ShellOutput.tsx`) renders
+up to the last 200 lines / 120,000 characters with a **Jump to latest** button
+when scrolled up and throttled polite status announcements (`1,500` ms). Clone
+cannot be stopped through this action once it starts; workspace action Shell
+processes join `LifecycleJobs` shutdown supervision (`supervise_shell`).
+For clone creation, action progress reports the reviewed `timeout_s` (86,400)
+and `idle_timeout_s` (3,600), matching the sender's overall and no-output limits.
+Other Shell actions retain their 600-second limit and omit `idle_timeout_s`.
+
+Action results (`cluster-action-1.1`) retain `shell_output`, `shell_stderr`,
+`shell_output_truncated` and `shell_stderr_truncated` for **every** MySQL Shell
+action (mode switches, replica-cluster Make primary, member rejoin and all
+ClusterSet actions; ANSI-stripped, password-redacted and capped server-side by
+`clusterset_execution.bounded_output` to the last 1 MiB UTF-8 tail per stream,
+retained even on non-zero Shell exits from `writer.stdout` / `writer.stderr`
+when the transport returned output). The connector separately enforces a
+1 MiB stderr hard limit: exceeding it stops the Shell client before the
+writer captures its streams, so the result has no retained tail and neither
+truncation flag is set for that output. The outcome is unknown; a server-side
+operation such as clone may continue after the client stops.
+ClusterSet results also add `outcome_class` (mirrored on `outcome`) and
+`verification` (`facts`, `missing`, `mismatches`, `summary`). Outcome classes
+are `verified`, `done, not fully verified` (rendered with a watch pill in
+`ActionReview.tsx`, never a green Done), `failed, nothing changed`, and `unknown
+or partial`. SQL verifies membership/view advancement (including `view_id` high
+counter `>> 32` on failover), cluster and group identities, primary and replica
+roles, new member `ONLINE` for creation, raw primary `super_read_only`, replica
+`mysql_disable_super_read_only_if_primary` disabled, primary
+`clusterset_replication` absent or stopped, replica channel receiver/applier/
+workers/source UUID and endpoint, and stored routing values (type-strict
+canonical JSON; `stats_updates_frequency` reset 0 below metadata 2.2 vs removed
+at 2.2+; `guideline` marked unavailable because SQL exposes only the stored ID;
+`target_cluster` resolved via group UUID). Post-action reports on saved peers
+verify the route UUID before accepting the report (`clusterset_verify.py`).
+Cleanup checks retain the pre-action UUID inventory, check `performance_schema`
+is enabled before trusting empty tables, verify metadata schema presence/absence,
+Group Replication state, `super_read_only`, managed channels,
+`replication_asynchronous_connection_failover_managed` rows (which flags
+MySQL Shell 9.7.1 `dissolve` leftover `clusterset_replication` rows on former
+replica members) and persisted `group_replication_start_on_boot` /
+`skip_replica_start`, using only saved group routes; missing schemas/rows and
+failed reads remain distinct. Only an unsent refusal (`status == "refused"` or
+`not_sent == plan["statements"]`, such as a pre-spawn refusal, a bare initial
+connect error before statement 1, or a first-line identity guard mismatch)
+produces `failed, nothing changed`. Any MySQL Shell error after starting
+produces `unknown or partial`: no action-level exception proves an internal
+pre-mutation stage (even `MYSQLSH 51004` during `dissolve` follows lock
+acquisition that can install persistent locking-service UDFs without binary
+logging). One pending audit record contains the bound guard and JS, then is
+completed with the outcome class and SQL evidence. The fixed `check_clusterset`
+expression is read-only (`ui.py` allows `read` policy only when the reviewed
+statement equals `_shell_check_clusterset(SHELL_MIN_VERSION)`), keeps the review
+token/identity gate, and returns `status({extended: 1})` JSON in `shell_output`
+(`ShellWriter` validates the raw JSON against the reviewed `domainName`,
+`clusters` object and `status` string; `clusterset_execution.finish` consumes
+the retained validation evidence). Its policy permits a read-only connection
+(`ClusterPlace.tsx` separates `readBlock` from `changeBlock`); arbitrary
+JavaScript keeps the risky policy floor. In the workspace, `ActionReview.tsx`
+renders the derived **Identity check** disclosure (open by default, Copy copies
+the complete script as sent) and collapsible **SQL verification** table
+(`VerificationSection`: Server, Fact, Expected, Actual, Result **Verified** /
+**Not read** / **Mismatch**; open automatically when anything is missing or
+mismatched). `ShellActionOutput` (`ShellOutput.tsx`) renders a collapsible
+**MySQL Shell output** block (or **MySQL Shell output (retained tail)** when
+`shell_output_truncated` or `shell_stderr_truncated` is true, naming which
+stream(s) exceeded 1 MiB and changing **Copy** to **Copy retained tail**; last
+400 lines / 120,000 characters displayed), and for `check_clusterset`
+(`clusterSetStatusFromFacts`, `ClusterSetCheckSummary`) leads with a structured
+summary of Shell's ClusterSet status, cluster roles, statuses, replication
+status and GTID consistency from the backend's validated `verification.facts`.
+The summary never parses the redacted display JSON, so it remains available
+when redaction changes JSON keys or punctuation, or stdout retention drops
+the start of the report. Stable fact labels identify the observations; names
+and values remain redacted. Full diagnostics stay in the output disclosure.
+When no structured status facts were returned, a notice explains that the
+summary is unavailable.
+
+
 The topologies always use the stage presentation (server glyphs, selectable nodes, floating cards with contact shadows over a lit stage floor with a faint grid, and links, stems and the group line as lit rails) with no presentation controls; the group's rail uses the accent only when every member is healthy, and colors come from theme tokens through color-mix() and light-dark(), while shadows use black with alpha. Motion illustrates reported running links or healthy group membership, never measured traffic. Failed, stopped, unknown and stale links stay still, and the operating system's reduced-motion setting turns it off. Each place's ⓘ explains what the motion means.
 
 On a ProxySQL Admin connection, show Not part of a cluster, "This connection
@@ -7422,8 +7541,11 @@ The Cluster place and `myflames cluster` show the cluster the connected server b
 - `python3 -m myflames cluster [--fail-on {problem,watch}] [--json] [-o PATH] [-q]` (`cluster-1.0`, `read_status`), connection flags and `--profile` as the other live commands, query timeout 30 s. Tag `/*myflames:cluster*/`; every statement is a `SELECT` or `SHOW GLOBAL`. Exit 0 (also for a server that is not part of a cluster), 1 when a finding is at the `--fail-on` level or worse, 2 for bad input, an account that cannot read the cluster tables (`available: false`; `--json` still writes the report to stdout or `-o`) or a connection failure.
 - Detection: Galera when the global `wsrep_on` is ON (MariaDB), or, when SHOW GLOBAL VARIABLES has no `wsrep_on` (Percona XtraDB Cluster 8.4, verified live on 8.4.11, where it is session-only), when `wsrep_provider` names a provider. MariaDB with the global `wsrep_on` OFF and a provider loaded reads the wsrep status anyway: while `wsrep_connected` is ON or `wsrep_cluster_size` above 0 the node is still in the component (the server-level names stay listed, the provider's are hidden) and is reported as Galera with the problem finding `wsrep_off`; when the account cannot read that status, `available: false` (unreadable is not disconnected); otherwise not a cluster ("the Galera provider is not connected"). `kind` is `pxc` when `version_comment` names Percona XtraDB Cluster, else `galera` (labelled MariaDB Galera Cluster on MariaDB and Galera Cluster for MySQL on MySQL, `cluster.kind_label`, `kindLabel`). Otherwise, on MySQL 8.0+, Group Replication from `performance_schema.replication_group_members` (with `MEMBER_COMMUNICATION_STACK` from 8.0.27); a single OFFLINE row without a group name is the idle plugin. `innodb_cluster` when `mysql_innodb_cluster_metadata.v2_gr_clusters` lists the group name, else `group_replication`. Without a group, a server whose `@@server_uuid` is a `read-replica` instance in its replicated copy of `v2_instances` is an InnoDB Cluster read replica (`kind: innodb_cluster`, the local member with role `READ_REPLICA` judged by its `read_replica_replication` channel in `replication_connection_status` and `replication_applier_status`: both ON ok, the receiver CONNECTING watch (also with its last error kept while it retries, as MySQL Shell tells it apart), a stopped receiver or applier, or an error while not connecting, problem; a table that cannot be read leaves it unknown unless what was read shows a failure; the group instances from the metadata with state null, never MISSING). MariaDB without wsrep and MySQL without a group return `kind: "none"` with `message`.
 - Reads: preflight `SHOW GLOBAL VARIABLES WHERE Variable_name IN (...)` and `Uptime`; Galera `SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\_%'`, `mysql.wsrep_cluster_members` (membership of the last Primary view; on a non-Primary node the members come from `wsrep_incoming_addresses`), and on PXC `performance_schema.pxc_cluster_view`; Group Replication `replication_group_member_stats`, then `information_schema.SCHEMATA`, `schema_version`, `v2_gr_clusters`, `v2_instances` (`attributes->>'$.instance_type'`: read replicas from 2.2.0 are listed apart, never MISSING) and `v2_routers` (the five port keys only, by `attributes->>'$.KEY'`, so the router configuration and its metadata account never leave the server; from metadata 2.4.0 `COALESCE(router_stats.last_check_in, routers.last_check_in)`, as MySQL Shell reads it; also `UNIX_TIMESTAMP` of the check-in for its UTC time).
-- InnoDB ClusterSet read (metadata 2.1.0 or later, no MySQL Shell required): `v2_cs_members` and `v2_cs_clustersets` identify the set's clusters, primary cluster and invalidated clusters. The other clusters' instances come from the shared `v2_instances` metadata, without reading their live member states. On an ONLINE primary of a replica cluster, read the `clusterset_replication` channel from `performance_schema.replication_connection_status`, `replication_applier_status` and `replication_connection_configuration`: receiver and applier state, last error number and message, and source address. Findings flag this or another invalidated cluster, no recorded primary cluster, and a stopped, reconnecting or errored channel. A replica cluster's view comes from its replicated metadata copy and may be behind; the report notes this. Connected to an InnoDB Cluster read replica of a cluster in a ClusterSet (a metadata 2.2.0 shape, on MySQL 8.0 and 8.4), the ClusterSet is read from the read replica's replicated copy the same way: `from_local_copy` is true and one note says the ClusterSet read here is that copy and may be behind. `ClusterTopology` draws a ClusterSet band above the group with an arrow from the primary cluster to each replica cluster, broken when the channel stops or a cluster is invalidated, and Use for saved connections to the other clusters' instances.
-- The `cluster-1.0` JSON report has an optional `clusterset` object (`docs/schemas/cluster-1.0.json`), absent outside a ClusterSet: `name, local_cluster, local_role, invalidated, primary_cluster, clusters[] {name, role, invalidated, local, instances[] {label, address, server_uuid, instance_type, source}}, channel {receiver_state?, applier_state?, last_error_number?, last_error_message?, source?} | null, from_local_copy` (`v2_cs_clustersets.clusterset_id` is moved by `@grouped_read` into the internal `_identity["clusterset_id"]` for `topology_identity` and is not serialized in `clusterset`). The deprecated command line's text output does not show the ClusterSet.
+- InnoDB ClusterSet read (metadata 2.1.0 or later, no MySQL Shell required): on MySQL 8.0.27+, initial discovery runs `_clusterset_may_exist` and `_clusterset_initial_metadata` on a UUID-guarded `REPEATABLE READ` consistent snapshot (`_clusterset_metadata_snapshot`: `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY`) even when preliminary reads missed the ClusterSet (for example on a read replica or `group_replication`). Cluster and domain names are projected with a `=` prefix (`CONCAT('=', cluster_name)`) so a literal name `"NULL"` stays distinct from SQL `NULL` in `--batch` output, and Router options are read in that same snapshot (retrying without Routers only when the Router `SELECT` is denied on its input line). If initial ClusterSet discovery fails on an otherwise readable server, `_clusterset_discovery_error` disables cluster changes until metadata can be read. `v2_cs_members` and `v2_cs_clustersets` supply membership, roles, invalidation and `view_id`; `v2_instances` supplies instance UUIDs and addresses; `v2_gr_clusters` supplies unique per-cluster `uuid` (Group Replication group UUID, or `null` when missing or ambiguous). A Group connection reads only its saved members and verifies `server_uuid` in this pass before accepting a route. Ordinary route search contacts only saved profiles with a matching cached UUID (tier 0) or an exact metadata endpoint (tier 1); unclassified/unknown group profiles (tier >= 2) are not probed, and `attach_topology_tiers` reuses only already-cached completed ProxySQL/Readyset entries without opening spare profiles on ClusterSet reads. Each cluster search has a shared five-second SQL deadline and at most three opens, including a followup to the primary. A profile is opened at most once in a pass. A probe that identifies another non-local cluster is retained as that cluster's route; its reads and primary followup also respect that cluster's remaining budget. With no route, member states remain unknown.
+- A secondary route reads `replication_group_members` for live membership, states, the primary UUID and quorum. When a saved group member has that primary's cached UUID or exact metadata endpoint, verify its current UUID and read the primary there. An exact endpoint is still tried when its cached UUID is stale. Preserve the secondary's facts if the primary cannot be read. Only the ONLINE primary supplies `super_read_only`, primary fencing (`disable_super_read_only_if_primary` and `fenced_writes`) and the `clusterset_replication` channel (checked on both primary and replica cluster primaries: receiver, applier, worker errors, `SOURCE_UUID` and host:port source, plus derived `channel.status`: `OK`, `STOPPED`, `ERROR`, `MISSING`, `MISCONFIGURED`, `CONNECTING`). By MySQL Shell's rule (`cluster_impl.cc:2043-2067`), `fenced_writes` is true only when `super_read_only` is ON and `performance_schema.replication_group_member_actions` has `mysql_disable_super_read_only_if_primary` disabled (`enabled = 0`) on that same ONLINE primary, and `null` when either required fact was not read; raw `super_read_only` (`boolean | null`) and `disable_super_read_only_if_primary` (`boolean | null`) are retained separately next to `fenced_writes` for post-action SQL verification (`clusterset_verify.py`). On the primary cluster: unread `super_read_only` (e.g. a secondary route or missing variable) is `NOT_READ` (quorum and an ONLINE primary alone do not establish writability); `fenced_writes: true` is `FENCED_WRITES`; `super_read_only: true` without confirmed write fencing (`fenced_writes` false or null) is `NOT_OK`; an unexpected active or errored `clusterset_replication` channel is `OK_MISCONFIGURED` (`channel.status: "MISCONFIGURED"`); otherwise `OK` (retaining a status reason when `fenced_writes` is `null` or the channel was not read in full). On a replica cluster: unread channel is `NOT_READ`; missing (`channel.status: "MISSING"`), stopped, `CONNECTING` or errored channel is `NOT_REPLICATING`; receiver `ON` connected to a `SOURCE_UUID` different from the current primary's UUID is `OK_MISCONFIGURED` (`channel.status: "MISCONFIGURED"`); receiver and applier `ON` with no error is `OK`. No quorum or no unique ONLINE primary is `NOT_OK`; metadata invalidation is `INVALIDATED` and does not prove live writes or replication stopped. SQL reads do not check GTID consistency (`gtid_consistency: null`, never rendered as a "Not checked" UI badge). Set status is `HEALTHY` only when all clusters are `OK`, `AVAILABLE` when the primary cluster is `OK` or `OK_MISCONFIGURED`, `UNAVAILABLE` when the primary is missing, `FENCED_WRITES` or `NOT_OK` (including primary `super_read_only` ON), otherwise `UNKNOWN`.
+- Prefer metadata from the primary cluster's verified ONLINE primary with quorum (re-reading the consistent snapshot without reopening its route, and also trying a speculative primary metadata refresh when a reachable replica primary has `super_read_only` OFF or lacks a channel). Metadata refresh can add, remove or rename clusters; retain already-read routes only when their group UUID, UUID membership and cluster role still agree, and invalidate a cluster's prior live read if its member inventory changed underneath it. `from_local_copy` stays true, with a replicated-copy/may-be-behind note, unless the selected metadata source is the primary cluster's ONLINE primary with quorum (`_clusterset_current_metadata`, because Group Replication defaults to `EVENTUAL` consistency so an ONLINE secondary can lag). This includes reads on a secondary, a replica cluster, a read replica, an OFFLINE member or a group without quorum. Failed route notes name the saved member, cluster and failing step, with categorized errors rather than raw client diagnostics.
+- ClusterSet Routers come from `v2_routers`: `name` is MySQL Shell's `address::router_name`, including a trailing `::` for an empty registered name. Both `v2_cs_clustersets.router_options` and per-Router `options` are projected to present keys only: `target_cluster`, `invalidated_cluster_policy`, `stats_updates_frequency`, `use_replica_primary_as_rw`, `read_only_targets`, `tags`, `guideline`. Preserve explicit zero, false and null; omit `Configuration` and all other stored settings. These are stored values, not resolved cluster/guideline names, effective configuration or proof of Router refresh or traffic routing.
+- The `cluster-1.1` JSON report has an optional `clusterset` object (`docs/schemas/cluster-1.0.json`), absent outside a ClusterSet: `name, local_cluster, local_role, invalidated, primary_cluster, view_id, metadata_read_on, clusters[], channel, from_local_copy, routers, routing_options, status, status_reason, gtid_consistency`. Each cluster carries metadata instances plus `uuid, route, read, read_error, members, primary, quorum, super_read_only, disable_super_read_only_if_primary, fenced_writes, channel, status, status_reason, gtid_consistency`. `v2_cs_clustersets.clusterset_id` is moved by `@grouped_read` into internal `_identity["clusterset_id"]` for `topology_identity` and is not serialized in `clusterset`. The deprecated command line's text output does not show the ClusterSet.
 - Envelope: `schema_version, engine, server_version, version_comment, captured_at, uptime_s, performance_schema, available, message, grant_sql?, kind, server {hostname, port, report_host, server_uuid}, cluster {name, uuid, size, expected_size, expected_source, component, quorum, failures_tolerated, topology, provider}, status, status_why, local, members[] {key, name, address, host, port, uuid, state, state_source, role, version, local, status, status_why, metrics, label?, endpoint?, in_metadata?, instance_type?, communication_stack?, pxc_status?, segment?}, galera {..., wsrep_on, address_nodes, address_names_this_node, missing, incomplete}, group_replication, metadata {..., local_copy}, routers[] {id, name, product, address, version, last_check_in, last_check_in_age_s, last_check_in_utc, from_local_copy, ports}, findings[] {id, status, title, text, member?}, topology_tiers, connection_group, summary, statements, notes`. Members are sorted by name; `member.host` and `port` are separate (an IPv6 host is bracketed only in `address`).
 - Denied reads (`available: false`): when a Group Replication read of `performance_schema.replication_group_members` (`_read_group_replication`) or a Galera `SHOW GLOBAL STATUS` read (`_read_galera`, `_read_galera_off`) is denied, the report sets the additive field `grant_sql` (`string | null`). For a denied table read (`performance_schema.replication_group_members`), `_denied_read_grant_sql` uses the `CURRENT_USER()` value that `read_status` reads in its first client invocation together with the server variables (no extra login; when it was not read, or the account has no `@`, `grant_sql` is null) and builds `GRANT SELECT ON ...` through `privileges.grant_sql` using the server's `partial_revokes` matching rules and printable-ASCII allowlist (no backslash). Galera `SHOW GLOBAL STATUS` has no denied table schema, so `grant_sql` is `null`. Neither the backend nor the workspace ever derives an account, table or `GRANT` statement from error text; `ClusterPlace.tsx` (`deniedText`) shows only the one-sentence reason in `PrerequisiteGate` and renders `report.grant_sql` in the shared `Commands` block only when present.
 - Severity, one scale for every kind (CLI, JSON, MCP, the place, the sidebar, `--fail-on`): `ok` with quorum and every expected member present and healthy; `watch` while quorum holds but a member is missing (a Galera node not in the component, an InnoDB Cluster member MISSING or UNREACHABLE), in a transitional state (Donor/Desynced, Joiner, Joined, Joining, RECOVERING), or one more failure would lose the majority (`no_tolerance`, "Cannot survive another failure"); `problem` without quorum or outside a Primary component, for a member in ERROR, when the connected member is OFFLINE or in ERROR, or a Galera node that does not replicate (`wsrep_off`).
@@ -7435,18 +7557,19 @@ The Cluster place and `myflames cluster` show the cluster the connected server b
 - API: `POST /api/live/cluster` (`_SERVER_VIEW_PATHS`, saved password filled on the server, query timeout 30 s) calls `read_status(conn, _identity=identity)`, `@grouped_read` `attach_topology_tiers(conn, report, ...)` (scoped to `connection_groups.members(profiles, current)` so only consenting saved connections in the same group are probed for upstream ProxySQL and Readyset tiers), `with_actions`, and `finish_read(workspace.store, report, connection, profiles, current, identity=identity)` to attach `connection_group` and record `topology_identity` for the connection in use. MCP: `cluster_status(profile, detail)` (saved profile only; `detail="core"` is `format_text` with the notes, `"full"` the report).
 - Workspace (`ClusterPlace.tsx`, `ClusterTopology.tsx`, `UpstreamTopologyTiers.tsx`, `TopologyTiers.tsx`, `CatalogActions.tsx`, `ConnectionGroupBar.tsx`, `clusterApi.ts`, `cluster.css`): a place of its own after Replication. It reads when opened on screen (`useOpenRead`, once per connection; Refresh reads again) and Server's Refresh all reads it too (`refreshTasks`, view id `cluster`, label Cluster). `ConnectionGroupBar` renders above `ClusterTopology` on the Topology tab and above the `kind: "none"` empty state when `report.connection_group` is present, re-reading `/api/live/cluster` when the group changes. `ClusterTopology` renders `report.topology_tiers` above the ClusterSet/group diagram via `UpstreamTopologyTiers.tsx` on the shared `TopologyTiers.tsx` tier module (`ProxySQL routing tier` and `Readyset cache tier` labelled rows with `Open ProxySQL` / `Open Readyset` jumps, Cluster card anatomy, `Use <connection>` only when the backend set `profile_id` under group consent, vertical stem links with accessible label plates beside the line; ProxySQL cards show `"Matched by address"` from `evidence: "mysql_servers"` when no QueryPilot rules exist, and read `"Not read"` with an `"unread"` link because this view reads only the database tier; Readyset tier items carry `database_connection` and `replication_error`, marking `"problem"` with detached cards, broken stems, and `"error"` links (`"Replication error or upstream unreachable · query fallback"`) when `replication_error` is true, `database_connection` is `"Unreachable"`, `status` contains `"unavail"`, or `replication_status` is `"Error"`, `"watch"` with `"stopped"` links (`"Replication stopped · query fallback"` / `"Replication disabled · query fallback"`) on `"Stopped"` or `"Disabled"`, `"running"` (`"CDC binlog stream & query fallback"`) only when every Readyset tier reports `"Running"` without a problem, and `"unread"` (`"Replication not read · query fallback"`) when unreported or `"Unknown"`). Toolbar with Refresh, the ⓘ (the severity scale, and that changes ask first and are audited) and the Segmented sections Topology, Members (Nodes on Galera and PXC) and, for InnoDB Cluster, Routers, which stay in the title row while they fit; the summary line (its OK has the same shape and word as Watch and Problem, and stays beside the text at 720 px); when the status is not OK the findings come first, one compact line each (the state's shape and word, the title in foreground text with only the member name linked, the reason on demand stacked under it; Details stay open by the finding's identity, `findingKeys`: its id and member, never its position, and `Findings` remounts per connection, so nothing opens on another finding after a refresh or on another cluster), then four tiles (Component or Quorum with failures tolerated, watch when it tolerates 0 and problem without quorum, "Not visible" with "Failures tolerated unknown" and the reason in its title on a read replica or a member out of the group; Nodes "3 in component · 1 inspected here" or Members "2 of 3 ONLINE", "Not visible" with "3 in metadata" when this member left the group or on a read replica, with the worst member's tone; This node or This member with the role as a hint; Flow control paused or Mode). Cards, the Members table, the inspector and findings share the status dot plus a word (`ClusterMark`); navigation uses a compact `NavMarker` with a neutral count or the state in its tooltip and accessible name. Topology uses a dimensional presentation: member cards (role badge, name, the address when it differs from the name, engine and version (PXC as "PXC 8.4.11-11.1", the full name on hover; nothing for another Galera node), the state, queues or flow control as text, and last the "This connection" chip, so every card's lines line up) on stems to one group line labelled with the component or the group mode, quorum and failures tolerated; a configured Galera node not in the component as a dashed placeholder; read replicas below the group on dashed neutral links ("Read replicas · asynchronous, not group members"); routers under them. A member that is UNREACHABLE, MISSING, OFFLINE, in ERROR or judged a problem has a dashed edge in its tone, a cut stem and its shape; a watch member has a heavier left edge. Only reported healthy membership may animate, and stops under the reduced-motion setting. At a view under 640 px the cards wrap in a grid inside a frame that stands for the group (dashed without quorum), and the tiles are shorter, so the first tab's content starts above the fold at 720×520. Members (`cluster.members` on Group Replication and InnoDB Cluster, `cluster.nodes` on Galera and PXC, whose columns differ; the name column starting at 150 px so nine columns fit at 1440 px) and Routers (`cluster.routers`) are DataTables, each its own instance (`key`) with its own column layout: the shell owns one record of layouts by table id (`main.tsx` `columnLayouts` through `useColumnStore`, given to Server as `columns`/`onColumns` and to the Cluster place through `ColumnStoreContext`) and saves it as `slow.columns_v1` (`TABLE_IDS` in `session.ts`), so a layout survives Topology, a restart and Server not being mounted; the inspector shows a member's state and where it was read (and the raw `pxc_cluster_view` STATUS), its counters (flow control as a percent and its fraction), and this node's Galera settings, or a router's ports and check-in (age and UTC, and a note when it is this member's frozen copy). Terms carry short glossary tooltips (Primary component, flow control, failures tolerated, queues, router ports). A report of another connection (`otherConnection`), or the last report after a failed read of this one, by the place's Refresh or by Refresh all (the shell keeps the failure with the report it failed over, `ClusterFailure`, until a read through either path succeeds; `is-stale`, with "Last read 14:40 (5 min ago)"), stays greyed and marks its member "Read here" (title: where and when it was read), never "This connection"; a failed read shows one short sentence (`failureText`: connection refused, lost, timed out, access denied), never the client's dump, and without a report a "Could not read the cluster" state with Retry instead of the first-run Load. The shell derives the sidebar item from the shared report of the connection in use (`clusterNav`): nothing before the first read; `NavMarker compact` with a status dot and neutral count for problem members, and the state word in the tooltip and accessible name; for `kind: "none"` the item gets `is-muted` (faint text and icon), `data-muted`, the tooltip and hidden text "This connection is not part of a cluster", stays focusable and clickable, and keeps the disabled look while open (a neutral gray fill, never the accent). The palette lists Cluster among the places. Browser suite `apps/workspace/test/cluster.mjs` (reports from `apps/workspace/test/cluster-fixtures.py`).
 - Tests: `test/test_cluster.py` replays `test/fixtures/cluster/cluster-*.json` (live recordings: healthy, donor, a node down, an isolated node, a member with Group Replication stopped read from the primary and from itself, an UNREACHABLE member; the recorded `v2_routers` answers carry the `UNIX_TIMESTAMP` column derived from the recorded check-in, the lab servers running in UTC) plus states derived from them (another PXC node Joiner or Joining, the address list as IPs, IP:port, FQDNs, one seed or a DNS service name, two nodes, wsrep_on OFF, a joiner, Galera Cluster for MySQL) and synthetic servers (a read replica connected to, an IPv6 group) in `test/_cluster_fixtures.py`, and checks the schema, read-only SQL, the CLI exit codes, the API and the MCP tool; `test/test_report.py` checks that checks.wsrep and the Cluster place give the same status on the Galera and PXC recordings.
+- ClusterSet zoom map and forms (`ClusterSetMap.tsx`, `ClusterSetActionForm.tsx`, `ShellOutput.tsx`, `ActionReview.tsx`, `ClusterPlace.tsx`, `main.tsx`): when `report.available && report.kind === "innodb_cluster"` and `report.clusterset` is present, `ClusterPlace` opens at the ClusterSet level (`zoom === null`) and leads with the ClusterSet (`showClusterSummary` hides single-cluster `SummaryLine`, `identityText`, `Findings` and `clusterTiles` at the set level), displaying `ConnectionGroupBar`, `Changes · the ClusterSet` (`mergeRemoveChoices` collapsing `remove_cluster:<name>` and `remove_cluster_keep:<name>` into `remove_cluster_choice:<name>`; `gateUngroupedRoutes` disabling actions routed to another saved connection and peer-dependent ClusterSet changes outside a Group connection, even when `target.self` is true; `readBlock` vs `changeBlock` permitting `check_clusterset` on Read-only connections), and `ClusterSetMap`. `ClusterSetMap` renders the set status line (`Healthy`, `Available`, `Unavailable`, `Unknown`, `Details`, `metadata_read_on`, `from_local_copy` note), per-cluster cards (role word with `Invalidated` taking precedence, name, plain-word status alongside the MySQL Shell `globalStatus` term only when the observed SQL facts establish it: **OK**/`OK` for a primary cluster, **Not checked** (no Shell term or green status for an SQL-only replica read, which does not check GTID consistency), **Misconfigured**/`OK_MISCONFIGURED`, **Connecting** (no Shell term), **Not replicating**/`OK_NOT_REPLICATING` when stopped or errored and `OK_MISCONFIGURED` when channel missing (no Shell term when ambiguous), **Writes fenced**/`OK_FENCED_WRITES` (omitting Shell term if primary channel is also misconfigured), **Not OK**/`NOT_OK` (omitting Shell term when primary has quorum, ONLINE primary and `super_read_only` ON without confirmed fencing), **Invalidated**/`INVALIDATED`, **Not read** (no Shell term: a missing workspace route does not establish Shell `UNKNOWN`); member count and primary when read; provenance `This connection`, `Read through <member>`, `Metadata only`, or `read_error`; `Details` toggle; **Open** button), `clusterset_replication` arrows (`setLinkText`: showing `missing` or `misconfigured` and never drawing broken or misconfigured links green), and plain stored Router / routing lists (`routingTargetLabel` resolving stored `target_cluster` Group Replication UUIDs to cluster names via unique `clusters[].uuid` matches). Clicking **Open**, double-clicking, or pressing `Enter` or `Space` on a focused card switches to the `topology` tab and zooms in (`clusterset-zoom` 200 ms animation, disabled under `prefers-reduced-motion`): local cluster zooms immediately; another cluster with a verified `route` calls `onZoomCluster(route.profile_id)` (`chooseMember("cluster", id)` in `main.tsx`), reads that saved group member (`Reading <cluster> through <profile>…` while pending, `Using <server> from group <group>.` in the top bar); an unrouted cluster shows `Metadata only` (or `read_error`), metadata instances, every action disabled, and `Use <connection>` or `Add a saved connection for a <cluster> member to this group.` with **Edit group…**. Breadcrumb `.clusterset-breadcrumb` shows `ClusterSet <name> › <cluster>` and **Zoom out** (`shortcut("↑")`: `⌘↑` on macOS, `Ctrl+↑` elsewhere; ignored while a modal dialog or text input/select/contentEditable is active), switching back to the `topology` tab and restoring `.cluster-view .view-main` scrollTop and focus on the cluster card; a fresh available report that no longer records the ClusterSet (after dissolve or removal) clears zoom navigation automatically. `Changes · the whole cluster` renders only outside a ClusterSet or inside a non-metadata, non-pending zoomed cluster. `ClusterSetActionForm` provides pre-review sheets for `remove_cluster_choice` (both removal choices with `WhyDisabled` on disabled choices, plus a **Force** checkbox shown only when `c.read === "failed"`, while `remove_cluster_keep` stays disabled when unreachable), `create_replica_cluster` (saved group target select, `CLUSTER_NAME` validated name with `suggestClusterName`, explicit `clone` or `incremental`), `set_routing_option` (`ROUTING_VALUES`: `target_cluster` mapping stored Group Replication UUIDs back to cluster names via `clusters[].uuid` or starting empty with an unmapped hint so raw UUIDs are never sent, `invalidated_cluster_policy`, `stats_updates_frequency`, `use_replica_primary_as_rw`, `read_only_targets`, filtered by catalog option gates; `tags` and `guideline` stay in MySQL Shell), `PromoteForm` (switchover/failover, shown only when another non-invalidated replica has `c.read === "failed"`, to select `invalidateReplicaClusters`), and `DissolveForm` (shown only when any cluster has `c.read === "failed"`, to select `force: true`).
 
 #### Cluster changes
 
 The workspace's action catalog is complete for the reported cluster kind even
-when an action cannot run. `cluster.with_actions` puts overview actions only in
+when an action cannot run. `cluster.with_actions` puts overview and ClusterSet actions only in
 `report.actions` (`overview_actions(report, checks)`) and member actions only in
 `member.actions` (`available_actions(report, member_key, checks)`). There is no
 `clusterset.actions` copy. CLI and MCP reads have no catalog. Actions keep their
 ids and labels as eligibility changes:
 
 - Group Replication: overview `switch_to_single_primary`, `switch_to_multi_primary`; each member `switchover`, `stop_member`, `start_member`.
-- InnoDB Cluster: the same two overview actions, plus `set_primary_cluster:<name>` for each non-invalidated replica cluster, `force_primary_cluster` for this cluster, and `rejoin_cluster:<name>` for each invalidated cluster; each member `switchover`, `stop_member`, `start_member`, `rejoin_instance`. Read replicas keep the same member actions, disabled. When there is no ClusterSet or no qualifying target, the overview keeps a disabled bare `set_primary_cluster`, `force_primary_cluster`, or `rejoin_cluster` entry for that family.
+- InnoDB Cluster: the same two overview actions, plus the `clusterset`-scope families below; each member keeps `switchover`, `stop_member`, `start_member`, `rejoin_instance`. Read replicas keep their disabled member actions. Every ClusterSet family remains listed, with a disabled bare id when there is no qualifying target.
 - MariaDB Galera: no overview actions; each node `desync_node`, `resync_node`, `bootstrap_pc`.
 - PXC, Galera for MySQL, and servers outside a cluster: no actions.
 
@@ -7454,10 +7577,10 @@ Each `cluster-action-1.1` entry has `schema_version, id, label, scope, kind,
 via, danger, description, member_key, member_name, member_uuid, cluster_name,
 enabled, why_not, fix, target, missing_privileges, grant_sql,
 privileges_unreadable` (`docs/schemas/cluster-1.0.json#/$defs/action`). `scope` is
-`overview` or `member`; member identity fields are null for overview actions.
+`overview`, `member` or `clusterset`; member identity fields are null for overview and ClusterSet actions.
 `cluster_name` identifies a ClusterSet target (null when there is none).
 `via` is `sql`, `udf` or `mysqlsh`. `kind` uses `dbops.KINDS`; these global
-SQL and AdminAPI changes are `risky`, independently of the existing `danger`
+SQL and AdminAPI changes are `risky`; `check_clusterset` is `read`, independently of the existing `danger`
 presentation hint. Enabled actions have null `fix`; `why_not` may carry an
 informational privilege warning. Disabled actions have a short plain reason
 and a fix, selected by the first failing
@@ -7610,35 +7733,42 @@ recorded with the tables, separate from fixture or live-test evidence.
 
 | Action and route | Engine / version | Required privileges | Source file:line |
 | --- | --- | --- | --- |
-| `start_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2187` |
-| `stop_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:2189` |
-| `start_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2188` |
-| `stop_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2190` |
-| `switchover`, UDF | MySQL 8.0.13+, plain Group Replication or InnoDB Cluster outside a ClusterSet replica cluster | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2181` |
-| `switch_to_single_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2183` |
-| `switch_to_multi_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:2185` |
-| `switch_to_single_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2184` |
-| `switch_to_multi_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2186` |
-| `switchover`, MySQL Shell | MySQL InnoDB ClusterSet replica cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:2182` |
-| `rejoin_instance`, MySQL Shell | MySQL InnoDB Cluster; Shell 8.1.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2192` |
-| `set_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2193` |
-| `force_primary_cluster`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2194` |
-| `rejoin_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:2195` |
-| `desync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2216`; `myflames/dbops.py:1549` |
-| `resync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:2216`; `myflames/dbops.py:1549` |
-| `bootstrap_pc`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_provider_options` | `myflames/cluster.py:2217`; `myflames/dbops.py:1549` |
-| All actions | PXC / Galera for MySQL | No actions offered; no privilege list inferred | `myflames/cluster.py:2806` (MySQL kinds); `myflames/cluster.py:2815` (MariaDB-only Galera branch) |
+| `start_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:3595` |
+| `stop_member`, SQL | MySQL 5.7.17–5.7.x | `SUPER` | `myflames/cluster.py:3597` |
+| `start_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:3596` |
+| `stop_member`, SQL | MySQL 8.0+, including 8.4 and 9.x | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:3598` |
+| `switchover`, UDF | MySQL 8.0.13+, plain Group Replication or InnoDB Cluster outside a ClusterSet replica cluster | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:3589` |
+| `switch_to_single_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:3591` |
+| `switch_to_multi_primary`, UDF | MySQL 8.0.13+, plain Group Replication | `GROUP_REPLICATION_ADMIN` or `SUPER` | `myflames/cluster.py:3593` |
+| `switch_to_single_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:3592` |
+| `switch_to_multi_primary`, MySQL Shell | MySQL 8.0.13+ InnoDB Cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:3594` |
+| `switchover`, MySQL Shell | MySQL InnoDB ClusterSet replica cluster; Shell 8.0.32+ | Full Shell administrator list below, with grant option | `myflames/cluster.py:3590` |
+| `rejoin_instance`, MySQL Shell | MySQL InnoDB Cluster; Shell 8.1.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3600` |
+| `set_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3601` |
+| `force_primary_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3602` |
+| `rejoin_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3603` |
+| `repair_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3607` |
+| `remove_cluster:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3608` |
+| `remove_cluster_keep:<name>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 9.0.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3609` |
+| `set_routing_option[:<address::name>]`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ (option gates to 9.2.0+) | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3610` |
+| `create_replica_cluster:<profile_id>`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3611` |
+| `dissolve_clusterset`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 9.0.0+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3612` |
+| `check_clusterset`, MySQL Shell | MySQL InnoDB ClusterSet; Shell 8.0.32+ | Shell checks at runtime; no local requirement list or GRANT suggestion | `myflames/cluster.py:3613` |
+| `desync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:3634`; `myflames/dbops.py:3294` |
+| `resync_node`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_desync` | `myflames/cluster.py:3634`; `myflames/dbops.py:3294` |
+| `bootstrap_pc`, SQL | MariaDB Galera 10.11+, including 11.4+ | `SUPER` for `SET GLOBAL wsrep_provider_options` | `myflames/cluster.py:3635`; `myflames/dbops.py:3294` |
+| All actions | PXC / Galera for MySQL | No actions offered; no privilege list inferred | `myflames/cluster.py:4774` (MySQL kinds); `myflames/cluster.py:4783` (MariaDB-only Galera branch) |
 
 For the three Shell topology actions, the global list is cumulative by
 **server** version, with `WITH GRANT OPTION` for every required privilege:
 
 | Server version | Global privileges added | Source file:line |
 | --- | --- | --- |
-| All supported versions | `RELOAD`, `SHUTDOWN`, `PROCESS`, `FILE`, `SELECT`, `REPLICATION SLAVE`, `REPLICATION CLIENT`, `CREATE USER` | `myflames/cluster.py:2198`; Shell `modules/adminapi/common/accounts.cc:122–175` |
-| MySQL 8.0.0+ | `SYSTEM_VARIABLES_ADMIN`, `PERSIST_RO_VARIABLES_ADMIN`, `REPLICATION_SLAVE_ADMIN`, `GROUP_REPLICATION_ADMIN`, `ROLE_ADMIN`, `CONNECTION_ADMIN` | `myflames/cluster.py:2200`; Shell `modules/adminapi/common/accounts.cc:122–175` |
-| MySQL 8.0.17+ | `EXECUTE`, `CLONE_ADMIN` | `myflames/cluster.py:2202`; Shell `modules/adminapi/common/accounts.cc:122–175` |
-| MySQL 8.0.18+ | `REPLICATION_APPLIER` | `myflames/cluster.py:2203`; Shell `modules/adminapi/common/accounts.cc:122–175` |
-| MySQL 8.3.0+, including 8.4 and 9.x | `TRANSACTION_GTID_TAG` | `myflames/cluster.py:2204`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| All supported versions | `RELOAD`, `SHUTDOWN`, `PROCESS`, `FILE`, `SELECT`, `REPLICATION SLAVE`, `REPLICATION CLIENT`, `CREATE USER` | `myflames/cluster.py:3616`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.0+ | `SYSTEM_VARIABLES_ADMIN`, `PERSIST_RO_VARIABLES_ADMIN`, `REPLICATION_SLAVE_ADMIN`, `GROUP_REPLICATION_ADMIN`, `ROLE_ADMIN`, `CONNECTION_ADMIN` | `myflames/cluster.py:3618`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.17+ | `EXECUTE`, `CLONE_ADMIN` | `myflames/cluster.py:3620`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.0.18+ | `REPLICATION_APPLIER` | `myflames/cluster.py:3621`; Shell `modules/adminapi/common/accounts.cc:122–175` |
+| MySQL 8.3.0+, including 8.4 and 9.x | `TRANSACTION_GTID_TAG` | `myflames/cluster.py:3622`; Shell `modules/adminapi/common/accounts.cc:122–175` |
 
 The schema requirements below also need grant option. A global grant can
 satisfy a schema requirement when `privileges.has` proves its scope and grant
@@ -7647,8 +7777,8 @@ a separate static `GRANT OPTION` does not supply it.
 
 | Schema | Privileges | Source file:line |
 | --- | --- | --- |
-| `mysql` | `DELETE`, `INSERT`, `UPDATE` | `myflames/cluster.py:2207`; Shell `modules/adminapi/common/accounts.cc:244–324` |
-| Each of `mysql_innodb_cluster_metadata`, `mysql_innodb_cluster_metadata_bkp`, `mysql_innodb_cluster_metadata_previous` | `ALTER`, `ALTER ROUTINE`, `CREATE`, `CREATE ROUTINE`, `CREATE TEMPORARY TABLES`, `CREATE VIEW`, `DELETE`, `DROP`, `EVENT`, `EXECUTE`, `INDEX`, `INSERT`, `LOCK TABLES`, `REFERENCES`, `SHOW VIEW`, `TRIGGER`, `UPDATE` | `myflames/cluster.py:2208`; Shell `modules/adminapi/common/accounts.cc:244–324` |
+| `mysql` | `DELETE`, `INSERT`, `UPDATE` | `myflames/cluster.py:3625`; Shell `modules/adminapi/common/accounts.cc:244–324` |
+| Each of `mysql_innodb_cluster_metadata`, `mysql_innodb_cluster_metadata_bkp`, `mysql_innodb_cluster_metadata_previous` | `ALTER`, `ALTER ROUTINE`, `CREATE`, `CREATE ROUTINE`, `CREATE TEMPORARY TABLES`, `CREATE VIEW`, `DELETE`, `DROP`, `EVENT`, `EXECUTE`, `INDEX`, `INSERT`, `LOCK TABLES`, `REFERENCES`, `SHOW VIEW`, `TRIGGER`, `UPDATE` | `myflames/cluster.py:3626–3629`; Shell `modules/adminapi/common/accounts.cc:244–324` |
 
 ##### Grant reads, suggestions and refusals
 
@@ -7756,7 +7886,8 @@ It issues no review token and sends no write, regardless of a caller-supplied
 The enabled-state rules below apply to catalog entries; failure disables the
 entry instead of hiding it (`ClusterPlace.tsx` wraps the shared `ActionGroup`
 from `CatalogActions.tsx` to render `report.actions` in `section.cluster-actions`
-under `Changes · the whole cluster` and `member.actions` in each member's
+under `Changes · the ClusterSet` at the set level and `Changes · the whole cluster`
+at the cluster level, and `member.actions` in each member's
 inspector, keeping disabled buttons focusable in the tab order with
 `aria-disabled="true"` and the reason and fix in a visually hidden
 `aria-describedby` description, so a screen reader hears them on focus; click,
@@ -7792,23 +7923,207 @@ version found and offer **Get MySQL Shell**. Member rejoin needs 8.1 or
 later for the incremental recovery option. Topology changes require MySQL
 8.0.13 on the connected server and every group member; a MISSING metadata row
 does not block Make primary. The connected member must be ONLINE with quorum,
-with no group member RECOVERING or UNREACHABLE. ClusterSet actions remain
-disabled on a read replica. Both InnoDB Cluster mode switches are disabled in
+with no group member RECOVERING or UNREACHABLE for cluster/member changes.
+Set-level eligibility instead uses each target cluster's fresh route, quorum
+and primary evidence. Both InnoDB Cluster mode switches are disabled in
 any ClusterSet, including its primary cluster, and require every member ONLINE.
 
 The reviewed statements below are JavaScript AdminAPI calls, tagged
-`/*myflames:cluster_op*/`. `Cluster` and `ClusterSet` name the AdminAPI objects;
-the sent calls get them with `dba.getCluster()` and `dba.getClusterSet()`.
+`/*myflames:cluster_op*/` (except `check_clusterset`, which is untagged).
+The first-line session guard obtains and checks `myflamesCluster` (`dba.getCluster()`)
+or `myflamesClusterSet` (`dba.getClusterSet()`), and the reviewed action line
+reuses that checked object instead of opening another unchecked AdminAPI session.
 
 | Action | Reviewed call | Additional offering conditions | Typed name |
 | --- | --- | --- | --- |
-| `switch_to_multi_primary` | `dba.getCluster().switchToMultiPrimaryMode();` | not in a ClusterSet, every member ONLINE, currently single-primary | cluster name |
-| `switch_to_single_primary` | `dba.getCluster().switchToSinglePrimaryMode();` | not in a ClusterSet, every member ONLINE, currently multi-primary | cluster name |
-| `rejoin_instance` Rejoin to the cluster… | `dba.getCluster().rejoinInstance("<host:port>", {recoveryMethod: "incremental"});` | metadata 2.0.0+, target in metadata and MISSING, OFFLINE or ERROR, valid metadata address, an ONLINE primary and quorum, cluster not invalidated, local cluster's ClusterSet global status exactly OK when in a set | member name |
-| `switchover` Make primary… | `dba.getCluster().setPrimaryInstance("<host:port>");` | ClusterSet replica cluster, single-primary, target ONLINE SECONDARY with a UUID and valid metadata address | no |
-| `set_primary_cluster:<name>` | `dba.getClusterSet().setPrimaryCluster("<name>");` | target a non-invalidated replica cluster in the set, local cluster not invalidated | target cluster name |
-| `force_primary_cluster` Fail over to this cluster… | `dba.getClusterSet().forcePrimaryCluster("<local_cluster>");` | connected to a non-invalidated replica cluster | local cluster name |
-| `rejoin_cluster:<name>` | `dba.getClusterSet().rejoinCluster("<name>");` | target an invalidated cluster in the set | target cluster name |
+| `switch_to_multi_primary` | `myflamesCluster.switchToMultiPrimaryMode();` | not in a ClusterSet, every member ONLINE, currently single-primary | cluster name |
+| `switch_to_single_primary` | `myflamesCluster.switchToSinglePrimaryMode();` | not in a ClusterSet, every member ONLINE, currently multi-primary | cluster name |
+| `rejoin_instance` Rejoin to the cluster… | `myflamesCluster.rejoinInstance("<host:port>", {recoveryMethod: "incremental"});` | metadata 2.0.0+, target in metadata and MISSING, OFFLINE or ERROR, valid metadata address, an ONLINE primary and quorum, cluster not invalidated, local cluster's ClusterSet global status exactly OK when in a set | member name |
+| `switchover` Make primary… | `myflamesCluster.setPrimaryInstance("<host:port>");` | ClusterSet replica cluster, single-primary, target ONLINE SECONDARY with a UUID and valid metadata address | no |
+| `set_primary_cluster:<name>` | `myflamesClusterSet.setPrimaryCluster(name[, options]);` | replica read OK, primary available and confirmed unfenced (`fenced_writes === False`), routing configuration readable | no |
+| `force_primary_cluster:<name>` | `myflamesClusterSet.forcePrimaryCluster(name[, options]);` | any reachable non-invalidated replica, routing configuration readable, every old-primary member confirmed unreachable | target cluster name |
+| `rejoin_cluster:<name>` | `myflamesClusterSet.rejoinCluster(name);` | reachable invalidated target, primary available and confirmed unfenced (`fenced_writes === False`) | no |
+| `repair_cluster:<name>` | `myflamesClusterSet.rejoinCluster(name);` | non-invalidated replica with observed channel trouble, primary available and confirmed unfenced (`fenced_writes === False`) | no |
+| `remove_cluster:<name>` | `myflamesClusterSet.removeCluster(name[, options]);` | replica or invalidated target; primary available and confirmed unfenced (`fenced_writes === False`); routing configuration read; healthy channel or explicitly forced unreachable target | cluster name |
+| `remove_cluster_keep:<name>` | `myflamesClusterSet.removeCluster(name, {dissolve: false, ...});` | reachable replica or invalidated target with quorum, ONLINE primary and healthy channel (no force on unreachable targets); primary available and confirmed unfenced (`fenced_writes === False`); routing configuration read; Shell 9.0.0+ | cluster name |
+| `set_routing_option[:<address::name>]` | `myflamesClusterSet.setRoutingOption([router,] option, value);` | primary available and confirmed unfenced (`fenced_writes === False`), global and Router metadata readable | no |
+| `create_replica_cluster:<profile_id>` | `myflamesClusterSet.createReplicaCluster(address, name, options);` | primary available and confirmed unfenced (`fenced_writes === False`); direct, non-Read-only standalone MySQL 8.0.27+ target in the active Group connection outside cluster metadata whose reported address matches its saved endpoint | new cluster name |
+| `dissolve_clusterset` | `myflamesClusterSet.dissolve([options]);` | primary available, Shell 9.0.0+ | ClusterSet name |
+| `check_clusterset` | `print(JSON.stringify(myflamesClusterSet.status({extended: 1}), null, 2));` (untagged) | readable set identity with a primary cluster recorded in the view; Shell opens connections to every member; permitted on Read-only connections | none, read-only |
+
+The table shows equivalent argument notation; the review contains the exact
+one-line call. `_js` encodes every server or user value as strict JSON;
+objects and arrays use `JSON.parse` to preserve own `__proto__` keys. Strings
+escape `<`, newlines and Unicode separators. No preview call is generated:
+creation and removal previews can modify servers in Shell 9104d2f0b.
+
+##### ClusterSet plan contract
+
+Catalogs (`_clusterset_actions`), planning (`plan_action(..., parameters=None)`),
+group-scoped `prepare_action` (forwarding `parameters` at `/api/live/cluster/plan`),
+read-only status dispatch, streaming execution (`ShellWriter.run_write` via
+`Progress.emit`) and per-instance post-verification (`clusterset_verify.verify`,
+`clusterset_execution.finish`) operate together under the shared review token. A
+disabled catalog entry always gives one reason and one fix; no missing probe is
+treated as evidence of unreachability or standalone membership. Mutating
+ClusterSet actions (`set_primary_cluster`, `rejoin_cluster`, `repair_cluster`,
+`remove_cluster`, `remove_cluster_keep`, `set_routing_option`,
+`create_replica_cluster`) require `primary.fenced_writes is False` explicitly:
+when fencing is `True` they refuse with `"The primary reports that writes are
+fenced."`, and when fencing is `None`/unknown they refuse with `"Cannot confirm
+whether the primary cluster's writes are fenced."` (`check_clusterset`,
+`dissolve_clusterset` and confirmed `force_primary_cluster` keep their
+exceptions).
+
+Capability gates are separate from the credential-file floor of Shell 8.0.32
+(`_shell_minimum` takes `max(SHELL_MIN_VERSION, CLUSTERSET_METHOD_MINIMUM[base])`).
+Core ClusterSet methods first appear in AdminAPI 8.0.27 (`forcePrimaryCluster.timeout`
+in 8.0.32), so running any ClusterSet action requires at least Shell 8.0.32;
+`dissolve` and the removal `dissolve` option (`remove_cluster_keep`) need 9.0.0.
+Routing entries expose `options` descriptors with `minimum_shell`, `enabled`,
+`why_not` and `fix`: AdminAPI added `target_cluster` and `invalidated_cluster_policy`
+in 8.0.27, `stats_updates_frequency` in 8.0.31, `use_replica_primary_as_rw` in
+8.0.32 (all gated to at least the 8.0.32 floor in `_clusterset_routing_options`),
+`tags`, `tag:name` and `read_only_targets` in 8.1.0, and `guideline` in 9.2.0
+(plus metadata 2.3.0+). The workspace form (`ClusterSetActionForm.tsx` `ROUTING_VALUES`)
+offers `target_cluster` (`primary` or cluster name), `invalidated_cluster_policy`
+(`drop_all`, `accept_ro`), `stats_updates_frequency` (`0`–`2147483647` s),
+`use_replica_primary_as_rw` (boolean), and `read_only_targets` (`all`,
+`read_replicas`, `secondaries`); `tags` and `guideline` stay in MySQL Shell
+because their values cannot be enumerated from the report. Shell validates
+existing guideline names and Router compatibility. Null clears an override or
+restores a global default (`_shell_set_routing_option`). Catalog privileges for
+these calls are `shell_runtime`: the active account's grants do not prove the
+account's privileges on every target. Creation validates the target's full
+administrator privileges inside Shell.
+
+`POST /api/live/cluster/plan` forwards optional `parameters` (via `ui._action_plan`)
+to `cluster.plan_action(..., parameters=payload.get("parameters"))`. Non-ClusterSet
+actions reject any non-empty `parameters` (`"This action does not accept parameters."`).
+For ClusterSet actions, `_clusterset_plan_parameters` requires `parameters` to be
+omitted, `null`, or a JSON-serializable object (`allow_nan=False`) with string
+keys, and accepts only the options supported by that action: `timeout` and
+`invalidateReplicaClusters` for switchover/failover; `timeout` and `force` for
+removal/dissolve; `option` and `value` for routing; `name`, `recoveryMethod`,
+`recoveryProgress` and `timeout` for creation; none (`()` / `{}`) for
+rejoin/repair/status. Any unsupported key raises HTTP 400. An invalidation list
+must be nonempty and name only other non-invalidated replicas confirmed
+unreachable. `force: true` is allowed only for confirmed unreachable clusters
+(and required when removing an unreachable cluster with `remove_cluster`), and
+is **never** supported for `remove_cluster_keep` (keeping a removed cluster
+running requires a reachable ONLINE primary and quorum; Shell's `dissolve:false`
+branch dereferences an unavailable target's null session after mutating metadata,
+`cluster_set_impl.cc:1579–1597`, `async_topology.cc:126–128`). The remove action id
+(`remove_cluster` vs `remove_cluster_keep`) determines the `dissolve` choice
+(omitted on Shell < 9.0.0, retaining Shell's destructive default; set to `true` or
+`false` on 9.0.0+). Creation requires an explicit recovery method, never
+`auto`, validates `name` against `_CLUSTER_NAME` (`^[A-Za-z_][A-Za-z0-9_.-]{0,62}$`)
+and uniqueness in the set, and defaults to textual `recoveryProgress: 1`.
+Both `clone` and `incremental` produce reviewed creation plans. Each binds
+`expect.server_identity.target_instance` to the spare's saved address and
+reviewed UUID. After the ClusterSet identity and view checks, the first script
+line opens a separate Shell session to that exact address, requires
+`SELECT @@global.server_uuid` to equal the reviewed spare UUID, and closes the
+session before `createReplicaCluster`. A mismatched or unreadable identity
+throws `MYFLAMES_IDENTITY_MISMATCH` on the guard line; the action is refused
+with every reviewed call `not_sent`. The probe also closes on mismatch.
+The target check is part of `session_guard`, the review token and the audit.
+
+Residual window: `createReplicaCluster` accepts an address instead of an
+already guarded Session (`mod_dba_cluster_set.cc:344`). Shell opens its own
+target connection after the probe (`cluster_set/cluster_set_impl.cc:842`)
+and another recipient connection immediately before clone copies data
+(`common/base_cluster_impl.cc:431–464`). Neither connection exposes an
+expected-UUID option. If the address changes destination after the check,
+Shell can still create or clone on a different server. Use direct server
+addresses without routers or load balancers, and keep each address pointing
+at the reviewed server for the duration of the operation. Both recovery
+methods disclose this limit in review. Clone also warns that it replaces data
+and restarts the target, with a 3,600-second no-output limit and an 86,400-second
+overall limit; stopping the client does not undo a server clone.
+Additional create options are rejected, rather than passed through without their
+version checks. `plan["parameters"]` and `plan["expect"]["clusterset_parameters"]`
+retain the normalized options inside the review token; execution (`execute_action`)
+reads `reviewed.get("parameters")`, never a request-level `parameters` field on
+`/api/live/cluster/action`.
+
+Backend-only `checks.clusterset_reachability` maps cluster names to fresh
+`{server_uuid, reachable}` observations for every metadata member. Ordinary
+report reads and catalog evaluation (`with_actions`) do **not** run the failover
+preflight: they reuse only the bounded ordinary route search's existing
+observations (`report._clusterset_reachability`). The dedicated
+`_clusterset_failover_preflight` (`CLUSTERSET_FAILOVER_TIMEOUT = 50.0`,
+`CLUSTERSET_FAILOVER_MAX_OPENS = 16`, `CLUSTERSET_FAILOVER_PROBE_TIMEOUT = 3.0`)
+runs in `prepare_action` during failover **review and send** to refresh
+primary-cluster observations independently of the ordinary three-open
+route-search budget. Both ordinary route search and `_clusterset_failover_preflight`
+use `_clusterset_initial_connection_failure`: only initial, non-timeout
+`2002`/`2003`/`2005` connection-level or DNS errors at a uniquely attributable,
+explicit saved metadata endpoint establish unreachability, and a successful UUID
+read establishes reachability. MySQL defines `2003` as `CR_CONN_HOST_ERROR` and
+`2005` as `CR_UNKNOWN_HOST` (`mysql-server/include/errmsg.h:62,64`, messages in
+`libmysql/errmsg.cc:40,42`). Authentication errors (including `1045`), `2013`
+(`CR_SERVER_LOST`), errors after SQL or guard markers, SSH failures, timeouts
+(including numeric OS timeout suffixes `60`, `110`, `10060`) and ambiguous routes
+remain unknown. Every observation must be false, and no route may have answered,
+before failover or an unreachable-target option is eligible. The report may carry
+that same map as `clusterset.reachability`. A failed SQL read, missing saved
+connection or incomplete probe list is insufficient, and all probes run only
+through authorized Group members.
+
+Backend-only `checks.replica_candidates` holds fresh preflight results for
+creation: `profile_id`, `route` (`profile_id`, `server_uuid`, `self`), `read`,
+`read_error`, `server_uuid`, saved `address`, `reported_address`, `endpoint`,
+`read_only`, `saved_group`, `group_generation`, `engine`, `server_version`,
+`kind`, `group_name`, `gtid_subset`, `super_read_only` and `configuration`. The
+profile must be in `checks.group_profiles` of `checks.group_name`, must **not**
+be `read_only` (bound in `expect.replica_candidate` and re-checked in `ui.py`
+`current_candidate` before planning and sending), have a successful read,
+match the route UUID, run MySQL 8.0.27+, be outside every cluster and group,
+have GTIDs verified as a subset of the primary's and have its fencing state
+read. Its saved host:port is the Shell target and must equal the reported
+host:port; a differing reported address refuses creation before the Shell
+configuration check. Action parameters cannot supply an address, credentials,
+profile or preflight evidence.
+Every spare SQL preflight result (variables, Group Replication members,
+metadata-schema presence and GTID subset) uses `_ClusterSetReader` with the
+saved UUID already bound. Each client login reads that UUID with its facts
+and disables reconnect; missing or changed identity rejects the result,
+including empty tables. Shell's `checkInstanceConfiguration()` remains a
+separate configuration check: its global-session guard does not attest the
+UUID of the internal sessions Shell opens (`mod_dba.cc:1766–1806`,
+`dba/check_instance.cc:191–195`). Direct endpoints are required for it too.
+
+Plans keep the existing server UUID and AdminAPI group-UUID bindings, and add
+`expect.clusterset_view_id`, `expect.clusterset_target` (cluster name, route,
+route server UUID and view_id), metadata source, normalized parameters and
+any required reachability evidence. Creation binds its preflight identity;
+switchover, failover, both removal choices and routing changes bind
+`expect.routing_configuration` (stored global and per-Router options, which can
+change without advancing `view_id`, compared with type-strict canonical JSON at
+pre-send in `execute_action`). Known limits on routing binding: a replicated
+metadata copy read can lag behind the primary, the in-session Shell guard does
+not recheck routing options after the fresh pre-send SQL read, and a Routing
+Guideline's document content can change without its stored guideline ID
+changing. `review_details` binds all of this, the exact call, warnings, effects
+and typed guard in the existing token. A fresh plan with a changed view, route
+or routing configuration differs in `expect` and is refused before send. The
+legacy bare `force_primary_cluster` remains a plan-only alias for the local
+named target; the catalog lists each candidate by name.
+
+The review names Routers with explicit or inherited pins before removal.
+Default removal dissolves the cluster; keeping it running creates divergent
+transactions and is not a rejoin undo. Routing changes are stored configuration
+applied on Router refresh, not proof of traffic routing. Failover warns of
+transactions not received and of an isolated old primary and Routers that
+only see it continuing to accept writes. Rejoin's undo suggests inspection,
+never destructive removal. Dissolve explains that `--no-wizard` skips Shell's
+own confirmation and requires checking every reachable instance because the
+upstream implementation skips its primary-last cleanup step
+(`modules/adminapi/cluster_set/dissolve.cc:483`, Shell 9104d2f0b) and, with
+MySQL Shell 9.7.1, can leave `clusterset_replication` rows in
+`performance_schema.replication_asynchronous_connection_failover_managed` on
+former replica members (flagged by `clusterset_verify.py`).
 
 Mode switches run `Cluster.switchToMultiPrimaryMode()` or
 `Cluster.switchToSinglePrimaryMode()`: MySQL Shell runs the Group Replication
@@ -7828,8 +8143,8 @@ waits for the new primary cluster to catch up and moves the replication
 channels; the old primary becomes a replica cluster. MySQL Shell refuses
 an unreachable or unhealthy primary or target, or a target with transactions
 the primary does not have. `ClusterSet.forcePrimaryCluster(name)` is an
-emergency failover to this replica cluster and invalidates the old primary.
-It refuses while any instance of the primary cluster is reachable, including a primary without quorum or an OFFLINE member. The catalog uses the metadata fields it reads; it does not infer that all primary instances are unreachable from a channel error. MySQL Shell verifies remote reachability, cluster health and GTIDs before these ClusterSet operations. Transactions
+emergency failover to any eligible named replica cluster and invalidates the old primary.
+It refuses while any instance of the primary cluster is reachable, including a primary without quorum or an OFFLINE member. The catalog requires complete fresh reachability evidence; it does not infer that all primary instances are unreachable from a channel error. MySQL Shell verifies remote reachability, cluster health and GTIDs before these ClusterSet operations. Transactions
 the old primary committed that this cluster did not receive are lost; the
 review warns to fence the old primary or confirm it is down before proceeding.
 `ClusterSet.rejoinCluster(name)` rejoins an invalidated cluster as a replica
@@ -7842,12 +8157,19 @@ Member rejoin requires metadata 2.0.0 or later and, within a ClusterSet, the
 local cluster's `globalStatus` to be exactly `OK` (Shell tag 8.4.0,
 `modules/adminapi/common/preconditions.cc:352–358`). `OK_NOT_REPLICATING`,
 `OK_NOT_CONSISTENT`, `OK_MISCONFIGURED`, `NOT_OK` and unknown status disable
-it with the reason. The SQL status report does not establish that complete
-AdminAPI status, which includes remote GTID consistency checks
-(`modules/adminapi/cluster_set/cluster_set_impl.cc:593–600`), so a ClusterSet
-member rejoin stays disabled when the status is unavailable. Its fix directs
-the user to check status and rejoin in MySQL Shell; a running local channel
-does not prove `OK`.
+it with the reason. When no explicit global status is available,
+`_primary_clusterset_rejoin_ok` can establish `OK` for the local primary
+cluster only: current metadata on this same verified ONLINE primary,
+quorum, no invalidation, raw `super_read_only: false`, `fenced_writes: false`
+and a positively absent `clusterset_replication` channel without a read
+error. Shell's primary branch returns `OK` without comparing replica GTIDs
+(`modules/adminapi/cluster_set/cluster_set_impl.cc:529–554`). An OFF/OFF
+channel is insufficient because these SQL reads omit coordinator errors
+that Shell checks. Replica clusters still require the complete AdminAPI
+status, including remote GTID consistency checks (:593–600), so rejoin
+stays disabled there when that status is unavailable. Explicit non-OK
+status is never overridden. MySQL Shell repeats its own preconditions
+inside the reviewed `rejoinInstance` call.
 
 Every MySQL Shell change uses the same reviewed-change policy, review token
 and audit path as the other Cluster changes. The exact call is shown at
@@ -7855,15 +8177,22 @@ review; before sending, the plan is made again from a fresh cluster read and
 the statements and `expect` are compared. A mismatch sends nothing.
 For MySQL Shell, `expect` also binds the group members' states and roles,
 the MISSING member keys, the Shell path and, when present, the ClusterSet's
-cluster names, roles and invalidation flags. Metadata instance addresses and
-cluster names are validated before being offered, and arguments are encoded
-as JavaScript string literals.
+cluster names, roles and invalidation flags. Metadata instance addresses are validated before being offered; server-provided
+cluster and Router names are retained as data and JSON-encoded in the exact call.
 
 `cluster_shell.ShellWriter` sends the reviewed script on standard input to
 `mysqlsh --js --no-wizard --quiet-start=2`. The account is passed in a private
 0600 option file, never on the command line or in the environment. The Shell
 runs with an empty temporary `HOME` and `MYSQLSH_USER_CONFIG_HOME`, so no user
-startup script or saved credential takes part. A socket connection passes
+startup script or saved credential takes part. For a replica target probe,
+`shell.parseUri(session.uri)` supplies the current account and TLS options;
+the script replaces host/port with the reviewed target and removes socket
+and schema. Shell's session URI excludes its password. `ShellWriter` passes
+that password through a separate 0600 JSON file in a private temporary
+directory, with only the file path in `MYFLAMES_SHELL_PASSWORD_FILE`.
+`shell.openSession` receives it through `os.loadTextFile`; the password stays
+out of the reviewed script, argv, environment values and audit. Both private
+credential files are cleaned up when the invocation exits. A socket connection passes
 through that socket. MySQL Shell changes stay disabled over an SSH connection,
 because MySQL Shell connects to the other members directly with this connection's
 user and password; the place says so in its notes. ShellWriter rechecks the Shell startup
@@ -7873,7 +8202,21 @@ sessions copy CA files but can drop the profile's ssl-mode. ShellWriter therefor
 refuses VERIFY_IDENTITY (member host names are not verified) and REQUIRED (member
 sessions can fall back to PREFERRED), before creating credentials or sending anything.
 VERIFY_CA always passes a CA file, including a private system-root bundle when no
-explicit CA was saved, so member sessions retain CA verification. The time limit is 600 s.
+explicit CA was saved, so member sessions retain CA verification. Ordinary Shell
+calls have a 600-second limit; clone creation uses the longer limits in its review.
+
+Workspace action Shell processes join `LifecycleJobs` shutdown supervision.
+`connector._run_bounded(tool_groups=...)` publishes their POSIX process group
+through `ToolGroups.start` before sending stdin. A closed registry or failed
+publication refuses the send; cleanup removes the group only after its
+descendants are gone. Windows keeps the desktop's task-tree termination path.
+Shutdown stops the client and gives its request thread the existing bounded
+audit grace. If shutdown interrupts observation, `ShellWriter` immediately
+completes the pending audit as unknown, before any post-action SQL read can
+wait on a server. The record tells the operator to check clone status, server
+restart, ClusterSet membership and replication before retrying. Killing the
+client does not roll back a server-side clone. The transport retains its
+separate inactivity and overall clone limits for an already running call.
 
 Before these calls, the first script line uses the Shell global session's
 `runSql("SELECT @@global.server_uuid").fetchOne()[0]` to compare the reviewed
@@ -7885,22 +8228,54 @@ AdminAPI object: `Cluster.status({extended: 1}).defaultReplicaSet.groupName`
 must match the reviewed server's own `group_replication_group_name` variable.
 The field exists in Shell 8.0.32 (`modules/adminapi/cluster/status.cc:1555–1556,1798`
 at that tag). ClusterSet actions use `ClusterSet.status({extended: 2})`:
-`domainName` and the exact cluster-name to `clusters[name].groupName` map must
-match the set name and every cluster group UUID read from this server's
-metadata. Extended level 2 retains those group names (Shell tag 8.0.32,
-`modules/adminapi/cluster_set/status.cc:132–164`). A missing or changed identity
-throws the same mismatch marker before any action. The reviewed action calls
+`domainName`, the exact cluster-name to `clusters[name].groupName` map,
+each `clusterRole`, invalidation (`globalStatus === "INVALIDATED"`) and
+`primaryCluster` must match the reviewed metadata. Extended level 2 retains
+those group names, including unavailable clusters; level 1 omits them
+(Shell tag 8.0.32, `modules/adminapi/cluster_set/status.cc:132–164`,
+`cluster/status.cc:1555–1556`). Invalidation takes precedence over availability
+(`cluster_set_impl.cc:600–606`); health is not required by this identity check.
+For invalidated clusters, metadata's NULL `member_role` is bound as `REPLICA`
+to match Shell's status representation (`common/metadata_storage.cc:3604`,
+`cluster_set/status.cc:118–120`). The invalidation flag remains bound separately.
+If status exposes `metadataServer`, its address must equal a reviewed member
+address from this set's metadata, excluding unrelated clusters and saved
+profile aliases. The same first line then selects `domain_name` and
+`CAST(view_id AS CHAR)` from `mysql_innodb_cluster_metadata.v2_cs_clustersets`
+on the global session. JavaScript requires exactly one matching domain and
+the exact reviewed decimal view string, preserving unsigned 64-bit values.
+The SQL contains no name interpolation or parameters, so Shell's SQL string
+escaping cannot depend on `NO_BACKSLASH_ESCAPES` here. A missing or changed
+identity throws the same mismatch marker before any action. The reviewed action calls
 `myflamesCluster` or `myflamesClusterSet`, reusing the checked object instead
 of obtaining another object with new unchecked connections. Shell's
 `mysqlshdk/shellcore/shell_core.cc:140–177` evaluates stdin JavaScript as one
 script, so that exception prevents subsequent calls. `session_guard` exposes
 the derived JavaScript line to review, token binding and audit. Its identities
 come from `expect.server_identity`, including the AdminAPI object kind and
-group UUID or ClusterSet name/group map. `ShellWriter`
+group UUID or ClusterSet name, groups, roles, invalidation, primary cluster,
+member addresses and view. `ShellWriter`
 maps the first-line marker to `refused` / `identity_mismatch` with every
 reviewed call `not_sent`; no after-read follows. Later exception locations
 subtract this prefix line, and a marker in a later AdminAPI error cannot
 claim an identity refusal.
+
+Known limit: Shell opens the AdminAPI object's internal sessions itself
+(`modules/adminapi/mod_dba.cc:2103–2158`), and exposes their metadata server
+address but not their connected UUID or view. The global session's view check
+therefore does not prove the internal metadata session's exact view. If an
+instance address in metadata reaches a load-balanced endpoint, an internal
+session could reach another server even when these checks pass. Connect
+ClusterSet members by direct addresses.
+
+The SQL route guard has a separate packet limit: the mysql client sends its
+UUID SELECT and the following facts as separate requests within one login.
+Disabling reconnect prevents a login from silently moving servers; it does
+not pin a statement-routing proxy's backend. A proxy such as ProxySQL or
+Readyset can answer the UUID from one server and route the next statement
+elsewhere. ClusterSet metadata, member reads and spare preflight require
+direct member connections, without statement-routing or load-balanced
+endpoints. The guard is not evidence of backend identity behind such a proxy.
 
 `cluster_shell.error_text` strips colour codes and maps a connection or login
 failure before any statement to `ERROR <n>: <message>` without a line, so the
@@ -7937,6 +8312,20 @@ exit without an error message also leaves the outcome unknown unless an
 after-read observes a partial change. No error is retried automatically.
 This read does not prove the state of members it cannot see.
 
+`MYSQLSH 51004` is `SHERR_DBA_GROUP_MEMBER_NOT_ONLINE`
+(`modules/adminapi/common/dba_errors.h:42`). Dissolve's fixed missing-member
+exception is raised while gathering instance state
+(`modules/adminapi/cluster_set/dissolve.cc:297–301,423`), before synchronization
+and dissolution. However, earlier lock acquisition (:408,416–419) can install
+locking-service UDFs (`cluster_set_impl.cc:3633–3644`,
+`cluster/cluster_impl.cc:4272–4283`). Installation suppresses binary logging
+and issues `CREATE FUNCTION` (`mysqlshdk/libs/mysql/lock_service.cc:53–61`).
+Unchanged topology and GTIDs therefore cannot prove that nothing changed;
+the current verifier does not inventory these UDFs. Even with genuine
+`mysqlsh` error provenance and the exact fixed message, the result retains
+`unknown or partial`. A matching server error number or input line alone
+cannot establish an internal precondition stage.
+
 Never use "GCache" wording. There are no catalog actions for `SET GLOBAL
 wsrep_on` (sessions opened later stop replicating their writes), PXC, Galera
 for MySQL, or direct SQL mode switches on InnoDB Cluster. Start remains visible
@@ -7953,14 +8342,21 @@ public `cluster-1.0` server object. Before a Galera write, a same-session
 `session_guard` compares all four global values and the node's wsrep_gcomm_uuid
 from GLOBAL_STATUS; a mismatch or missing node UUID refuses before
 the reviewed action statement runs. Endpoints:
-`POST /api/live/cluster/plan` (`action`, `member_key` for member actions;
-`_CONNECTION_PATHS`, saved password like the views; returns an enabled plan
-with `policy` and `review_token`) and `POST /api/live/cluster/action`
-(`plan` without its token, `review_token`, `typed`, `confirmed: true`;
-`_WRITE_PATHS`), audited as `cluster_action`, envelope `cluster-action-1.1`.
-Direct SQL sends wait up to 120 s; MySQL Shell sends wait up to 600 s. The
-workspace's `POST /api/live/cluster` returns the catalog in the two scopes
-described above; `myflames cluster` and `cluster_status` do not carry it.
+`POST /api/live/cluster/plan` (`connection`, `action`, `member_key` for member
+actions, optional `target_profile_id` for a Group connection route, optional
+`parameters` object forwarded to `plan_action`; `_CONNECTION_PATHS`, saved
+password like the views; returns an enabled `cluster-action-1.1` plan with
+`policy`, `parameters` and `review_token`) and `POST /api/live/cluster/action`
+(`connection`, `plan` without its token, `review_token`, `typed`, `confirmed:
+true`, optional `target_profile_id`, optional `progress_id`; `_WRITE_PATHS`),
+audited as `cluster_action`, envelope `cluster-action-1.1` (all MySQL Shell
+results include `shell_output`, `shell_stderr`, `shell_output_truncated` and
+`shell_stderr_truncated` capped at the last 1 MiB per stream; ClusterSet results
+also include `outcome_class`, `outcome` and `verification`). Direct SQL sends
+wait up to 120 s; ordinary MySQL Shell sends wait up to 600 s, and clone replica
+creation uses its reviewed 3,600 s no-output limit and 86,400 s overall limit. The workspace's `POST /api/live/cluster` returns the catalog in
+`report.actions` (`overview` and `clusterset` scopes) and `member.actions`
+(`member` scope); `myflames cluster` and `cluster_status` do not carry it.
 Tests: `test/test_cluster.py` (complete catalogs, eligibility, versions,
 optional variables and identical refusals), `test/test_cluster_actions.py`
 and `test/test_cluster_shell.py` (plans, statements, typed names, review-token
@@ -8014,7 +8410,7 @@ A row change refuses while the module has other changes in memory (LOAD would ap
 
 #### Reviewed changes planned from a fresh read (Cluster, ProxySQL and Readyset)
 
-`myflames/reviewed_writes.py`, `apps/workspace/src/ActionReview.tsx` and `apps/workspace/src/CatalogActions.tsx`. Catalog refusal now covers both Cluster and Readyset: `ActionUnavailable` (defined as a `ValueError` subclass in `myflames/reviewed_writes.py` and re-exported by `myflames/cluster.py` for `ui.request_error_text`) carries the catalog entry's `why_not` and `fix` (plus Cluster's `grant_sql` when present) straight through HTTP 400 unchanged with no review token. In the workspace, `CatalogActions.tsx` (`ActionGroup`) renders complete catalogs for both Cluster and Readyset: every action stays visible and focusable (`aria-disabled`), with `why_not` and `fix` in a visually hidden `aria-describedby` description and in a `WhyDisabled` message anchored to the button that click, Enter or Space opens, while a client-side `blocked` reason (stale or failed report, paused reads, write policy, read-only connection) disables every action with one line. Plan: the module reads and plans (exact statements, `expect`, `typed_guard`, `facts`, `warnings`, `undo`, `changes`, `next`); `ui._action_response` adds `policy` from `dbops.decide(worst_kind(statements))` (every statement is risky, so Production and Development both confirm and Read-only answers `refuse`) and a review token over the plan without `review_token` and `policy` (`reviewed_writes.review_details`). Action: `check_reviewed` (a dict with an action and 1 to 10 complete statements; MySQL/MariaDB identity packets permit multi-line SQL, while Admin interfaces require single-line statements), the policy gate before any connection (refused and audited: `read_only`, `needs_confirmation`), the token consumer (missing, expired, used or changed: refused and audited as `review`), the saved password, then `execute`: plan again from a fresh read (not offered any more or disabled: refused `changed`), compare statements and `expect` (refused `changed`), the typed guard (refused `typed_guard`), read the saved policy again (`ui._action_response` `before_send`: a profile made Read-only or another type since the request refuses as `policy_changed`), consume the token, write the pending audit record (failure sends nothing), one `run_write` with the statements joined by newlines (`--comments --binary-mode`, stdin, no reconnect; batch mode stops at the first error), then: `done` with `after` (the state read again) and `next`. Only an error the client printed with its number decides a failure: `failed` when a server error (any number but the client's 2000 to 2999) names line 1, or for an initial connection/login error without a line or private acknowledgement (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005 or 2026; audit outcome `not_connected`); `partial` when a server error names line N > 1 (`sent`, `not_sent`). The mysql and MariaDB clients add "at line N" once they have read a statement (client/mysql.cc `put_info`). Everything else is `unknown` (audit `unknown`, outcome `timeout` or `no_reply`; never retried): a time limit, an interrupt, a client error at a line (2013, 2006), a line past the last statement, and a client that ended without printing an error number (killed or crashed after the server may have run every statement). Envelope `proxysql-action-1.0` / `cluster-action-1.1` / `readyset-action-1.0`: `{schema_version, action, status, message, statements, sent, not_sent, error, after, undo, next, audit_id, policy, states, effect, checks}`: `states` is each statement's final state (`done`, `failed`, `not_run`, `not_sent`, `unknown`; `done` only for statements the server answered), `effect` the rows `[what, before, now]` the module builds from the read before the send (captured in its fresh plan) and the read after (`proxysql._effect`: the changed field of the configuration row, Runtime, the rule in memory and runtime, memory versus runtime and disk; `cluster._effect`: Primary, the member's state, `wsrep_desync` and state, Component or Group mode; a missing value says why, never "Not readable": "No member reported the PRIMARY role in the view read here" for the primary, and after stop or start a missing member state is "The read after the action failed", told apart from a server that reported no value; `readyset._effect`: Readyset status, Replication status, Replication offset on `set_replication_position`, Caches count, Proxied queries count on `drop_all_proxied_queries`, changed Table statuses up to 5, and changed allowlists), null when the read after failed or the outcome is not done; `checks` comes from the plan (`proxysql._checks`, `cluster._checks`, `readyset`: what to refresh and look at, and that the Audit log keeps it as Outcome unknown). Plans also carry `timeout_s` (60 for ProxySQL, 120 for Cluster, 30 for Readyset). Progress (`reviewed_writes.Progress`, kept by `ProgressRegistry` on the workspace: at most 64, ten minutes after their last change): the action request may carry `progress_id` (16 to 64 of `[A-Za-z0-9_-]`; missing, invalid or reused means only that no progress is kept), and `POST /api/live/action/progress {progress_id}` (no connection, not in `_CONNECTION_PATHS`) returns `action-progress-1.0` `{phase received|checking|sending|reading|finished|unknown, states, status, elapsed_s, waiting_s, timeout_s}`: received (policy gate and token), checking (the fresh read and plan), sending (the pending audit record is written and every statement is `sent`: with the server, it may run), reading (the server answered; final states) and finished; a refusal finishes with `not_sent`, an exception after sending with `unknown`. No SQL, no credentials. The sheet: eyebrow (statement verb), question title, the description, the target, Connection (label with address), Type, the facts, Undo, the policy text, warnings, the statements exactly as sent, the differences (`changes`), a typed name field when needed; Cancel and Escape call `recordDeclined` (`proxysql_action`, `cluster_action` or `readyset_action`, the statements, the connection, the action, target and `expect`); a confirm the workspace stops itself (the saved connections cannot be read, or name another policy) posts the same to `/api/audit/declined` with `reason` `policy_unknown` or `policy_changed`, recorded as refused; a connection change closes and audits an open sheet; confirm re-reads the saved connections (`useWritePolicy().check()`) and refuses locally when the key changed; a reply below 500 means nothing was sent unless the last progress read was sending or reading; no reply or a 500 is Outcome unknown, never retried. After Confirm the same sheet stays (no second dialog): `confirm()` makes a 128-bit hex `progress_id`, polls the progress every 400 ms while the request runs, and the sheet shows the phase line (the seconds waited counted from the first sending snapshot, with `timeout_s`), each statement with its state (a spinner on Sent), the confirm button reading Sending… with `aria-busy` and duplicate clicks ignored. After ten seconds without a reply, Close and Escape can hide the sheet (`onLeave`) while the request continues; a pending line in the view retains its start time and connection label. A late reply replaces it with the result panel without reopening the sheet or resending the statements. On the answer: the outcome pill and message, the statements' final states, What changed (`effect`), What to check (`checks`, for unknown), the undo for partial or unknown, the Audit log line with Open the Audit log (the `myflames-open-audit` event with `audit_id`; `main.tsx` opens the Audit log with that record selected, `AuditLog focusId`), and ConfirmSheet's `doneLabel` mode: the next change (Save … to disk…) as secondary and Close focused, no Cancel; Close records nothing. The result panel in the view keeps the result (with an Audit log button). A planning error or a Read-only plan shows in the view and opens no sheet. Values (weight, hostgroup) are asked first in a small sheet with bounds and the current value; nothing is planned until Review.
+`myflames/reviewed_writes.py`, `apps/workspace/src/ActionReview.tsx` and `apps/workspace/src/CatalogActions.tsx`. Catalog refusal now covers both Cluster and Readyset: `ActionUnavailable` (defined as a `ValueError` subclass in `myflames/reviewed_writes.py` and re-exported by `myflames/cluster.py` for `ui.request_error_text`) carries the catalog entry's `why_not` and `fix` (plus Cluster's `grant_sql` when present) straight through HTTP 400 unchanged with no review token. In the workspace, `CatalogActions.tsx` (`ActionGroup`) renders complete catalogs for both Cluster and Readyset: every action stays visible and focusable (`aria-disabled`), with `why_not` and `fix` in a visually hidden `aria-describedby` description and in a `WhyDisabled` message anchored to the button that click, Enter or Space opens, while a client-side `blocked` reason (stale or failed report, paused reads, write policy, read-only connection) disables every action with one line. Plan: the module reads and plans (exact statements, `expect`, `typed_guard`, `facts`, `warnings`, `undo`, `changes`, `next`); `ui._action_response` adds `policy` from `dbops.decide(action_verdict(plan))` (every statement is risky, so Production and Development both confirm and Read-only answers `refuse`, except `check_clusterset` when its reviewed statement equals `_shell_check_clusterset(SHELL_MIN_VERSION)`, which gets `kind: "read"` and is allowed on Read-only connections) and a review token over the plan without `review_token` and `policy` (`reviewed_writes.review_details`). Action: `check_reviewed` (a dict with an action and 1 to 10 complete statements; MySQL/MariaDB identity packets permit multi-line SQL, while Admin interfaces require single-line statements), the policy gate before any connection (refused and audited: `read_only`, `needs_confirmation`), the token consumer (missing, expired, used or changed: refused and audited as `review`), the saved password, then `execute`: plan again from a fresh read (not offered any more or disabled: refused `changed`), compare statements and `expect` (refused `changed`), the typed guard (refused `typed_guard`), read the saved policy again (`ui._action_response` `before_send`: a profile made Read-only or another type since the request refuses as `policy_changed`), consume the token, write the pending audit record (failure sends nothing), one `run_write` with the statements joined by newlines (`--comments --binary-mode`, stdin, no reconnect; batch mode stops at the first error), then: `done` with `after` (the state read again) and `next`. Only an error the client printed with its number decides a failure: `failed` when a server error (any number but the client's 2000 to 2999) names line 1, or for an initial connection/login error without a line or private acknowledgement (1044, 1045, 1049, 1129, 1130, 2002, 2003, 2005 or 2026; audit outcome `not_connected`); `partial` when a server error names line N > 1 (`sent`, `not_sent`). The mysql and MariaDB clients add "at line N" once they have read a statement (client/mysql.cc `put_info`). Everything else is `unknown` (audit `unknown`, outcome `timeout` or `no_reply`; never retried): a time limit, an interrupt, a client error at a line (2013, 2006), a line past the last statement, and a client that ended without printing an error number (killed or crashed after the server may have run every statement). Envelope `proxysql-action-1.0` / `cluster-action-1.1` / `readyset-action-1.0`: `{schema_version, action, status, message, statements, sent, not_sent, error, after, undo, next, audit_id, policy, states, effect, checks}`: `states` is each statement's final state (`done`, `failed`, `not_run`, `not_sent`, `unknown`; `done` only for statements the server answered), `effect` the rows `[what, before, now]` the module builds from the read before the send (captured in its fresh plan) and the read after (`proxysql._effect`: the changed field of the configuration row, Runtime, the rule in memory and runtime, memory versus runtime and disk; `cluster._effect`: Primary, the member's state, `wsrep_desync` and state, Component or Group mode, and ClusterSet primary, invalidated list, channels, membership/view, routing and cleanup observations; a missing value says why, never "Not readable": "No member reported the PRIMARY role in the view read here" for the primary, and after stop or start a missing member state is "The read after the action failed", told apart from a server that reported no value; `readyset._effect`: Readyset status, Replication status, Replication offset on `set_replication_position`, Caches count, Proxied queries count on `drop_all_proxied_queries`, changed Table statuses up to 5, and changed allowlists), null when the read after failed or the outcome is not done; `checks` comes from the plan (`proxysql._checks`, `cluster._checks`, `readyset`: what to refresh and look at, and that the Audit log keeps it as Outcome unknown). Plans also carry `timeout_s` (60 for ProxySQL, 120 for Cluster SQL, 600 for ordinary Cluster MySQL Shell, 86,400 with `idle_timeout_s` 3,600 for clone replica creation, 30 for Readyset). Progress (`reviewed_writes.Progress`, kept by `ProgressRegistry` on the workspace: at most 64, ten minutes after their last change): the action request may carry `progress_id` (16 to 64 of `[A-Za-z0-9_-]`; missing, invalid or reused means only that no progress is kept), and `POST /api/live/action/progress {progress_id}` (no connection, not in `_CONNECTION_PATHS`) returns `action-progress-1.0` `{phase received|checking|sending|reading|finished|unknown, states, status, elapsed_s, waiting_s, timeout_s, idle_timeout_s?, output?: [{stream: "stdout"|"stderr", text}]}`: received (policy gate and token), checking (the fresh read and plan), sending (the pending audit record is written and every statement is `sent`: with the server, it may run), reading (the server answered; final states) and finished; a refusal finishes with `not_sent`, an exception after sending with `unknown`. Active snapshots always carry `output` (the last 100 chunks emitted by `Progress.emit`, each `text` capped at 2,048 characters; `ShellWriter.run_write` streams ANSI-stripped, password-redacted lines and omits lines over 8,192 bytes, which may include server text and echoed SQL); unknown/expired `progress_id` responses omit `output`. No credentials. The sheet: eyebrow (statement verb), question title, the description, the target, Connection (label with address), Type, the facts, Undo, the policy text, warnings, the statements exactly as sent (plus an **Identity check** disclosure open by default when `session_guard` is present, with **Copy** copying the complete script as sent), the differences (`changes`), a typed name field when needed; Cancel and Escape call `recordDeclined` (`proxysql_action`, `cluster_action` or `readyset_action`, the statements, the connection, the action, target and `expect`); a confirm the workspace stops itself (the saved connections cannot be read, or name another policy) posts the same to `/api/audit/declined` with `reason` `policy_unknown` or `policy_changed`, recorded as refused; a connection change closes and audits an open sheet; confirm re-reads the saved connections (`useWritePolicy().check()`) and refuses locally when the key changed; a reply below 500 means nothing was sent unless the last progress read was sending or reading; no reply or a 500 is Outcome unknown, never retried. After Confirm the same sheet stays (no second dialog): `confirm()` makes a 128-bit hex `progress_id`, polls the progress every 400 ms while the request runs, and the sheet shows the phase line (the seconds waited counted from the first sending snapshot, with `timeout_s`), each statement with its state (a spinner on Sent), live **MySQL Shell progress** (`LiveShellOutput`) when output chunks arrive, the confirm button reading Sending… with `aria-busy` and duplicate clicks ignored. After ten seconds without a reply, Close and Escape can hide the sheet (`onLeave`) while the request continues; a pending line in the view retains its start time and connection label. A late reply replaces it with the result panel without reopening the sheet or resending the statements. On the answer: the outcome pill (`Done, not fully verified` uses a watch pill) and message, the statements' final states, What changed (`effect`), collapsible **SQL verification** (`VerificationSection`) for ClusterSet facts, collapsible **MySQL Shell output** (`ShellActionOutput`, showing **(retained tail)** and **Copy retained tail** when server-side 1 MiB truncation occurred, plus the `check_clusterset` summary table when stdout was not truncated), What to check (`checks`, for unknown), the undo for partial or unknown, the Audit log line with Open the Audit log (the `myflames-open-audit` event with `audit_id`; `main.tsx` opens the Audit log with that record selected, `AuditLog focusId`), and ConfirmSheet's `doneLabel` mode: the next change (Save … to disk…) as secondary and Close focused, no Cancel; Close records nothing. The result panel in the view keeps the result (with an Audit log button). A planning error or a Read-only plan shows in the view and opens no sheet. Values (weight, hostgroup) are asked first in a small sheet with bounds and the current value; nothing is planned until Review.
 
 ### Readyset
 

@@ -138,18 +138,26 @@ def _client_text(data):
 
 
 def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail_start=None,
-                 stdout_limit=None, stderr_limit=None, kill_tree=False):
+                 stdout_limit=None, stderr_limit=None, kill_tree=False, on_output=None,
+                 idle_timeout=None, on_spawn=None, tool_groups=None):
     """Drain both pipes concurrently on POSIX and Windows with fixed byte caps.
 
     A separate stdin writer prevents a large script from blocking output
     drainage. On timeout, overflow or interruption, kill and reap the client
     and join pipe workers within a shared cleanup deadline. A read-only
     caller may give (raw marker row, seconds) to start a separate tail budget
-    once that complete row arrives. Only that mode retains stdout on timeout.
+    once that complete row arrives. That mode retains stdout on timeout.
     Its optional on_tail_start callback runs once in the stdout reader at
     that boundary, before waiting for the tail; it must not block.
     Probes opt into a private process group so descendants holding a pipe
     cannot extend the deadline after the original process exits.
+    An optional idle budget resets on any stdout/stderr bytes, independently
+    of the overall deadline, and retains both bounded pipes on timeout.
+    on_spawn runs immediately after Popen succeeds, before stdin is sent;
+    callers can distinguish setup failures from uncertain process outcomes.
+    tool_groups registers the private process group with desktop shutdown
+    before stdin is sent, and refuses new work once shutdown starts.
+    Both options are opt-in: existing callers keep their deadline semantics.
     """
     from . import read_cancel
     read_cancel.check()
@@ -159,15 +167,25 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
                    if tail_timeout is not None else None)
     deadline = time.monotonic() + timeout
     process_options = {}
+    kill_tree = kill_tree or tool_groups is not None
     if kill_tree:
         if os.name == 'nt':
             process_options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             process_options['start_new_session'] = True
     read_cancel.check()
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE if input is not None else None,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, bufsize=0,
-                            **process_options)
+
+    def spawn():
+        return subprocess.Popen(argv, stdin=subprocess.PIPE if input is not None else None,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, bufsize=0,
+                                **process_options)
+
+    # POSIX lists private process groups. Windows desktop shutdown owns the
+    # backend's entire task tree; its ToolGroups must not contain POSIX ids.
+    registered_groups = tool_groups if os.name == 'posix' else None
+    if tool_groups is not None and tool_groups.closed:
+        raise ConnectorError("The workspace is closing; the client was not started.")
+    proc, recorded = registered_groups.start(spawn) if registered_groups is not None else (spawn(), True)
     changed = threading.Event()
     failed = []
     buffers = [bytearray(), bytearray()]
@@ -175,6 +193,11 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
     pipe_workers = {}
     tail_deadline = []
     timed_out = None
+    interrupted = None
+    # One slot per reader avoids an older concurrent timestamp replacing a
+    # newer one. Count bytes, not lines or display callbacks: Shell can emit
+    # carriage returns, partial lines or stderr-only progress.
+    last_output = [time.monotonic()] * 2 if idle_timeout is not None else None
 
     def drain(pipe, index, limit, label):
         try:
@@ -182,6 +205,8 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
                 chunk = pipe.read(min(65536, limit - len(buffers[index]) + 1))
                 if not chunk:
                     break
+                if last_output is not None:
+                    last_output[index] = time.monotonic()
                 if len(buffers[index]) + len(chunk) > limit:
                     failed.append(ConnectorError("Lost connection to the MySQL client: %s response exceeds "
                                                  "the %d-byte limit; "
@@ -190,6 +215,13 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
                     break
                 old_size = len(buffers[index])
                 buffers[index].extend(chunk)
+                if on_output is not None:
+                    # The callback must be bounded and nonblocking. It sees
+                    # bytes before decoding so callers can retain split UTF-8.
+                    try:
+                        on_output(label, chunk)
+                    except Exception:
+                        pass  # Display failure must never interrupt a write.
                 if index == 0 and tail_marker is not None and not tail_deadline:
                     # Include a split marker, but never rescan a large result.
                     start = max(0, old_size - len(tail_timeout[0]) - 3)
@@ -224,6 +256,12 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
             changed.set()
 
     try:
+        if not recorded:
+            # No input has been sent. The finally block kills and reaps the
+            # unlisted child, so a failed registry write cannot strand it.
+            raise ConnectorError("Could not record the client process group; nothing was sent.")
+        if on_spawn is not None:
+            on_spawn()
         for args in ((proc.stdout, 0, stdout_limit, "stdout"),
                      (proc.stderr, 1, stderr_limit, "stderr")):
             worker = threading.Thread(target=drain, args=args, daemon=True)
@@ -238,14 +276,32 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
         while True:
             changed.clear()
             read_cancel.check()
+            if tool_groups is not None and tool_groups.closed:
+                interrupted = ConnectorError("The workspace is closing; client observation was interrupted "
+                                             "and the outcome is unknown.")
+                interrupted.workspace_shutdown = True
+                raise interrupted
             if failed:
                 raise failed[0]
-            remaining = (tail_deadline[0] if tail_deadline else deadline) - time.monotonic()
+            now = time.monotonic()
+            remaining = (tail_deadline[0] if tail_deadline else deadline) - now
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(argv, tail_timeout[1] if tail_deadline else timeout)
+            if last_output is not None:
+                idle_remaining = max(last_output) + idle_timeout - now
+                if idle_remaining <= 0:
+                    exc = subprocess.TimeoutExpired(argv, idle_timeout)
+                    exc.idle_timeout = idle_timeout
+                    raise exc
+                remaining = min(remaining, idle_remaining)
             if not any(worker.is_alive() for worker in workers):
-                proc.wait(timeout=remaining)
-                break
+                if last_output is None:
+                    proc.wait(timeout=remaining)
+                    break
+                # A client can close both pipes and keep running. Continue
+                # checking both budgets instead of blocking in wait().
+                if proc.poll() is not None:
+                    break
             changed.wait(min(remaining, 0.05))
         result = subprocess.CompletedProcess(argv, proc.returncode, bytes(buffers[0]), bytes(buffers[1]))
         return result
@@ -294,6 +350,16 @@ def _run_bounded(argv, timeout, input=None, env=None, tail_timeout=None, on_tail
         if timed_out is not None and tail_timeout is not None:
             # Preserve only the bounded output captured before cleanup ends.
             timed_out.output = bytes(buffers[0])
+        if timed_out is not None and idle_timeout is not None:
+            timed_out.output = bytes(buffers[0])
+            timed_out.stderr = bytes(buffers[1])
+        if interrupted is not None:
+            interrupted.output = bytes(buffers[0])
+            interrupted.stderr = bytes(buffers[1])
+        if registered_groups is not None:
+            # Keep the group published until its descendants are gone, even
+            # when the leader exited before a pipe-holding child did.
+            registered_groups.settle(proc.pid, wait=max(0.0, cleanup_deadline - time.monotonic()))
 
 #: A statement error the client prints in batch mode: "ERROR 1146 (42S02) at line 3: ...".
 _STATEMENT_ERROR = re.compile(r"^ERROR \d+(?: \([^)]*\))? at line \d+", re.M)

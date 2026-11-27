@@ -13,17 +13,20 @@
 // (/api/live/action/progress, reviewed_writes.Progress) names the step and
 // each statement's state (Waiting, Sent, Done, Failed, Not run, Not sent,
 // Outcome unknown). A statement is Done only once the server answered. Then
-// the sheet shows the result: what changed (read again after the write), the
-// Audit log record, and for an unknown outcome what to check. Close leaves the
+// the sheet shows the result: what changed (read again after the write), for
+// ClusterSet actions the SQL verification facts (a "done, not fully verified"
+// outcome is a watch pill, never a green Done), the Audit log record, and for
+// an unknown outcome what to check. Close leaves the
 // result as a panel in the view, never a toast. A request without a reply is
 // "Outcome unknown": nothing is sent again.
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, recordDeclined, type Connection } from "./api";
 import { connectionKey, connectionLabel } from "./binding";
 import { ConnectionTypeBand, TYPE_LABEL, useWritePolicy } from "./Connections";
-import { ActionStatus, ConfirmSheet, Fields, NumberField, StatusPill, type Tone } from "./kit";
+import { ActionStatus, ConfirmSheet, Disclosure, Fields, NumberField, StatusPill, type Tone } from "./kit";
 import { Commands } from "./OpsShared";
 import { useOpsScope } from "./opsApi";
+import { LiveShellOutput, ShellActionOutput, type ProgressOutputChunk } from "./ShellOutput";
 import "./ops.css";
 
 export type ReviewPolicy = {
@@ -44,6 +47,11 @@ export type ReviewedPlan = {
   description: string;
   target_text: string;
   statements: string[];
+  /** Automatically derived identity check sent first on the same session
+   * (reviewed_writes.session_guard: SQL or MySQL Shell JavaScript). */
+  session_guard?: string[];
+  /** Execution transport when present (sql, udf, mysqlsh). */
+  via?: string;
   facts: [string, string][];
   warnings: string[];
   typed_guard: string | null;
@@ -78,7 +86,27 @@ export type ReviewedResult = {
   /** What changed: what, before, now (read again after the write). */
   effect?: [string, string, string][] | null;
   checks?: string[];
+  /** MySQL Shell stdout returned by ClusterSet / Shell execution (including check_clusterset JSON). */
+  shell_output?: string | null;
+  /** True when the backend kept only the last 1 MiB of shell_output. */
+  shell_output_truncated?: boolean;
+  /** MySQL Shell stderr returned by ClusterSet / Shell execution. */
+  shell_stderr?: string | null;
+  /** True when the backend kept only the last 1 MiB of shell_stderr. */
+  shell_stderr_truncated?: boolean;
+  /** ClusterSet execution outcome classification and SQL verification details. */
+  outcome_class?: string | null;
+  outcome?: string | null;
+  verification?: {
+    /** Per-server expected/actual facts (clusterset_verify._Evidence.add). */
+    facts?: { server: string; fact: string; expected: unknown; actual: unknown;
+      status: "verified" | "missing" | "mismatch" }[];
+    missing?: string[];
+    mismatches?: string[];
+    summary?: string;
+  } | null;
 };
+export type { ProgressOutputChunk };
 /** reviewed_writes.Progress as /api/live/action/progress returns it. */
 export type ActionProgress = {
   schema_version: string;
@@ -88,6 +116,8 @@ export type ActionProgress = {
   elapsed_s: number | null;
   waiting_s: number | null;
   timeout_s: number | null;
+  /** Bounded, already-redacted Shell progress chunks from Progress.emit. */
+  output?: ProgressOutputChunk[];
 };
 export type ShownResult = { key: string; label: string; title: string; value: ReviewedResult };
 export type SendReviewed = (connection: Connection, plan: ReviewedPlan, token: string, typed: string, progressId: string) => Promise<ReviewedResult>;
@@ -99,6 +129,15 @@ const RESULT_TONE: Record<ReviewedResult["status"], [Tone, string]> = {
   partial: ["problem", "Partly applied"],
   unknown: ["watch", "Outcome unknown"],
 };
+/** The outcome pill for a result. "done, not fully verified" (ClusterSet
+ * execution: Shell's call succeeded but some SQL facts could not be read back)
+ * is not a green Done. */
+function resultTone(r: ReviewedResult): [Tone, string] {
+  if (r.status === "done" && (r.outcome_class || r.outcome) === "done, not fully verified") {
+    return ["watch", "Done, not fully verified"];
+  }
+  return RESULT_TONE[r.status] || RESULT_TONE.unknown;
+}
 const STATE_WORD: Record<StatementState, [Tone, string]> = {
   waiting: ["unknown", "Waiting"],
   sent: ["info", "Sent"],
@@ -262,9 +301,16 @@ export function useReviewedActions({ connection, operation, send, onSent, onNext
           const snap = await api<ActionProgress>("live/action/progress", { progress_id: id });
           if (stopped) return;
           if (snap.phase !== "unknown") lastPhase = snap.phase;
-          setRun((r) => (r && r.id === id && !r.result
-            ? { ...r, progress: snap, sentAt: r.sentAt ?? (snap.phase === "sending" ? Date.now() - (snap.waiting_s || 0) * 1000 : null) }
-            : r));
+          setRun((r) => {
+            if (!r || r.id !== id || r.result) return r;
+            const output = Array.isArray(snap.output) ? snap.output : r.progress?.output;
+            const progress = output !== undefined ? { ...snap, output } : snap;
+            return {
+              ...r,
+              progress,
+              sentAt: r.sentAt ?? (snap.phase === "sending" ? Date.now() - (snap.waiting_s || 0) * 1000 : null),
+            };
+          });
         } catch {
           // Progress only describes the send; the send's own answer decides.
         }
@@ -409,6 +455,64 @@ export function EffectTable({ rows }: { rows: [string, string, string][] }) {
   );
 }
 
+const VERIFICATION_TONE: Record<string, [Tone, string]> = {
+  verified: ["ok", "Verified"],
+  missing: ["unknown", "Not read"],
+  mismatch: ["problem", "Mismatch"],
+};
+
+function factValue(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "string") return value;
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** The SQL facts read back after a ClusterSet change: each server's expected
+ * and actual state, with what was verified, not read or contradictory.
+ * Collapsible; open when anything is missing or mismatched. */
+export function VerificationSection({ verification }: { verification: NonNullable<ReviewedResult["verification"]> }) {
+  const facts = (Array.isArray(verification.facts) ? verification.facts : [])
+    .filter((f) => !!f && typeof f === "object" && typeof f.fact === "string");
+  const missing = Array.isArray(verification.missing) ? verification.missing : [];
+  const mismatches = Array.isArray(verification.mismatches) ? verification.mismatches : [];
+  if (!facts.length) return null;
+  return (
+    <Disclosure title="SQL verification" count={facts.length || undefined}
+      open={missing.length > 0 || mismatches.length > 0} className="action-verification">
+      {verification.summary && <p className="hint">{verification.summary}</p>}
+      {facts.length > 0 && (
+        <div className="shell-check-table-wrap">
+          <table className="shell-check-clusters action-verification-facts">
+            <thead>
+              <tr><th scope="col">Server</th><th scope="col">Fact</th><th scope="col">Expected</th><th scope="col">Actual</th><th scope="col">Result</th></tr>
+            </thead>
+            <tbody>
+              {facts.map((f, i) => {
+                const [tone, word] = VERIFICATION_TONE[f.status] || ["unknown", f.status] as [Tone, string];
+                return (
+                  <tr key={i} data-status={f.status}>
+                    <th scope="row">{f.server}</th>
+                    <td>{f.fact}</td>
+                    <td>{factValue(f.expected)}</td>
+                    <td>{factValue(f.actual)}</td>
+                    <td><StatusPill tone={tone} label={word} /></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Disclosure>
+  );
+}
+
 function auditText(r: ReviewedResult): string {
   if (r.audit_id) return r.status === "unknown" ? "Recorded in the Audit log as Outcome unknown." : "Recorded in the Audit log.";
   return r.status === "refused" ? "Recorded in the Audit log as refused." : "The Audit log has the attempt.";
@@ -424,6 +528,8 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
   const readOnly = plan.policy?.read_only === true;
   const endpoint = `${p.connection.host || "127.0.0.1"}:${p.connection.port || 3306}`;
   const [now, setNow] = useState(() => Date.now());
+  const [guardOpen, setGuardOpen] = useState(true);
+  useEffect(() => { setGuardOpen(true); }, [plan]);
   const applying = !!run && !run.result;
   useEffect(() => {
     if (!applying) return;
@@ -435,8 +541,13 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
   const states: StatementState[] = r?.states && r.states.length === plan.statements.length ? r.states
     : run?.progress?.states && run.progress.states.length === plan.statements.length ? run.progress.states
       : plan.statements.map(() => "waiting");
-  const [tone, word] = r ? RESULT_TONE[r.status] || RESULT_TONE.unknown : ["unknown", ""];
+  const [tone, word] = r ? resultTone(r) : ["unknown", ""];
   const checks = r?.checks?.length ? r.checks : plan.checks || [];
+  const sessionGuard = Array.isArray(plan.session_guard)
+    ? plan.session_guard.filter((line): line is string => typeof line === "string" && line.length > 0)
+    : [];
+  const isShell = plan.via === "mysqlsh";
+  const fullScript = [...sessionGuard, ...plan.statements].join("\n");
   return (
     <ConfirmSheet className="ops-confirm action-review"
       band={<ConnectionTypeBand connection={p.connection} label={p.label} type={type} readOnly={readOnly} />}
@@ -461,8 +572,13 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
           </p>
         )}
         <StatementSteps statements={plan.statements} states={states} spinning={applying} />
+        {applying && run.progress?.output && run.progress.output.length > 0 && (
+          <LiveShellOutput chunks={run.progress.output} />
+        )}
         {applying && <p className="hint">Sent once, never again. If the reply takes longer, Close lets you follow the outcome in the view.</p>}
         {r?.effect && r.effect.length > 0 && <EffectTable rows={r.effect} />}
+        {r?.verification && <VerificationSection verification={r.verification} />}
+        {r && <ShellActionOutput result={r} />}
         {r?.status === "unknown" && checks.length > 0 && (
           <section className="action-checks" aria-label="What to check">
             <h3>What to check</h3>
@@ -477,7 +593,38 @@ function ReviewSheet({ p, run, busy, typed, onTyped, confirmDisabled, blocked, o
           </p>
         )}
       </> : <>
-        <Commands label="Statements to send, exactly as sent" text={plan.statements.join("\n")} />
+        {sessionGuard.length > 0 ? (
+          <>
+            <p className="ops-plan-note">
+              {isShell
+                ? "MySQL Shell call (runs after the identity check below):"
+                : plan.statements.length === 1
+                  ? "Statement to send (runs after the identity check below):"
+                  : "Statements to send (run after the identity check below):"}
+            </p>
+            <pre className="ops-pre" tabIndex={0} aria-label={isShell ? "MySQL Shell call" : "Statements to send"}>
+              <code>{plan.statements.join("\n")}</code>
+            </pre>
+            <Disclosure
+              title="Identity check"
+              open={guardOpen}
+              onToggle={setGuardOpen}
+              className="action-guard"
+            >
+              <p className="hint">
+                {isShell
+                  ? "Sent first on the same MySQL Shell session before the call above. Checks the server and AdminAPI identity and defines the checked object used by the call. Copy copies the complete script as sent."
+                  : "Sent first on the same session before the statements above. Stops if the server identity changed. Copy copies the complete script as sent."}
+              </p>
+              <Commands
+                label={isShell ? "Identity check and MySQL Shell call, exactly as sent" : "Identity check and statements, exactly as sent"}
+                text={fullScript}
+              />
+            </Disclosure>
+          </>
+        ) : (
+          <Commands label="Statements to send, exactly as sent" text={plan.statements.join("\n")} />
+        )}
         <Fields rows={[
           ["Connection", p.label.includes(endpoint) ? p.label : `${p.label} (${endpoint})`],
           ["Type", `${TYPE_LABEL[type]}${readOnly ? ", read-only" : ""}`],
@@ -528,7 +675,7 @@ export function ActionResult({ shown, onClose, onNext, extra }: {
   shown: ShownResult; onClose: () => void; onNext?: (action: string) => void; extra?: ReactNode;
 }) {
   const r = shown.value;
-  const [tone, word] = RESULT_TONE[r.status] || RESULT_TONE.unknown;
+  const [tone, word] = resultTone(r);
   return (
     <section className="ops-result action-result" aria-label="Result of the change" role="status" data-status={r.status}>
       <div className="ops-result-head">
@@ -539,6 +686,8 @@ export function ActionResult({ shown, onClose, onNext, extra }: {
       </div>
       <p>{r.message}</p>
       {extra}
+      {r.verification && <VerificationSection verification={r.verification} />}
+      <ShellActionOutput result={r} />
       {(r.status === "partial" || r.status === "unknown") && r.undo && <p className="hint">Undo, after checking: {r.undo}</p>}
       {r.status === "done" && r.next && onNext && (
         <div className="ops-actions action-next">

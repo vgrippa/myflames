@@ -588,11 +588,17 @@ try {
   });
   await backToList();
 
-  // clusterset-band: the ClusterSet band seen through a read replica.
-  await view("clusterset-band", async () => {
+  // clusterset-map: the zoomable ClusterSet map seen through a read replica.
+  await view("clusterset-map", async () => {
     await refreshClusterTo(clusterSetReplica);
-    await page.waitForSelector(`${clusterView} .clusterset-band`, { visible: true });
-    await until((sel) => document.querySelector(`${sel} .clusterset-band .cluster-row-label`)?.textContent.includes("ClusterSet mfcs"), clusterView);
+    await page.waitForSelector(`${clusterView} .clusterset-map`, { visible: true });
+    await until((sel) => document.querySelector(`${sel} .clusterset-map .clusterset-setline`)?.textContent.includes("ClusterSet mfcs"), clusterView);
+    const controls = await page.$$eval(`${clusterView} .cluster-actions[aria-label="ClusterSet changes"] .review-actions > button`,
+      (buttons) => buttons.map((b) => ({ label: b.textContent.trim(), disabled: b.getAttribute("aria-disabled") === "true" })));
+    assert.equal(controls.length, 9, "the screenshot exercises all nine backend set controls");
+    const check = clusterSetReplica.actions.find((a) => a.id === "check_clusterset");
+    assert.deepEqual(controls.find((b) => b.label === check.label), { label: check.label, disabled: false },
+      "the real Check action stays available in the read-replica scenario");
   });
 
   // topology-cluster: the healthy InnoDB Cluster stage.

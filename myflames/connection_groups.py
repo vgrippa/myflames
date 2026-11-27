@@ -295,7 +295,7 @@ def identity_from_report(report, extra=None):
     metadata = report.get('metadata') or {}
     cs = report.get('clusterset') or {}
     kind = report.get('kind') or report.get('cluster_kind')
-    cluster_read = report.get('schema_version') == 'cluster-1.0' or kind in (
+    cluster_read = report.get('schema_version') in ('cluster-1.0', 'cluster-1.1') or kind in (
         'none', 'group_replication', 'innodb_cluster', 'galera', 'pxc')
     identity = dict.fromkeys(CLUSTER_IDENTITY_FIELDS) if cluster_read else {}
     uuid = server.get('server_uuid') or report.get('server_uuid')

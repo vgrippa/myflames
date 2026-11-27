@@ -1530,7 +1530,7 @@ def cmd_cluster(argv):
         'connection failure.')
     parser.add_argument('--fail-on', choices=('problem', 'watch'), metavar='LEVEL',
                         help="Exit 1 if any finding is at LEVEL or worse: 'problem', or 'watch' (watch or problem).")
-    _add_output_args(parser, 'the cluster-1.0 report')
+    _add_output_args(parser, 'the cluster-1.1 report')
     args = parser.parse_args(argv)
     report = _discover_run(args, read_status, query_timeout=30)
     if not report['available']:

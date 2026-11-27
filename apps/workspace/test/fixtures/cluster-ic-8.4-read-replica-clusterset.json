@@ -1,5 +1,5 @@
 {
- "schema_version": "cluster-1.0",
+ "schema_version": "cluster-1.1",
  "engine": "mysql",
  "flavor": "mysql",
  "server_product": "MySQL",
@@ -583,10 +583,12 @@
   "SELECT performance_schema.replication_group_members",
   "SELECT mysql_innodb_cluster_metadata.v2_gr_clusters, v2_instances, v2_routers",
   "SELECT mysql_innodb_cluster_metadata.v2_cs_members, v2_cs_clustersets",
-  "SELECT performance_schema.replication_connection_status, replication_applier_status (read_replica_replication)"
+  "SELECT performance_schema.replication_connection_status, replication_applier_status (read_replica_replication)",
+  "SELECT performance_schema.replication_connection_status, replication_applier_status (clusterset_replication)"
  ],
  "notes": [
   "This server is a read replica of the InnoDB Cluster: it replicates asynchronously over the read_replica_replication channel and is not a group member, so the group's quorum and members are not visible here. The metadata read here is its replicated copy.",
+  "Local member could not read group membership for cluster mfcluster: The route is not an online group member, so the group's state is not visible.",
   "This server is a read replica, so the ClusterSet read here is its replicated copy of the metadata and may be behind. Connect to a group member of the primary cluster for the current view."
  ],
  "clusterset": {
@@ -601,7 +603,62 @@
     "role": "PRIMARY",
     "invalidated": false,
     "local": true,
-    "instances": []
+    "instances": [],
+    "route": {
+     "profile_id": "local",
+     "profile_name": "Local member",
+     "self": true,
+     "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+    },
+    "read": "this_connection",
+    "read_error": "The route is not an online group member, so the group's state is not visible.",
+    "members": [
+     {
+      "label": "mf-ic-1:3306",
+      "address": "mf-ic-1:3306",
+      "server_uuid": "11111111-1111-11f0-8a00-0242ac130002",
+      "instance_type": "group-member",
+      "source": false,
+      "state": null,
+      "role": null
+     },
+     {
+      "label": "mf-ic-2:3306",
+      "address": "mf-ic-2:3306",
+      "server_uuid": "22222222-2222-11f0-8a00-0242ac130003",
+      "instance_type": "group-member",
+      "source": false,
+      "state": null,
+      "role": null
+     },
+     {
+      "label": "mf-ic-3:3306",
+      "address": "mf-ic-3:3306",
+      "server_uuid": "33333333-3333-11f0-8a00-0242ac130004",
+      "instance_type": "group-member",
+      "source": false,
+      "state": null,
+      "role": null
+     },
+     {
+      "label": "mf-rr-1:3306",
+      "address": "mf-rr-1:3306",
+      "server_uuid": "44444444-4444-11f0-8a00-0242ac130005",
+      "instance_type": "read-replica",
+      "source": false,
+      "state": null,
+      "role": null
+     }
+    ],
+    "primary": null,
+    "quorum": null,
+    "super_read_only": null,
+    "fenced_writes": null,
+    "channel": null,
+    "disable_super_read_only_if_primary": null,
+    "status": "NOT_READ",
+    "status_reason": "The route is not an online group member, so the group's state is not visible.",
+    "gtid_consistency": null
    },
    {
     "name": "drcluster",
@@ -630,15 +687,109 @@
       "instance_type": "group-member",
       "source": false
      }
-    ]
+    ],
+    "route": {
+     "profile_id": "remote",
+     "profile_name": "DR member",
+     "self": false,
+     "server_uuid": "00000030-2222-11f0-8a00-0242ac130002"
+    },
+    "read": "route",
+    "read_error": null,
+    "members": [
+     {
+      "label": "mf-dr-1:3306",
+      "address": "mf-dr-1:3306",
+      "server_uuid": "00000030-2222-11f0-8a00-0242ac130002",
+      "instance_type": "group-member",
+      "source": false,
+      "state": "ONLINE",
+      "role": "PRIMARY"
+     },
+     {
+      "label": "mf-dr-2:3306",
+      "address": "mf-dr-2:3306",
+      "server_uuid": "00000031-2222-11f0-8a00-0242ac130002",
+      "instance_type": "group-member",
+      "source": false,
+      "state": "ONLINE",
+      "role": "SECONDARY"
+     },
+     {
+      "label": "mf-dr-3:3306",
+      "address": "mf-dr-3:3306",
+      "server_uuid": "00000032-2222-11f0-8a00-0242ac130002",
+      "instance_type": "group-member",
+      "source": false,
+      "state": "ONLINE",
+      "role": "SECONDARY"
+     }
+    ],
+    "primary": {
+     "label": "mf-dr-1:3306",
+     "address": "mf-dr-1:3306",
+     "server_uuid": "00000030-2222-11f0-8a00-0242ac130002",
+     "instance_type": "group-member",
+     "source": false,
+     "state": "ONLINE",
+     "role": "PRIMARY"
+    },
+    "quorum": true,
+    "super_read_only": true,
+    "fenced_writes": true,
+    "channel": {
+     "receiver_state": "ON",
+     "applier_state": "ON",
+     "last_error_number": 0,
+     "source": "mf-ic-1:3306",
+     "present": true,
+     "source_uuid": null,
+     "workers": [
+      {
+       "worker_id": 1,
+       "state": "ON",
+       "last_error_number": 0,
+       "last_error_message": null
+      }
+     ],
+     "read_error": null,
+     "status": "OK"
+    },
+    "disable_super_read_only_if_primary": false,
+    "status": "OK",
+    "status_reason": "The cluster has quorum and an ONLINE primary with its replication receiver and applier ON.",
+    "gtid_consistency": null
    }
   ],
   "channel": null,
-  "from_local_copy": true
+  "view_id": "4294967297",
+  "metadata_read_on": {
+   "profile_id": "local",
+   "profile_name": "Local member",
+   "self": true,
+   "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+  },
+  "routers": [],
+  "routing_options": {
+   "stored_configuration": true,
+   "options": {}
+  },
+  "from_local_copy": true,
+  "status": "UNKNOWN",
+  "status_reason": "The primary cluster's availability could not be established from these reads.",
+  "gtid_consistency": null
  },
  "connection_group": {
-  "name": "",
-  "read": [],
+  "name": "production",
+  "read": [
+   {
+    "id": "remote",
+    "name": "DR member",
+    "type": "production",
+    "outcome": "read",
+    "message": ""
+   }
+  ],
   "suggestions": [],
   "join": [],
   "suggested_name": "mfcluster"
@@ -696,21 +847,23 @@
    "schema_version": "cluster-action-1.1",
    "id": "set_primary_cluster:drcluster",
    "label": "Make drcluster the primary cluster…",
-   "scope": "overview",
+   "scope": "clusterset",
    "kind": "risky",
    "via": "mysqlsh",
    "danger": true,
-   "description": "MySQL Shell switches the ClusterSet primary to the selected replica cluster (setPrimaryCluster).",
+   "description": "Switches the primary cluster after synchronizing the selected replica.",
    "member_key": null,
    "member_name": null,
    "member_uuid": null,
    "cluster_name": "drcluster",
    "enabled": false,
-   "why_not": "This connection is to a read replica, not a Group Replication member. MySQL Shell checks the privileges it needs when it runs.",
-   "fix": "Connect to an ONLINE Group Replication member, then Refresh.",
+   "why_not": "The primary cluster was not read with quorum and an ONLINE primary.",
+   "fix": "Read an available primary-cluster member through this Group connection, then Refresh.",
    "target": {
     "self": true,
-    "member_name": "mf-rr-1:3306"
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
    },
    "missing_privileges": [],
    "grant_sql": null,
@@ -718,23 +871,25 @@
   },
   {
    "schema_version": "cluster-action-1.1",
-   "id": "force_primary_cluster",
-   "label": "Fail over to this cluster…",
-   "scope": "overview",
+   "id": "force_primary_cluster:drcluster",
+   "label": "Fail over to drcluster…",
+   "scope": "clusterset",
    "kind": "risky",
    "via": "mysqlsh",
    "danger": true,
-   "description": "MySQL Shell makes this replica cluster the primary and invalidates the old primary cluster (forcePrimaryCluster). Only when no instance of the old primary cluster is reachable.",
+   "description": "Promotes a surviving replica only when every old-primary member is unreachable.",
    "member_key": null,
    "member_name": null,
    "member_uuid": null,
-   "cluster_name": "mfcluster",
+   "cluster_name": "drcluster",
    "enabled": false,
-   "why_not": "This connection is to a read replica, not a Group Replication member. MySQL Shell checks the privileges it needs when it runs.",
-   "fix": "Connect to an ONLINE Group Replication member, then Refresh.",
+   "why_not": "Every member of the primary cluster must be confirmed unreachable before failover.",
+   "fix": "Check every primary-cluster member through this group; use switchover if one is reachable.",
    "target": {
-    "self": true,
-    "member_name": "mf-rr-1:3306"
+    "self": false,
+    "member_name": "DR member",
+    "profile_id": "remote",
+    "server_uuid": "00000030-2222-11f0-8a00-0242ac130002"
    },
    "missing_privileges": [],
    "grant_sql": null,
@@ -744,21 +899,277 @@
    "schema_version": "cluster-action-1.1",
    "id": "rejoin_cluster",
    "label": "Rejoin cluster to the ClusterSet…",
-   "scope": "overview",
+   "scope": "clusterset",
    "kind": "risky",
    "via": "mysqlsh",
    "danger": true,
-   "description": "MySQL Shell rejoins the selected invalidated cluster as a replica cluster (rejoinCluster).",
+   "description": "Rejoins an invalidated cluster after MySQL Shell checks its transactions.",
    "member_key": null,
    "member_name": null,
    "member_uuid": null,
    "cluster_name": null,
    "enabled": false,
-   "why_not": "No invalidated cluster is recorded in this ClusterSet. MySQL Shell checks the privileges it needs when it runs.",
-   "fix": "Use Rejoin cluster after a cluster has been invalidated.",
+   "why_not": "The primary cluster was not read with quorum and an ONLINE primary.",
+   "fix": "Read an available primary-cluster member through this Group connection, then Refresh.",
    "target": {
     "self": true,
-    "member_name": "mf-rr-1:3306"
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "repair_cluster:drcluster",
+   "label": "Repair replication on drcluster…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Refreshes a replica's replication account and settings with rejoinCluster.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": "drcluster",
+   "enabled": false,
+   "why_not": "The primary cluster was not read with quorum and an ONLINE primary.",
+   "fix": "Read an available primary-cluster member through this Group connection, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "remove_cluster:drcluster",
+   "label": "Remove and dissolve the cluster drcluster…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Removes the replica cluster and dissolves it into standalone instances.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": "drcluster",
+   "enabled": false,
+   "why_not": "The primary cluster was not read with quorum and an ONLINE primary.",
+   "fix": "Read an available primary-cluster member through this Group connection, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "remove_cluster_keep:drcluster",
+   "label": "Remove drcluster, keep the cluster running…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Removes the replica from this set and keeps a standalone InnoDB Cluster.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": "drcluster",
+   "enabled": false,
+   "why_not": "This action needs MySQL Shell 9.0.0 or later; found 8.4.6.",
+   "fix": "Install MySQL Shell 9.0.0 or later, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "set_routing_option",
+   "label": "Change ClusterSet routing defaults…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": false,
+   "description": "Stores routing configuration that Routers apply on their next refresh.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "The primary cluster was not read with quorum and an ONLINE primary.",
+   "fix": "Read an available primary-cluster member through this Group connection, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false,
+   "options": {
+    "target_cluster": {
+     "minimum_shell": [
+      8,
+      0,
+      27
+     ],
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    },
+    "invalidated_cluster_policy": {
+     "minimum_shell": [
+      8,
+      0,
+      27
+     ],
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    },
+    "stats_updates_frequency": {
+     "minimum_shell": [
+      8,
+      0,
+      31
+     ],
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    },
+    "use_replica_primary_as_rw": {
+     "minimum_shell": [
+      8,
+      0,
+      32
+     ],
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    },
+    "tags": {
+     "minimum_shell": [
+      8,
+      1,
+      0
+     ],
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    },
+    "read_only_targets": {
+     "minimum_shell": [
+      8,
+      1,
+      0
+     ],
+     "enabled": true,
+     "why_not": null,
+     "fix": null
+    },
+    "guideline": {
+     "minimum_shell": [
+      9,
+      2,
+      0
+     ],
+     "enabled": false,
+     "why_not": "guideline needs MySQL Shell 9.2.0 or later.",
+     "fix": "Install MySQL Shell 9.2.0 or later, then Refresh."
+    }
+   }
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "create_replica_cluster",
+   "label": "Create replica cluster…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Creates a replica on a standalone server read in this Group connection.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "The primary cluster was not read with quorum and an ONLINE primary.",
+   "fix": "Read an available primary-cluster member through this Group connection, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "dissolve_clusterset",
+   "label": "Dissolve ClusterSet…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Removes ClusterSet metadata and dissolves its clusters, keeping user data.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "This action needs MySQL Shell 9.0.0 or later; found 8.4.6.",
+   "fix": "Install MySQL Shell 9.0.0 or later, then Refresh.",
+   "target": {
+    "self": true,
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "check_clusterset",
+   "label": "Check with MySQL Shell (connects to every member)",
+   "scope": "clusterset",
+   "kind": "read",
+   "via": "mysqlsh",
+   "danger": false,
+   "description": "Reads the authoritative MySQL Shell status, including GTID consistency.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": true,
+   "why_not": "MySQL Shell checks the privileges it needs when it runs.",
+   "fix": null,
+   "target": {
+    "self": true,
+    "member_name": "Local member",
+    "profile_id": "local",
+    "server_uuid": "44444444-4444-11f0-8a00-0242ac130005"
    },
    "missing_privileges": [],
    "grant_sql": null,
