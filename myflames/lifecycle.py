@@ -1830,8 +1830,9 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         warnings.append('Shell briefly takes a global read lock; writers wait behind long statements. '
                         'It may need RELOAD/FLUSH_TABLES, BACKUP_ADMIN, REPLICATION CLIENT or LOCK TABLES.')
     else:
-        commands = [tool['name'] + ' --defaults-file=<0600 file> ' + ' '.join(_dump_args(request, tool)) +
-                    ' > ' + os.path.join(directory, 'dump.sql')]
+        args = [tool['name'], '--defaults-file=<0600 file>'] + _dump_args(request, tool)
+        commands = [' '.join(shlex.quote(arg) for arg in args) +
+                    ' > ' + shlex.quote(os.path.join(directory, 'dump.sql'))]
     try:
         running = Reader(conn, TAG).rows("SELECT ID,USER,HOST,TIME,STATE FROM information_schema.PROCESSLIST "
                                          "WHERE COMMAND <> 'Sleep' AND TIME >= 30 AND ID <> CONNECTION_ID() LIMIT 20")

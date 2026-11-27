@@ -1,5 +1,6 @@
 import "./indexes.css";
 import { bt, dropIndexSql, indexVisibilitySql, showIndexSql, tableMaintenanceSql } from "./sqlIdent";
+import { copyNote, unsafeNamesReason } from "./sqlPasteSafety";
 // Server > Indexes: unused and redundant indexes and tables read mostly by
 // full scans (indexes-1.0 from myflames/indexes.py). One read per click: the
 // Performance Schema tables behind it cost time on servers with many tables,
@@ -215,13 +216,13 @@ function FixStatements({ item }: { item: UnusedIndex | RedundantIndex }) {
       {item.test_sql && (
         <>
           <p className="hint">Test first: the optimizer stops using it, writes still maintain it.</p>
-          <CopySql sql={item.test_sql} label={`Test without ${item.index}`} />
+          <CopySql sql={item.test_sql} label={`Test without ${item.index}`} names={[item.schema, item.table, item.index]} />
         </>
       )}
       {item.drop_sql && (
         <>
           <p className="hint">Then, when nothing slowed down:</p>
-          <CopySql sql={item.drop_sql} label={`Drop ${item.index}`} />
+          <CopySql sql={item.drop_sql} label={`Drop ${item.index}`} names={[item.schema, item.table, item.index]} />
         </>
       )}
       {item.caveat && <p className="hint perf-caveat">{item.caveat}</p>}
@@ -290,6 +291,10 @@ export function IndexesView({
       : (isCurrentlyVisible ? "Set invisible" : "Set visible");
 
     const dropSql = dropIndexSql(schema, table, index);
+    // Copies built from server names are refused (reason on click) when a
+    // name is not safe to paste into the mysql client.
+    const nameReason = unsafeNamesReason([schema, table, index]) || undefined;
+    const indexNameReason = unsafeNamesReason([index]) || undefined;
 
     return [
       ...(!actionBlockedReason && !isPrimary && canInvisible
@@ -356,12 +361,22 @@ export function IndexesView({
       {
         label: `Copy index name (\`${index}\`)`,
         icon: "copy",
-        onClick: () => void copy(bt(index), "Copied index name"),
+        disabled: !!indexNameReason,
+        hint: indexNameReason,
+        onClick: () => {
+          const text = bt(index);
+          void copy(text, copyNote("Copied index name", text));
+        },
       },
       ...(!actionBlockedReason ? [{
         label: isPrimary ? "Copy DROP PRIMARY KEY SQL" : "Copy DROP INDEX SQL",
         icon: "copy",
-        onClick: () => void copy(dropSql + ";", isPrimary ? "Copied DROP PRIMARY KEY SQL" : "Copied DROP INDEX SQL"),
+        disabled: !!nameReason,
+        hint: nameReason,
+        onClick: () => {
+          const sql = dropSql + ";";
+          void copy(sql, copyNote(isPrimary ? "Copied DROP PRIMARY KEY SQL" : "Copied DROP INDEX SQL", sql));
+        },
       },
       { divider: true as const },
       {

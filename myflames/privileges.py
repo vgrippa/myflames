@@ -416,9 +416,32 @@ def parse_grants(lines, engine='mysql', version='8.4.0', partial_revokes=False, 
                 if engine == 'mariadb' and name == 'REPLICATION CLIENT':
                     name = 'BINLOG MONITOR'
                 if paren >= 0:
-                    if item[-1] != ')':
+                    column_tokens = item[paren + 1:-1]
+                    groups = split_tokens(column_tokens)
+                    # A column list is one or more identifiers, not an SQL
+                    # expression. Reject the entire line rather than silently
+                    # discarding a malformed group and trusting its privileges.
+                    if (item[-1] != ')' or not column_tokens or column_tokens[-1] == ',' or
+                            any(token in ('(', ')') for token in column_tokens) or
+                            any(len(group) != 1 or group[0] in (';', '.', '*', '@') for group in groups)):
                         raise ValueError()
-                    columns.append((name, [unquote(p[0]) for p in split_tokens(item[paren + 1:-1]) if len(p) == 1]))
+                    column_names = []
+                    for group in groups:
+                        token = group[0]
+                        if token[:1] in ('`', '"', "'"):
+                            if not dbops._GRANT_CLOSED_QUOTE.fullmatch(token):
+                                raise ValueError()
+                        elif (not re.fullmatch(r'[0-9A-Za-z_$\u0080-\uffff]+', token) or
+                              re.fullmatch(r'[0-9]+|0x[0-9A-Fa-f]+|0b[01]+', token) or
+                              re.match(r'[0-9]+[eE][0-9]', token)):
+                            # Both server lexers distinguish identifiers from
+                            # numeric literals, operators and comment tokens.
+                            raise ValueError()
+                        column = unquote(token)
+                        if not column:
+                            raise ValueError()
+                        column_names.append(column)
+                    columns.append((name, column_names))
                 else:
                     names.append(name)
             target = parts[on + 1:boundary]

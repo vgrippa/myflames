@@ -434,6 +434,72 @@ class ExportTest(unittest.TestCase):
             self.assertEqual(not A._unsafe_name(ch), allowed, hex(cp))
 
 class ExportEdgeTest(unittest.TestCase):
+    def test_unsafe_partial_revoke_refuses_the_entire_export(self):
+        grant = 'GRANT SELECT ON *.* TO `app`@`%`'
+        for database in ('priv\u00e9', 'secret\nname', 'secret\rname', 'secret\0name', 'secret\\!id'):
+            revoke = 'REVOKE SELECT ON `%s`.* FROM `app`@`%%`' % database
+            for lines in ([grant, revoke], [revoke.lower(), grant]):
+                with self.subTest(database=database, lines=lines):
+                    report = side([account(grants=lines), account('unrelated')])
+                    with self.assertRaisesRegex(ValueError, 'REVOKE.*no SQL was exported.*restriction') as caught:
+                        A.export_sql(report)
+                    self.assertIn('`app`@`%`', str(caught.exception))
+
+    def test_unsafe_partial_revoke_in_a_required_role_refuses_export(self):
+        role = account('restricted_role', role=True, grants=[
+            'GRANT SELECT ON *.* TO `restricted_role`@`%`',
+            'REVOKE SELECT ON `priv\u00e9`.* FROM `restricted_role`@`%`',
+        ])
+        member = account(roles=[{'name': 'restricted_role', 'host': '%'}])
+        with self.assertRaisesRegex(ValueError, 'REVOKE for `restricted_role`@`%`.*no SQL was exported'):
+            A.export_sql(side([member, role]), ['app@%'])
+
+    def test_malformed_column_grants_cannot_be_exported(self):
+        # Keep the reviewer's payload verbatim so a parser regression cannot
+        # turn its unquoted suffix into a second exported statement.
+        lines = ['GRANT SELECT (a) ; DROP USER root ; -- ) ON d.t TO app@%']
+        lines.extend('GRANT SELECT %s ON d.t TO app@%%' % columns for columns in (
+            '()', '(,a)', '(a,)', '(a,,b)', '((a))', '(a) (b)',
+            '(;)', '(.)', '(*)', '(@)', '(a b)', '(a+b)', '(a/b)', '(#x)', '(=)', '(`unclosed)',
+        ))
+        for engine in ('mysql', 'mariadb'):
+            for line in lines:
+                with self.subTest(engine=engine, line=line):
+                    with self.assertRaisesRegex(ValueError, 'safely exported'):
+                        A.export_sql(side([account(grants=[line])], engine))
+
+    def test_valid_column_groups_are_quoted_without_changing_identifiers(self):
+        columns = ['plain', 'a,b', 'x)y', '(x', 'a+b', '#x', 'a`b']
+        tokens = ['plain'] + [privileges.quote_identifier(name) for name in columns[1:]]
+        line = 'GRANT SELECT (%s), UPDATE (`u`), CREATE VIEW ON d.t TO app@%% WITH GRANT OPTION' % ', '.join(tokens)
+        for engine in ('mysql', 'mariadb'):
+            with self.subTest(engine=engine):
+                sql = A.export_sql(side([account(grants=[line])], engine))
+                rebuilt = privileges.parse_grants([line for line in sql.split('\n') if line.startswith('GRANT ')], engine)
+                self.assertEqual(rebuilt['unparsed'], [])
+                self.assertEqual(rebuilt['columns'][0]['columns'], columns)
+                self.assertEqual(rebuilt['columns'][1]['columns'], ['u'])
+                self.assertEqual(rebuilt['tables'][0]['privs'], ['CREATE VIEW'])
+
+    def test_unsafe_unreadable_names_are_omitted_before_detail_and_role_checks(self):
+        for engine in ('mysql', 'mariadb'):
+            unreadable = account('bad\nname', error='Could not read this account.',
+                                 attributes_checked=False, defaults_checked=False,
+                                 roles=[{'name': 'unreadable_dependency', 'host': '%'}])
+            with self.subTest(engine=engine):
+                sql = A.export_sql(side([unreadable, account('safe_app')], engine))
+                self.assertIn('-- Left out `bad<U+000A>name`@`%`:', sql)
+                self.assertIn('CREATE USER IF NOT EXISTS `safe_app`@`%`;', sql)
+                self.assertNotIn('unreadable_dependency', sql)
+                with self.assertRaisesRegex(ValueError, 'could not be read'):
+                    A.export_sql(side([unreadable, account('safe_app', error='Access denied')], engine))
+
+    def test_unsafe_required_system_role_still_needs_explicit_selection(self):
+        member = account(roles=[{'name': 'mysql.session', 'host': 'bad\nhost'}])
+        system_role = account('mysql.session', 'bad\nhost', role=True, error='Could not read this account.')
+        with self.assertRaisesRegex(ValueError, 'system account; choose it explicitly'):
+            A.export_sql(side([member, system_role]), ['app@%'])
+
     def test_mariadb_package_mode_is_restored(self):
         a=account(grants=['GRANT EXECUTE ON PACKAGE BODY `d`.`p` TO `app`@`%`'])
         sql=A.export_sql(side([a],'mariadb'))
@@ -473,7 +539,12 @@ class _BatchServerState(object):
         self.default_roles = list(default_roles or [])
         self.by_quoted = {}
         for entry in self.entries:
-            quoted = accounts._name(entry['name'], entry['host'], engine, entry.get('role', False))
+            try:
+                quoted = accounts._name(entry['name'], entry['host'], engine, entry.get('role', False))
+            except ValueError:
+                # A server inventory may include names this client cannot
+                # address. Keep those rows without inventing a readable target.
+                continue
             self.by_quoted[quoted] = entry
 
     def evidence_identity(self):
@@ -906,6 +977,38 @@ def _capture_unchecked(conn):
 
 
 class BatchedCaptureParityTest(unittest.TestCase):
+    def test_captured_control_names_export_as_omissions_in_all_reader_paths(self):
+        controls = '\n\r\0\t\x0b\x0c\x1c\x1d\x1e\x1f\x85\u2028\u2029'
+        for engine in ('mysql', 'mariadb'):
+            for field in ('name', 'host'):
+                for control in controls:
+                    for value in (control + 'bad', 'bad' + control):
+                        bad = {'name': 'bad_user', 'host': '%'}
+                        bad[field] = value
+                        quoted = '`%s`@`%s`' % (bad['name'], bad['host'])
+                        bad.update(grants=['GRANT SELECT ON *.* TO ' + quoted],
+                                   create='CREATE USER ' + quoted + ' ACCOUNT UNLOCK')
+                        good = {'name': 'safe_app', 'host': '%',
+                                'grants': ['GRANT SELECT ON *.* TO `safe_app`@`%`'],
+                                'create': 'CREATE USER `safe_app`@`%` ACCOUNT UNLOCK'}
+                        state = _BatchServerState(engine, entries=[bad, good])
+                        for reader, transport in ((A.capture, _EvidenceFakeConn),
+                                                  (_capture_unchecked, _ScriptFakeConn),
+                                                  (_capture_unchecked, _PerAccountFakeConn)):
+                            with self.subTest(engine=engine, field=field, value=value, transport=transport.__name__):
+                                captured = reader(transport(state))
+                                item = next(i for i in captured['items'] if i['name'] == bad['name'] and i['host'] == bad['host'])
+                                if field == 'host' or engine == 'mysql' or control in '\n\r\0':
+                                    self.assertTrue(item.get('error'), item)
+                                sql = A.export_sql(captured)
+                                self.assertIn('CREATE USER IF NOT EXISTS `safe_app`@`%`;', sql)
+                                self.assertIn('GRANT SELECT ON * . * TO `safe_app`@`%`;', sql)
+                                self.assertEqual(sql.count('CREATE USER'), 1)
+                                self.assertEqual(sql.count('-- Left out '), 1)
+                                self.assertIn('<U+%04X>' % ord(control), sql)
+                                self.assertNotIn(control, sql.replace('\n', '') if control == '\n' else sql)
+                                self.assertRegex(sql, r'\A[\x20-\x7e\n]*\Z')
+
     def test_evidence_batch_uses_remaining_member_budget(self):
         from myflames.topology_group import _ReadConnection
         state = _BatchServerState(entries=_healthy_mysql_entries(50))

@@ -703,9 +703,13 @@ def _grant_sql_checked(line, item, engine):
     for token in parts[1:on]:
         if token == '(':
             depth += 1
+            if depth > 1:
+                raise ValueError('A grant could not be safely exported; inspect its original text.')
             prefix.append(token)
         elif token == ')':
             depth -= 1
+            if depth < 0:
+                raise ValueError('A grant could not be safely exported; inspect its original text.')
             prefix.append(token)
         elif token == ',':
             prefix.append(token)
@@ -717,7 +721,11 @@ def _grant_sql_checked(line, item, engine):
         else:
             if _unsafe_name(token):
                 return None, 'privilege name contains characters outside printable ASCII or a backslash'
+            if not re.fullmatch(r'[A-Z0-9_]+', token.upper()):
+                raise ValueError('A grant could not be safely exported; inspect its original text.')
             prefix.append(token.upper())
+    if depth:
+        raise ValueError('A grant could not be safely exported; inspect its original text.')
     prefix.append('ON')
     scope = list(parts[on + 1:boundary])
     if scope and scope[0].upper() in ('TABLE', 'PROCEDURE', 'FUNCTION', 'LIBRARY', 'PACKAGE'):
@@ -786,6 +794,11 @@ def export_sql(side, chosen=None):
         item = indexed.get(key)
         if item and item['system'] and key not in requested:
             raise ValueError('A required role is a system account; choose it explicitly before exporting.')
+        if item and _account_unsafe(item, engine):
+            # Capture can reject these names before reading account details.
+            # They still belong in the omission comments, not in executable SQL.
+            selected.add(key)
+            continue
         if not item or item.get('error') or item.get('attributes_checked') is False or item.get('defaults_checked') is False:
             raise ValueError('An account or required role could not be read; no SQL was exported.')
         selected.add(key)
@@ -830,6 +843,11 @@ def export_sql(side, chosen=None):
         for raw in item['grants']:
             statement, unsafe_reason = _grant_sql_checked(raw, item, engine)
             if unsafe_reason:
+                if privileges.tokens(raw)[0].upper() == 'REVOKE':
+                    # Refuse the whole export, including dependent roles: a
+                    # global grant without its partial revoke expands access.
+                    raise ValueError('A REVOKE for %s could not be safely exported; no SQL was exported '
+                                     'because omitting a restriction could grant extra privileges.' % label(item))
                 skipped_grants += 1
             elif statement:
                 (revokes if statement.upper().startswith('REVOKE ') else grants).append(statement)

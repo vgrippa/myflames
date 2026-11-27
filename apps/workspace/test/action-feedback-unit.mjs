@@ -252,7 +252,7 @@ try {
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   // W11 + lead 27: markup + U+200B + U+202E in reason and grant_sql stay literal text,
-  // Copy strips bidi override U+202E and reports the removal count while keeping
+  // Copy replaces bidi override U+202E with a space and reports the removal count while keeping
   // literal markup and U+200B; double click + Enter/Space burst runs 0 times.
   await page.evaluate(() => {
     window.__copied = [];
@@ -271,8 +271,8 @@ try {
   assert.equal(await page.evaluate(() => window.__abuseFix || window.__abuseGrant || 0), 0, "markup never executes");
   await page.click(".why-disabled:popover-open .ops-commands button");
   await page.waitForFunction(() => /Copied\./.test(document.querySelector(".why-disabled:popover-open .ops-commands [role=status]")?.textContent || ""));
-  const expectedAbuseGrant = "GRANT CONNECTION_ADMIN ON *.* TO '<img src=x onerror=window.__abuseGrant=1><svg onload=window.__abuseGrant=2>\u200b'@'%';";
-  assert.equal(await page.evaluate(() => window.__copied.at(-1)), expectedAbuseGrant, "Copy strips U+202E while keeping literal markup and U+200B");
+  const expectedAbuseGrant = "GRANT CONNECTION_ADMIN ON *.* TO '<img src=x onerror=window.__abuseGrant=1><svg onload=window.__abuseGrant=2>\u200b '@'%';";
+  assert.equal(await page.evaluate(() => window.__copied.at(-1)), expectedAbuseGrant, "Copy replaces U+202E with a space while keeping literal markup and U+200B");
   assert.equal(
     await page.$eval(".why-disabled:popover-open .ops-commands [role=status]", (e) => e.textContent),
     "Copied. Removed 1 control character.",

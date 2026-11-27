@@ -502,8 +502,27 @@ try {
     }, label);
   };
   await page.evaluate(() => { window.__tableCopies = []; navigator.clipboard.writeText = text => { window.__tableCopies.push(text); return Promise.resolve(); }; });
-  for (const label of [`Copy table name (${qTable})`, "Copy SELECT query", "Copy SELECT COUNT(*)"]) await contextAction(label);
-  assert.deepEqual(await page.evaluate(() => window.__tableCopies), [qTable, `SELECT * FROM ${qTable} LIMIT 100;`, `SELECT COUNT(*) AS total_rows FROM ${qTable};`]);
+  // Copies built from these names are refused: the backslash in the table
+  // name fails the paste-safety allowlist, so each copy stays visible but
+  // aria-disabled with the reason, and clicking writes nothing.
+  for (const label of [`Copy table name (${qTable})`, "Copy SELECT query", "Copy SELECT COUNT(*)"]) {
+    if (await page.$(".detail-back")) await page.click(".detail-back");
+    await page.click(oddRow, { button: "right" });
+    await page.waitForSelector(".context-menu [role=menuitem]");
+    const refused = await page.$$eval(".context-menu [role=menuitem]", (items, label) => {
+      const item = items.find(item => item.textContent.trim().startsWith(label));
+      if (!item) throw new Error(`Missing menu action ${label}`);
+      const state = { aria: item.getAttribute("aria-disabled"), title: item.getAttribute("title") || "" };
+      item.click();
+      return state;
+    }, label);
+    assert.equal(refused.aria, "true", `${label} stays visible but off`);
+    assert.match(refused.title, /not printable ASCII or contains a backslash/, `${label} shows the reason`);
+    assert.match(refused.title, /editing keys/, "the reason names the libedit editing keys");
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".context-menu[role=menu]", { hidden: true });
+  }
+  assert.deepEqual(await page.evaluate(() => window.__tableCopies), [], "a refused copy never reaches the clipboard");
   const confirmedBefore = state.other.filter(call => call.path === "/api/editor/run" && call.body.confirmed).length;
   const expectReview = async expected => {
     await page.waitForSelector("dialog.confirm-sheet[open]");
@@ -533,6 +552,14 @@ try {
     await expectReview(`${verb} TABLE ${qTable}`);
   }
   await h.select(oddRow);
+  // The What to do copies of the refused row explain instead of copying.
+  const refusedCopy = await page.$eval(".view-inspector .perf-sql button", button => button.getAttribute("aria-disabled"));
+  assert.equal(refusedCopy, "true", "a copy built from refused names is aria-disabled");
+  await page.click(".view-inspector .perf-sql button");
+  await page.waitForSelector("[role=dialog].why-disabled");
+  assert.match(await h.text("[role=dialog].why-disabled"), /not printable ASCII or contains a backslash/);
+  await page.click(".why-disabled-close");
+  await page.waitForSelector("[role=dialog].why-disabled", { hidden: true });
   for (const [label, verb] of [["Optimize", "OPTIMIZE"], ["Analyze", "ANALYZE"], ["Check", "CHECK"]]) {
     await page.$$eval('.view-inspector [data-reviewed-sql]', (buttons, label) => {
       const button = buttons.find(button => button.dataset.reviewedSql === label);

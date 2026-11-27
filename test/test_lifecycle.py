@@ -12,6 +12,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shlex
 import signal
 import socket
 import stat
@@ -1144,6 +1145,44 @@ class LifecycleTests(unittest.TestCase):
         self.assert_secret_transport(self.calls()[0])
         self.assertNotIn(PASSWORD, json.dumps(result) + json.dumps(self.store.audit_records()))
         self.assertIn('--set-gtid-purged=OFF', self.calls()[0]['argv'])
+
+    def test_native_dump_commands_quote_every_shell_argument_and_output_path(self):
+        schema = 'x$(touch /tmp/p)'
+        table = "table 'quoted' `touch p` ; & $HOME"
+        output = self.root / "backup 'quoted' $(touch p) `touch p` ; &"
+        output.mkdir()
+        dump_file = output / 'dump.sql'
+        for engine in ('mysql', 'mariadb'):
+            for tables in ([], [table]):
+                with self.subTest(engine=engine, tables=tables):
+                    tools = self.native_tools(engine)
+                    conn = ReplayConnection(server_variables(engine))
+                    plan = lc.prepare_dump(conn, CONNECTION, str(output), schemas=[schema],
+                                           tables=tables, tools=tools)
+                    command = plan['commands'][0]
+                    name = 'mysqldump' if engine == 'mysql' else 'mariadb-dump'
+                    expected = ['--defaults-file=<0600 file>', '--single-transaction', '--quick']
+                    expected += ['--routines', '--events', '--triggers', '--hex-blob', '--add-drop-table']
+                    if engine == 'mysql':
+                        expected.append('--set-gtid-purged=OFF')
+                    expected += [schema, table] if tables else ['--databases', schema]
+                    self.assertEqual(shlex.split(command), [name] + expected + ['>', str(dump_file)])
+                    if os.name == 'nt':
+                        continue  # The displayed command uses POSIX shell syntax.
+                    # Execute the exact displayed text against an argv recorder.
+                    # A local touch function also makes a quoting regression
+                    # harmless: it cannot create the reviewer's /tmp/p payload.
+                    program = self.bin / name
+                    program.write_text('#!' + sys.executable + '\nimport json, sys\n'
+                                       'print(json.dumps(sys.argv[1:]))\n', encoding='utf-8')
+                    result = subprocess.run(['/bin/sh', '-c', 'touch() { return 97; }\n' + command],
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            universal_newlines=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr, '')
+                    self.assertEqual(json.loads(dump_file.read_text(encoding='utf-8')), expected)
+                    # prepare_dump requires an empty destination on each review.
+                    dump_file.rename(self.root / ('argv-%s-%s.json' % (engine, bool(tables))))
 
     def test_dump_creates_only_reviewed_default_parent_at_start(self):
         for documents_exist in (False, True):

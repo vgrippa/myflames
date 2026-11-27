@@ -2058,14 +2058,28 @@ in editor text as well as password fields; ordinary SELECT drafts are retained.
 History redacts the actual reused editor session's password even when a later
 request supplies no password.
 
-Every workspace clipboard copy routes through `clipboard.ts` (also re-exported
-lazily by `kit.tsx`'s `copyToClipboard` so the entry chunk stays within budget),
-which runs one shared sanitizer (`sanitizeClipboardText`) before calling
-`navigator.clipboard.writeText` or the textarea `execCommand("copy")` fallback: CRLF, lone CR, `U+2028` and `U+2029`
-become LF; TAB and LF stay; all other C0 controls, DEL (`U+007F`), C1 controls
-(`U+0080`–`U+009F`) and bidirectional embedding, override and isolate controls
-(`U+202A`–`U+202E`, `U+2066`–`U+2069`) are removed. When any control character
-is removed, `copyFeedback` appends a plain-language count (for example
+Every workspace Copy button and menu routes through `clipboard.ts` (also loaded
+lazily by `kit.tsx`'s `loadClip`, `copyToClipboard` and `DataTable`'s
+`copyWithFeedback` so the entry chunk stays within budget; if loading the
+clipboard chunk fails, `loadClip` resolves to `null` with no unhandled
+rejection, `copyToClipboard` returns `false`, and `copyWithFeedback` shows
+`Could not copy to clipboard`). At startup, `main.tsx` calls `loadClip()` and
+registers one document-level `copy` listener (`installCopySanitizer`) so manual
+selection copies (`Cmd+C`, `Ctrl+C`, **Edit** > **Copy**) outside CodeMirror
+(`.cm-editor` / `.cm-content`) also write sanitized `text/plain` when any
+character changes, leaving clean selections, password inputs and CodeMirror's
+own copy handling untouched. Every path runs one shared sanitizer
+(`sanitizeClipboardText`) before calling `navigator.clipboard.writeText`, the
+textarea `execCommand("copy")` fallback, or `clipboardData.setData`: only CRLF
+(`\r\n`) normalizes to LF (`\n`); TAB and LF stay; lone CR, Unicode line and
+paragraph separators (`U+2028`, `U+2029`), all other C0 controls, DEL
+(`U+007F`), C1 controls (`U+0080`–`U+009F`), and bidirectional controls and
+marks (`U+061C`, `U+200E`, `U+200F`, `U+202A`–`U+202E`, `U+2066`–`U+2069`) are
+each replaced with a single ASCII space (`U+0020`) rather than deleted or turned
+into line breaks, keeping SQL comment boundaries, TSV rows and JSON string
+literals intact. Every character replaced with a space is counted in `removed`
+(CRLF to LF normalization is not counted). When `removed > 0`, `copyFeedback`
+appends a plain-language count (for example
 `Copied. Removed 2 control characters.`) to the caller's status confirmation.
 
 ### Reviewed actions and session ownership

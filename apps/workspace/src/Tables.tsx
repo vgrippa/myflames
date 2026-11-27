@@ -1,4 +1,5 @@
 import { qualifiedTable, tableMaintenanceSql } from "./sqlIdent";
+import { copyNote, unsafeNamesReason } from "./sqlPasteSafety";
 // Server > Tables: tables without a primary key or a usable unique key, and
 // InnoDB fragmentation (schema-2.0 from myflames/schema_health.py). One read per
 // click over the chosen databases (all user databases by default). Rebuild
@@ -63,7 +64,7 @@ function Status({ status }: { status: string }) {
   );
 }
 
-function Statements({ items, hint }: { items: { label: string; sql: string; template?: boolean }[]; hint: string }) {
+function Statements({ items, hint, names }: { items: { label: string; sql: string; template?: boolean }[]; hint: string; names?: string[] }) {
   if (!items.length) return null;
   return (
     <>
@@ -71,7 +72,7 @@ function Statements({ items, hint }: { items: { label: string; sql: string; temp
       {items.map((x) => (
         <div key={x.sql}>
           <p className="tables-statement-label">{x.label}</p>
-          <CopySql sql={x.sql} label={x.label} />
+          <CopySql sql={x.sql} label={x.label} names={names} />
         </div>
       ))}
     </>
@@ -104,14 +105,14 @@ function Rebuild({ row, report, onOpenSql, disabled }: {
   const exceptions = report.notes.filter(note => /innodb_(defragment|optimize_fulltext_only) is ON/.test(note));
   return <InspectorSection title="Rebuild">
     {statements.map(statement => <div key={statement.label}>
-      <CopySql sql={statement.sql} label={`${statement.label}: ${row.schema}.${row.table}`} />
+      <CopySql sql={statement.sql} label={`${statement.label}: ${row.schema}.${row.table}`} names={[row.schema, row.table]} />
       {onOpenSql && <button type="button" className="text-button" disabled={disabled}
         aria-label={`Open in Query editor: ${statement.label}`}
         onClick={() => onOpenSql(statement.sql)}>Open in Query editor</button>}
     </div>)}
     {row.online_sql && <>
       <p className="hint">The same rebuild, refused instead of blocking writes when it cannot run online:</p>
-      <CopySql sql={row.online_sql} label={`Rebuild ${row.schema}.${row.table} online`} />
+      <CopySql sql={row.online_sql} label={`Rebuild ${row.schema}.${row.table} online`} names={[row.schema, row.table]} />
     </>}
     <ul className="hint tables-rebuild-notes">
       <li>On InnoDB, <code>OPTIMIZE TABLE</code> does recreate + analyze; <code>ALTER TABLE ... ENGINE=InnoDB</code> rebuilds without the separate <code>ANALYZE TABLE</code> step (InnoDB still recalculates persistent statistics when the rebuild commits).</li>
@@ -269,6 +270,9 @@ export function TablesView({
   const getTableRowContextMenu = (schema: string, table: string, copy: (text: string, msg?: string) => Promise<void>) => {
     const runner = reviewedSqlRef.current;
     const qTable = qualifiedTable(schema, table);
+    // Copies built from server names are refused (reason on click) when a
+    // name is not safe to paste into the mysql client.
+    const nameReason = unsafeNamesReason([schema, table]) || undefined;
     return [
       {
         label: "Table structure",
@@ -364,17 +368,29 @@ export function TablesView({
       {
         label: `Copy table name (${qTable})`,
         icon: "copy",
-        onClick: () => void copy(qTable, "Copied table name"),
+        disabled: !!nameReason,
+        hint: nameReason,
+        onClick: () => void copy(qTable, copyNote("Copied table name", qTable)),
       },
       {
         label: "Copy SELECT query",
         icon: "copy",
-        onClick: () => void copy(`SELECT * FROM ${qTable} LIMIT 100;`, "Copied SELECT query"),
+        disabled: !!nameReason,
+        hint: nameReason,
+        onClick: () => {
+          const sql = `SELECT * FROM ${qTable} LIMIT 100;`;
+          void copy(sql, copyNote("Copied SELECT query", sql));
+        },
       },
       {
         label: "Copy SELECT COUNT(*)",
         icon: "copy",
-        onClick: () => void copy(`SELECT COUNT(*) AS total_rows FROM ${qTable};`, "Copied SELECT COUNT(*)"),
+        disabled: !!nameReason,
+        hint: nameReason,
+        onClick: () => {
+          const sql = `SELECT COUNT(*) AS total_rows FROM ${qTable};`;
+          void copy(sql, copyNote("Copied SELECT COUNT(*)", sql));
+        },
       },
       { divider: true as const },
       {
@@ -706,8 +722,8 @@ export function TablesView({
               </InspectorSection>
             )}
             <InspectorSection title="What to do">
-              <Statements items={m.checks} hint="Check first (each is a read; on a large table run it on a replica or at a quiet time):" />
-              <Statements items={m.fixes} hint="Then, if the check passes:" />
+              <Statements items={m.checks} names={[m.schema, m.table]} hint="Check first (each is a read; on a large table run it on a replica or at a quiet time):" />
+              <Statements items={m.fixes} names={[m.schema, m.table]} hint="Then, if the check passes:" />
               <p className="hint perf-caveat">{m.caveat}</p>
             </InspectorSection>
           </>
