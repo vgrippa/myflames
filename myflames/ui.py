@@ -1043,24 +1043,31 @@ def _lifecycle_owner(connection, profile_id=None):
     return (endpoint, owner_id)
 
 
-def _lifecycle_caller(connection, store):
-    """Verify a claimed group against the current store before owner matching.
+def _registry_group_allowed(connection, store):
+    """Verify a claimed group against the current store before registry access.
 
     Even an endpoint match cannot authorize a stale group route. Registry
     access reads only public profile fields, never credentials or a server.
     Plain connections keep their endpoint and saved-owner access.
     """
     if not isinstance(connection, dict):
-        return None
+        return False
     if connection.get('group_name') is not None:
         from .connection_groups import validate_group
         try:
             group = validate_group(connection['group_name'])
             profile = _request_profile(connection, store)
         except ValueError:
-            return None
+            return False
         if not group or not profile or profile.get('group') != group:
-            return None
+            return False
+    return True
+
+
+def _lifecycle_caller(connection, store):
+    """The job owner only when the current store permits its group route."""
+    if not _registry_group_allowed(connection, store):
+        return None
     return _lifecycle_owner(connection, _lifecycle_profile_id(connection, store))
 
 
@@ -1141,7 +1148,9 @@ def _lifecycle_jobs_response(payload, workspace):
         except ValueError:
             with _LIFECYCLE_OWNERS_LOCK:
                 owners.pop(job_id, None)
-    return {"schema_version": "lifecycle-jobs-1.0", "jobs": jobs}
+    # A revoked group route is not evidence that the owner's registry is empty.
+    # Restoring clients must retain the member until access can be rechecked.
+    return {"schema_version": "lifecycle-jobs-1.0", "jobs": jobs, "scope_denied": caller is None}
 
 
 def _dump_tool_capabilities(report):
@@ -1496,11 +1505,15 @@ def _replication_response(path, payload, workspace):
     if path == "/api/live/replication/skip-loop/start":
         return _replication_loop_start(payload, workspace)
     connection = payload.get("connection")
-    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
-    identity = dbops.connection_identity(connection if isinstance(connection, dict) else {}, safety)
     job_id = payload.get("job_id")
     if job_id is not None and (not isinstance(job_id, str) or len(job_id) > 64):
         raise ValueError("Invalid job_id.")
+    if not _registry_group_allowed(connection, workspace.store):
+        if path == "/api/live/replication/skip-loop/status" and job_id is None:
+            return {"schema_version": rp.LOOP_SCHEMA_VERSION, "loops": []}
+        raise ValueError("No skip loop with this id (loops never survive a myflames restart).")
+    safety = dbops.connection_safety(_request_profile(connection, workspace.store), connection)
+    identity = dbops.connection_identity(connection if isinstance(connection, dict) else {}, safety)
     registry = _replication_loops(workspace)
     if path == "/api/live/replication/skip-loop/status":
         return registry.status(identity, job_id)

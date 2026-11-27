@@ -793,10 +793,35 @@ try {
   assert.match(await text(`${view} .ops-job[data-job=job-3] [role=alert]`), /Outcome unknown/,
     "successful status polling does not erase a banner Cancel failure");
   cancelFailures.delete("job-3");
+  // R3b: retrying from Maintenance clears the shared banner failure for
+  // this job, including the card kept mounted under another task.
+  const retryCancels = calls(CANCEL).length;
+  await page.locator(`${view} .ops-job[data-job=job-3] button ::-p-text(Cancel)`).click();
+  await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=cancelled]`);
+  assert.equal(calls(CANCEL).length, retryCancels + 1, "Maintenance retries Cancel once");
+  assert.equal(await page.$(`${view} .ops-job[data-job=job-3] [role=alert]`), null,
+    "a successful Maintenance retry clears the job's shared Cancel error");
+  await cancelTask("Tools");
+  assert.equal(await page.$$eval(`${view} [role=alert]`, alerts => alerts.some(e =>
+    e.getClientRects().length && /Cancellation reply was lost after navigation/.test(e.textContent))), false,
+    "the cleared Cancel error stays cleared on other tasks");
+  await h.view("health");
+  assert.equal(await page.$(`${cancelBanner} .ops-loop-error`), null,
+    "the banner has no stale Cancel failure after the retry succeeds");
+  await h.view("maintenance");
+  await cancelTask("Dump");
+
+  // Keep the connection-switch and reload probes on their own running job.
+  next.start.push({ job: job(running, "job-switch") });
+  await preflight();
+  await page.waitForSelector(sheet);
+  await page.click(confirmButton);
+  await page.waitForSelector(`${view} .ops-job[data-job=job-switch][data-state=running]`);
+  await closedSheet();
   await connect("Archive");
-  await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-other-connection]`);
-  assert.match(await text(`${view} .ops-job[data-job=job-3]`), /Switch back to that connection to manage this job\./);
-  assert.equal(await page.$eval(`${view} .ops-job[data-job=job-3] .ops-job-head button`, (e) => e.disabled), true);
+  await page.waitForSelector(`${view} .ops-job[data-job=job-switch][data-other-connection]`);
+  assert.match(await text(`${view} .ops-job[data-job=job-switch]`), /Switch back to that connection to manage this job\./);
+  assert.equal(await page.$eval(`${view} .ops-job[data-job=job-switch] .ops-job-head button`, (e) => e.disabled), true);
   await page.waitForFunction(v => !document.querySelector(`${v}[data-other-connection]`), {}, view);
   assert.equal(state.seen.filter(r => r.connection.host === "archive.test").length, 1, "tool discovery follows the new connection automatically");
   const quiet = calls(STATUS).length;
@@ -817,13 +842,13 @@ try {
   // Back on Primary the running job is found again and followed.
   const before = calls(STATUS).length;
   await connect("Primary");
-  await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=running]`);
+  await page.waitForSelector(`${view} .ops-job[data-job=job-switch][data-state=running]`);
   await settle(STATUS, before + 1, "the found job is polled");
   await page.waitForSelector(`${view} .ops-job[data-job=job-2][data-state=done] .ops-job-folder button`);
   await pause(1700);
   assert.equal(calls(REVEAL).length, revealsBeforeAdoption, 'a completed dump adopted on mount never auto-reveals');
-  await page.locator(`${view} .ops-job[data-job=job-3] button ::-p-text(Cancel)`).click();
-  await page.waitForSelector(`${view} .ops-job[data-job=job-3][data-state=cancelled]`);
+  await page.locator(`${view} .ops-job[data-job=job-switch] button ::-p-text(Cancel)`).click();
+  await page.waitForSelector(`${view} .ops-job[data-job=job-switch][data-state=cancelled]`);
   assert.equal(calls(START).length, starts, "a restored workspace never starts a job");
 
   for (const call of [...calls(STATUS), ...calls(CANCEL)])

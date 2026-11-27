@@ -266,7 +266,7 @@ export const cancelLifecycleJob = (connection: Connection, id: string) => api<Li
 /** The jobs this myflames holds for the connection's endpoint (no database
  * read): how a reloaded page, or one whose Start reply was lost, finds them. */
 export const listLifecycleJobs = (connection: Connection, signal?: AbortSignal) =>
-  api<{ schema_version: "lifecycle-jobs-1.0"; jobs: LifecycleJob[] }>("lifecycle/jobs", { connection }, signal);
+  api<{ schema_version: "lifecycle-jobs-1.0"; jobs: LifecycleJob[]; scope_denied: boolean }>("lifecycle/jobs", { connection }, signal);
 
 /** Write replies cannot be cancelled as if that undid the operation. Ignore
  * obsolete replies instead. The revision also rejects switch A → B → A and

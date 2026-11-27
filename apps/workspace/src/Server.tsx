@@ -1722,15 +1722,17 @@ export function Server({
       const failed: { id: string; name: string }[] = [];
       if (reads.length) {
         const answers = await Promise.allSettled(
-          reads.map(async (r) => ({ ...r, jobs: (await listLifecycleJobs(r.c, controller.signal)).jobs })),
+          reads.map(async (r) => ({ ...r, answer: await listLifecycleJobs(r.c, controller.signal) })),
         );
         if (controller.signal.aborted) return;
         for (let i = 0; i < answers.length; i++) {
           const a = answers[i], r = reads[i];
-          if (a.status === "fulfilled") {
+          // A stale group claim can be denied before the profiles list catches
+          // up. Keep that member saved, just like a failed registry read.
+          if (a.status === "fulfilled" && !a.value.answer.scope_denied) {
             doneIds.push(r.id);
-            if (a.value.jobs.length) {
-              setMaintenance((m) => adoptJobs(m, connectionKey(r.c), connectionLabel(r.c), a.value.jobs));
+            if (a.value.answer.jobs.length) {
+              setMaintenance((m) => adoptJobs(m, connectionKey(r.c), connectionLabel(r.c), a.value.answer.jobs));
             }
           } else {
             failed.push({ id: r.id, name: known.find((x) => x.id === r.id)?.name || r.id });
@@ -1886,6 +1888,14 @@ export function Server({
   }
   const [jobCancelling, setJobCancelling] = useState("");
   const [jobCancelErrors, setJobCancelErrors] = useState<Record<string, string>>({});
+  function clearJobCancelError(id: string) {
+    setJobCancelErrors((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
   const jobCancellingRef = useRef(new Set<string>());
   async function cancelJobNow(bound: Bound<LifecycleJob>) {
     const id = bound.report.id;
@@ -2604,6 +2614,7 @@ export function Server({
                     onMemory={setMaintenance}
                     profiles={profiles}
                     jobCancelErrors={jobCancelErrors}
+                    onJobCancelled={clearJobCancelError}
                   />
                   </ViewOnScreenContext.Provider>
                   </ViewSwitcherContext.Provider>

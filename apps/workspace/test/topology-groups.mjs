@@ -2669,6 +2669,40 @@ try {
   lifecycleJobs.clear();
   console.log("topology-groups: scope changes requeue an in-flight restore batch");
 
+  // R3a: the store can revoke a group after the page's profiles read. A
+  // successful HTTP reply denying that scope is not an empty registry.
+  await selectPlainMember("nav-db-1", "10.0.1.11");
+  const deniedRestoreJob = "job-r3-scope-denied";
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: deniedRestoreJob }]);
+  lifecycleListReply = body => {
+    if (body.connection.profile_id !== "p-nav-2") return null;
+    assert.equal(body.connection.group_name, "mf-nav", "the restore still carries its last known group");
+    nav2Profile.group = "r3-outside";
+    return { status: 200, body: { schema_version: "lifecycle-jobs-1.0", jobs: [], scope_denied: true } };
+  };
+  const beforeDeniedConnects = connectCalls.length;
+  await restoreJobMembers(["p-nav-2"]);
+  await page.waitForFunction(() => /Status not refreshed for nav-db-2/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""));
+  await h.savedSlow(s => s.lifecycle_job_members?.includes("p-nav-2"));
+  assert.equal(await page.$(`[data-maintenance-job="${deniedRestoreJob}"]`), null,
+    "a scope-denied reply adopts no job");
+  await focusProfilesRefresh();
+  await page.waitForFunction(() => /nav-db-2.*r3-outside.*outside/.test(document.querySelector('.server-content > .ops-note')?.textContent || ""));
+  await h.savedSlow(s => s.lifecycle_job_members?.includes("p-nav-2"));
+  const deniedLists = lifecycleJobLists.filter(b => b.connection.profile_id === "p-nav-2").length;
+  await pause(1800);
+  assert.equal(lifecycleJobLists.filter(b => b.connection.profile_id === "p-nav-2").length, deniedLists,
+    "a denied member reclassified outside stops registry retries");
+  lifecycleListReply = null;
+  nav2Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+  await page.waitForSelector(`.server-content > .ops-loop[data-maintenance-job="${deniedRestoreJob}"]`, { visible: true, timeout: 8000 });
+  assert.equal(connectCalls.length, beforeDeniedConnects, "scope denial and recovery never open a saved connection");
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobDone), id: deniedRestoreJob }]);
+  await page.waitForFunction(id => !document.querySelector(`[data-maintenance-job="${id}"]`), {}, deniedRestoreJob);
+  lifecycleJobs.clear();
+  console.log("topology-groups: scope-denied restore retains the member until group consent recovers");
+
   // R2-5: equal database host/port through a different SSH destination is
   // still a different execution target. Both banner and card keep the route.
   const sshJobId = "job-r2-ssh-route";

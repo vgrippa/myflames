@@ -296,7 +296,7 @@ function JobSummary({ job, onShow }: { job: LifecycleJob; onShow: () => void }) 
   </div>;
 }
 
-export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [], jobCancelErrors = {} }: {
+export function MaintenanceView({ connection, disabled, onBack, selection, section, onSection, memory, onMemory, targetVersions = [], missingPrivileges = {}, profiles = [], jobCancelErrors = {}, onJobCancelled }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   section: MaintenanceSection; onSection: (section: MaintenanceSection) => void;
   /** Server owns memory; never serialize this object into the workspace. */
@@ -308,6 +308,8 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
   profiles?: Profile[];
   /** Banner Cancel failures survive opening this view while its reply is pending. */
   jobCancelErrors?: Record<string, string>;
+  /** A successful retry clears the banner's failure for this job, across views. */
+  onJobCancelled?: (id: string) => void;
 }) {
   const reads = useConnectionReads(connection);
   const captureScope = useOpsScope(connection);
@@ -874,6 +876,7 @@ export function MaintenanceView({ connection, disabled, onBack, selection, secti
       const c = jobConnections.current.get(id);
       const target = c && endpointKey(connectionKey(c)) === endpointKey(bound.key) ? c : connection;
       const job = await cancelLifecycleJob(target, id);
+      onJobCancelled?.(id);
       if (live()) {
         onMemory((m) => ({ ...m, jobs: m.jobs.map((b) => b.key === bound.key && b.report.id === id ? { ...b, report: job } : b) }));
         setPollRetry((n) => n + 1);

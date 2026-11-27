@@ -774,13 +774,17 @@ class Endpoints(Isolated):
                 for group in ('before', '', 'missing'):
                     stale = dict(connection, group_name=group)
                     with self.subTest(connection=connection, group=group):
-                        self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': stale})['jobs'], [])
+                        denied = self.call('/api/lifecycle/jobs', {'connection': stale})
+                        self.assertEqual(denied['jobs'], [])
+                        self.assertIs(denied['scope_denied'], True)
                         for route in ('status', 'cancel'):
                             with self.assertRaisesRegex(ValueError, 'No such job'):
                                 self.call('/api/lifecycle/' + route, {'connection': stale, 'id': job.id})
             cancel.assert_not_called()
             for connection in (original, edited, dict(edited, group_name='after')):
-                self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': connection})['jobs'][0]['id'], job.id)
+                allowed = self.call('/api/lifecycle/jobs', {'connection': connection})
+                self.assertIs(allowed['scope_denied'], False)
+                self.assertEqual(allowed['jobs'][0]['id'], job.id)
                 self.assertEqual(self.call('/api/lifecycle/status', {'connection': connection, 'id': job.id})['id'], job.id)
             self.call('/api/lifecycle/cancel', {'connection': dict(edited, group_name='after'), 'id': job.id})
             cancel.assert_called_once_with()
@@ -1237,7 +1241,9 @@ class Endpoints(Isolated):
         self.assertIn('/api/lifecycle/jobs', ui._LIFECYCLE_PATHS)
         self.assertNotIn('/api/lifecycle/jobs', ui._CONNECTION_PATHS)
         self.assertNotIn('/api/lifecycle/jobs', ui._WRITE_PATHS)
-        self.assertEqual(self.call('/api/lifecycle/jobs', {'connection': self.connection})['jobs'], [])
+        empty = self.call('/api/lifecycle/jobs', {'connection': self.connection})
+        self.assertEqual(empty['jobs'], [])
+        self.assertIs(empty['scope_denied'], False)
         with mock.patch.object(lc, 'restore_job', return_value=finished_job('restore')):
             started = self.call('/api/lifecycle/start', {'operation': 'restore', 'plan': fake_plan(),
                                                          'connection': self.connection, 'confirmed': True,
