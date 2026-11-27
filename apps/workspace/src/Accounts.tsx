@@ -8,6 +8,7 @@ import { useOpenRead, useViewOnScreen } from "./viewOnScreen";
 import { CopySql, engineLabel } from "./PerfShared";
 import { VisiblePrivilegeGate } from "./Locks";
 import { ObjectChanges } from "./ObjectChanges";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, CountBadge, DataTable, Disclosure, EmptyState, Fields, InspectorSection, useSince,
   SearchField, Segmented, Select, StatusDot, SummaryLine, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection } from "./kit";
@@ -851,7 +852,7 @@ function GeneratedPassword({ password, account, connection, onDismiss }: { passw
   const [copied, setCopied] = useState("");
   return <section className="account-result" aria-label="Generated password"><strong>Generated password</strong>
     <p>{account} on {connection}. Copy it before dismissing this password.</p><code>{password}</code><div className="account-actions">
-      <button className="button" onClick={() => void navigator.clipboard.writeText(password).then(() => setCopied("Copied."), () => setCopied("Copy failed. Select and copy the password."))}>Copy password</button>
+      <button className="button" onClick={() => void copyToClipboardResult(password).then((res) => setCopied(res.ok ? copyFeedback("Copied.", res.removed) : "Copy failed. Select and copy the password."))}>Copy password</button>
       <button className="button" onClick={onDismiss}>Dismiss password</button></div><span role="status">{copied}</span>
   </section>;
 }

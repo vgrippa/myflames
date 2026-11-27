@@ -594,7 +594,7 @@ try {
   await page.waitForFunction((n) => (window.__copied || []).length > n, {}, beforeCopies);
   assert.equal(
     await copied(),
-    'region\tstatus\tnote\tamount\r\n2\tpaid\t""\t200\r\n3\tpaid\tNULL\t300\r\n4\tpending\t""\t400\r\n5\trefunded\tnote\t500',
+    'region\tstatus\tnote\tamount\n2\tpaid\t""\t200\n3\tpaid\tNULL\t300\n4\tpending\t""\t400\n5\trefunded\tnote\t500',
   );
 
   await page.click('button[aria-label="Clear filter"]');
@@ -763,7 +763,7 @@ try {
   await page.waitForSelector('.context-menu[aria-label="Result actions"]');
   await page.locator('.context-menu[aria-label="Result actions"] [role=menuitem] ::-p-text(Copy selection (2 cells))').click();
   await page.waitForFunction((n) => (window.__copied || []).length > n, {}, copiesBeforeRange);
-  assert.equal(await copied(), "40\r\n20", "copy uses the surviving selected rows only");
+  assert.equal(await copied(), "40\n20", "copy uses the surviving selected rows only");
   await page.click('button[aria-label="Clear filter"]');
   await page.waitForFunction(() => !document.querySelector(".result-filter-summary"));
 

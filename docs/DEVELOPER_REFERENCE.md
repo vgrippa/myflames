@@ -2058,6 +2058,16 @@ in editor text as well as password fields; ordinary SELECT drafts are retained.
 History redacts the actual reused editor session's password even when a later
 request supplies no password.
 
+Every workspace clipboard copy routes through `clipboard.ts` (also re-exported
+lazily by `kit.tsx`'s `copyToClipboard` so the entry chunk stays within budget),
+which runs one shared sanitizer (`sanitizeClipboardText`) before calling
+`navigator.clipboard.writeText` or the textarea `execCommand("copy")` fallback: CRLF, lone CR, `U+2028` and `U+2029`
+become LF; TAB and LF stay; all other C0 controls, DEL (`U+007F`), C1 controls
+(`U+0080`–`U+009F`) and bidirectional embedding, override and isolate controls
+(`U+202A`–`U+202E`, `U+2066`–`U+2069`) are removed. When any control character
+is removed, `copyFeedback` appends a plain-language count (for example
+`Copied. Removed 2 control characters.`) to the caller's status confirmation.
+
 ### Reviewed actions and session ownership
 
 Kill preparation, single replication skips, and lifecycle plans
@@ -8634,7 +8644,14 @@ role a chosen account needs must be chosen too. Protected accounts such as
 root are ordinary export candidates. A missing chosen account, an unreadable
 detail or dependency, unparsed grant syntax, an inconsistent default-role
 grant, or an incomplete inventory without a choice refuses before any output
-file is written.
+file is written. Names entering exported statements follow
+`privileges._UNSAFE_GRANT_SQL` (printable ASCII `0x20`–`0x7E` without
+backslash, decoding only `SHOW GRANTS` `\_` and `\%` wildcard escapes in
+database-level `ON <schema>.*` patterns): any account, role, default role or
+grant statement whose user, host, role or object name fails that allowlist is
+not emitted, and the exported `.sql` text (for both **Copy** and **Download
+.sql**) adds a printable-ASCII `-- Left out ...` comment (escaping unsafe code
+points as `<U+XXXX>`) naming the account and why it was left out.
 
 **Snapshots.** The store's `parameter_snapshots` table holds zlib-compressed
 JSON with a summary, an exact UUID `id`, `label` (at most 200 characters),

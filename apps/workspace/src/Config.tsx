@@ -15,7 +15,7 @@ import { ObjectChanges, parameterUndo } from "./ObjectChanges";
 import {
   ActionStatus,
   ConfirmSheet,
-  copyToClipboard,
+  // DataTable rowContextMenu provides copy with toast feedback.
   EmptyState,
   FactStrip,
   Disclosure,
@@ -1295,7 +1295,7 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
       </section>}
       <DataTable id="parameters.all" label="Parameters" columns={columns} rows={rows} rowKey={p => p.name} selection={selection} compact={sharedInspector?.sheet ?? false} detailColumns={["allowed", "type", "description"]}
         rowClass={p => Object.prototype.hasOwnProperty.call(drafts, p.name) ? "parameter-staged" : ""} empty="No parameters match this filter."
-        rowContextMenu={p => [
+        rowContextMenu={(p, { copy }) => [
           ...(p.modifiable !== "none" ? [{
             label: "Edit parameter value…",
             icon: "edit",
@@ -1315,12 +1315,12 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
           {
             label: `Copy variable name (${p.name})`,
             icon: "copy",
-            onClick: () => void copyToClipboard(p.name),
+            onClick: () => void copy(p.name, "Copied variable name"),
           },
           {
             label: `Copy current value (${valueText(p.type, p.value)})`,
             icon: "copy",
-            onClick: () => void copyToClipboard(valueText(p.type, p.value)),
+            onClick: () => void copy(valueText(p.type, p.value), "Copied current value"),
           },
           ...(onOpenSql ? [{
             label: "Query in Editor (SHOW VARIABLES)",

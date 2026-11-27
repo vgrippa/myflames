@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { type Connection } from './api';
 import { connectionKey } from './binding';
 import { ConnectionTypeBand } from './Connections';
-import { ActionButton, ActionStatus, ConfirmSheet, ContextMenu, copyToClipboard, writeFailure, type TableContextAction } from './kit';
+import { copyFeedback, copyToClipboardResult } from './clipboard';
+import { ActionButton, ActionStatus, ConfirmSheet, ContextMenu, writeFailure, type TableContextAction } from './kit';
 import { csvCell } from './reportTableExport';
 import { tsv } from './ResultsPane';
 import { tableData, type Cell, type Change, type TablePage, type TableReview, type TableOutcome } from './tableDataApi';
@@ -38,16 +39,16 @@ export function TableData({ connection, currentConnectionKey, schema, table, onC
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
-  const showToast = (msg: string) => {
+  const showToast = (msg: string, ms = 1800) => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     setToast(msg);
-    toastTimer.current = window.setTimeout(() => setToast(null), 1800);
+    toastTimer.current = window.setTimeout(() => setToast(null), ms);
   };
 
   const copyWithFeedback = async (text: string, msg?: string) => {
     setContextMenu(null);
-    const ok = await copyToClipboard(text);
-    showToast(ok ? (msg || "Copied to clipboard") : "Could not copy to clipboard");
+    const res = await copyToClipboardResult(text);
+    showToast(res.ok ? copyFeedback(msg || "Copied to clipboard", res.removed) : "Could not copy to clipboard", res.ok && res.removed > 0 ? 3200 : 1800);
   };
 
   const heading = useRef<HTMLHeadingElement>(null);

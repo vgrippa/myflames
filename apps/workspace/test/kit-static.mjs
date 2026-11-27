@@ -169,6 +169,98 @@ try {
   assert.equal(reads, sortable.length, 'one read per row');
   assert.deepEqual(kit.sortRows(sortable, { key: 'v', dir: 'desc' }, byV).map(r => r.id), ['a', 'd', 'c', 'f', 'b', 'e']);
   assert.equal(kit.sortRows(sortable, null, byV), sortable, 'unsorted rows are returned as they are');
+  const clipBundle = await build({ entryPoints: [path.join(here, '../src/clipboard.ts')], bundle: true, platform: 'node',
+    format: 'cjs', write: false, loader: { '.css': 'empty' }, external: ['react', 'react-dom'], jsx: 'automatic' });
+  const clipOutput = path.join(directory, 'clipboard.cjs');
+  await writeFile(clipOutput, clipBundle.outputFiles[0].text);
+  const clip = require(clipOutput);
+  // Clipboard sanitizer: keeps TAB/LF, normalizes CRLF/CR/U+2028/U+2029 to LF,
+  // removes all other C0 controls, DEL, C1 (U+0080-U+009F) and bidi embedding,
+  // override and isolate controls (U+202A-U+202E, U+2066-U+2069).
+  for (let cp = 0x00; cp <= 0xff; cp += 1) {
+    const ch = String.fromCodePoint(cp);
+    const res = clip.sanitizeClipboardText(`a${ch}b`);
+    if (cp === 0x0d) {
+      assert.deepEqual(res, { text: 'a\nb', removed: 0 }, `CR (${cp}) becomes LF without counting as removed`);
+    } else if (cp === 0x09 || cp === 0x0a || (cp >= 0x20 && cp <= 0x7e) || cp >= 0xa0) {
+      assert.deepEqual(res, { text: `a${ch}b`, removed: 0 }, `code point 0x${cp.toString(16)} kept`);
+    } else {
+      assert.deepEqual(res, { text: 'ab', removed: 1 }, `code point 0x${cp.toString(16)} removed`);
+    }
+  }
+  assert.deepEqual(clip.sanitizeClipboardText('a\r\nb\rc\u2028d\u2029e\tf\ng'), { text: 'a\nb\nc\nd\ne\tf\ng', removed: 0 });
+  const bidiRemoved = ['\u202a', '\u202b', '\u202c', '\u202d', '\u202e', '\u2066', '\u2067', '\u2068', '\u2069'];
+  assert.deepEqual(clip.sanitizeClipboardText(`ok${bidiRemoved.join('')}end`), { text: 'okend', removed: bidiRemoved.length });
+  assert.deepEqual(clip.sanitizeClipboardText('café \u200b \u202f 🔥'), { text: 'café \u200b \u202f 🔥', removed: 0 });
+  assert.deepEqual(
+    clip.sanitizeClipboardText('\x1b[201~DROP TABLE t;\x9b2J\u202e\x00\x07'),
+    { text: '[201~DROP TABLE t;2J', removed: 5 },
+  );
+  assert.equal(clip.copyFeedback('Copied.', 0), 'Copied.');
+  assert.equal(clip.copyFeedback('Copied.', 1), 'Copied. Removed 1 control character.');
+  assert.equal(clip.copyFeedback('Copied.', 2), 'Copied. Removed 2 control characters.');
+  assert.equal(clip.copyFeedback('Copied to clipboard', 2), 'Copied to clipboard. Removed 2 control characters.');
+  assert.equal(clip.copyFeedback('Copied', 1), 'Copied. Removed 1 control character.');
+  assert.equal(clip.copyFeedback('', 3), 'Copied. Removed 3 control characters.');
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  try {
+    const written = [];
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { clipboard: { writeText: async (value) => { written.push(value); } } },
+    });
+    const res1 = await clip.copyToClipboardResult('SELECT\t1\r\n-- \x1b[31mhi\u202e');
+    assert.deepEqual(res1, { ok: true, text: 'SELECT\t1\n-- [31mhi', removed: 2 });
+    assert.equal(written.at(-1), 'SELECT\t1\n-- [31mhi');
+    assert.equal(await clip.copyToClipboard('ok\x00\x9b'), true);
+    assert.equal(written.at(-1), 'ok');
+    assert.equal(await kit.copyToClipboard('via\x1bkit\u202e'), true);
+    assert.equal(written.at(-1), 'viakit');
+    // Fallback textarea path also receives sanitized text only and restores focus.
+    const fallbackValues = [];
+    let focusRestored = null;
+    class FakeElement {
+      isConnected = true;
+      focus(opts) { focusRestored = opts; }
+    }
+    const htmlElementDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'HTMLElement');
+    Object.defineProperty(globalThis, 'HTMLElement', { configurable: true, value: FakeElement });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { clipboard: { writeText: async () => { throw new Error('denied'); } } },
+    });
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: {
+        activeElement: new FakeElement(),
+        body: { appendChild(el) { fallbackValues.push(el.value); } },
+        createElement() {
+          return { value: '', style: {}, setAttribute() {}, select() {}, remove() {} };
+        },
+        execCommand(cmd) { return cmd === 'copy'; },
+      },
+    });
+    try {
+      const res2 = await clip.copyToClipboardResult('a\r\nb\x1b[201~\x01');
+      assert.deepEqual(res2, { ok: true, text: 'a\nb[201~', removed: 2 });
+      assert.equal(fallbackValues.at(-1), 'a\nb[201~');
+      assert.deepEqual(focusRestored, { preventScroll: true });
+    } finally {
+      if (htmlElementDescriptor) Object.defineProperty(globalThis, 'HTMLElement', htmlElementDescriptor);
+      else delete globalThis.HTMLElement;
+    }
+    // No clipboard and no document fails cleanly without throwing.
+    delete globalThis.document;
+    const res3 = await clip.copyToClipboardResult('a\x00b');
+    assert.deepEqual(res3, { ok: false, text: 'ab', removed: 1 });
+    assert.equal(await clip.copyToClipboard('a\x00b'), false);
+  } finally {
+    if (navigatorDescriptor) Object.defineProperty(globalThis, 'navigator', navigatorDescriptor);
+    else delete globalThis.navigator;
+    if (documentDescriptor) Object.defineProperty(globalThis, 'document', documentDescriptor);
+    else delete globalThis.document;
+  }
   console.log('Kit static render contracts passed.');
 } finally {
   console.error = originalError;

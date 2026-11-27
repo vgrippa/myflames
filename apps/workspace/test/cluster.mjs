@@ -708,7 +708,15 @@ try {
   assert.equal(await page.evaluate(() => window.__w11Fix || window.__w11Grant || 0), 0, "W11: no script executes");
   await page.click(`${memberWhy} .ops-commands button`);
   await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why:popover-open .ops-commands [role=status]")?.textContent || ""));
-  assert.equal(await page.evaluate(() => window.__grants.at(-1)), abuseStop.grant_sql, "W11: Copy returns exact grant_sql including markup, U+200B and U+202E");
+  assert.equal(
+    await page.evaluate(() => window.__grants.at(-1)),
+    abuseStop.grant_sql.replace(/\u202e/g, ""),
+    "W11 + lead 27: Copy strips bidi override U+202E while keeping literal markup and U+200B",
+  );
+  assert.equal(
+    await page.$eval(".view-inspector .cluster-action-why:popover-open .ops-commands [role=status]", (e) => e.textContent),
+    "Copied. Removed 1 control character.",
+  );
   await page.keyboard.press("Escape");
   await page.waitForFunction((sel) => !document.querySelector(sel), {}, memberWhy);
   await refreshTo(grantReport);

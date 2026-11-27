@@ -22,4 +22,6 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Security fixes
 
+- Clipboard copy across the workspace now removes terminal and bidirectional text control characters (C0 controls except tab and newline, DEL, C1 controls `U+0080`–`U+009F`, and bidi embedding, override and isolate controls `U+202A`–`U+202E` and `U+2066`–`U+2069`), normalizes CR, CRLF and Unicode line/paragraph separators to LF, and states how many control characters were removed in the copy confirmation. **Compare servers** > **Accounts** SQL export (**Copy** and **Download .sql**) now omits any account, role or grant whose user, host or object name contains characters outside printable ASCII or a backslash, naming the left-out account and the reason in a SQL comment.
+
 ### Known issues

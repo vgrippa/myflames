@@ -33,7 +33,6 @@ import {
   type InspectorContent,
   type Selection,
   type Tone,
-  copyToClipboard,
 } from "./kit";
 import "./tables.css";
 import { PaginatedReportTable } from "./PaginatedReportTable";
@@ -267,7 +266,7 @@ export function TablesView({
   const importGate = useImportCsvGate("existing");
   const otherList = "This list is from another connection. Refresh to use the connection in use.";
 
-  const getTableRowContextMenu = (schema: string, table: string) => {
+  const getTableRowContextMenu = (schema: string, table: string, copy: (text: string, msg?: string) => Promise<void>) => {
     const runner = reviewedSqlRef.current;
     const qTable = qualifiedTable(schema, table);
     return [
@@ -365,17 +364,17 @@ export function TablesView({
       {
         label: `Copy table name (${qTable})`,
         icon: "copy",
-        onClick: () => void copyToClipboard(qTable),
+        onClick: () => void copy(qTable, "Copied table name"),
       },
       {
         label: "Copy SELECT query",
         icon: "copy",
-        onClick: () => void copyToClipboard(`SELECT * FROM ${qTable} LIMIT 100;`),
+        onClick: () => void copy(`SELECT * FROM ${qTable} LIMIT 100;`, "Copied SELECT query"),
       },
       {
         label: "Copy SELECT COUNT(*)",
         icon: "copy",
-        onClick: () => void copyToClipboard(`SELECT COUNT(*) AS total_rows FROM ${qTable};`),
+        onClick: () => void copy(`SELECT COUNT(*) AS total_rows FROM ${qTable};`, "Copied SELECT COUNT(*)"),
       },
       { divider: true as const },
       {
@@ -944,7 +943,7 @@ export function TablesView({
                   filters={listFilters}
                   rowAction={tableRowAction} rowKey={r => `table:${r.schema}.${r.table}`} selection={selection} defaultSort={{key:"table",dir:"asc"}}
                   rowAttrs={r => ({"data-table": `${r.schema}.${r.table}`})} empty="No tables match these filters."
-                  rowContextMenu={r => getTableRowContextMenu(r.schema, r.table)}
+                  rowContextMenu={(r, { copy }) => getTableRowContextMenu(r.schema, r.table, copy)}
                   exportContext={exportContext} resetKey={resetKey} exportColumns={[
                     {label:"Database",value:r=>r.schema},{label:"Table",value:r=>r.table},{label:"Engine",value:r=>r.engine},
                     {label:"Rows (estimated)",value:r=>r.rows},{label:"Data bytes",value:r=>r.data_bytes},{label:"Index bytes",value:r=>r.index_bytes},
@@ -964,7 +963,7 @@ export function TablesView({
                     selection={selection}
                     defaultSort={{ key: "status", dir: "asc" }}
                     rowAttrs={(m) => ({ "data-table": `${m.schema}.${m.table}` })}
-                    rowContextMenu={m => getTableRowContextMenu(m.schema, m.table)}
+                    rowContextMenu={(m, { copy }) => getTableRowContextMenu(m.schema, m.table, copy)}
                     empty={
                       report.missing_primary_keys.length
                         ? "No table matches these filters."
@@ -1002,7 +1001,7 @@ export function TablesView({
                     selection={selection}
                     defaultSort={{ key: "free", dir: "desc" }}
                     rowAttrs={(f) => ({ "data-table": `${f.schema}.${f.table}` })}
-                    rowContextMenu={f => getTableRowContextMenu(f.schema, f.table)}
+                    rowContextMenu={(f, { copy }) => getTableRowContextMenu(f.schema, f.table, copy)}
                     empty={freeStatus === "info" ? "No fragmented tables reported from DATA_FREE." : "No table matches these filters."}
                   />
                 {report.more.fragmentation > 0 && <p className="hint table-more">{report.more.fragmentation} more not shown.</p>}

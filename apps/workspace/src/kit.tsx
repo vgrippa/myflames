@@ -1716,22 +1716,11 @@ function columnName<T>(c: Column<T>) {
 }
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+let clipMod: typeof import("./clipboard") | null = null;
+const loadClip = () => (clipMod ? Promise.resolve(clipMod) : import("./clipboard").then((m) => (clipMod = m)));
+
 export async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    const area = document.createElement("textarea");
-    area.value = text;
-    area.setAttribute("readonly", "");
-    area.style.position = "fixed";
-    area.style.opacity = "0";
-    document.body.appendChild(area);
-    area.select();
-    const ok = document.execCommand("copy");
-    area.remove();
-    return ok;
-  }
+  return (await (clipMod ?? (await loadClip())).copyToClipboardResult(text)).ok;
 }
 
 export type TableContextAction =
@@ -2039,20 +2028,21 @@ export function DataTable<T>({
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
-  const showToast = (msg: string) => {
+  const showToast = (msg: string, ms = 1800) => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     setToast(msg);
-    toastTimer.current = window.setTimeout(() => setToast(null), 1800);
+    toastTimer.current = window.setTimeout(() => setToast(null), ms);
   };
+
+  useEffect(() => {
+    if (contextMenu && !clipMod) void loadClip();
+  }, [contextMenu]);
 
   const copyWithFeedback = async (text: string, msg?: string) => {
     setContextMenu(null);
-    const ok = await copyToClipboard(text);
-    if (ok) {
-      showToast(msg || "Copied to clipboard");
-    } else {
-      showToast("Could not copy to clipboard");
-    }
+    const mod = clipMod ?? (await loadClip());
+    const res = await mod.copyToClipboardResult(text);
+    showToast(res.ok ? mod.copyFeedback(msg || "Copied to clipboard", res.removed) : "Could not copy to clipboard", res.ok && res.removed > 0 ? 3200 : 1800);
   };
 
   const natural = measured.sig === signature ? measured.natural : {};

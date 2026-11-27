@@ -8,7 +8,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api, download, type Connection } from "./api";
 import { connectionLabel } from "./binding";
-import { actionOpener, ActionStatus, Segmented, copyToClipboard, useAction, useFocusScope } from "./kit";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
+import { actionOpener, ActionStatus, Segmented, useAction, useFocusScope } from "./kit";
 import "./table-structure.css";
 
 export type TableStructureColumn = {
@@ -149,7 +150,7 @@ export function TableStructureSheet({ connection, schema, table, onClose }: {
       actions={<>
         <button type="button" className="button" disabled={!ddl}
           title={ddl ? "Copy the CREATE TABLE statement" : report?.create_error || "Wait for the structure"}
-          onClick={() => void copyToClipboard(ddl).then((ok) => setCopied(ok ? "Copied." : "Select the text to copy it."))}>
+          onClick={() => void copyToClipboardResult(ddl).then((res) => setCopied(res.ok ? copyFeedback("Copied.", res.removed) : "Select the text to copy it."))}>
           Copy CREATE TABLE
         </button>
         <button type="button" className="button primary" disabled={!ddl || !report}

@@ -3,6 +3,7 @@
 // (tables, grouped lists, inspector) are in kit.tsx.
 import { useEffect, useId, useRef, useState } from "react";
 import { formatNumber, type Connection, type SchemaCatalog } from "./api";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import { DataTable, InfoPopover, Popover, Select, closePopovers } from "./kit";
 import { durationText } from "./duration";
 import { invalidateSchemaCatalog, useSchemaCatalog } from "./schemaCatalog";
@@ -126,7 +127,22 @@ export function engineLabel(report: { engine: string | null; server_version: str
 
 /** SQL the user may run themselves, with a Copy button. myflames never runs it. */
 export function CopySql({ sql, label }: { sql: string; label: string }) {
-  const [copied, setCopied] = useState("");
+  const [copied, setCopied] = useState<{ text: string; message: string }>({ text: "", message: "" });
+  const currentSql = useRef(sql);
+  currentSql.current = sql;
+  const copySeq = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    copySeq.current += 1;
+    setCopied({ text: "", message: "" });
+  }, [sql]);
+  const status = copied.text === sql ? copied.message : "";
   return (
     <div className="perf-sql">
       <pre tabIndex={0} aria-label={label}>
@@ -137,17 +153,25 @@ export function CopySql({ sql, label }: { sql: string; label: string }) {
         className="text-button"
         aria-label={`Copy: ${label}`}
         onClick={() => {
-          navigator.clipboard
-            .writeText(sql)
-            .then(() => setCopied("Copied. Run it yourself in a SQL client if you decide to."))
-            .catch(() => setCopied("Select the text to copy it."));
+          const seq = ++copySeq.current;
+          const target = sql;
+          void copyToClipboardResult(target).then((res) => {
+            if (mounted.current && copySeq.current === seq && currentSql.current === target) {
+              setCopied({
+                text: target,
+                message: res.ok
+                  ? copyFeedback("Copied. Run it yourself in a SQL client if you decide to.", res.removed)
+                  : "Select the text to copy it.",
+              });
+            }
+          });
         }}
       >
         Copy
       </button>
-      {copied && (
+      {status && (
         <span className="hint" role="status">
-          {copied}
+          {status}
         </span>
       )}
     </div>

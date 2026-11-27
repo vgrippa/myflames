@@ -311,9 +311,127 @@ class ExportTest(unittest.TestCase):
         self.assertIn('SELECT',sql)
         self.assertNotIn('INSERT',sql)
 
-    def test_line_break_account_name_refuses(self):
-        with self.assertRaises(ValueError):
-            A.export_sql(side([account('x\nDROP USER y')]))
+    def test_line_break_account_name_is_omitted_safely(self):
+        sql = A.export_sql(side([account('x\nDROP USER y')]))
+        self.assertNotIn('CREATE USER', sql)
+        self.assertTrue(all(line.startswith('--') for line in sql.splitlines()))
+        self.assertIn('`x<U+000A>DROP USER y`@`%`', sql)
+        self.assertIn('outside printable ASCII', sql)
+
+    def test_unsafe_characters_in_user_host_and_schema_are_omitted(self):
+        abuse = [
+            ('esc_seq', '\x1b[201~DROP DATABASE prod;#'),
+            ('c1_csi', 'x\x9b2Jy'),
+            ('rlo', 'a\u202eb'),
+            ('nul', 'a\x00b'),
+            ('soh_cmd', 'dba\x01\\! id #'),
+            ('nak', 'a\x15b'),
+            ('del', 'a\x7fb'),
+            ('nel', 'a\x85b'),
+            ('ls', 'a\u2028b'),
+            ('ps', 'a\u2029b'),
+            ('backslash', 'a\\b'),
+            ('non_ascii_libedit', '\u00c8' * 6 + 'DROP DATABASE prod;#'),
+            ('non_ascii_latin', 'caf\u00e9'),
+            ('zwsp', 'a\u200bb'),
+        ]
+        safe_printable = re.compile(r'^[\x20-\x7e]*$')
+        for engine in ('mysql', 'mariadb'):
+            for label, payload in abuse:
+                with self.subTest(engine=engine, kind='user', case=label):
+                    bad_user = account(payload, '%', grants=[
+                        'GRANT SELECT ON *.* TO `%s`@`%%`' % payload.replace('`', '``')])
+                    good = account('safe_app', '%', grants=['GRANT SELECT ON `shop`.* TO `safe_app`@`%`'])
+                    self.assertIsNone(A._grant_sql(bad_user['grants'][0], bad_user, engine))
+                    sql = A.export_sql(side([bad_user, good], engine))
+                    self.assertIn('CREATE USER IF NOT EXISTS `safe_app`@`%`;', sql)
+                    self.assertIn('GRANT SELECT ON `shop` . * TO `safe_app`@`%`;', sql)
+                    exec_lines = [ln for ln in sql.splitlines() if not ln.startswith('--')]
+                    self.assertEqual(len([ln for ln in exec_lines if ln.startswith('CREATE USER')]), 1)
+                    self.assertEqual(len([ln for ln in exec_lines if ln.startswith('GRANT ')]), 1)
+                    self.assertIn('-- Left out ', sql)
+                    self.assertIn('outside printable ASCII', sql)
+                    for ln in sql.splitlines():
+                        self.assertRegex(ln, safe_printable, (engine, label, ln))
+
+                with self.subTest(engine=engine, kind='host', case=label):
+                    bad_host = account('host_user', payload, grants=[
+                        'GRANT SELECT ON *.* TO `host_user`@`%s`' % payload.replace('`', '``')])
+                    self.assertIsNone(A._grant_sql(bad_host['grants'][0], bad_host, engine))
+                    sql = A.export_sql(side([bad_host], engine))
+                    self.assertTrue(all(ln.startswith('--') for ln in sql.splitlines()))
+                    self.assertNotIn('CREATE USER', sql)
+                    self.assertIn('`host_user`@`', sql)
+                    self.assertIn('outside printable ASCII', sql)
+                    for ln in sql.splitlines():
+                        self.assertRegex(ln, safe_printable, (engine, label, ln))
+
+                with self.subTest(engine=engine, kind='schema', case=label):
+                    grant_line = 'GRANT SELECT ON `%s`.* TO `app`@`%%`' % payload.replace('`', '``')
+                    safe_grant = 'GRANT INSERT ON `good_db`.* TO `app`@`%`'
+                    user = account('app', '%', grants=[grant_line, safe_grant])
+                    self.assertIsNone(A._grant_sql(grant_line, user, engine))
+                    sql = A.export_sql(side([user], engine))
+                    self.assertIn('CREATE USER IF NOT EXISTS `app`@`%`;', sql)
+                    self.assertIn('GRANT INSERT ON `good_db` . * TO `app`@`%`;', sql)
+                    exec_lines = [ln for ln in sql.splitlines() if not ln.startswith('--')]
+                    self.assertEqual(len([ln for ln in exec_lines if ln.startswith('GRANT ')]), 1)
+                    self.assertIn('-- Left out 1 grant for `app`@`%`:', sql)
+                    self.assertIn('outside printable ASCII', sql)
+                    for ln in sql.splitlines():
+                        self.assertRegex(ln, safe_printable, (engine, label, ln))
+
+    def test_unsafe_table_column_proxy_roles_and_wildcard_escapes(self):
+        # Legitimate SHOW GRANTS wildcard escapes (\_ and \%) in ON <schema>.* stay allowed.
+        user = account('app', '%', grants=[
+            'GRANT SELECT ON `performance\\_schema`.* TO `app`@`%`',
+            'GRANT SELECT ON `data\\_\\%`.* TO `app`@`%`',
+            'GRANT SELECT ON `bad\\\\_db`.* TO `app`@`%`',
+            'GRANT SELECT ON `bad\\!id`.* TO `app`@`%`',
+            'GRANT SELECT ON `shop`.`bad\x1btable` TO `app`@`%`',
+            'GRANT SELECT (`col\u202e`) ON `shop`.`t` TO `app`@`%`',
+            'GRANT PROXY ON `other\x9b`@`%` TO `app`@`%`',
+            'GRANT EXECUTE ON PROCEDURE `shop`.`proc\x00` TO `app`@`%`',
+        ])
+        sql = A.export_sql(side([user], 'mysql'))
+        self.assertIn('GRANT SELECT ON `performance\\_schema` . * TO `app`@`%`;', sql)
+        self.assertIn('GRANT SELECT ON `data\\_\\%` . * TO `app`@`%`;', sql)
+        exec_grants = [ln for ln in sql.splitlines() if ln.startswith('GRANT ')]
+        self.assertEqual(len(exec_grants), 2)
+        self.assertIn('-- Left out 6 grants for `app`@`%`:', sql)
+
+        # Unsafe roles are omitted from CREATE ROLE, GRANT role TO user, and SET DEFAULT ROLE.
+        bad_role = account('role\x1b[201~', '%', role=True)
+        good_role = account('reader', '%', role=True)
+        member = account('app', '%',
+                         roles=[{'name': 'role\x1b[201~', 'host': '%'}, {'name': 'reader', 'host': '%'}],
+                         default_roles=[{'name': 'role\x1b[201~', 'host': '%'}, {'name': 'reader', 'host': '%'}])
+        role_sql = A.export_sql(side([member, bad_role, good_role], 'mysql'))
+        self.assertIn('CREATE ROLE IF NOT EXISTS `reader`@`%`;', role_sql)
+        self.assertIn('GRANT `reader`@`%` TO `app`@`%`;', role_sql)
+        self.assertIn('SET DEFAULT ROLE `reader`@`%` TO `app`@`%`;', role_sql)
+        self.assertIn('-- Left out role `role<U+001B>[201~`@`%`:', role_sql)
+        self.assertIn('-- Left out role grant `role<U+001B>[201~`@`%` for `app`@`%`:', role_sql)
+        self.assertIn('-- Left out default role `role<U+001B>[201~`@`%` for `app`@`%`:', role_sql)
+        self.assertNotIn('\x1b', role_sql)
+
+        # MariaDB hostless role with unsafe name and omitted system account with hostile host.
+        m_role = account('r\u202e', '', role=True)
+        m_user = account('app', '%', roles=[{'name': 'r\u202e', 'host': ''}], default_roles=[{'name': 'r\u202e', 'host': ''}])
+        sys_hostile = account('mariadb.sys', 'h\x9b2J')
+        m_sql = A.export_sql(side([m_user, m_role, sys_hostile], 'mariadb'))
+        self.assertNotIn('CREATE ROLE', m_sql)
+        self.assertNotIn('SET DEFAULT ROLE', m_sql)
+        self.assertIn('-- Omitted system accounts: `mariadb.sys`@`h<U+009B>2J`.', m_sql)
+        self.assertIn('-- Left out role `r<U+202E>`:', m_sql)
+        self.assertNotIn('\x9b', m_sql)
+        self.assertNotIn('\u202e', m_sql)
+
+        # Boundary: allowlist matches privileges._UNSAFE_GRANT_SQL for every 0x00-0xFF byte.
+        for cp in range(0x00, 0x100):
+            ch = chr(cp)
+            allowed = 0x20 <= cp <= 0x7e and cp != 0x5c
+            self.assertEqual(not A._unsafe_name(ch), allowed, hex(cp))
 
 class ExportEdgeTest(unittest.TestCase):
     def test_mariadb_package_mode_is_restored(self):

@@ -4,6 +4,7 @@
 import { useMemo, useState, type Dispatch, type MutableRefObject, type ReactNode, type RefObject, type SetStateAction, type SyntheticEvent } from "react";
 import { digestSource, number, time, type Comparison, type Operator, type Plan, type View } from "./api";
 import { Icon } from "./components";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import { Checkbox, ActionButton, ExportMenu, ActionStatus, useAction, closePopovers, Disclosure, NotesButton, Popover, Segmented, Select } from "./kit";
 import { changeExact, changeText, matchText, pairTitle, severityText, statusText } from "./compareText";
 import { engineName, metrics, views } from "./planDisplay";
@@ -299,12 +300,10 @@ export function PlanScreen({
                     aria-label="Copy SQL"
                     title="Copy SQL"
                     onClick={() => {
-                      navigator.clipboard
-                        .writeText(active.query)
-                        .then(() => setNotice("Query copied."))
-                        .catch(() =>
-                          setError("Select the query text to copy it."),
-                        );
+                      void copyToClipboardResult(active.query).then((res) => {
+                        if (res.ok) setNotice(copyFeedback("Query copied.", res.removed));
+                        else setError("Select the query text to copy it.");
+                      });
                     }}
                   >
                     <Icon name="copy" size={13} />

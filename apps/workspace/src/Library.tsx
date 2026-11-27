@@ -4,6 +4,7 @@ import {
   type Bundle, type Comparison, type InvestigationCursor, type InvestigationEvidence, type InvestigationSummary,
 } from "./api";
 import { Icon, ImportDialog } from "./components";
+import { copyFeedback, copyToClipboardResult } from "./clipboard";
 import {
   ActionButton, ActionStatus, ConfirmSheet, EmptyState, GroupedList, GroupedRow, Pill,
   SearchField, errorText, moveRowFocus, useAction, useSince,
@@ -179,11 +180,11 @@ export function Library({
       });
   }
   async function copyEvidenceText(ev: InvestigationEvidence) {
-    try {
-      await navigator.clipboard.writeText(ev.text);
-      setEvidenceNote({ error: false, text: `Copied “${ev.title}”.` });
-    } catch (e) {
-      setEvidenceNote({ error: true, text: `Could not copy to the clipboard: ${errorText(e)}` });
+    const res = await copyToClipboardResult(ev.text);
+    if (res.ok) {
+      setEvidenceNote({ error: false, text: copyFeedback(`Copied “${ev.title}”.`, res.removed) });
+    } else {
+      setEvidenceNote({ error: true, text: "Could not copy to the clipboard." });
     }
   }
   function downloadEvidenceText(ev: InvestigationEvidence) {
