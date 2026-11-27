@@ -22,7 +22,10 @@ const filesUrl = moduleUrl((await compile('filesApi.ts')).replace('"./api"', JSO
 const kitUrl = moduleUrl('export const ActionButton = null, ActionStatus = null, Fields = null, useAction = null;');
 const perfUrl = moduleUrl('export const Duration = null;');
 const opsUrl = moduleUrl('export const chooseBackupDirectory = null, factText = null;');
+// OpsShared re-exports Commands from its own module; the folder helpers do not use it.
+const commandsUrl = moduleUrl('export const Commands = null;');
 const source = (await compile('OpsShared.tsx'))
+  .replace('"./Commands"', JSON.stringify(commandsUrl))
   .replace('"react/jsx-runtime"', JSON.stringify(pathToFileURL(require.resolve('react/jsx-runtime')).href))
   .replace('"react"', JSON.stringify(pathToFileURL(require.resolve('react')).href))
   .replace('"./kit"', JSON.stringify(kitUrl)).replace('"./PerfShared"', JSON.stringify(perfUrl))
