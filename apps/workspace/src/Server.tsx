@@ -315,6 +315,7 @@ export function Server({
   replicationLoops: propReplicationLoops,
   onReplicationLoops: propOnReplicationLoops,
   restoredLoopKeys = [],
+  staleLoopEndpoints = [],
   restoredOutsideNote = "",
   resolveMemberConnection,
   replication: propReplication,
@@ -388,6 +389,8 @@ export function Server({
   /** Keys of restored same-group loops that stay visible after reload before
    * the Group connection is opened again. */
   restoredLoopKeys?: string[];
+  /** Endpoints whose background skip-loop poll could not resolve or failed. */
+  staleLoopEndpoints?: string[];
   /** Note when a restored loop's member is outside the active connection's group. */
   restoredOutsideNote?: string;
   /** Rebuilds a group member's request connection by profile id (main.tsx
@@ -1659,44 +1662,65 @@ export function Server({
       .join("\n"),
     [jobsHere, activeKey],
   );
+  const [staleJobKeys, setStaleJobKeys] = useState<string[]>([]);
   useEffect(() => {
-    if (!otherActiveJobs) return;
+    if (!otherActiveJobs) {
+      setStaleJobKeys((prev) => (prev.length ? [] : prev));
+      return;
+    }
     const entries = otherActiveJobs.split("\n").map((line) => {
       const sep = line.indexOf("\u0000");
       return { boundKey: line.slice(0, sep), id: line.slice(sep + 1) };
     });
     const controller = new AbortController();
     let timer: number | undefined;
-    async function poll() {
-      const targets = entries
-        .map((e) => ({ ...e, c: latestResolveBound.current(e.boundKey, "Cancel").connection }))
-        .filter((e): e is { boundKey: string; id: string; c: Connection } => !!e.c);
-      if (!targets.length) return;
-      const answers = await Promise.allSettled(
-        targets.map(async (t) => ({ ...t, job: await readLifecycleJob(t.c, t.id, controller.signal) })),
+    const updateStale = (staleSet: Set<string>) => {
+      const next = [...staleSet].sort();
+      setStaleJobKeys((prev) =>
+        prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next,
       );
-      if (controller.signal.aborted) return;
-      const updates: { boundKey: string; nextKey: string; nextLabel: string; job: LifecycleJob }[] = [];
-      for (const answer of answers) {
-        if (answer.status === "fulfilled") {
-          updates.push({
-            boundKey: answer.value.boundKey,
-            nextKey: connectionKey(answer.value.c),
-            nextLabel: connectionLabel(answer.value.c),
-            job: answer.value.job,
-          });
+    };
+    async function poll() {
+      const resolved = entries.map((e) => ({
+        ...e,
+        cancelKey: `${e.boundKey}:${e.id}`,
+        c: latestResolveBound.current(e.boundKey, "Cancel").connection,
+      }));
+      const targets = resolved.filter((e): e is { boundKey: string; id: string; cancelKey: string; c: Connection } => !!e.c);
+      const stale = new Set(resolved.filter((e) => !e.c).map((e) => e.cancelKey));
+      if (targets.length) {
+        const answers = await Promise.allSettled(
+          targets.map(async (t) => ({ ...t, job: await readLifecycleJob(t.c, t.id, controller.signal) })),
+        );
+        if (controller.signal.aborted) return;
+        const updates: { boundKey: string; nextKey: string; nextLabel: string; job: LifecycleJob }[] = [];
+        for (let i = 0; i < answers.length; i++) {
+          const answer = answers[i];
+          if (answer.status === "fulfilled") {
+            updates.push({
+              boundKey: answer.value.boundKey,
+              nextKey: connectionKey(answer.value.c),
+              nextLabel: connectionLabel(answer.value.c),
+              job: answer.value.job,
+            });
+          } else {
+            stale.add(targets[i].cancelKey);
+          }
+        }
+        if (updates.length) {
+          setMaintenance((m) => ({
+            ...m,
+            jobs: m.jobs.map((b) => {
+              const u = updates.find((item) => item.boundKey === b.key && item.job.id === b.report.id);
+              return u ? { key: u.nextKey, label: u.nextLabel, report: u.job } : b;
+            }),
+          }));
         }
       }
-      if (updates.length) {
-        setMaintenance((m) => ({
-          ...m,
-          jobs: m.jobs.map((b) => {
-            const u = updates.find((item) => item.boundKey === b.key && item.job.id === b.report.id);
-            return u ? { key: u.nextKey, label: u.nextLabel, report: u.job } : b;
-          }),
-        }));
+      if (!controller.signal.aborted) {
+        updateStale(stale);
+        timer = window.setTimeout(() => { void poll(); }, JOB_POLL_MS);
       }
-      if (!controller.signal.aborted) timer = window.setTimeout(() => { void poll(); }, JOB_POLL_MS);
     }
     timer = window.setTimeout(() => { void poll(); }, JOB_POLL_MS);
     return () => { controller.abort(); window.clearTimeout(timer); };
@@ -2095,6 +2119,7 @@ export function Server({
                   key={bound.key}
                   loops={bound.report.filter(loopActive)}
                   server={memberServerLabel(bound)}
+                  stale={staleLoopEndpoints.includes(endpointKey(bound.key))}
                   stopping={loopStopping?.key === bound.key ? loopStopping.id : ""}
                   errorFor={(l) => (l.job_id ? loopStopErrors[`${bound.key}:${l.job_id}`] || "" : "")}
                   onStop={(l) => void stopLoopNow(bound, l)}
@@ -2107,11 +2132,14 @@ export function Server({
                   const cancelKey = b.report.id ? `${b.key}:${b.report.id}` : "";
                   const cancelling = !!cancelKey && jobCancelling === cancelKey;
                   const jobError = cancelKey ? jobCancelErrors[cancelKey] || "" : "";
+                  const jobStale = !!cancelKey && endpointKey(b.key) !== endpointKey(activeKey) &&
+                    (staleJobKeys.includes(cancelKey) || !resolveBoundConnection(b.key, "Cancel").connection);
                   const target = memberServerLabel(b) || b.label;
                   return (
                     <div key={b.report.id || b.key} className="ops-loop" role="status" data-maintenance-job={b.report.id || undefined}>
                       <div className="ops-loop-copy">
                         <strong>{MAINTENANCE_JOB_LABEL[b.report.operation] || b.report.operation} on {target} is running.</strong>
+                        {jobStale && <span className="ops-last ops-loop-stale">Status not refreshed</span>}
                         {jobError && <span className="ops-last ops-loop-error" role="alert">{jobError}</span>}
                       </div>
                       {b.report.id && (

@@ -59,7 +59,7 @@ export function ReplicationPlace({
   onLoops?: (loops: Bound<SkipLoop[]>) => void;
   /** Active skip loops running on other members of the active group (or a
    * restored same-group member), with their server label and Stop handler. */
-  otherLoops?: { bound: Bound<SkipLoop[]>; server: string }[];
+  otherLoops?: { bound: Bound<SkipLoop[]>; server: string; stale?: boolean }[];
   otherLoopStopping?: { key: string; id: string } | null;
   otherLoopErrors?: Record<string, string>;
   onStopOtherLoop?: (bound: Bound<SkipLoop[]>, loop: SkipLoop) => void;

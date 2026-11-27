@@ -108,6 +108,8 @@ const groupCalls = [];
 const replicationReads = [];
 const proxysqlReads = [];
 let groupError = "";
+let profilesFail = false;
+let profilesListCalls = 0;
 let onGroupSuccess = null;
 let replicationReport = structuredClone(replicationBase);
 let replicationReportFor = null;
@@ -184,17 +186,23 @@ const navMapReport = {
 };
 
 const h = await open("/api/live/cluster", "topology-groups", {
-  "/api/profiles/list": () => ({
-    status: 200,
-    body: {
-      items: profiles,
-      secret_store: {
-        backend: "vault",
-        label: "myflames encrypted vault",
-        available: true,
+  "/api/profiles/list": () => {
+    profilesListCalls += 1;
+    if (profilesFail) {
+      return { status: 500, body: { error: "The workspace store is busy." } };
+    }
+    return {
+      status: 200,
+      body: {
+        items: profiles,
+        secret_store: {
+          backend: "vault",
+          label: "myflames encrypted vault",
+          available: true,
+        },
       },
-    },
-  }),
+    };
+  },
   "/api/profiles/save": (body) => {
     saveCalls.push(body);
     const val = body.value || {};
@@ -1763,15 +1771,153 @@ try {
     s.replication_loop_active === true &&
     Array.isArray(s.replication_loop_members) &&
     s.replication_loop_members.includes("p-nav-2"));
-  // When the loop member itself leaves its own group, restore clears the flag.
+  // S10: when the loop member itself leaves its group, the backend keeps the
+  // loop running, so restore keeps the flag and shows the no-group note without
+  // polling p-nav-2; an id is dropped only when its saved connection is deleted.
   nav1Profile.group = "mf-nav";
   nav2Profile.group = "";
   const statusBeforeLeft = loopStatusReads.length;
   await page.reload({ waitUntil: "networkidle0" });
-  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_members);
+  await page.waitForSelector('.replication-place .ops-note', { visible: true });
   assert.equal(loopStatusReads.slice(statusBeforeLeft).some((b) => b.connection.profile_id === "p-nav-2"), false,
-    "a member that left its group is never polled");
-  assert.equal(await page.$('.replication-place .ops-note'), null, "no outside-group note once the member left its group");
+    "S10 never polls a saved loop member that left its group");
+  const noGroupPattern = /nav-db-2, which is no longer in a connection group\. Open nav-db-2 to check or stop it\./;
+  assert.match(await page.$eval('.replication-place .ops-note', (e) => e.textContent.trim()), noGroupPattern,
+    "S10 Replication note names the member with the no-group wording after reload");
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-note', { visible: true });
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()), noGroupPattern,
+    "S10 Server note names the member with the no-group wording after reload");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+
+  // S10 in-window: a member removed from the active group by a refresh while
+  // its loop runs leaves the live banner, gets no polls, keeps the saved flag,
+  // and stays visible in the note list until its saved connection is deleted.
+  async function focusProfilesRefresh() {
+    const before = profilesListCalls;
+    await pause(1100);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    for (let i = 0; i < 120 && profilesListCalls === before; i++) await pause(25);
+    assert.ok(profilesListCalls > before, "focus refreshed /api/profiles/list");
+    await pause(200);
+  }
+  nav2Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  nav2Profile.group = "";
+  await focusProfilesRefresh();
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Refresh group connection mf-nav"]', { visible: true });
+  const connectsBeforeS10Refresh = connectCalls.length;
+  await page.click('button[aria-label="Refresh group connection mf-nav"]');
+  for (let i = 0; i < 120 && connectCalls.length === connectsBeforeS10Refresh; i++) await pause(25);
+  await pause(400);
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+  await page.waitForSelector('.server-content > .ops-note', { visible: true });
+  assert.match(await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim()), noGroupPattern,
+    "S10 in-window refresh moves the removed member's running loop into the no-group note");
+  const pollsAfterInWindowLeave = loopStatusReads.length;
+  await pause(2500);
+  assert.equal(loopStatusReads.slice(pollsAfterInWindowLeave).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "S10 in-window refresh stops polling the removed member");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  // Control: deleting the saved connection itself drops the note and flag.
+  const nav2Idx = profiles.indexOf(nav2Profile);
+  profiles.splice(nav2Idx, 1);
+  await focusProfilesRefresh();
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-note'));
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_members);
+  profiles.splice(nav2Idx, 0, nav2Profile);
+  nav2Profile.group = "mf-nav";
+  await focusProfilesRefresh();
+
+  // S11: one failed /api/profiles/list read marks the unresolved loop row
+  // "Status not refreshed" without killing the poller; once the list recovers
+  // and the registry advances to 400, the banner updates within two LOOP_POLL_MS
+  // and clears when the loop ends.
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-s11" }]);
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Refresh group connection mf-nav"]', { visible: true });
+  const connectsBeforeS11 = connectCalls.length;
+  await page.click('button[aria-label="Refresh group connection mf-nav"]');
+  for (let i = 0; i < 120 && connectCalls.length === connectsBeforeS11; i++) await pause(25);
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-place button[data-action="refresh"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  const pollsBeforeS11Fail = loopStatusReads.length;
+  for (let i = 0; i < 180 && !loopStatusReads.slice(pollsBeforeS11Fail).some((b) => b.connection.profile_id === "p-nav-2"); i++) await pause(25);
+  assert.ok(loopStatusReads.slice(pollsBeforeS11Fail).some((b) => b.connection.profile_id === "p-nav-2"),
+    "S11 baseline background poller polls p-nav-2 after reload");
+  profilesFail = true;
+  await focusProfilesRefresh();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.server-content > .ops-loop[data-loop="running"] .ops-loop-stale')]
+      .some((e) => e.textContent.trim() === "Status not refreshed"),
+    { timeout: 4000 });
+  // Let at least one LOOP_POLL_MS tick fire while no target resolves.
+  await pause(2500);
+  profilesFail = false;
+  loopRegistry.set("10.0.1.12:3306:dba", [{
+    ...structuredClone(loopRunning),
+    job_id: "job-s11",
+    skips_done: 400,
+    checks: 400,
+    message: "Skipping 1062 on channel '': 400 skipped since 18:16 UTC.",
+  }]);
+  const pollsBeforeRecover = loopStatusReads.length;
+  const listBeforeRecover = profilesListCalls;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  for (let i = 0; i < 120 && profilesListCalls === listBeforeRecover; i++) await pause(25);
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.server-content > .ops-loop[data-loop="running"] strong')]
+      .some((e) => e.textContent.includes("400 skipped")) &&
+    !document.querySelector('.server-content > .ops-loop[data-loop="running"] .ops-loop-stale'),
+    { timeout: 4500 });
+  assert.ok(loopStatusReads.slice(pollsBeforeRecover).some((b) => b.connection.profile_id === "p-nav-2"),
+    "S11 poller resumed after /api/profiles/list recovered");
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopStopped), job_id: "job-s11" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'),
+    { timeout: 5000 });
 
   assert.deepEqual(h.errors, [], "Group actions and replication branch changes produce no runtime exceptions");
 

@@ -74,21 +74,23 @@ function time(iso: Json | undefined) {
  * the last one, and Stop while it runs. Used in this view and in Server's
  * persistent status area. Stop cancels a loop the person already authorized,
  * so it never goes through the write policy or a second prompt. */
-export function ReplicationLoopBanner({ loops, disabled, stopping, onStop, server, errorFor }: {
+export function ReplicationLoopBanner({ loops, disabled, stopping, onStop, server, stale = false, errorFor }: {
   loops: SkipLoop[]; disabled?: boolean; stopping?: string; onStop: (loop: SkipLoop) => void;
   /** Names the server the loops run on, when it is not the member on screen
    * (a Group connection's Server: control showing another member). */
   server?: string;
+  /** True when the background poller could not resolve or refresh this loop's status. */
+  stale?: boolean;
   /** Refusal reason shown on the row when Stop could not be sent (stale key). */
   errorFor?: (loop: SkipLoop) => string;
 }) {
   return <>{loops.map(loop => <ReplicationLoopRow key={loop.job_id || loop.channel} loop={loop}
-    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} server={server}
+    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} server={server} stale={stale}
     stopError={errorFor ? errorFor(loop) : ""} />)}</>;
 }
 
-function ReplicationLoopRow({ loop, disabled, stopping, onStop, server, stopError }: {
-  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void; server?: string; stopError?: string;
+function ReplicationLoopRow({ loop, disabled, stopping, onStop, server, stale = false, stopError }: {
+  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void; server?: string; stale?: boolean; stopError?: string;
 }) {
   const last = loop.skips?.length ? loop.skips[loop.skips.length - 1] : null;
   const active = loopActive(loop);
@@ -112,6 +114,7 @@ function ReplicationLoopRow({ loop, disabled, stopping, onStop, server, stopErro
           Last skip: {factText(last.gtid || last.exec_pos)}
           {last.at ? ` at ${time(last.at)}` : ""}
         </span>}
+        {active && stale && <span className="ops-last ops-loop-stale">Status not refreshed</span>}
         {stopError && <span className="ops-last ops-loop-error" role="alert">{stopError}</span>}
         <ActionStatus state={{ phase: stopping ? "pending" : "idle", startedAt: since, message: "Waiting for the reply to Stop." }}
           slowAfter={10_000} slowText="No reply to Stop yet; the loop may still be running." />
@@ -140,7 +143,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   onLoops: (loops: Bound<SkipLoop[]>) => void;
   /** Active skip loops running on other members of the active group (or a
    * restored same-group member), shown with their server label and Stop. */
-  otherLoops?: { bound: Bound<SkipLoop[]>; server: string }[];
+  otherLoops?: { bound: Bound<SkipLoop[]>; server: string; stale?: boolean }[];
   otherLoopStopping?: { key: string; id: string } | null;
   otherLoopErrors?: Record<string, string>;
   onStopOtherLoop?: (bound: Bound<SkipLoop[]>, loop: SkipLoop) => void;
@@ -645,13 +648,14 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         <p>{loopResult.report.message}</p><p className="hint">Sent on {loopResult.label}, not the connection in use.</p>
       </section>}
       {loopsShown.length > 0 && <ReplicationLoopBanner loops={loopsShown} stopping={stopping} onStop={(l) => { void stop(l); }} />}
-      {otherLoops.map(({ bound: otherBound, server }) => {
+      {otherLoops.map(({ bound: otherBound, server, stale }) => {
         const active = otherBound.report.filter(loopActive);
         return active.length > 0 ? (
           <ReplicationLoopBanner
             key={otherBound.key}
             loops={active}
             server={server}
+            stale={stale}
             stopping={otherLoopStopping?.key === otherBound.key ? otherLoopStopping.id : ""}
             errorFor={(l) => (l.job_id ? otherLoopErrors[`${otherBound.key}:${l.job_id}`] || "" : "")}
             onStop={(l) => { onStopOtherLoop?.(otherBound, l); }}
