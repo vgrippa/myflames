@@ -9,6 +9,7 @@ export type ActionPrivilege = {
   allowed?: boolean | null;
   // privileges.can returns alternatives; the endpoint may flatten them.
   missing: string[] | string[][];
+  grant_sql?: string | null;
   reason: string;
   need?: string;
   note?: string;

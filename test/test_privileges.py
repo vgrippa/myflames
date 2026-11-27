@@ -51,6 +51,9 @@ class RecordedSessions(unittest.TestCase):
                     self.assertIn(answer['state'], ('allowed', 'denied', 'unknown'), key)
                     self.assertIsInstance(answer['missing'], list)
                     self.assertTrue(answer['reason'])
+                    self.assertIn('grant_sql', answer)
+                    if answer['state'] != 'denied' or not answer['available']:
+                        self.assertIsNone(answer['grant_sql'])
                     if answer['state'] == 'allowed':
                         self.assertEqual(answer['missing'], [])
                 # One tagged call for the grants (+ APPLICABLE_ROLES on MySQL); never mysql.* or SHOW CREATE.
@@ -469,6 +472,158 @@ class Rules(unittest.TestCase):
     def test_python37_syntax(self):
         for path in (Path(p.__file__), Path(__file__), Path(replay.__file__)):
             ast.parse(path.read_text(encoding="utf-8"), **({'feature_version': 7} if sys.version_info >= (3, 8) else {}))
+
+
+class AdvisoryGrants(unittest.TestCase):
+    def model(self, engine='mysql', version=None, account='app@%', **extra):
+        version = version or ('11.4.13-MariaDB' if engine == 'mariadb' else '8.4.11')
+        model = p.parse_grants(['GRANT USAGE ON *.* TO `app`@`%`'], engine, version)
+        model.update(account=account, **extra)
+        return model
+
+    def test_report_uses_current_user_not_login_or_active_role(self):
+        for server in replay.SERVERS:
+            with self.subTest(server=server):
+                r, _data, _conn = report(server, 'acct_app')
+                answer = r['actions']['kill']
+                self.assertEqual(answer['state'], 'denied')
+                privilege = 'CONNECTION ADMIN' if r['engine'] == 'mariadb' else 'CONNECTION_ADMIN'
+                self.assertEqual(answer['grant_sql'], 'GRANT %s ON *.* TO `acct_app`@`%%`;' % privilege)
+
+    def test_or_alternatives_choose_one_catalog_privilege_per_engine(self):
+        for engine, expected, missing in (
+                ('mysql', 'CONNECTION_ADMIN', ['CONNECTION_ADMIN', 'SUPER']),
+                ('mariadb', 'CONNECTION ADMIN', ['CONNECTION ADMIN'])):
+            with self.subTest(engine=engine):
+                model = self.model(engine)
+                answer = p.can(model, 'kill', target_system_user=False)
+                self.assertEqual(answer['state'], 'denied')
+                self.assertEqual(answer['missing'], missing)
+                self.assertEqual(answer['grant_sql'], 'GRANT %s ON *.* TO `app`@`%%`;' % expected)
+                granted = p.parse_grants([answer['grant_sql']], engine, model['version'])
+                self.assertTrue(p.can(granted, 'kill', target_system_user=False)['allowed'])
+
+    def test_and_alternative_keeps_only_missing_privileges(self):
+        model = self.model()
+        answer = p.can(model, 'set_persist_only')
+        self.assertEqual(answer['grant_sql'],
+                         'GRANT SYSTEM_VARIABLES_ADMIN, PERSIST_RO_VARIABLES_ADMIN ON *.* TO `app`@`%`;')
+        model['dynamic'] = ['SYSTEM_VARIABLES_ADMIN']
+        self.assertEqual(p.can(model, 'set_persist_only')['grant_sql'],
+                         'GRANT PERSIST_RO_VARIABLES_ADMIN ON *.* TO `app`@`%`;')
+
+    def test_schema_grant_uses_report_partial_revokes_and_exact_database(self):
+        database = r'data\_%`'
+        for partial, pattern in ((False, r'data\\\_\%``'), (True, r'data\_%``')):
+            with self.subTest(partial_revokes=partial):
+                model = self.model(partial_revokes=partial)
+                answer = p.can(model, 'dump_mysqldump', database=database, single_transaction=True, triggers=False)
+                self.assertEqual(answer['state'], 'denied')
+                self.assertEqual(answer['grant_sql'],
+                                 'GRANT SELECT ON `%s`.* TO `app`@`%%`;\n'
+                                 'GRANT PROCESS ON *.* TO `app`@`%%`;' % pattern)
+                granted = p.parse_grants(answer['grant_sql'].splitlines(), 'mysql', model['version'], partial)
+                self.assertTrue(p.can(granted, 'dump_mysqldump', database=database,
+                                      single_transaction=True, triggers=False)['allowed'])
+                for other in ('dataXX`', 'data_%`', r'data\XX`'):
+                    self.assertIsNot(p.has(granted, 'SELECT', 'database', database=other), True)
+
+    def test_shared_schema_builder_on_each_engine(self):
+        for engine, version, partial, pattern in (
+                ('mysql', '8.4.11', False, r'data\_\%'),
+                ('mysql', '8.4.11', True, 'data_%'),
+                ('mysql', '5.7.44', False, r'data\_\%'),
+                ('mariadb', '10.11.19-MariaDB', False, r'data\_\%'),
+                ('mariadb', '11.4.13-MariaDB', False, r'data\_\%')):
+            with self.subTest(engine=engine, version=version, partial_revokes=partial):
+                sql = p.grant_sql([(('INSERT',), 'data_%', False)], 'app@%', partial, engine)
+                self.assertEqual(sql, 'GRANT INSERT ON `%s`.* TO `app`@`%%`;' % pattern)
+                granted = p.parse_grants([sql], engine, version, partial)
+                self.assertTrue(p.has(granted, 'INSERT', 'database', database='data_%'))
+                self.assertIsNot(p.has(granted, 'INSERT', 'database', database='dataXX'), True)
+
+    def test_unknown_partial_revokes_refuses_ambiguous_schema_grants(self):
+        model = self.model(partial_revokes=None)
+        for database, expected in (('data_%', None), ('data', 'GRANT SELECT ON `data`.* TO `app`@`%`;\n'
+                                                   'GRANT PROCESS ON *.* TO `app`@`%`;')):
+            with self.subTest(database=database):
+                answer = p.can(model, 'dump_mysqldump', database=database, single_transaction=True, triggers=False)
+                self.assertEqual(answer['state'], 'denied')
+                self.assertEqual(answer['grant_sql'], expected)
+        self.assertEqual(p.can(model, 'innodb_status')['grant_sql'], 'GRANT PROCESS ON *.* TO `app`@`%`;')
+
+    def test_mysql_without_partial_revokes_uses_wildcard_escaping(self):
+        for version in ('5.7.44', '8.0.15'):
+            with self.subTest(version=version):
+                answer = p.can(self.model(version=version, partial_revokes=None), 'dump_mysqldump',
+                               database='data_%', single_transaction=True, triggers=False)
+                self.assertEqual(answer['grant_sql'], 'GRANT SELECT ON `data\\_\\%`.* TO `app`@`%`;\n'
+                                                     'GRANT PROCESS ON *.* TO `app`@`%`;')
+
+    def test_account_quoting_preserves_hostile_but_valid_names(self):
+        cases = [("o'reilly@%", "`o'reilly`@`%`"), (r'back\slash@host%', r'`back\slash`@`host%`'),
+                 ('tick`user@ho`st', '`tick``user`@`ho``st`'), ('name@inside@%', '`name@inside`@`%`'),
+                 ('x`; GRANT SUPER@%', '`x``; GRANT SUPER`@`%`')]
+        for engine in ('mysql', 'mariadb'):
+            for account, quoted in cases:
+                with self.subTest(engine=engine, account=account):
+                    answer = p.can(self.model(engine, account=account), 'innodb_status')
+                    sql = 'GRANT PROCESS ON *.* TO %s;' % quoted
+                    self.assertEqual(answer['grant_sql'], sql)
+                    parsed = p.parse_grants([sql], engine)
+                    self.assertEqual(parsed['unparsed'], [])
+                    self.assertEqual(parsed['grants'][0], sql[:-1])
+                    source = p.grant_source(sql)
+                    self.assertEqual(source['name'], account.rsplit('@', 1)[0])
+                    self.assertEqual(source['host'], account.rsplit('@', 1)[1])
+
+    def test_invalid_or_unknown_accounts_return_null(self):
+        cases = [None, '', 'unknown', 42]
+        cases += [name + '@host' for name in ('bad\0name', 'bad\rname', 'bad\nname')]
+        cases += ['app@' + host for host in ('bad\0host', 'bad\rhost', 'bad\nhost')]
+        for engine in ('mysql', 'mariadb'):
+            for account in cases:
+                with self.subTest(engine=engine, account=account):
+                    answer = p.can(self.model(engine, account=account), 'innodb_status')
+                    self.assertEqual(answer['state'], 'denied')
+                    self.assertIsNone(answer['grant_sql'])
+
+    def test_non_grantable_or_non_catalog_names_return_null(self):
+        for engine in ('mysql', 'mariadb'):
+            for privilege in ('USAGE', 'PROXY', 'GRANT OPTION', 'PROCESS; DROP USER app', 'NOT_A_PRIVILEGE'):
+                with self.subTest(engine=engine, privilege=privilege):
+                    answer = p.can(self.model(engine), 'grant', privileges=['SELECT', privilege])
+                    self.assertEqual(answer['state'], 'denied')
+                    self.assertIsNone(answer['grant_sql'])
+
+    def test_system_user_is_included_when_needed(self):
+        model = self.model()
+        self.assertEqual(p.can(model, 'kill', target_system_user=True)['grant_sql'],
+                         'GRANT CONNECTION_ADMIN, SYSTEM_USER ON *.* TO `app`@`%`;')
+        model['dynamic'] = ['CONNECTION_ADMIN']
+        self.assertEqual(p.can(model, 'kill', target_system_user=True)['grant_sql'],
+                         'GRANT SYSTEM_USER ON *.* TO `app`@`%`;')
+
+    def test_allowed_unknown_unavailable_and_non_privilege_refusals_return_null(self):
+        for engine, action, extra in (
+                ('mysql', 'health', {}), ('mysql', 'insert', {}),
+                ('mysql', 'innodb_status', {'checked': False}),
+                ('mysql', 'create_user', {'variables': {'super_read_only': 'ON'}}),
+                ('mariadb', 'set_persist', {}), ('mysql', 'grant_role', {})):
+            with self.subTest(engine=engine, action=action, extra=extra):
+                self.assertIsNone(p.can(self.model(engine, **extra), action)['grant_sql'])
+
+    def test_cluster_builder_keeps_grouping_alternative_order_and_grant_option(self):
+        from myflames import cluster
+        missing = [(('CONNECTION_ADMIN', 'SUPER'), None, False), (('PROCESS',), None, False),
+                   (('PROCESS',), None, False), (('INSERT',), 'data_%', True)]
+        for partial, pattern in ((False, r'data\_\%'), (True, 'data_%')):
+            expected = ('GRANT CONNECTION_ADMIN, PROCESS ON *.* TO `app`@`%%`;\n'
+                        'GRANT INSERT ON `%s`.* TO `app`@`%%` WITH GRANT OPTION;' % pattern)
+            with self.subTest(partial_revokes=partial):
+                self.assertEqual(p.grant_sql(missing, 'app@%', partial), expected)
+                self.assertEqual(cluster._grant_sql(missing, 'app@%', partial), expected)
+        self.assertIsNone(cluster._grant_sql(missing, 'app@%', None))
 
 
 class EditorStatementPrivileges(unittest.TestCase):

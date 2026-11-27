@@ -293,6 +293,33 @@ def quote_account(name, host='%', role=False, engine='mysql'):
     return quote_identifier(name) + '@' + quote_identifier(host)
 
 
+def grant_sql(missing, account, partial_revokes=None, engine='mysql'):
+    """Advisory text only. No statement built here enters the write plan.
+
+    ``missing`` holds ``(privilege alternatives, database, grantable)``
+    requirements. As in the Cluster catalog, choose the first privilege of
+    each alternative and group requirements by scope and grant option.
+    Callers supply catalog-verified names and a known CURRENT_USER() account.
+    """
+    account = quote_account(*account.rsplit('@', 1), engine=engine)
+    grouped = {}
+    for alternatives, database, grantable in missing:
+        if database and any(c in database for c in '\\_%'):
+            if not isinstance(partial_revokes, bool):
+                return None
+            if partial_revokes is False:
+                # mysql-server/sql/auth/sql_auth_cache.cc:1426-1430:
+                # wildcard comparison with partial_revokes OFF, literal ON.
+                database = database.replace('\\', '\\\\').replace('_', '\\_').replace('%', '\\%')
+        names = grouped.setdefault((database, grantable), [])
+        if alternatives[0] not in names:
+            names.append(alternatives[0])
+    return '\n'.join('GRANT %s ON %s TO %s%s;' %
+                     (', '.join(names), '%s.*' % quote_identifier(database) if database else '*.*', account,
+                      ' WITH GRANT OPTION' if grantable else '')
+                     for (database, grantable), names in grouped.items())
+
+
 def _pattern(pattern, literal):
     """``(name, wildcard)`` of a stored database pattern. With partial_revokes
     ON (MySQL) every name matches literally; otherwise ``\\_`` and ``\\%``
@@ -914,18 +941,54 @@ def _join(alternative):
                         for a in alternative)
 
 
+def _action_grant_sql(model, alternatives):
+    """Map one missing AND alternative to plain catalog GRANTs, or null.
+
+    Keep the structured requirements: parsing the display labels would lose
+    scope, grant option and the distinction between AND and OR. Unsupported
+    scopes and statement semantics (USAGE, PROXY, GRANT OPTION) stay null.
+    """
+    account = model.get('account')
+    if not isinstance(account, str) or '@' not in account or not alternatives:
+        return None
+    engine, version = model.get('engine', 'mysql'), model.get('version', '')
+    missing = []
+    for atom in alternatives[0]:
+        level, privilege = atom['level'], atom['privilege']
+        if level not in ('global', 'database'):
+            return None
+        names = static_privileges(engine, version, level)
+        if engine == 'mysql' and level == 'global':
+            names |= builtin_dynamic_privileges(version)
+        if privilege not in names:
+            return None
+        database = atom.get('database') if level == 'database' else None
+        if level == 'database' and (not isinstance(database, str) or not database):
+            return None
+        missing.append(((privilege,), database, atom.get('grantable', False)))
+    partial = model.get('partial_revokes')
+    if engine == 'mariadb' or (5, 7, 0) <= version_tuple(version) < (8, 0, 16):
+        partial = False  # These engines always use database wildcard matching.
+    try:
+        return grant_sql(missing, account, partial, engine) if missing else None
+    except ValueError:
+        return None  # NUL and line breaks cannot enter an advisory statement.
+
+
 def can(model, action, **target):
     """Whether the account in *model* (a privileges-1.0 report or a
     :func:`parse_grants` model) may run *action*.
 
     Returns ``{"state", "allowed", "available", "missing", "need", "reason",
-    "via", "note", "grey_out"}``. ``state`` is ``allowed``, ``denied`` or
+    "via", "note", "grey_out", "grant_sql"}``. ``state`` is ``allowed``, ``denied`` or
     ``unknown`` (``allowed`` True, False or None). ``missing`` lists the
     alternatives still missing (a name, or names joined with " and "; any
     one is enough), empty when allowed. Unknown must leave a control
     enabled; ``grey_out`` is True only for an exact denial of a non-read.
     ``available`` False means the engine or version lacks the feature: do
-    not offer it.
+    not offer it. ``grant_sql`` is advisory SQL for one plain missing
+    alternative of a denied, available action, otherwise None. It uses the
+    report's CURRENT_USER() account and database-pattern semantics.
     """
     if isinstance(action, dict):
         target = dict(action, **target)
@@ -943,21 +1006,23 @@ def can(model, action, **target):
                        (engine == 'mariadb' or r['host'] == role.get('host', '%')) for r in model.get('roles', []))
         if all(holds(r) for r in target['roles']):
             alternatives = alternatives + [[]]
-    checks, missing = [], []
+    checks, missing, missing_atoms = [], [], []
     for alternative in alternatives:
         values = [has(model, a['privilege'], **{k: v for k, v in a.items() if k != 'privilege'}) for a in alternative]
         checks.append(True if all(v is True for v in values) else False if any(v is False for v in values) else None)
         lacking = [a for a, value in zip(alternative, values) if value is not True]
         if lacking:
             missing.append(_join(lacking))
+            missing_atoms.append(lacking)
     allowed = True if True in checks else None if not checks or None in checks else False
     if allowed is True:
         missing = []
+        missing_atoms = []
     if action in ('grant_role', 'revoke_role') and allowed is not True:
         allowed = None  # An admin path through the role graph is not printed.
     if not model.get('checked', True) or not model.get('fresh_session', True) or model.get('unparsed'):
         allowed = None
-    detail = ''
+    detail, plain_grant = '', True
     # SYSTEM_USER exists from MySQL 8.0.16 (_MYSQL_DYNAMIC_SINCE); before it
     # no target can hold it, so it never limits KILL or an account change.
     system_user_exists = not (5, 0, 0) <= version_tuple(model.get('version', '')) < (8, 0, 16)
@@ -971,6 +1036,7 @@ def can(model, action, **target):
         if system is True and admin is not True:
             allowed = False if admin is False else (None if allowed is not False else False)
             missing.append('SYSTEM_USER')
+            missing_atoms = [alt + [_atom('SYSTEM_USER')] for alt in (missing_atoms or [[]])]
             detail = 'The target holds SYSTEM_USER, so the actor needs it too.'
         elif system is None and admin is not True and allowed is True:
             allowed = None
@@ -980,12 +1046,14 @@ def can(model, action, **target):
         everyone, bypass_needed, setting = _read_only_state(model)
         if everyone:
             allowed = False
+            plain_grant = False
             missing.append('server is read-only (%s)' % setting)
             detail = 'The server has %s, so nobody can run this.' % setting
         elif bypass_needed:
             bypass = can(dict(model, variables={}), 'read_only_bypass')
             if bypass['allowed'] is not True:
                 allowed = False if bypass['allowed'] is False else None
+                plain_grant = False
                 missing.append('read_only bypass (%s)' % bypass['need'])
                 detail = 'The server has %s; writing needs %s.' % (setting, bypass['need'])
     if not spec['available']:
@@ -1020,6 +1088,8 @@ def can(model, action, **target):
                       'which SHOW GRANTS does not show; the server decides.')
     return {'state': state, 'allowed': allowed, 'available': spec['available'], 'missing': missing,
             'need': need, 'reason': reason, 'via': via, 'note': spec['note'],
+            'grant_sql': (_action_grant_sql(model, missing_atoms)
+                          if allowed is False and spec['available'] and plain_grant else None),
             'grey_out': allowed is False and not spec['read'] and spec['available']}
 
 

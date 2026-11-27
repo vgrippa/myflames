@@ -2318,24 +2318,8 @@ def _privilege_label(privilege, database, grantable):
 
 def _grant_sql(missing, account, partial_revokes=None):
     """Advisory text only. No statement built here enters the write plan."""
-    from .privileges import quote_account, quote_identifier
-    account = quote_account(*account.rsplit("@", 1))
-    grouped = {}
-    for alternatives, database, grantable in missing:
-        if database and any(c in database for c in "\\_%"):
-            if not isinstance(partial_revokes, bool):
-                return None
-            if partial_revokes is False:
-                # mysql-server/sql/auth/sql_auth_cache.cc:1426-1430:
-                # wildcard comparison with partial_revokes OFF, literal ON.
-                database = database.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
-        names = grouped.setdefault((database, grantable), [])
-        if alternatives[0] not in names:
-            names.append(alternatives[0])
-    return "\n".join("GRANT %s ON %s TO %s%s;" %
-                     (", ".join(names), "%s.*" % quote_identifier(database) if database else "*.*", account,
-                      " WITH GRANT OPTION" if grantable else "")
-                     for (database, grantable), names in grouped.items())
+    from .privileges import grant_sql
+    return grant_sql(missing, account, partial_revokes)
 
 
 from .reviewed_writes import ActionUnavailable  # re-exported; ui.py imports it from here
