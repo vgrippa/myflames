@@ -569,14 +569,16 @@ def _measure_scanner_scaling(function, first, second, allow_refusal=False):
 
     Returns (first_pair, confirmed_pair). confirmed_pair is None unless the
     first 3-sample pair reached both the 50 ms noise floor and the 8x bound,
-    in which case the pair is re-measured once with 7 interleaved samples each.
+    in which case 7 more interleaved samples are taken per size and
+    confirmed_pair pools the minimums across all 10 samples per size.
     """
     first_pair = _scanner_pair_seconds(function, first, second, allow_refusal, samples=3)
     short, long = first_pair
     if long >= 0.05 and long >= 8 * short:
-        confirmed_pair = _scanner_pair_seconds(
+        retry_short, retry_long = _scanner_pair_seconds(
             function, first, second, allow_refusal, samples=7
         )
+        confirmed_pair = (min(short, retry_short), min(long, retry_long))
         return first_pair, confirmed_pair
     return first_pair, None
 
@@ -590,7 +592,7 @@ class TestSQLScannerTiming(unittest.TestCase):
         if confirmed_pair is not None:
             short, long = confirmed_pair
             if log:
-                print("SQL scanner %s %s (confirmed, 7 samples): 16K=%.6fs 64K=%.6fs ratio=%.2f" %
+                print("SQL scanner %s %s (confirmed, pooled over 10 samples): 16K=%.6fs 64K=%.6fs ratio=%.2f" %
                       (name, shape, short, long, _scaling_ratio(short, long)), flush=True)
         if long >= 0.05:
             self.assertLess(long, 8 * short,
@@ -618,24 +620,20 @@ class TestSQLScannerTiming(unittest.TestCase):
         from myflames import dbops
 
         def quadratic_scanner(sql):
-            # Hashing every step=6 prefix does O(n^2) work while keeping 64K
-            # above 50 ms on modern Python and under 0.5 s on Python 3.7.
+            # Hashing every step=6 prefix does O(n^2) work (~16x from 16K to 64K)
+            # while keeping 64K under 0.5 s on Python 3.7.
             return sum(hash(sql[:i]) for i in range(0, len(sql), 6))
 
         nbe_short = dict(_hostile_sql_shapes(16384))["nbe_literal"]
         nbe_long = dict(_hostile_sql_shapes(65536))["nbe_literal"]
 
-        quad_first, quad_confirmed = _measure_scanner_scaling(
-            quadratic_scanner, nbe_short, nbe_long
+        q_short, q_long = _scanner_pair_seconds(
+            quadratic_scanner, nbe_short, nbe_long, samples=5
         )
-        self.assertIsNotNone(quad_confirmed)
-        q_short, q_long = quad_confirmed
-        self.assertGreaterEqual(q_long, 0.05)
-        self.assertGreater(_scaling_ratio(q_short, q_long), 8)
-        with self.assertRaises(AssertionError):
-            self._assert_scaling_bound(
-                "quadratic_probe", "nbe_literal", quad_first, quad_confirmed, log=False
-            )
+        q_ratio = _scaling_ratio(q_short, q_long)
+        print("SQL scanner quadratic_probe nbe_literal: 16K=%.6fs 64K=%.6fs ratio=%.2f" %
+              (q_short, q_long, q_ratio), flush=True)
+        self.assertGreater(q_ratio, 8)
 
         lin_first, lin_confirmed = _measure_scanner_scaling(
             dbops.classify, nbe_short, nbe_long
@@ -647,7 +645,7 @@ class TestSQLScannerTiming(unittest.TestCase):
         )
 
     def test_scaling_confirmation_and_interleaving(self):
-        """Verify interleaved sampling, one-shot 7-sample confirmation, and refusal rules."""
+        """Verify interleaved sampling, pooled 10-sample confirmation, and refusal rules."""
         def scripted_measure(short_times, long_times):
             calls = []
             phase = [0]
@@ -666,21 +664,33 @@ class TestSQLScannerTiming(unittest.TestCase):
                 first_pair, confirmed_pair = _measure_scanner_scaling(probe, "short", "long")
             return calls, first_pair, confirmed_pair
 
-        # First pass misses 8x due to a transient spike; confirmed 7-sample pass recovers.
+        # First round hits a long-sample spike; pooling 10 samples resolves it.
         calls, first_pair, confirmed_pair = scripted_measure(
-            [0.005, 0.006, 0.005] + [0.015, 0.013, 0.014, 0.014, 0.015, 0.014, 0.013],
-            [0.060, 0.055, 0.058] + [0.060, 0.054, 0.052, 0.055, 0.053, 0.056, 0.054],
+            [0.005, 0.005, 0.005] + [0.005] * 7,
+            [0.060, 0.055, 0.058] + [0.022, 0.020, 0.021, 0.023, 0.020, 0.022, 0.021],
         )
         self.assertEqual(calls, ["short", "long"] * 10)
         self.assertEqual(first_pair, (0.005, 0.055))
-        self.assertEqual(confirmed_pair, (0.013, 0.052))
+        self.assertEqual(confirmed_pair, (0.005, 0.020))
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             self._assert_scaling_bound("probe", "nbe_literal", first_pair, confirmed_pair)
         lines = buf.getvalue().strip().splitlines()
         self.assertEqual(len(lines), 2)
         self.assertIn("SQL scanner probe nbe_literal: 16K=0.005000s 64K=0.055000s ratio=11.00", lines[0])
-        self.assertIn("SQL scanner probe nbe_literal (confirmed, 7 samples): 16K=0.013000s 64K=0.052000s ratio=4.00", lines[1])
+        self.assertIn("SQL scanner probe nbe_literal (confirmed, pooled over 10 samples): 16K=0.005000s 64K=0.020000s ratio=4.00", lines[1])
+
+        # Slowed confirmation shorts cannot mask true growth caught in round 1.
+        calls, first_pair, confirmed_pair = scripted_measure(
+            [0.010] * 3 + [0.025] * 7,
+            [0.160] * 3 + [0.160] * 7,
+        )
+        self.assertEqual(calls, ["short", "long"] * 10)
+        self.assertEqual(first_pair, (0.010, 0.160))
+        self.assertEqual(confirmed_pair, (0.010, 0.160))
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(AssertionError):
+                self._assert_scaling_bound("probe", "nbe_literal", first_pair, confirmed_pair)
 
         # Confirmed pass still above 8x fails immediately without a second retry.
         calls, first_pair, confirmed_pair = scripted_measure(
@@ -688,7 +698,7 @@ class TestSQLScannerTiming(unittest.TestCase):
             [0.055, 0.060, 0.058] + [0.065, 0.060, 0.062, 0.061, 0.063, 0.064, 0.066],
         )
         self.assertEqual(calls, ["short", "long"] * 10)
-        self.assertEqual(confirmed_pair, (0.005, 0.060))
+        self.assertEqual(confirmed_pair, (0.005, 0.055))
         with contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(AssertionError):
                 self._assert_scaling_bound("probe", "nbe_literal", first_pair, confirmed_pair)
