@@ -293,6 +293,11 @@ def quote_account(name, host='%', role=False, engine='mysql'):
     return quote_identifier(name) + '@' + quote_identifier(host)
 
 
+# Control characters (U+0000-U+001F, U+007F-U+009F), Unicode line/paragraph
+# separators (U+2028, U+2029), and backslashes cannot enter advisory GRANT text.
+_UNSAFE_GRANT_SQL = re.compile('[\x00-\x1f\x7f-\x9f\u2028\u2029\\\\]')
+
+
 def grant_sql(missing, account, partial_revokes=None, engine='mysql'):
     """Advisory text only. No statement built here enters the write plan.
 
@@ -300,17 +305,24 @@ def grant_sql(missing, account, partial_revokes=None, engine='mysql'):
     requirements. As in the Cluster catalog, choose the first privilege of
     each alternative and group requirements by scope and grant option.
     Callers supply catalog-verified names and a known CURRENT_USER() account.
+    Returns None when the account or any database name contains a control
+    character (U+0000-U+001F, U+007F-U+009F), U+2028, U+2029 or a backslash.
     """
+    if not isinstance(account, str) or _UNSAFE_GRANT_SQL.search(account):
+        return None
     account = quote_account(*account.rsplit('@', 1), engine=engine)
     grouped = {}
     for alternatives, database, grantable in missing:
-        if database and any(c in database for c in '\\_%'):
+        if database is not None:
+            if not isinstance(database, str) or _UNSAFE_GRANT_SQL.search(database):
+                return None
+        if database and any(c in database for c in '_%'):
             if not isinstance(partial_revokes, bool):
                 return None
             if partial_revokes is False:
                 # mysql-server/sql/auth/sql_auth_cache.cc:1426-1430:
                 # wildcard comparison with partial_revokes OFF, literal ON.
-                database = database.replace('\\', '\\\\').replace('_', '\\_').replace('%', '\\%')
+                database = database.replace('_', '\\_').replace('%', '\\%')
         names = grouped.setdefault((database, grantable), [])
         if alternatives[0] not in names:
             names.append(alternatives[0])
@@ -355,7 +367,8 @@ def parse_grants(lines, engine='mysql', version='8.4.0', partial_revokes=False, 
     """
     text_version = '.'.join(str(n) for n in version_tuple(version)) if isinstance(version, (tuple, list)) else str(version)
     result = {'engine': engine, 'version': text_version, 'checked': checked, 'fresh_session': True,
-              'partial_revokes': bool(partial_revokes), 'global': [], 'dynamic': [], 'global_grantable': [],
+              'partial_revokes': None if partial_revokes is None else bool(partial_revokes),
+              'global': [], 'dynamic': [], 'global_grantable': [],
               'static_grant_option': False, 'schemas': [], 'tables': [], 'columns': [], 'routines': [],
               'proxies': [], 'restrictions': [], 'roles': [], 'unparsed': [], 'grants': []}
     defaults = []
@@ -765,11 +778,16 @@ def requirements(action, engine='mysql', version='8.4.0', **target):
             available = action != 'skip_gtid'
             alternatives = g('SUPER+REPLICATION SLAVE ADMIN')
         else:
-            first = (g('SUPER', 'SYSTEM_VARIABLES_ADMIN', 'SESSION_VARIABLES_ADMIN', 'REPLICATION_APPLIER')
+            # Least privilege first, SUPER last (deprecated on MySQL 8.0+):
+            # SET GTID_NEXT checks check_session_admin_or_replication_applier
+            # (or check_tagged_gtid_next_privileges without SUPER for tagged
+            # GTIDs) in mysql-server sql/sys_vars.cc; START REPLICA checks
+            # REPLICATION_SLAVE_ADMIN or SUPER in sql/rpl_replica.cc.
+            first = (g('REPLICATION_APPLIER', 'SESSION_VARIABLES_ADMIN', 'SYSTEM_VARIABLES_ADMIN', 'SUPER')
                      if action == 'skip_gtid' else g('SYSTEM_VARIABLES_ADMIN', 'SUPER'))
             if target.get('tagged_gtid'):
                 first = [a + [_atom('TRANSACTION_GTID_TAG')] for a in first if a != [_atom('SUPER')]]
-            alternatives = [a + b for a in first for b in g('REPLICATION_SLAVE_ADMIN', 'SUPER')]
+            alternatives = [a + b for b in g('REPLICATION_SLAVE_ADMIN', 'SUPER') for a in first]
     elif action in _OBJECT or action in ('restore', 'create_temporary_table', 'dump_shell', 'dump_mysqldump',
                                          'dump_mariadb'):
         if action == 'restore':
@@ -1298,7 +1316,11 @@ def read_privileges(conn):
         active = [] if role_text in (None, 'NONE', '') else [account_tokens(p) for p in split_tokens(tokens(role_text))]
     else:
         active = [{'name': role_text, 'host': '', 'role': True}] if role_text else []
-    partial = engine == 'mysql' and str(variables.get('partial_revokes', '')).upper() in ('ON', '1')
+    if engine == 'mariadb' or (5, 7, 0) <= version_tuple(version) < (8, 0, 16):
+        partial = False
+    else:
+        raw_partial = str(variables.get('partial_revokes', '')).upper()
+        partial = True if raw_partial in ('ON', '1') else False if raw_partial in ('OFF', '0') else None
     model = parse_grants(grants, engine, version, partial)
     if not grants:
         model['checked'] = False

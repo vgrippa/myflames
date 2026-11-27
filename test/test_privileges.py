@@ -513,8 +513,8 @@ class AdvisoryGrants(unittest.TestCase):
                          'GRANT PERSIST_RO_VARIABLES_ADMIN ON *.* TO `app`@`%`;')
 
     def test_schema_grant_uses_report_partial_revokes_and_exact_database(self):
-        database = r'data\_%`'
-        for partial, pattern in ((False, r'data\\\_\%``'), (True, r'data\_%``')):
+        database = 'data_%`'
+        for partial, pattern in ((False, r'data\_\%``'), (True, 'data_%``')):
             with self.subTest(partial_revokes=partial):
                 model = self.model(partial_revokes=partial)
                 answer = p.can(model, 'dump_mysqldump', database=database, single_transaction=True, triggers=False)
@@ -525,8 +525,14 @@ class AdvisoryGrants(unittest.TestCase):
                 granted = p.parse_grants(answer['grant_sql'].splitlines(), 'mysql', model['version'], partial)
                 self.assertTrue(p.can(granted, 'dump_mysqldump', database=database,
                                       single_transaction=True, triggers=False)['allowed'])
-                for other in ('dataXX`', 'data_%`', r'data\XX`'):
+                for other in ('dataXX`', 'dataXY`', 'data_X`'):
                     self.assertIsNot(p.has(granted, 'SELECT', 'database', database=other), True)
+        for partial in (False, True, None):
+            with self.subTest(backslash_partial_revokes=partial):
+                model = self.model(partial_revokes=partial)
+                answer = p.can(model, 'dump_mysqldump', database=r'data\_%`', single_transaction=True, triggers=False)
+                self.assertEqual(answer['state'], 'denied')
+                self.assertIsNone(answer['grant_sql'])
 
     def test_shared_schema_builder_on_each_engine(self):
         for engine, version, partial, pattern in (
@@ -561,7 +567,7 @@ class AdvisoryGrants(unittest.TestCase):
                                                      'GRANT PROCESS ON *.* TO `app`@`%`;')
 
     def test_account_quoting_preserves_hostile_but_valid_names(self):
-        cases = [("o'reilly@%", "`o'reilly`@`%`"), (r'back\slash@host%', r'`back\slash`@`host%`'),
+        cases = [("o'reilly@%", "`o'reilly`@`%`"),
                  ('tick`user@ho`st', '`tick``user`@`ho``st`'), ('name@inside@%', '`name@inside`@`%`'),
                  ('x`; GRANT SUPER@%', '`x``; GRANT SUPER`@`%`')]
         for engine in ('mysql', 'mariadb'):
@@ -587,6 +593,146 @@ class AdvisoryGrants(unittest.TestCase):
                     answer = p.can(self.model(engine, account=account), 'innodb_status')
                     self.assertEqual(answer['state'], 'denied')
                     self.assertIsNone(answer['grant_sql'])
+
+    def test_control_characters_line_separators_and_backslash_return_null(self):
+        from myflames import cluster
+        hostile_accounts = [
+            'dba\x01\\! id #@%',
+            '\x15', '\x15@%', 'app@\x15',
+            '\x1b[201~', '\x1b[201~@%', 'app@\x1b[201~',
+            '\x7f', '\x7f@%', 'app@\x7f',
+            '\x85', '\x85@%', 'app@\x85',
+            '\u2028', '\u2028@%', 'app@\u2028',
+            '\u2029@%',
+            '\\', 'back\\slash@host%', 'app@host\\',
+            'dba\x1f@%', 'dba\x9f@%',
+        ]
+        missing = [(('PROCESS',), None, False)]
+        for engine in ('mysql', 'mariadb'):
+            for account in hostile_accounts:
+                with self.subTest(engine=engine, account=account):
+                    answer = p.can(self.model(engine, account=account), 'innodb_status')
+                    self.assertEqual(answer['state'], 'denied')
+                    self.assertIsNone(answer['grant_sql'])
+                    self.assertIsNone(p.grant_sql(missing, account, False, engine))
+                    self.assertIsNone(cluster._grant_sql(missing, account, False))
+            dump_action = 'dump_mariadb' if engine == 'mariadb' else 'dump_mysqldump'
+            dump_opts = {'single_transaction': True, 'triggers': False, 'source_data': engine == 'mariadb'}
+            for db in ('db\x15x', 'db\x01x', 'db\x1b[201~x', 'db\x7fx', 'db\x85x', 'db\u2028x', 'db\u2029x', 'db\\x'):
+                for partial in (False, True, None):
+                    with self.subTest(engine=engine, database=db, partial_revokes=partial):
+                        answer = p.can(self.model(engine, partial_revokes=partial), dump_action,
+                                       database=db, **dump_opts)
+                        self.assertTrue(answer['available'])
+                        self.assertEqual(answer['state'], 'denied')
+                        self.assertIsNone(answer['grant_sql'])
+                        req = [(('SELECT',), db, False)]
+                        self.assertIsNone(p.grant_sql(req, 'app@%', partial, engine))
+                        self.assertIsNone(cluster._grant_sql(req, 'app@%', partial))
+
+    def test_read_privileges_preserves_unknown_partial_revokes_on_mysql_8016_plus(self):
+        rest = ("VERSION(); " + p.TAG + "SHOW GRANTS; " + p.TAG +
+                "SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s)" % ', '.join("'%s'" % v for v in p._VARIABLES))
+        who_sql = p.TAG + "SELECT 'myflames_who', USER(), CURRENT_USER(), CURRENT_ROLE(), " + rest
+        roles_sql = (p.TAG + 'SELECT ROLE_NAME, ROLE_HOST, IS_DEFAULT, IS_MANDATORY '
+                     'FROM information_schema.APPLICABLE_ROLES')
+
+        def make_conn(version, extra_vars=()):
+            rows = [
+                'myflames_who\tapp@localhost\tapp@%\tNONE\t' + version,
+                'GRANT USAGE ON *.* TO `app`@`%`',
+                'read_only\tOFF',
+            ] + ['%s\t%s' % pair for pair in extra_vars]
+            calls = [{'sql': who_sql, 'output': '\n'.join(rows) + '\n'},
+                     {'sql': roles_sql, 'output': ''}]
+            return replay.ReplayConn(calls, version or '8.4.11')
+
+        self.assertIsNone(p.parse_grants(['GRANT USAGE ON *.* TO `app`@`%`'], 'mysql', '8.4.11',
+                                         partial_revokes=None)['partial_revokes'])
+        for version in ('8.0.16', '8.4.11', '9.7.0', '8.0', ''):
+            with self.subTest(unknown_version=version):
+                report = p.read_privileges(make_conn(version))
+                self.assertIsNone(report['partial_revokes'])
+                self.assertIsNone(p.can(report, 'dump_mysqldump', database='data_%',
+                                        single_transaction=True, triggers=False)['grant_sql'])
+                self.assertEqual(p.can(report, 'dump_mysqldump', database='data',
+                                       single_transaction=True, triggers=False)['grant_sql'],
+                                 'GRANT SELECT ON `data`.* TO `app`@`%`;\nGRANT PROCESS ON *.* TO `app`@`%`;')
+                self.assertEqual(report['actions']['innodb_status']['grant_sql'],
+                                 'GRANT PROCESS ON *.* TO `app`@`%`;')
+        for version, action, opts, expected_sql in (
+                ('5.7.44', 'dump_mysqldump', {'single_transaction': True, 'triggers': False},
+                 'GRANT SELECT ON `data\\_\\%`.* TO `app`@`%`;\nGRANT PROCESS ON *.* TO `app`@`%`;'),
+                ('8.0.15', 'dump_mysqldump', {'single_transaction': True, 'triggers': False},
+                 'GRANT SELECT ON `data\\_\\%`.* TO `app`@`%`;\nGRANT PROCESS ON *.* TO `app`@`%`;'),
+                ('11.4.13-MariaDB', 'dump_mariadb', {'single_transaction': True, 'triggers': False, 'source_data': True},
+                 'GRANT SELECT ON `data\\_\\%`.* TO `app`@`%`;\nGRANT RELOAD, BINLOG MONITOR ON *.* TO `app`@`%`;')):
+            with self.subTest(legacy_version=version):
+                report = p.read_privileges(make_conn(version))
+                self.assertIs(report['partial_revokes'], False)
+                answer = p.can(report, action, database='data_%', **opts)
+                self.assertTrue(answer['available'])
+                self.assertEqual(answer['grant_sql'], expected_sql)
+        report_off = p.read_privileges(make_conn('8.4.11', (('partial_revokes', 'OFF'),)))
+        self.assertIs(report_off['partial_revokes'], False)
+        report_on = p.read_privileges(make_conn('8.4.11', (('partial_revokes', 'ON'),)))
+        self.assertIs(report_on['partial_revokes'], True)
+
+    def test_least_privilege_first_for_skip_gtid_and_read_only_bypass(self):
+        for version in ('8.0.46', '8.4.11', '9.7.0'):
+            with self.subTest(version=version):
+                model = self.model('mysql', version=version)
+                # read_only_bypass: CONNECTION_ADMIN first, SUPER last; both still allowed.
+                ro_spec = p.requirements('read_only_bypass', 'mysql', version)
+                self.assertEqual([[a['privilege'] for a in alt] for alt in ro_spec['alternatives']],
+                                 [['CONNECTION_ADMIN'], ['SUPER']])
+                ro = p.can(model, 'read_only_bypass')
+                self.assertEqual(ro['need'], 'CONNECTION_ADMIN or SUPER')
+                self.assertEqual(ro['grant_sql'], 'GRANT CONNECTION_ADMIN ON *.* TO `app`@`%`;')
+                for priv in ('CONNECTION_ADMIN', 'SUPER'):
+                    granted = p.parse_grants(['GRANT %s ON *.* TO `app`@`%%`' % priv], 'mysql', version)
+                    self.assertIs(p.can(granted, 'read_only_bypass')['allowed'], True)
+                # skip_gtid untagged: narrowest first, all non-SUPER before SUPER, SUPER last.
+                gtid_spec = p.requirements('skip_gtid', 'mysql', version)
+                alts = [[a['privilege'] for a in alt] for alt in gtid_spec['alternatives']]
+                self.assertEqual(alts[:3], [
+                    ['REPLICATION_APPLIER', 'REPLICATION_SLAVE_ADMIN'],
+                    ['SESSION_VARIABLES_ADMIN', 'REPLICATION_SLAVE_ADMIN'],
+                    ['SYSTEM_VARIABLES_ADMIN', 'REPLICATION_SLAVE_ADMIN'],
+                ])
+                self.assertEqual(alts[-1], ['SUPER'])
+                gtid = p.can(model, 'skip_gtid')
+                self.assertEqual(gtid['grant_sql'],
+                                 'GRANT REPLICATION_APPLIER, REPLICATION_SLAVE_ADMIN ON *.* TO `app`@`%`;')
+                for privs in (
+                        ('REPLICATION_APPLIER', 'REPLICATION_SLAVE_ADMIN'),
+                        ('SESSION_VARIABLES_ADMIN', 'REPLICATION_SLAVE_ADMIN'),
+                        ('SYSTEM_VARIABLES_ADMIN', 'REPLICATION_SLAVE_ADMIN'),
+                        ('REPLICATION_APPLIER', 'SUPER'),
+                        ('SUPER',),
+                ):
+                    granted = p.parse_grants(['GRANT %s ON *.* TO `app`@`%%`' % ', '.join(privs)], 'mysql', version)
+                    self.assertIs(p.can(granted, 'skip_gtid')['allowed'], True, privs)
+                # skip_gtid tagged: narrowest + TRANSACTION_GTID_TAG first; SUPER never satisfies tag check.
+                tagged = p.can(model, 'skip_gtid', tagged_gtid=True)
+                if p.version_tuple(version) >= (8, 3, 0):
+                    self.assertEqual(
+                        tagged['grant_sql'],
+                        'GRANT REPLICATION_APPLIER, TRANSACTION_GTID_TAG, REPLICATION_SLAVE_ADMIN ON *.* TO `app`@`%`;',
+                    )
+                super_only = p.parse_grants(['GRANT SUPER ON *.* TO `app`@`%`'], 'mysql', version)
+                self.assertIs(p.can(super_only, 'skip_gtid', tagged_gtid=True)['allowed'], False)
+                tagged_super_start = p.parse_grants(
+                    ['GRANT SESSION_VARIABLES_ADMIN, TRANSACTION_GTID_TAG, SUPER ON *.* TO `app`@`%`'], 'mysql', version)
+                self.assertIs(p.can(tagged_super_start, 'skip_gtid', tagged_gtid=True)['allowed'], True)
+        # MySQL 5.7 keeps static SUPER only; MariaDB keeps READ_ONLY ADMIN first and skip_gtid unavailable.
+        m57 = self.model('mysql', version='5.7.44')
+        self.assertEqual(p.can(m57, 'read_only_bypass')['grant_sql'], 'GRANT SUPER ON *.* TO `app`@`%`;')
+        self.assertEqual(p.can(m57, 'skip_gtid')['grant_sql'], 'GRANT SUPER ON *.* TO `app`@`%`;')
+        for mver in ('10.11.0-MariaDB', '11.4.13-MariaDB'):
+            mm = self.model('mariadb', version=mver)
+            self.assertEqual(p.can(mm, 'read_only_bypass')['grant_sql'], 'GRANT READ_ONLY ADMIN ON *.* TO `app`@`%`;')
+            self.assertFalse(p.can(mm, 'skip_gtid')['available'])
 
     def test_non_grantable_or_non_catalog_names_return_null(self):
         for engine in ('mysql', 'mariadb'):

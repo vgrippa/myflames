@@ -2228,6 +2228,8 @@ _SHELL_RUNTIME_PRIVILEGES = "MySQL Shell checks the privileges it needs when it 
 _GRANT_FIX = "Run the statement below as an administrator, then Refresh."
 _GRANT_MODE_UNKNOWN = ("The GRANT could not be built because partial_revokes could not be read "
                        "in this account's session. Refresh and try again.")
+_GRANT_UNAVAILABLE = ("The GRANT could not be built for this account name. Grant the missing "
+                      "privileges as an administrator, then Refresh.")
 
 
 def _grant_model(report, grants):
@@ -2693,13 +2695,26 @@ def _action_privileges(report, action, checks):
         action["missing_privileges"] = [[_privilege_label(p, database, grantable) for p in alternatives]
                                          for alternatives, database, grantable in missing]
         if missing:
-            action["grant_sql"] = _grant_sql(missing, model["account"], model.get("grant_partial_revokes"))
+            try:
+                action["grant_sql"] = _grant_sql(missing, model["account"], model.get("grant_partial_revokes"))
+            except ValueError:
+                action["grant_sql"] = None
+            if not action["grant_sql"]:
+                account = model.get("account")
+                unsafe_name = (not isinstance(account, str) or bool(privileges._UNSAFE_GRANT_SQL.search(account)) or
+                               any(database is not None and (not isinstance(database, str) or
+                                                             bool(privileges._UNSAFE_GRANT_SQL.search(database)))
+                                   for _, database, _ in missing))
+                fallback = (_GRANT_MODE_UNKNOWN
+                            if not unsafe_name and model.get("grant_partial_revokes") is None
+                            and any(database and any(c in database for c in "_%") for _, database, _ in missing)
+                            else _GRANT_UNAVAILABLE)
             if action["enabled"]:
                 action.update(enabled=False,
                               why_not="Needs " + "; and ".join(" or ".join(a) for a in action["missing_privileges"]) + ".",
-                              fix=_GRANT_FIX if action["grant_sql"] else _GRANT_MODE_UNKNOWN)
+                              fix=_GRANT_FIX if action["grant_sql"] else fallback)
             elif not action["grant_sql"]:
-                note = " ".join(n for n in (note, _GRANT_MODE_UNKNOWN) if n)
+                note = " ".join(n for n in (note, fallback) if n)
     if note:
         action["why_not"] = " ".join(n for n in (action["why_not"], note) if n)
     return action
