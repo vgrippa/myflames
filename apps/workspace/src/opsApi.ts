@@ -229,9 +229,11 @@ export type LifecycleResult = {
 };
 export type LifecycleJob = {
   schema_version: "lifecycle-job-1.0"; id: string | null; operation: LifecycleOperation;
-  /** Immutable execution target; absent only for a refusal before a job exists. */
+  /** Where the job was started (non-secret): stays the truth when the owning
+   * saved connection's endpoint is edited afterwards. */
   started_on?: { host: string; port: number };
-  /** Per-request ownership match on registry, status and cancellation replies. */
+  /** How this caller owns the job: the endpoint it runs on, or the saved
+   * connection it started from (survives an endpoint edit). */
   owner_match?: "endpoint" | "saved_connection";
   state: "queued" | "running" | "done" | "failed" | "refused" | "cancelled";
   progress: number | null; detail: CloneProgress | null;
@@ -239,12 +241,6 @@ export type LifecycleJob = {
   output?: { written_bytes: number; estimated_bytes: number | null } | null;
   events: { at: string; stream: string; text: string }[];
   result: LifecycleResult | null; error: string; policy?: OpsPolicy;
-  /** Where the job was started (non-secret): stays the truth when the owning
-   * saved connection's endpoint is edited afterwards. */
-  started_on?: { host: string; port: number };
-  /** How this caller owns the job: the endpoint it runs on, or the saved
-   * connection it started from (survives an endpoint edit). */
-  owner_match?: "endpoint" | "saved_connection";
 };
 export function jobActive(job: LifecycleJob) { return job.state === "queued" || job.state === "running"; }
 /** lifecycle-dump-info-1.0: what a dump folder restores into, read before the
