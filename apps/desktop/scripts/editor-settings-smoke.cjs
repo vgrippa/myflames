@@ -245,52 +245,93 @@ async function editorChecks(page, expected, helpers) {
     .catch(error => { throw new Error(`the editor never applied Multiple cursors ${multi}: ` + error.message); });
   await page.waitForFunction(selector => document.querySelectorAll(selector).length === 1, {}, CURSORS)
     .catch(error => { throw new Error('the editor never showed exactly one cursor before Option-click: ' + error.message); });
-  const point = await page.$eval(EDITOR, editor => {
-    const second = editor.querySelectorAll('.cm-line')[1];
-    if (!second) throw new Error('Editor has no second line');
+  // The Option-click must land on line 2's text inside the editor. Measure and
+  // verify in one wait (fresh coordinates each poll): a closing overlay or a
+  // late layout change between measuring and clicking would otherwise swallow
+  // the click (seen on CI: the click never reached the editor after the
+  // second relaunch, leaving one cursor at its previous position).
+  const measured = await page.waitForFunction(selector => {
+    const editor = document.querySelector(selector);
+    const second = editor?.querySelectorAll('.cm-line')[1];
+    if (!second) return null;
     const range = document.createRange();
     range.selectNodeContents(second);
     const rect = range.getClientRects()[0];
-    if (!rect || rect.width <= 0 || rect.height <= 0) throw new Error('Second line has no visible text');
-    return { x: rect.left + Math.min(16, rect.width / 2), y: rect.top + rect.height / 2 };
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    const point = { x: rect.left + Math.min(16, rect.width / 2), y: rect.top + rect.height / 2 };
+    const hit = document.elementFromPoint(point.x, point.y);
+    return hit && editor.contains(hit) ? point : null;
+  }, {}, EDITOR).catch(async error => {
+    const seen = await page.evaluate(selector => {
+      const editor = document.querySelector(selector);
+      const second = editor?.querySelectorAll('.cm-line')[1];
+      if (!second) return 'line 2 is not rendered';
+      const range = document.createRange();
+      range.selectNodeContents(second);
+      const rect = range.getClientRects()[0];
+      if (!rect || rect.width <= 0 || rect.height <= 0) return 'line 2 has no visible text';
+      const hit = document.elementFromPoint(rect.left + Math.min(16, rect.width / 2), rect.top + rect.height / 2);
+      const classes = node => String(node?.className?.baseVal ?? node?.className ?? '');
+      return `topmost at the point: ${hit ? `${hit.tagName} "${classes(hit)}"` : 'nothing'}`;
+    }, EDITOR).catch(() => 'diagnostic unavailable');
+    throw new Error(`the Option-click point never landed inside the editor (${seen}): ` + error.message);
   });
+  const point = await measured.jsonValue();
+  await measured.dispose();
+  const want = expected.multi_cursor ? 2 : 1;
+  // The outcome the assertions need: the expected cursor count and the main
+  // cursor on line 2. Wait for it instead of assuming the click took effect.
+  const outcome = () => page.waitForFunction((selector, cursors, n) => {
+    const editor = document.querySelector(selector);
+    return !!editor && document.querySelectorAll(cursors).length === n
+      && editor.selectionStart >= editor.value.indexOf('\n') + 1;
+  }, { timeout: 5000 }, EDITOR, CURSORS, want).catch(() => false);
+  const frames = () => page.evaluate(() => new Promise(resolve => {
+    let left = 4;
+    const tick = () => (--left ? requestAnimationFrame(tick) : resolve());
+    requestAnimationFrame(tick);
+  }));
   await page.keyboard.down('Alt');
   try { await page.mouse.click(point.x, point.y); }
   finally { await page.keyboard.up('Alt'); }
   // Let CodeMirror measure/draw both cursors before counting. A slow CI runner
-  // can need more than two frames, so wait for the expected count (bounded),
+  // can need more than two frames, so wait for the expected outcome (bounded),
   // then let a few more frames pass so the negative case cannot gain a late
   // second cursor. Cursor DOM remains present during its CSS blink off phase.
-  const want = expected.multi_cursor ? 2 : 1;
-  await page.waitForFunction((selector, n) => document.querySelectorAll(selector).length === n,
-    { timeout: 5000 }, CURSORS, want).catch(() => {});
-  await page.evaluate(() => new Promise(resolve => {
-    let frames = 4;
-    const tick = () => (--frames ? requestAnimationFrame(tick) : resolve());
-    requestAnimationFrame(tick);
-  }));
+  let settled = await outcome();
+  await frames();
   let count = await page.$$eval(CURSORS, nodes => nodes.length);
-  if (want === 2 && count === 1) {
-    // A busy macOS CI runner has dropped the first Option-click with the
-    // setting applied and the editor focused (not reproduced locally). Record
-    // the state, then Option-click once more a little further along line 2.
-    // Only the positive case retries, so "Multiple cursors off leaves one
-    // cursor" can never pass by accident, and two misses still fail.
-    const state = await page.evaluate(selector => ({
-      focused: !!document.querySelector('.query-lab .cm-editor.cm-focused'),
-      active: document.activeElement?.className || document.activeElement?.tagName || '',
-      multi: document.querySelector(selector)?.dataset.multiCursor || '',
-    }), EDITOR);
-    console.log(`RETRY (${stage}): Option-click left 1 cursor, want 2; ${JSON.stringify(state)}`);
+  let onSecondLine = await page.$eval(EDITOR, node => node.selectionStart >= node.value.indexOf('\n') + 1);
+  if (!settled && count === 1 && (want === 2 || !onSecondLine)) {
+    // The click had no visible effect, or (Multiple cursors on) added no
+    // second cursor: a busy macOS CI runner has dropped the first Option-click
+    // with the setting applied (seen on CI after the second relaunch, with the
+    // editor not even focused). Record the state, then Option-click once more
+    // a little further along line 2. A click that landed with Multiple cursors
+    // off moves the cursor to line 2, so the negative case retries only a
+    // click that did nothing; an editor that wrongly added a cursor shows
+    // count 2 and never enters this branch, and two misses still fail.
+    const state = await page.evaluate((selector, x, y) => {
+      const hit = document.elementFromPoint(x, y);
+      const classes = node => String(node?.className?.baseVal ?? node?.className ?? '');
+      return {
+        focused: !!document.querySelector('.query-lab .cm-editor.cm-focused'),
+        active: document.activeElement?.className || document.activeElement?.tagName || '',
+        multi: document.querySelector(selector)?.dataset.multiCursor || '',
+        topmost: hit ? `${hit.tagName} "${classes(hit)}"` : 'nothing',
+      };
+    }, EDITOR, point.x, point.y);
+    console.log(`RETRY (${stage}): Option-click left ${count} cursor on line ${onSecondLine ? 2 : 1}, want ${want} on line 2; ${JSON.stringify(state)}`);
     await page.keyboard.down('Alt');
     try { await page.mouse.click(point.x + 8, point.y); }
     finally { await page.keyboard.up('Alt'); }
-    await page.waitForFunction((selector, n) => document.querySelectorAll(selector).length === n,
-      { timeout: 5000 }, CURSORS, want).catch(() => {});
+    await outcome();
+    await frames();
     count = await page.$$eval(CURSORS, nodes => nodes.length);
+    onSecondLine = await page.$eval(EDITOR, node => node.selectionStart >= node.value.indexOf('\n') + 1);
   }
-  assert.equal(count, expected.multi_cursor ? 2 : 1, 'Option-click obeys Multiple cursors');
-  assert.ok(await page.$eval(EDITOR, node => node.selectionStart >= node.value.indexOf('\n') + 1), 'Option-click reached the second line');
+  assert.equal(count, want, 'Option-click obeys Multiple cursors');
+  assert.ok(onSecondLine, 'Option-click reached the second line');
   pass(`${stage}: Option-click on line 2 leaves ${count} cursor${count === 1 ? '' : 's'}`);
   await selectEditor(page, 0);
 }

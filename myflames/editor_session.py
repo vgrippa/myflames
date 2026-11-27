@@ -3262,6 +3262,7 @@ class EditorSessions(object):
 
     def __init__(self, max_sessions=MAX_SESSIONS, reap_every=15.0):
         self.sessions = {}
+        self._draining = []
         self.lock = threading.Lock()
         self.tokens = {}
         self.max_sessions = max_sessions
@@ -3269,6 +3270,20 @@ class EditorSessions(object):
         self._reaper = None
         self._closed = False
         self._reaper_stop = threading.Event()
+
+    @staticmethod
+    def _draining_active(session):
+        run = getattr(session, "run", None)
+        if run is not None and not run.done.is_set():
+            return True
+        readers = getattr(session, "_readers", None)
+        return isinstance(readers, (list, tuple)) and any(reader.is_alive() for reader in readers)
+
+    def _remember_draining(self, session=None):
+        """Retain removed or replaced sessions until their run and reader threads exit."""
+        self._draining = [s for s in self._draining if self._draining_active(s)]
+        if session is not None and self._draining_active(session) and session not in self._draining:
+            self._draining.append(session)
 
     def get(self, tab_id):
         with self.lock:
@@ -3287,6 +3302,7 @@ class EditorSessions(object):
     def reap(self):
         """End sessions idle longer than their timeout; drop old tombstones."""
         with self.lock:
+            self._remember_draining()
             sessions = list(self.sessions.items())
         for tab_id, session in sessions:
             if not session.ended and session.idle_for() > session.idle_seconds:
@@ -3296,6 +3312,7 @@ class EditorSessions(object):
                 with self.lock:
                     if self.sessions.get(tab_id) is session:
                         del self.sessions[tab_id]
+                        self._remember_draining(session)
 
     def open(self, tab_id, make, identity=None):
         """Register the session *make()* builds and starts for *tab_id*. A
@@ -3316,6 +3333,7 @@ class EditorSessions(object):
                                   "too_many_sessions")
             session = make()
             session._owner_registry = self
+            self._remember_draining(existing)
             self.sessions[tab_id] = session
         self._start_reaper()
         return session
@@ -3345,6 +3363,9 @@ class EditorSessions(object):
             current = self.sessions.get(tab_id)
             if current is not None and (session is None or current is session):
                 del self.sessions[tab_id]
+                self._remember_draining(current)
+            else:
+                self._remember_draining()
 
     def close(self):
         """End every session (workspace exit)."""
@@ -3353,6 +3374,8 @@ class EditorSessions(object):
             self._reaper_stop.set()
             sessions = list(self.sessions.values())
             self.sessions = {}
+            draining = list(self._draining)
+            self._draining = []
             reaper = self._reaper
         if reaper is not None and reaper is not threading.current_thread():
             reaper.join(timeout=0.1)
@@ -3361,11 +3384,21 @@ class EditorSessions(object):
                 session.end("server_exit")
             except Exception:
                 pass
-        # Let runs finish their audit and history records before the store goes away.
-        for session in sessions:
-            run = session.run
+        # Let runs finish their audit and history records before the store goes away,
+        # including sessions already removed by Close, open() replacement or reap().
+        seen = set()
+        for session in sessions + draining:
+            if id(session) in seen:
+                continue
+            seen.add(id(session))
+            run = getattr(session, "run", None)
             if run is not None:
                 run.done.wait(5)
+            readers = getattr(session, "_readers", None)
+            if isinstance(readers, (list, tuple)):
+                for reader in list(readers):
+                    if reader is not threading.current_thread():
+                        reader.join(2)
 
 
 # ---- export -----------------------------------------------------------------------------

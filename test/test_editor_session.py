@@ -267,6 +267,54 @@ class ReaperShutdownTests(unittest.TestCase):
         registry._start_reaper()
         self.assertFalse(registry._reaper.is_alive(), 'shutdown must not restart the reaper')
 
+    def test_close_drains_runs_from_removed_and_replaced_sessions(self):
+        registry = ed.EditorSessions(reap_every=0)
+        self.addCleanup(registry.close)
+        done_early = threading.Event()
+        done_early.set()
+        early = types.SimpleNamespace(identity="id", ended=True, run=types.SimpleNamespace(done=done_early),
+                                      _readers=[], end=lambda *a, **kw: None)
+        removed_done = threading.Event()
+        replaced_done = threading.Event()
+        reader_release = threading.Event()
+        reader = threading.Thread(target=reader_release.wait, args=(5,), daemon=True)
+        reader.start()
+        removed = types.SimpleNamespace(identity="id", ended=True, run=types.SimpleNamespace(done=removed_done),
+                                        _readers=[reader], end=lambda *a, **kw: None)
+        replaced = types.SimpleNamespace(identity="id", ended=True, run=types.SimpleNamespace(done=replaced_done),
+                                         _readers=[], end=lambda *a, **kw: None)
+        fresh = types.SimpleNamespace(identity="id", ended=False, run=None, _readers=[], end=lambda *a, **kw: None)
+
+        registry.open("tab-early", lambda: early, "id")
+        registry.remove("tab-early", early)
+        self.assertEqual(registry._draining, [], "already-finished sessions are not retained")
+
+        registry.open("tab-removed", lambda: removed, "id")
+        registry.remove("tab-removed", removed)
+        self.assertIsNone(registry.get("tab-removed"))
+
+        registry.open("tab-replaced", lambda: replaced, "id")
+        registry.open("tab-replaced", lambda: fresh, "id")
+        self.assertIs(registry.get("tab-replaced"), fresh)
+
+        finished = threading.Event()
+
+        def finish_later():
+            time.sleep(0.05)
+            finished.set()
+            removed_done.set()
+            replaced_done.set()
+            reader_release.set()
+
+        worker = threading.Thread(target=finish_later, daemon=True)
+        worker.start()
+        registry.close()
+        self.assertTrue(finished.is_set(), "registry.close returned before removed/replaced runs finished")
+        self.assertTrue(removed_done.is_set())
+        self.assertTrue(replaced_done.is_set())
+        self.assertFalse(reader.is_alive(), "registry.close returned before removed session's reader exited")
+        worker.join(2)
+
 
 class InsightTests(unittest.TestCase):
     """History attribution and transaction reads, with hand-authored engine
