@@ -159,8 +159,11 @@ export type SlowState = {
   /** Replication: a skip loop was active when the workspace was saved. The
    * only loop state a restore keeps; it warns that nothing resumes. */
   replication_loop_active?: boolean;
-  /** Saved-connection id of the member running an active skip loop, so a
-   * reload polls that member rather than the window's active connection. */
+  /** Saved-connection ids of the members running active skip loops (deduped,
+   * capped), so a reload polls every running loop's member. */
+  replication_loop_members?: string[];
+  /** Legacy single member id (kept as the first id of replication_loop_members
+   * for older snapshots and callers). */
   replication_loop_member?: string;
   /** Column layout of the workspace tables (Server's views and the Cluster
    * place) by table id (TABLE_IDS): widths and hidden columns. Versioned
@@ -258,6 +261,20 @@ export function schemaList(v: unknown): string[] {
   for (const name of v.slice(0, 200))
     if (typeof name === "string" && name && name.length <= 64 && !/[\n\r\0]/.test(name) && !out.includes(name))
       out.push(name);
+  return out;
+}
+/** Restored saved-connection ids of active skip loops: non-empty strings
+ * cut to 200 chars, deduplicated and capped at 64. Merges legacy
+ * replication_loop_member so older snapshots still restore cleanly. */
+export function loopMemberIds(rawList: unknown, legacy?: unknown): string[] {
+  const out: string[] = [];
+  const push = (v: unknown) => {
+    if (out.length >= 64 || typeof v !== "string") return;
+    const id = v.slice(0, 200);
+    if (id && !out.includes(id)) out.push(id);
+  };
+  if (Array.isArray(rawList)) for (const v of rawList.slice(0, 256)) push(v);
+  push(legacy);
   return out;
 }
 /** Sampling windows the Health tab offers; the server accepts 1 to 60. */
@@ -495,6 +512,9 @@ export function normalizeLab(raw: unknown): LabState {
   const wanted = typeof raw.tab_id === "string" ? raw.tab_id.slice(0, 100) : "";
   const tabId = tabs.some((t) => t.id === wanted) ? wanted : tabs[0].id;
   const s = isObject(raw.slow) ? raw.slow : {};
+  const loopMembers = s.replication_loop_active === true
+    ? loopMemberIds(s.replication_loop_members, s.replication_loop_member)
+    : [];
   return {
     profile_id: text(raw.profile_id, "", 200),
     connection,
@@ -529,8 +549,8 @@ export function normalizeLab(raw: unknown): LabState {
         ? (s.maintenance_section as "tools" | "upgrade" | "dump" | "restore" | "clone")
         : "tools",
       ...(s.replication_loop_active === true ? { replication_loop_active: true } : {}),
-      ...(s.replication_loop_active === true && text(s.replication_loop_member, "", 200)
-        ? { replication_loop_member: text(s.replication_loop_member, "", 200) }
+      ...(loopMembers.length
+        ? { replication_loop_members: loopMembers, replication_loop_member: loopMembers[0] }
         : {}),
       ...(s.report_run === true ? { report_run: true } : {}),
       ...(Object.keys(columnLayouts(s.columns_v1)).length ? { columns_v1: columnLayouts(s.columns_v1) } : {}),

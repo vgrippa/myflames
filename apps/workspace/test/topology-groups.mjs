@@ -124,6 +124,7 @@ const loopStarts = [];
 const loopStatusReads = [];
 const loopStops = [];
 const lifecycleJobs = new Map();
+const lifecycleStatusReads = [];
 const lifecycleCancels = [];
 const loopEndpoint = (c) => `${c?.host}:${c?.port}:${c?.user}`;
 const loopRunning = await load("replication-loop-running.json");
@@ -275,6 +276,7 @@ const h = await open("/api/live/cluster", "topology-groups", {
     body: { schema_version: "lifecycle-jobs-1.0", jobs: lifecycleJobs.get(loopEndpoint(body.connection)) || [] },
   }),
   "/api/lifecycle/status": (body) => {
+    lifecycleStatusReads.push(body);
     const list = lifecycleJobs.get(loopEndpoint(body.connection)) || [];
     return { status: 200, body: list.find((j) => j.id === body.id) || structuredClone(lifecycleJobCancelled) };
   },
@@ -1404,7 +1406,11 @@ try {
   assert.equal(loopStarts.at(-1).connection.profile_id, "p-nav-2", "loop start runs on p-nav-2");
   await page.waitForFunction(() => !document.querySelector('dialog.ops-confirm[open]'));
   await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
-  await h.savedSlow((s) => s.replication_loop_active === true && s.replication_loop_member === "p-nav-2");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    s.replication_loop_member === "p-nav-2" &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
 
   // Open p-nav-3's card as a non-replica: Server's banner (and Replication)
   // must still show the nav-db-2 loop.
@@ -1441,7 +1447,11 @@ try {
   assert.ok(await page.$$eval('.server-content > .ops-loop .ops-last',
     (els) => els.some((e) => e.textContent.trim() === "on nav-db-2 · 10.0.1.12:3306 · SECONDARY")),
     "Server's banner still names nav-db-2 after replica p-nav-3 polled []");
-  await h.savedSlow((s) => s.replication_loop_active === true && s.replication_loop_member === "p-nav-2");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    s.replication_loop_member === "p-nav-2" &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
   const stopsBeforeS4 = loopStops.length;
   await page.click('.server-content > .ops-loop[data-loop="running"] button');
   for (let i = 0; i < 100 && loopStops.length === stopsBeforeS4; i++) await pause(25);
@@ -1460,7 +1470,11 @@ try {
   await page.click('.topology-map-node[data-node="p-nav-2"]');
   await page.waitForSelector('.main-nav button[data-place="replication"].active');
   await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
-  await h.savedSlow((s) => s.replication_loop_active === true && s.replication_loop_member === "p-nav-2");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    s.replication_loop_member === "p-nav-2" &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   const statusBeforeReload = loopStatusReads.length;
   await page.reload({ waitUntil: "networkidle0" });
@@ -1522,6 +1536,242 @@ try {
   assert.equal(lifecycleCancels.at(-1).connection.group_name, "mf-nav");
   assert.equal(lifecycleCancels.at(-1).connection.host, "10.0.1.12");
   await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job="job-nav-2"]'));
+
+  // ---------------------------------------------------------------------------
+  // 10. Write-safety S6-S9: multi-member reload (p-nav-1, p-nav-2, p-nav-3),
+  //     background polling of advancing/finished other-member loops and jobs,
+  //     endpoint-key Stop with visible stale-key refusal reason, and keeping
+  //     the loop flag with a note when the active profile moves out of group.
+  // ---------------------------------------------------------------------------
+  // S6: three loops running on p-nav-1 (active), p-nav-2 and p-nav-3 survive
+  // View > Reload when Server is on screen, polling every member including the
+  // active one.
+  loopRegistry.clear();
+  loopRegistry.set("10.0.1.11:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-nav-1" }]);
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-nav-2" }]);
+  loopRegistry.set("10.0.1.13:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-nav-3" }]);
+  replicationReportFor = () => structuredClone(replicationBase);
+  // Switch Replication away from p-nav-1 first (to p-nav-2 and p-nav-3), then
+  // reopen mf-nav so Replication reads p-nav-1 fresh and polls its running loop.
+  for (const id of ["p-nav-2", "p-nav-3"]) {
+    await page.click('.main-nav button[data-place="topology"]');
+    await page.waitForSelector('.main-nav button[data-place="topology"].active');
+    const sb = loopStatusReads.length;
+    await page.click(`.topology-map-node[data-node="${id}"]`);
+    await page.waitForSelector('.main-nav button[data-place="replication"].active');
+    await page.click(`${replicationView} button[data-action="refresh"]`);
+    for (let i = 0; i < 120 && !loopStatusReads.slice(sb).some((b) => b.connection.profile_id === id); i++) await pause(25);
+    assert.ok(loopStatusReads.slice(sb).some((b) => b.connection.profile_id === id), `${id} polled its running loop`);
+  }
+  const soloOpt = await connectionOption(page, "solo-db");
+  await page.keyboard.press("Escape");
+  await chooseConnection(page, soloOpt);
+  await page.waitForFunction(() => /10\.0\.0\.99/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  const stBeforeMulti = loopStatusReads.length;
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  for (let i = 0; i < 120 && !loopStatusReads.slice(stBeforeMulti).some((b) => b.connection.profile_id === "p-nav-1"); i++) await pause(25);
+  assert.ok(loopStatusReads.slice(stBeforeMulti).some((b) => b.connection.profile_id === "p-nav-1"), "p-nav-1 polled its running loop");
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForFunction(() => document.querySelectorAll('.server-content > .ops-loop[data-loop="running"]').length === 3);
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    ["p-nav-1", "p-nav-2", "p-nav-3"].every((id) => s.replication_loop_members.includes(id)));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const statusBeforeMultiReload = loopStatusReads.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  for (let i = 0; i < 200; i++) {
+    const polled = new Set(loopStatusReads.slice(statusBeforeMultiReload).map((b) => b.connection.profile_id));
+    if (polled.has("p-nav-1") && polled.has("p-nav-2") && polled.has("p-nav-3")) break;
+    await pause(25);
+  }
+  const polledAfterMulti = new Set(loopStatusReads.slice(statusBeforeMultiReload).map((b) => b.connection.profile_id));
+  assert.ok(polledAfterMulti.has("p-nav-1"), "S6 reload keeps the active member's own loop poll");
+  assert.ok(polledAfterMulti.has("p-nav-2") && polledAfterMulti.has("p-nav-3"), "S6 reload polls every persisted group member");
+  await page.waitForFunction(() => document.querySelectorAll('.server-content > .ops-loop[data-loop="running"]').length === 3);
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  assert.equal(await page.$('.replication-place .ops-note'), null, "no false restart note when all three loops are still running");
+  await page.waitForFunction(() => document.querySelectorAll('.replication-place .ops-loop[data-loop="running"]').length === 3);
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  // Stop all three from Server's banner and confirm each targets its own server.
+  for (const [label, expectedId, expectedHost] of [
+    ["", "p-nav-1", "10.0.1.11"],
+    ["nav-db-2", "p-nav-2", "10.0.1.12"],
+    ["nav-db-3", "p-nav-3", "10.0.1.13"],
+  ]) {
+    const stopsBefore = loopStops.length;
+    const clicked = await page.evaluate((targetLabel) => {
+      const rows = [...document.querySelectorAll('.server-content > .ops-loop[data-loop="running"]')];
+      const row = rows.find((e) => targetLabel === ""
+        ? ![...e.querySelectorAll(".ops-last")].some((s) => s.textContent.trim().startsWith("on "))
+        : e.textContent.includes(targetLabel));
+      const b = row && [...row.querySelectorAll("button")].find((x) => x.textContent.includes("Stop"));
+      if (!b) return false;
+      b.click();
+      return true;
+    }, label);
+    assert.equal(clicked, true, `Stop clicked for ${expectedId}`);
+    for (let i = 0; i < 100 && loopStops.length === stopsBefore; i++) await pause(25);
+    assert.equal(loopStops.at(-1).connection.profile_id, expectedId, `Stop targets ${expectedId}`);
+    assert.equal(loopStops.at(-1).connection.host, expectedHost);
+  }
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_members);
+
+  // S7: background shell polling refreshes an advancing other-member loop and
+  // clears it once the loop ends, then stops polling; maintenance-job variant
+  // clears a finished other-member job banner too.
+  loopRegistry.clear();
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-s7" }]);
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  // Advance p-nav-2's registry while Replication shows p-nav-3.
+  loopRegistry.set("10.0.1.12:3306:dba", [{
+    ...structuredClone(loopRunning),
+    job_id: "job-s7",
+    skips_done: 400,
+    message: "Skipping 1062 on channel '': 400 skipped since 18:16 UTC.",
+  }]);
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.replication-place .ops-loop[data-loop="running"] strong')]
+      .some((e) => e.textContent.includes("400 skipped")),
+    { timeout: 8000 });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  assert.ok(await page.$$eval('.server-content > .ops-loop[data-loop="running"] strong',
+    (els) => els.some((e) => e.textContent.includes("400 skipped"))),
+    "S7 Server banner shows the refreshed skip count");
+  // End p-nav-2's loop in the registry: Server's banner must clear and polling must stop.
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopStopped), job_id: "job-s7" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'), { timeout: 8000 });
+  const nav2PollsAfterStop = loopStatusReads.filter((b) => b.connection.profile_id === "p-nav-2").length;
+  await pause(2500);
+  assert.equal(loopStatusReads.filter((b) => b.connection.profile_id === "p-nav-2").length, nav2PollsAfterStop,
+    "S7 stops background polling once the other member's loop ends");
+
+  // S7 maintenance-job variant: a running job on p-nav-2 updates while Server shows p-nav-3.
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobRunning), id: "job-s7-maint" }]);
+  await h.view("maintenance");
+  await chooseMaintServer("p-nav-2");
+  await page.waitForSelector('.server-view[data-view="maintenance"] .ops-job[data-job="job-s7-maint"][data-state="running"]');
+  await chooseMaintServer("p-nav-3");
+  await page.waitForSelector('.server-content > .ops-loop[data-maintenance-job="job-s7-maint"]', { visible: true });
+  const maintPollsBefore = lifecycleStatusReads.filter((b) => b.connection.profile_id === "p-nav-2" && b.id === "job-s7-maint").length;
+  lifecycleJobs.set("10.0.1.12:3306:dba", [{ ...structuredClone(lifecycleJobCancelled), id: "job-s7-maint" }]);
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-maintenance-job="job-s7-maint"]'), { timeout: 8000 });
+  assert.ok(lifecycleStatusReads.filter((b) => b.connection.profile_id === "p-nav-2" && b.id === "job-s7-maint").length > maintPollsBefore,
+    "S7 maintenance variant polled the other member's job and cleared its banner");
+
+  // S8: plain connection loop -> open group Stop succeeds by endpointKey;
+  // edited endpoint -> Stop sends nothing and shows a visible refusal reason.
+  loopRegistry.clear();
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-s8-plain" }]);
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  const nav2Opt = await connectionOption(page, "nav-db-2");
+  await page.keyboard.press("Escape");
+  await chooseConnection(page, nav2Opt);
+  await page.waitForFunction(() => /10\.0\.1\.12/.test(document.querySelector(".window-toolbar .picker-target")?.textContent || ""));
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForSelector('button[aria-label="Open group connection mf-nav"]', { visible: true });
+  await page.click('button[aria-label="Open group connection mf-nav"]');
+  await page.waitForSelector('.topology-map-node[data-node="p-nav-2"]', { visible: true });
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  const stopsBeforeS8Plain = loopStops.length;
+  await page.click('.server-content > .ops-loop[data-loop="running"] button');
+  for (let i = 0; i < 100 && loopStops.length === stopsBeforeS8Plain; i++) await pause(25);
+  assert.equal(loopStops.at(-1).connection.profile_id, "p-nav-2", "S8 plain->group Stop matches by endpointKey");
+  assert.equal(loopStops.at(-1).connection.host, "10.0.1.12");
+  await page.waitForFunction(() => !document.querySelector('.server-content > .ops-loop[data-loop="running"]'));
+
+  // S8 stale endpoint edit: host changes to 10.0.1.99 -> Stop sends nothing and
+  // displays a visible alert reason on the banner.
+  loopRegistry.set("10.0.1.12:3306:dba", [{ ...structuredClone(loopRunning), job_id: "job-s8-stale" }]);
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-2"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click(`${replicationView} button[data-action="refresh"]`);
+  await page.waitForSelector('.replication-place .ops-loop[data-loop="running"]', { visible: true });
+  await page.click('.main-nav button[data-place="topology"]');
+  await page.waitForSelector('.main-nav button[data-place="topology"].active');
+  await page.click('.topology-map-node[data-node="p-nav-3"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector('.main-nav button[data-place="server"].active');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"]', { visible: true });
+  const nav2Profile = profiles.find((p) => p.id === "p-nav-2");
+  nav2Profile.host = "10.0.1.99";
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await pause(800);
+  const stopsBeforeStale = loopStops.length;
+  await page.click('.server-content > .ops-loop[data-loop="running"] button');
+  await page.waitForSelector('.server-content > .ops-loop[data-loop="running"] .ops-loop-error[role="alert"]', { visible: true });
+  assert.equal(loopStops.length, stopsBeforeStale, "S8 stale endpoint sends no Stop request");
+  assert.match(await page.$eval('.server-content > .ops-loop[data-loop="running"] .ops-loop-error', (e) => e.textContent),
+    /Could not send Stop:.*changed/, "S8 banner explains why Stop was refused");
+  // Restore p-nav-2's host so S9 runs with the original endpoint.
+  nav2Profile.host = "10.0.1.12";
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await pause(600);
+
+  // S9: active profile p-nav-1 moves to another group before reload while
+  // p-nav-2 stays in mf-nav -> zero status reads to p-nav-2, flag kept, visible
+  // .ops-note naming nav-db-2.
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
+  const nav1Profile = profiles.find((p) => p.id === "p-nav-1");
+  nav1Profile.group = "other-group";
+  const statusBeforeMoved = loopStatusReads.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector('.server-content > .ops-note', { visible: true });
+  assert.equal(loopStatusReads.slice(statusBeforeMoved).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "S9 never polls a saved loop member outside the active connection's group");
+  const movedNoteServer = await page.$eval('.server-content > .ops-note', (e) => e.textContent.trim());
+  assert.match(movedNoteServer, /nav-db-2.*mf-nav/, "S9 Server note names the outside-group member and group");
+  await page.click('.main-nav button[data-place="replication"]');
+  await page.waitForSelector('.main-nav button[data-place="replication"].active');
+  await page.waitForSelector('.replication-place .ops-note', { visible: true });
+  assert.match(await page.$eval('.replication-place .ops-note', (e) => e.textContent.trim()), /nav-db-2.*mf-nav/,
+    "S9 Replication note names the outside-group member and group");
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes("p-nav-2"));
+  // When the loop member itself leaves its own group, restore clears the flag.
+  nav1Profile.group = "mf-nav";
+  nav2Profile.group = "";
+  const statusBeforeLeft = loopStatusReads.length;
+  await page.reload({ waitUntil: "networkidle0" });
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_members);
+  assert.equal(loopStatusReads.slice(statusBeforeLeft).some((b) => b.connection.profile_id === "p-nav-2"), false,
+    "a member that left its group is never polled");
+  assert.equal(await page.$('.replication-place .ops-note'), null, "no outside-group note once the member left its group");
 
   assert.deepEqual(h.errors, [], "Group actions and replication branch changes produce no runtime exceptions");
 

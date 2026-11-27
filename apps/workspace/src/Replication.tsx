@@ -20,7 +20,7 @@ import {
 } from "./kit";
 import { Commands, FactsList, channelCell, channelPhrase, engineName, factRows, formatGtidSet, plural } from "./OpsShared";
 import {
-  factText, loopActive, readReplication, readSkipLoops, skipTransaction,
+  LOOP_POLL_MS, factText, loopActive, readReplication, readSkipLoops, skipTransaction,
   startSkipLoop, stopSkipLoop, useOpsScope,
   type Json, type LoopOptions, type MissingPrivileges, type ReplicationChannel,
   type ReplicationReport, type SkipLoop, type SkipPlan, type SkipResult,
@@ -34,8 +34,6 @@ import "./replication.css";
 const SKIP_TAG = "/*myflames:replication-skip*/ ";
 /** A confirmation older than this is planned again before anything is sent. */
 export const PLAN_TTL_MS = 60_000;
-/** Loop status is read this often while a loop runs (no database connection). */
-const LOOP_POLL_MS = 2000;
 const COMMON_ERRORS: [number, string][] = [[1062, "Duplicate key"], [1032, "Row not found"], [1452, "Foreign key child row"]];
 const lag = (value: number | null | undefined) => (value === null || value === undefined ? "Not available" : <Duration value={value} />);
 const lagCell = (channel: ReplicationChannel) => {
@@ -76,18 +74,21 @@ function time(iso: Json | undefined) {
  * the last one, and Stop while it runs. Used in this view and in Server's
  * persistent status area. Stop cancels a loop the person already authorized,
  * so it never goes through the write policy or a second prompt. */
-export function ReplicationLoopBanner({ loops, disabled, stopping, onStop, server }: {
+export function ReplicationLoopBanner({ loops, disabled, stopping, onStop, server, errorFor }: {
   loops: SkipLoop[]; disabled?: boolean; stopping?: string; onStop: (loop: SkipLoop) => void;
   /** Names the server the loops run on, when it is not the member on screen
    * (a Group connection's Server: control showing another member). */
   server?: string;
+  /** Refusal reason shown on the row when Stop could not be sent (stale key). */
+  errorFor?: (loop: SkipLoop) => string;
 }) {
   return <>{loops.map(loop => <ReplicationLoopRow key={loop.job_id || loop.channel} loop={loop}
-    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} server={server} />)}</>;
+    disabled={disabled} stopping={stopping === loop.job_id} onStop={onStop} server={server}
+    stopError={errorFor ? errorFor(loop) : ""} />)}</>;
 }
 
-function ReplicationLoopRow({ loop, disabled, stopping, onStop, server }: {
-  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void; server?: string;
+function ReplicationLoopRow({ loop, disabled, stopping, onStop, server, stopError }: {
+  loop: SkipLoop; disabled?: boolean; stopping: boolean; onStop: (loop: SkipLoop) => void; server?: string; stopError?: string;
 }) {
   const last = loop.skips?.length ? loop.skips[loop.skips.length - 1] : null;
   const active = loopActive(loop);
@@ -111,6 +112,7 @@ function ReplicationLoopRow({ loop, disabled, stopping, onStop, server }: {
           Last skip: {factText(last.gtid || last.exec_pos)}
           {last.at ? ` at ${time(last.at)}` : ""}
         </span>}
+        {stopError && <span className="ops-last ops-loop-error" role="alert">{stopError}</span>}
         <ActionStatus state={{ phase: stopping ? "pending" : "idle", startedAt: since, message: "Waiting for the reply to Stop." }}
           slowAfter={10_000} slowText="No reply to Stop yet; the loop may still be running." />
       </div>
@@ -128,7 +130,7 @@ type Confirmation = {
 
 export type ReplicationSubTab = "topology" | "channels" | "lag" | "gtid" | "recovery";
 
-export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, sameEndpoint: sameEndpointProp, onLoops, otherLoops = [], otherLoopStopping = null, onStopOtherLoop, restoredLoop = false, restoredStoppedKey = "", onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster, onOpenReadyset, onOpenProxySql, onSwitchConnection, topologyHeader }: {
+export function ReplicationView({ connection, disabled, selection, report: bound, onReport, loops: boundLoops, sameEndpoint: sameEndpointProp, onLoops, otherLoops = [], otherLoopStopping = null, otherLoopErrors = {}, onStopOtherLoop, restoredLoop = false, restoredStoppedKeys = [], restoredOutsideNote = "", onLoopActivity, missingPrivileges = {}, activeTab = "topology", onTabChange, clusterKind = null, onOpenCluster, onOpenReadyset, onOpenProxySql, onSwitchConnection, topologyHeader }: {
   connection: Connection; disabled: boolean; onBack?: () => void; selection: Selection;
   report: Bound<ReplicationReport> | null; onReport: (report: Bound<ReplicationReport>) => void;
   /** Memory only, owned by the shell (this connection key's entry). Keep this view mounted while hidden. */
@@ -140,11 +142,14 @@ export function ReplicationView({ connection, disabled, selection, report: bound
    * restored same-group member), shown with their server label and Stop. */
   otherLoops?: { bound: Bound<SkipLoop[]>; server: string }[];
   otherLoopStopping?: { key: string; id: string } | null;
+  otherLoopErrors?: Record<string, string>;
   onStopOtherLoop?: (bound: Bound<SkipLoop[]>, loop: SkipLoop) => void;
   /** The only loop state a restored workspace may retain is this warning flag. */
   restoredLoop?: boolean;
-  /** Key whose restored skip loop was confirmed stopped by a restart. */
-  restoredStoppedKey?: string;
+  /** Keys whose restored skip loop was confirmed stopped by a restart. */
+  restoredStoppedKeys?: string[];
+  /** Note when a restored loop's member is outside the active connection's group. */
+  restoredOutsideNote?: string;
   onLoopActivity?: (active: boolean) => void;
   missingPrivileges?: MissingPrivileges;
   activeTab?: ReplicationSubTab;
@@ -164,7 +169,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   const policy = useWritePolicy();
   const report = bound?.report || null;
   const other = bound && bound.key !== reads.key ? bound.label : null;
-  const loops = boundLoops?.key === reads.key ? boundLoops.report : [];
+  const loops = boundLoops && endpointKey(boundLoops.key) === endpointKey(reads.key) ? boundLoops.report : [];
   // The loop registry matches a loop by its connection's endpoint
   // (dbops.identity_endpoint), so after a change of type or Read-only on the
   // same saved connection the loop is read again under the new key and keeps
@@ -382,7 +387,17 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   }
   async function stop(loop: SkipLoop) {
     const id = loop.job_id;
-    if (!id || stoppingRef.current.has(id) || boundLoops?.key !== reads.currentKey()) return;
+    if (!id || stoppingRef.current.has(id)) return;
+    if (!boundLoops || endpointKey(boundLoops.key) !== endpointKey(reads.currentKey())) {
+      setFailure({
+        key,
+        label: connectionLabel(connection),
+        write: true,
+        text: "Could not send Stop: the connection changed since this skip loop started.",
+      });
+      focusResult(".replication-write-result");
+      return;
+    }
     stoppingRef.current.add(id); setStopping(id);
     setFailure(null);
     const live = captureScope();
@@ -556,7 +571,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
   // The restored flag belongs only to the connection key that ran the loop.
   const restartNote =
     (isRestoredKey && loopChecked === key && !loops.length) ||
-    (!!restoredStoppedKey && key === restoredStoppedKey && !loops.length);
+    (restoredStoppedKeys.some((k) => endpointKey(k) === endpointKey(key)) && !loops.length);
   // Only the backend's judged channels contribute a health status. Group
   // Replication channels have a different contract and remain unjudged here.
   const replicaFailed = judged.some(ch => ch.status === "problem" && !!(ch.io.error.errno || ch.sql.error.errno));
@@ -638,6 +653,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
             loops={active}
             server={server}
             stopping={otherLoopStopping?.key === otherBound.key ? otherLoopStopping.id : ""}
+            errorFor={(l) => (l.job_id ? otherLoopErrors[`${otherBound.key}:${l.job_id}`] || "" : "")}
             onStop={(l) => { onStopOtherLoop?.(otherBound, l); }}
           />
         ) : null;
@@ -652,6 +668,7 @@ export function ReplicationView({ connection, disabled, selection, report: bound
         </section>}</div>}>
 
       {restartNote && <p className="ops-note" role="status">Stopped when myflames restarted. Skip loops never resume from a restored workspace.</p>}
+      {restoredOutsideNote && <p className="ops-note" role="status">{restoredOutsideNote}</p>}
       {report ? <>
         {/* Not a replica is a state of its own, not an unknown one: no status pill. */}
         <SummaryLine tone={!report.available ? "unknown" : !report.replica ? undefined : judged.length ? worstTone(judged.map((r) => r.status)) : "unknown"} toneLabel={judged.length || !report.replica ? undefined : "Not judged"} notes={report.notes.length ? report.notes : undefined}>

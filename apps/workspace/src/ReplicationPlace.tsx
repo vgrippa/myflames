@@ -32,12 +32,14 @@ export function ReplicationPlace({
   onLoops,
   otherLoops = [],
   otherLoopStopping = null,
+  otherLoopErrors = {},
   onStopOtherLoop,
   onLoopActivity,
   report: propReport,
   onReport,
   restoredLoop = false,
-  restoredStoppedKey = "",
+  restoredStoppedKeys = [],
+  restoredOutsideNote = "",
 }: {
   connection: Connection;
   disabled?: boolean;
@@ -59,6 +61,7 @@ export function ReplicationPlace({
    * restored same-group member), with their server label and Stop handler. */
   otherLoops?: { bound: Bound<SkipLoop[]>; server: string }[];
   otherLoopStopping?: { key: string; id: string } | null;
+  otherLoopErrors?: Record<string, string>;
   onStopOtherLoop?: (bound: Bound<SkipLoop[]>, loop: SkipLoop) => void;
   onLoopActivity?: (active: boolean) => void;
   /** Owned by the shell so Server's Refresh all feeds this place too. */
@@ -68,8 +71,10 @@ export function ReplicationPlace({
    * loop status at once (it reads no database) and say if it stopped with
    * myflames. */
   restoredLoop?: boolean;
-  /** Key whose restored skip loop was already confirmed stopped by a restart. */
-  restoredStoppedKey?: string;
+  /** Keys whose restored skip loop was already confirmed stopped by a restart. */
+  restoredStoppedKeys?: string[];
+  /** Note when a restored loop's member is outside the active connection's group. */
+  restoredOutsideNote?: string;
 }) {
   const [localReport, setLocalReport] = useState<Bound<ReplicationReport> | null>(null);
   const report = propReport !== undefined ? propReport : localReport;
@@ -137,8 +142,11 @@ export function ReplicationPlace({
     [inspectorOpen, selectedKey, inspectorWidth, sheet],
   );
   const key = connectionKey(connection);
-  const ownLoops = allLoops[key] || null;
-  const sameEndpointLoops = Object.values(allLoops).some((b) => endpointKey(b.key) === endpointKey(key));
+  const ownLoops =
+    allLoops[key] ||
+    Object.values(allLoops).find((b) => endpointKey(b.key) === endpointKey(key)) ||
+    null;
+  const sameEndpointLoops = !!ownLoops;
   const current = report && report.key === key ? report.report : null;
   useWindowStatus(`replication:${key}`, {
     connectionState: connection.host ? connectionLabel(connection) : "No connection",
@@ -177,9 +185,11 @@ export function ReplicationPlace({
             onLoops={handleLoops}
             otherLoops={otherLoops}
             otherLoopStopping={otherLoopStopping}
+            otherLoopErrors={otherLoopErrors}
             onStopOtherLoop={onStopOtherLoop}
             restoredLoop={restoredLoop}
-            restoredStoppedKey={restoredStoppedKey}
+            restoredStoppedKeys={restoredStoppedKeys}
+            restoredOutsideNote={restoredOutsideNote}
             onLoopActivity={(active) => {
               setLoopActiveNow(active);
               onLoopActivity?.(active);

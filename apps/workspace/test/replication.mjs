@@ -514,7 +514,11 @@ try {
   await settle(START, 3);
   assert.equal(calls(START)[2].body.connection.type, "development");
   await page.waitForSelector(`${view} .ops-loop[data-loop=running]`);
-  await h.savedSlow((s) => s.replication_loop_active === true && s.replication_loop_member === replica.id);
+  await h.savedSlow((s) =>
+    s.replication_loop_active === true &&
+    s.replication_loop_member === replica.id &&
+    Array.isArray(s.replication_loop_members) &&
+    s.replication_loop_members.includes(replica.id));
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state === "saved");
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForSelector(`${view} .ops-loop[data-loop=running]`, { visible: true });
@@ -536,7 +540,7 @@ try {
   await settle(STOP, stops + 1);
   assert.equal(calls(STOP).at(-1).body.connection.type, "production");
   await page.waitForSelector(`${view} .ops-loop[data-loop=stopped]`);
-  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_member);
+  await h.savedSlow((s) => s.replication_loop_active !== true && !s.replication_loop_member && !s.replication_loop_members);
 
   // Another connection: the report stays greyed with every skip action off.
   await h.refresh();

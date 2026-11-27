@@ -39,7 +39,7 @@ import { connectionKey, connectionLabel, endpointKey, keyProfileId, type Bound }
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { useSchemaCatalog } from "./PerfShared";
 import { showCreateSql } from "./sqlHighlight";
-import { loopActive, NOT_A_REPLICA, readSkipLoops, replicationNav, stopSkipLoop, type ReplicationReport, type SkipLoop } from "./opsApi";
+import { LOOP_POLL_MS, loopActive, NOT_A_REPLICA, readSkipLoops, replicationNav, stopSkipLoop, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
 import { NOT_A_READYSET, readysetNav, type ReadysetFailure, type ReadysetReport } from "./readysetApi";
@@ -71,6 +71,7 @@ import { ActionButton, ActionStatus, useAction, ColumnStoreContext, Popover, use
 import {
   defaultLab,
   loadSession,
+  loopMemberIds,
   normalizeLab,
   sameLab,
   serializePlans,
@@ -310,8 +311,15 @@ function App() {
   const [placeActionsWidth, setPlaceActionsWidth] = useState(0);
   const [replicationLoops, setReplicationLoops] = useState<Record<string, Bound<SkipLoop[]>>>({});
   const [loopRevision, setLoopRevision] = useState(0);
-  const [restoredMemberLoop, setRestoredMemberLoop] = useState<{ reset: number; key: string; stopped: boolean } | null>(null);
-  const restoredMemberPolled = useRef(-1);
+  const [restoredMembers, setRestoredMembers] = useState<{
+    reset: number;
+    activeKeys: string[];
+    stoppedKeys: string[];
+    outsideGroup: { id: string; name: string; group: string }[];
+  } | null>(null);
+  const restoredMembersPolled = useRef(-1);
+  const unreachedRechecked = useRef(new Set<string>());
+  const [otherLoopErrors, setOtherLoopErrors] = useState<Record<string, string>>({});
   const publishReplicationLoops = useCallback((next: Bound<SkipLoop[]>) => {
     setReplicationLoops((current) => {
       const endpoint = endpointKey(next.key);
@@ -510,11 +518,14 @@ function App() {
   );
   const reportSlow = useCallback(
     (slow: SlowState) => setLabState((current) => {
+      const members = current.slow?.replication_loop_active
+        ? loopMemberIds(current.slow.replication_loop_members, current.slow.replication_loop_member)
+        : [];
       const merged: SlowState = {
         ...slow,
         ...(current.slow?.replication_loop_active ? { replication_loop_active: true } : {}),
-        ...(current.slow?.replication_loop_active && current.slow?.replication_loop_member
-          ? { replication_loop_member: current.slow.replication_loop_member }
+        ...(members.length
+          ? { replication_loop_members: members, replication_loop_member: members[0] }
           : {}),
       };
       const next = normalizeLab({ ...current, slow: merged });
@@ -522,15 +533,22 @@ function App() {
     }),
     [],
   );
-  const syncLoopSession = useCallback((active: boolean, member = "") => {
+  const syncLoopSession = useCallback((active: boolean, members: string[] = []) => {
     setLabState((current) => {
       const slow: SlowState = { ...(current.slow || { kind: "health" }) };
       if (active) {
+        const ids = [...new Set(members.map((id) => id.slice(0, 200)).filter(Boolean))].slice(0, 64);
         slow.replication_loop_active = true;
-        if (member) slow.replication_loop_member = member;
-        else delete slow.replication_loop_member;
+        if (ids.length) {
+          slow.replication_loop_members = ids;
+          slow.replication_loop_member = ids[0];
+        } else {
+          delete slow.replication_loop_members;
+          delete slow.replication_loop_member;
+        }
       } else {
         delete slow.replication_loop_active;
+        delete slow.replication_loop_members;
         delete slow.replication_loop_member;
       }
       const next = normalizeLab({ ...current, slow });
@@ -1243,8 +1261,10 @@ function App() {
     setLabState(defaultLab());
     setReplicationLoops({});
     setLoopRevision(0);
-    setRestoredMemberLoop(null);
-    restoredMemberPolled.current = -1;
+    setRestoredMembers(null);
+    restoredMembersPolled.current = -1;
+    unreachedRechecked.current.clear();
+    setOtherLoopErrors({});
     setColumnLayouts({});
     setActivePassword("");
     setPasswordRevision(value => value + 1);
@@ -1451,8 +1471,10 @@ function App() {
     setLabState(lab);
     setReplicationLoops({});
     setLoopRevision(0);
-    setRestoredMemberLoop(null);
-    restoredMemberPolled.current = -1;
+    setRestoredMembers(null);
+    restoredMembersPolled.current = -1;
+    unreachedRechecked.current.clear();
+    setOtherLoopErrors({});
     setColumnLayouts(lab.slow?.columns_v1 || {});
     setActivePassword("");
     setPasswordRevision(value => value + 1);
@@ -2134,71 +2156,168 @@ function App() {
   const mountProxySql = visited.current.proxysql;
   const mountReadyset = visited.current.readyset;
   const mountFiles = visited.current.files;
+  const initialProfileId = labInitial?.profile_id || "";
   const restoredLoop = labInitial?.slow?.replication_loop_active === true;
-  const restoredLoopMember = restoredLoop ? (labInitial?.slow?.replication_loop_member || "") : "";
-  const restoredLoopIsOtherMember = restoredLoop && !!restoredLoopMember && restoredLoopMember !== (labInitial?.profile_id || "");
-  const restoredLoopForCurrent = restoredLoop && !restoredLoopIsOtherMember;
-  const restoreMemberPending = restoredLoopIsOtherMember && !profilesFailed && restoredMemberLoop?.reset !== resetKey;
-  const activeRestoredLoopKey =
-    restoredMemberLoop &&
-    restoredMemberLoop.reset === resetKey &&
-    !restoredMemberLoop.stopped &&
-    labState.profile_id === (labInitial?.profile_id || "")
-      ? restoredMemberLoop.key
-      : "";
-  const stoppedRestoredLoopKey =
-    restoredMemberLoop &&
-    restoredMemberLoop.reset === resetKey &&
-    restoredMemberLoop.stopped
-      ? restoredMemberLoop.key
-      : "";
+  const restoredLoopMembers = useMemo(
+    () => (restoredLoop ? loopMemberIds(labInitial?.slow?.replication_loop_members, labInitial?.slow?.replication_loop_member) : []),
+    [restoredLoop, labInitial],
+  );
+  // Keep the active member's own restore poll when no member ids were stored
+  // (an unsaved connection) or when the active member's own id is listed.
+  const restoredLoopForCurrent =
+    restoredLoop && (restoredLoopMembers.length === 0 || (!!initialProfileId && restoredLoopMembers.includes(initialProfileId)));
+  const restoredOtherMembers = useMemo(
+    () => restoredLoopMembers.filter((id) => id !== initialProfileId),
+    [restoredLoopMembers, initialProfileId],
+  );
+  const restoreMemberPending =
+    restoredOtherMembers.length > 0 && !profilesFailed && restoredMembers?.reset !== resetKey;
+  const activeRestoredLoopKeys = useMemo(
+    () =>
+      restoredMembers &&
+      restoredMembers.reset === resetKey &&
+      labState.profile_id === initialProfileId
+        ? restoredMembers.activeKeys
+        : [],
+    [restoredMembers, resetKey, labState.profile_id, initialProfileId],
+  );
+  const stoppedRestoredLoopKeys = useMemo(
+    () => (restoredMembers && restoredMembers.reset === resetKey ? restoredMembers.stoppedKeys : []),
+    [restoredMembers, resetKey],
+  );
+  const unreachedLoopMembers = useMemo(() => {
+    if (!restoredMembers || restoredMembers.reset !== resetKey) return [];
+    return restoredMembers.outsideGroup.filter((m) => {
+      if (Object.values(replicationLoops).some((b) => keyProfileId(b.key) === m.id)) return false;
+      const p = profiles.find((item) => item.id === m.id);
+      return !!p && !!(p.group || "").trim();
+    });
+  }, [restoredMembers, resetKey, replicationLoops, profiles]);
+  const restoredOutsideNote = useMemo(() => {
+    if (!unreachedLoopMembers.length) return "";
+    const names = unreachedLoopMembers.map((m) => `${m.name} (group ${m.group})`);
+    if (names.length === 1) {
+      return `A skip loop was running on ${names[0]}, which is outside the active connection's group. Switch to that connection or open its group to check or stop it.`;
+    }
+    return `Skip loops were running on ${names.join(", ")}, which are outside the active connection's group. Switch to those connections or open their group to check or stop them.`;
+  }, [unreachedLoopMembers]);
   const mountServer = visited.current.server || restoredLoop;
   const mountReplication = visited.current.replication || restoredLoop;
-  // When a restored workspace had a skip loop on another member of the active
-  // connection's group, poll that member's loop registry once profiles load
-  // (no database login) instead of polling the active connection and falsely
-  // reporting it stopped.
+  // When a restored workspace had skip loops on other members, poll each
+  // same-group member's loop registry once saved connections load (no database
+  // login). Members outside the active connection's group get no read; if a
+  // member still belongs to a group (e.g. the active connection moved or was
+  // deleted), keep the flag and warn naming it instead of silently clearing.
   useEffect(() => {
-    if (!ready || !restoredLoopIsOtherMember || !profilesLoaded || profilesFailed) return;
-    if (restoredMemberPolled.current === resetKey) return;
-    restoredMemberPolled.current = resetKey;
-    const c = loopMemberRequest(restoredLoopMember);
-    if (!c) {
-      setRestoredMemberLoop({ reset: resetKey, key: "", stopped: false });
-      syncLoopSession(false, "");
+    if (!ready || restoredOtherMembers.length === 0 || !profilesLoaded || profilesFailed) return;
+    if (restoredMembersPolled.current === resetKey) return;
+    restoredMembersPolled.current = resetKey;
+    const list = profilesRef.current;
+    const toPoll: { id: string; c: Connection; key: string; label: string }[] = [];
+    const outsideGroup: { id: string; name: string; group: string }[] = [];
+    for (const id of restoredOtherMembers) {
+      const c = loopMemberRequest(id);
+      if (c) {
+        toPoll.push({ id, c, key: connectionKey(c), label: connectionLabel(c) });
+        continue;
+      }
+      const target = list.find((p) => p.id === id);
+      const targetGroup = (target?.group || "").trim();
+      if (target && targetGroup) {
+        outsideGroup.push({ id, name: target.name || id, group: targetGroup });
+      }
+    }
+    if (toPoll.length === 0) {
+      setRestoredMembers({ reset: resetKey, activeKeys: [], stoppedKeys: [], outsideGroup });
+      if (!restoredLoopForCurrent) {
+        if (outsideGroup.length === 0) syncLoopSession(false, []);
+        else syncLoopSession(true, outsideGroup.map((m) => m.id));
+      }
       return;
     }
     const controller = new AbortController();
-    const targetKey = connectionKey(c);
-    const targetLabel = connectionLabel(c);
     let done = false;
-    readSkipLoops(c, controller.signal)
-      .then((answer) => {
-        if (controller.signal.aborted) return;
-        done = true;
-        publishReplicationLoops({ key: targetKey, label: targetLabel, report: answer.loops });
-        setRestoredMemberLoop({ reset: resetKey, key: targetKey, stopped: answer.loops.length === 0 });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          done = true;
+    void Promise.allSettled(
+      toPoll.map(async (item) => {
+        const answer = await readSkipLoops(item.c, controller.signal);
+        return { item, loops: answer.loops };
+      }),
+    ).then((results) => {
+      if (controller.signal.aborted) return;
+      done = true;
+      const activeKeys: string[] = [];
+      const stoppedKeys: string[] = [];
+      let anyFailed = false;
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        const item = toPoll[i];
+        if (r.status === "fulfilled") {
+          publishReplicationLoops({ key: item.key, label: item.label, report: r.value.loops });
+          if (r.value.loops.some(loopActive)) activeKeys.push(item.key);
+          else if (r.value.loops.length === 0) stoppedKeys.push(item.key);
+        } else {
+          anyFailed = true;
         }
-      });
+      }
+      setRestoredMembers({ reset: resetKey, activeKeys, stoppedKeys, outsideGroup });
+      if (!anyFailed && activeKeys.length === 0 && outsideGroup.length === 0 && !restoredLoopForCurrent) {
+        syncLoopSession(false, []);
+      }
+    });
     return () => {
-      if (!done) restoredMemberPolled.current = -1;
+      if (!done) restoredMembersPolled.current = -1;
       controller.abort();
     };
-  }, [ready, resetKey, restoredLoopIsOtherMember, restoredLoopMember, profilesLoaded, profilesFailed, loopMemberRequest, publishReplicationLoops, syncLoopSession]);
+  }, [ready, resetKey, restoredOtherMembers, restoredLoopForCurrent, profilesLoaded, profilesFailed, loopMemberRequest, publishReplicationLoops, syncLoopSession]);
   // Active skip loops belonging to the connection in use, any member of the
-  // active group, or a restored same-group member after View > Reload.
+  // active group, or restored same-group members after View > Reload.
   const requestKey = connectionKey(request);
   const replicationKey = connectionKey(replicationRequest);
+  // If the user later switches to an unreached restored loop's connection or
+  // opens its group, poll its registry (no database login) and clear the note.
+  useEffect(() => {
+    if (!ready || !unreachedLoopMembers.length || !profilesLoaded || profilesFailed) return;
+    const reachable = unreachedLoopMembers
+      .filter((m) => !unreachedRechecked.current.has(m.id))
+      .map((m) => ({ m, c: loopMemberRequest(m.id) }))
+      .filter((item): item is { m: { id: string; name: string; group: string }; c: Connection } => !!item.c);
+    if (!reachable.length) return;
+    const controller = new AbortController();
+    const finished = new Set<string>();
+    for (const { m } of reachable) unreachedRechecked.current.add(m.id);
+    void Promise.allSettled(
+      reachable.map(async ({ m, c }) => {
+        const answer = await readSkipLoops(c, controller.signal);
+        if (controller.signal.aborted) return;
+        finished.add(m.id);
+        const targetKey = connectionKey(c);
+        publishReplicationLoops({ key: targetKey, label: connectionLabel(c), report: answer.loops });
+        if (answer.loops.length === 0) {
+          setRestoredMembers((prev) =>
+            prev && prev.reset === resetKey
+              ? { ...prev, stoppedKeys: [...new Set([...prev.stoppedKeys, targetKey])] }
+              : prev,
+          );
+        }
+      }),
+    );
+    return () => {
+      for (const { m } of reachable) {
+        if (!finished.has(m.id)) unreachedRechecked.current.delete(m.id);
+      }
+      controller.abort();
+    };
+  }, [ready, resetKey, unreachedLoopMembers, profilesLoaded, profilesFailed, groupActive, requestKey, loopMemberRequest, publishReplicationLoops]);
   const shellActiveLoops = useMemo(() => {
     const memberIds = groupActive ? new Set(groupActive.members.map((m) => m.profile_id)) : null;
+    const reqEp = endpointKey(requestKey);
+    const replEp = endpointKey(replicationKey);
+    const activeEps = new Set(activeRestoredLoopKeys.map(endpointKey));
     const list = Object.values(replicationLoops).filter((bound) => {
       if (!bound.report.some(loopActive)) return false;
-      if (bound.key === requestKey || bound.key === replicationKey) return true;
-      if (activeRestoredLoopKey && bound.key === activeRestoredLoopKey) return true;
+      const ep = endpointKey(bound.key);
+      if (ep === reqEp || ep === replEp) return true;
+      if (activeEps.has(ep)) return true;
       const pid = keyProfileId(bound.key);
       return !!memberIds && !!pid && memberIds.has(pid);
     });
@@ -2206,8 +2325,8 @@ function App() {
       ? new Map(groupActive.members.map((m, i) => [m.profile_id, i]))
       : null;
     list.sort((a, b) => {
-      if (a.key === requestKey) return -1;
-      if (b.key === requestKey) return 1;
+      if (endpointKey(a.key) === reqEp) return -1;
+      if (endpointKey(b.key) === reqEp) return 1;
       if (order) {
         const ai = order.get(keyProfileId(a.key)) ?? 9999;
         const bi = order.get(keyProfileId(b.key)) ?? 9999;
@@ -2216,46 +2335,121 @@ function App() {
       return a.key.localeCompare(b.key);
     });
     return list;
-  }, [replicationLoops, requestKey, replicationKey, activeRestoredLoopKey, groupActive]);
+  }, [replicationLoops, requestKey, replicationKey, activeRestoredLoopKeys, groupActive]);
+  const restoreCurrentPending =
+    restoredLoopForCurrent &&
+    labState.profile_id === initialProfileId &&
+    !Object.values(replicationLoops).some((b) => endpointKey(b.key) === endpointKey(requestKey));
   useEffect(() => {
-    if (loopRevision === 0 || restoreMemberPending) return;
-    const hasActive = shellActiveLoops.length > 0;
-    const member = hasActive
-      ? (shellActiveLoops.map((b) => keyProfileId(b.key)).find((id) => id && id !== labStateRef.current.profile_id)
-        || shellActiveLoops.map((b) => keyProfileId(b.key)).find(Boolean)
-        || "")
-      : "";
-    syncLoopSession(hasActive, member);
-  }, [loopRevision, restoreMemberPending, shellActiveLoops, syncLoopSession]);
+    if (loopRevision === 0 || restoreMemberPending || restoreCurrentPending) return;
+    const activeIds = shellActiveLoops.map((b) => keyProfileId(b.key)).filter(Boolean);
+    const unreachedIds = unreachedLoopMembers.map((m) => m.id);
+    const allIds = [...new Set([...activeIds, ...unreachedIds])];
+    const hasActive = shellActiveLoops.length > 0 || unreachedIds.length > 0;
+    syncLoopSession(hasActive, allIds);
+  }, [loopRevision, restoreMemberPending, restoreCurrentPending, shellActiveLoops, unreachedLoopMembers, syncLoopSession]);
+  const resolveBoundLoopConnection = useCallback((boundKey: string): { connection: Connection | null; reason: string } => {
+    const wanted = endpointKey(boundKey);
+    if (endpointKey(connectionKey(requestRef.current)) === wanted) {
+      return { connection: requestRef.current, reason: "" };
+    }
+    const pid = keyProfileId(boundKey);
+    if (!pid) {
+      return {
+        connection: null,
+        reason: "Could not send Stop: the active connection changed since this skip loop started.",
+      };
+    }
+    const rebuilt = loopMemberRequest(pid);
+    if (rebuilt) {
+      if (endpointKey(connectionKey(rebuilt)) === wanted) {
+        return { connection: rebuilt, reason: "" };
+      }
+      return {
+        connection: null,
+        reason: "Could not send Stop: this saved connection's address, user, TLS or SSH settings changed since the skip loop started.",
+      };
+    }
+    const known = profilesRef.current.find((p) => p.id === pid);
+    return {
+      connection: null,
+      reason: known
+        ? `Could not send Stop: ${known.name || pid} is no longer in the active connection group.`
+        : "Could not send Stop: this saved connection was deleted.",
+    };
+  }, [loopMemberRequest]);
+  // Refresh active skip loops running on other members (ReplicationView polls
+  // only its own key) through the same endpoint-key Stop resolver. Registry
+  // only, no database login; stops when the loop ends or leaves scope.
+  const otherActiveLoopKeys = useMemo(
+    () => shellActiveLoops
+      .filter((b) => endpointKey(b.key) !== endpointKey(replicationKey))
+      .map((b) => b.key)
+      .sort()
+      .join("\n"),
+    [shellActiveLoops, replicationKey],
+  );
+  useEffect(() => {
+    if (!otherActiveLoopKeys) return;
+    const keys = otherActiveLoopKeys.split("\n");
+    const controller = new AbortController();
+    let timer: number | undefined;
+    async function poll() {
+      const targets = keys
+        .map((boundKey) => ({ boundKey, c: resolveBoundLoopConnection(boundKey).connection }))
+        .filter((item): item is { boundKey: string; c: Connection } => !!item.c);
+      if (!targets.length) return;
+      const answers = await Promise.allSettled(
+        targets.map(async (t) => ({ c: t.c, answer: await readSkipLoops(t.c, controller.signal) })),
+      );
+      if (controller.signal.aborted) return;
+      for (const r of answers) {
+        if (r.status === "fulfilled") {
+          publishReplicationLoops({
+            key: connectionKey(r.value.c),
+            label: connectionLabel(r.value.c),
+            report: r.value.answer.loops,
+          });
+        }
+      }
+      if (!controller.signal.aborted) timer = window.setTimeout(() => { void poll(); }, LOOP_POLL_MS);
+    }
+    timer = window.setTimeout(() => { void poll(); }, LOOP_POLL_MS);
+    return () => { controller.abort(); window.clearTimeout(timer); };
+  }, [otherActiveLoopKeys, resolveBoundLoopConnection, publishReplicationLoops]);
   const [otherLoopStopping, setOtherLoopStopping] = useState<{ key: string; id: string } | null>(null);
   const otherLoopStoppingRef = useRef(new Set<string>());
   const stopOtherLoop = useCallback(async (bound: Bound<SkipLoop[]>, loop: SkipLoop) => {
     const id = loop.job_id;
     const stopKey = id ? `${bound.key}:${id}` : "";
     if (!id || otherLoopStoppingRef.current.has(stopKey)) return;
-    const pid = keyProfileId(bound.key);
-    const c = bound.key === connectionKey(requestRef.current)
-      ? requestRef.current
-      : pid
-        ? loopMemberRequest(pid)
-        : null;
-    if (!c || connectionKey(c) !== bound.key) return;
+    const { connection: c, reason } = resolveBoundLoopConnection(bound.key);
+    if (!c) {
+      setOtherLoopErrors((prev) => ({ ...prev, [stopKey]: reason }));
+      return;
+    }
+    setOtherLoopErrors((prev) => {
+      if (!(stopKey in prev)) return prev;
+      const next = { ...prev };
+      delete next[stopKey];
+      return next;
+    });
     otherLoopStoppingRef.current.add(stopKey);
     setOtherLoopStopping({ key: bound.key, id });
     try {
       await stopSkipLoop(c, id);
       const answer = await readSkipLoops(c);
-      publishReplicationLoops({ key: bound.key, label: connectionLabel(c), report: answer.loops });
+      publishReplicationLoops({ key: connectionKey(c), label: connectionLabel(c), report: answer.loops });
     } catch {
       // Banner stays quiet; the member's own view shows status errors.
     } finally {
       otherLoopStoppingRef.current.delete(stopKey);
       setOtherLoopStopping((pending) => (pending?.key === bound.key && pending.id === id ? null : pending));
     }
-  }, [loopMemberRequest, publishReplicationLoops]);
+  }, [resolveBoundLoopConnection, publishReplicationLoops]);
   const otherReplicationLoops = useMemo(
     () => shellActiveLoops
-      .filter((bound) => bound.key !== replicationKey)
+      .filter((bound) => endpointKey(bound.key) !== endpointKey(replicationKey))
       .map((bound) => {
         const pid = keyProfileId(bound.key);
         const member = pid ? groupActive?.members.find((m) => m.profile_id === pid) : undefined;
@@ -3137,7 +3331,8 @@ function App() {
                 profiles={profiles}
                 replicationLoops={replicationLoops}
                 onReplicationLoops={publishReplicationLoops}
-                restoredLoopKey={activeRestoredLoopKey}
+                restoredLoopKeys={activeRestoredLoopKeys}
+                restoredOutsideNote={restoredOutsideNote}
                 resolveMemberConnection={loopMemberRequest}
                 replication={replicationReport}
                 onReplication={shareReplication}
@@ -3181,7 +3376,8 @@ function App() {
                   key={resetKey}
                   connection={replicationRequest}
                   restoredLoop={restoredLoopForCurrent}
-                  restoredStoppedKey={stoppedRestoredLoopKey}
+                  restoredStoppedKeys={stoppedRestoredLoopKeys}
+                  restoredOutsideNote={restoredOutsideNote}
                   disabled={labBusy}
                   clusterKind={clusterReport?.key === connectionKey(replicationRequest) && clusterReport.report.available && clusterReport.report.kind !== "none" ? clusterReport.report.kind : null}
                   onOpenCluster={() => go("cluster")}
@@ -3193,6 +3389,7 @@ function App() {
                   onLoops={publishReplicationLoops}
                   otherLoops={otherReplicationLoops}
                   otherLoopStopping={otherLoopStopping}
+                  otherLoopErrors={otherLoopErrors}
                   onStopOtherLoop={(bound, loop) => { void stopOtherLoop(bound, loop); }}
                   report={replicationReport}
                   onReport={shareReplication}
