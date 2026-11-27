@@ -8,6 +8,7 @@ import contextlib
 import json
 import re
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
@@ -34,6 +35,10 @@ MAP_USER_MAX_CHARS = 32
 MAP_NOTES_PER_EDGE = 4
 TAG = '/*myflames:topology*/ '
 _UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
+_DUMP_PFS_VARS_SQL = (
+    "SHOW GLOBAL VARIABLES WHERE Variable_name IN "
+    "('performance_schema', 'performance_schema_session_connect_attrs_size')"
+)
 _DUMP_ATTRS_LOST_SQL = "SHOW GLOBAL STATUS LIKE 'Performance_schema_session_connect_attrs_lost'"
 # Collect every Binlog Dump thread on a MySQL source with its replica/slave
 # UUID, client host, client user, and ALL connect attributes (never filtering
@@ -569,8 +574,16 @@ def _uuid(value):
             and value != '00000000-0000-0000-0000-000000000000' else None)
 
 
-def _classify_dump_attrs(attrs, attrs_lost, attrs_unreadable=False):
-    """Classify one Binlog Dump session from its full connect attributes."""
+def _classify_dump_attrs(attrs, attrs_lost, attrs_unreadable=False, attrs_storage_enabled=True):
+    """Classify one Binlog Dump session from its full connect attributes.
+
+    MySQL storage/perfschema/pfs.cc:8307-8365 skips attribute storage and
+    leaves Performance_schema_session_connect_attrs_lost at 0 when
+    performance_schema_session_connect_attrs_size is 0, so disabled or unknown
+    attribute storage makes every dump class "unknown".
+    """
+    if not attrs_storage_enabled:
+        return 'unknown'
     has_mysqld = any(
         (name in ('program_name', '_program_name') and (value or '').strip().lower() == 'mysqld')
         or (name == '_client_role' and (value or '').strip().lower() == 'binary_log_listener')
@@ -585,25 +598,105 @@ def _classify_dump_attrs(attrs, attrs_lost, attrs_unreadable=False):
     return 'other'
 
 
+def _is_query_timeout(exc):
+    """True for a per-statement client timeout, never for overall read-budget expiry."""
+    return isinstance(exc, ConnectorError) and str(exc).startswith('Query timed out after ')
+
+
+def _dump_guard(conn):
+    """Build an isolated evidence/read guard for best-effort dump reads.
+
+    A short DUMP_QUERY_SECONDS timeout on optional performance_schema reads
+    must never latch the member's _ReadConnection.failure or
+    TargetEvidenceConnection.problem. Identity verification still checks
+    against the member's observed identity, and non-timeout failures still
+    propagate to the member guard.
+    """
+    parent_ev = conn if isinstance(conn, dbops.TargetEvidenceConnection) else None
+    parent_read = (
+        parent_ev.connection
+        if parent_ev is not None and isinstance(parent_ev.connection, _ReadConnection)
+        else conn if isinstance(conn, _ReadConnection) else None
+    )
+    if parent_ev is not None:
+        raw = parent_read.connection if parent_read is not None else parent_ev.connection
+        isolated_read = _ReadConnection(raw)
+        if parent_read is not None:
+            isolated_read.authenticated = parent_read.authenticated
+        isolated_ev = dbops.TargetEvidenceConnection(isolated_read)
+        if parent_ev.variables is not None:
+            isolated_ev.variables = dict(parent_ev.variables)
+        return isolated_ev, isolated_read, parent_ev, parent_read
+    if parent_read is not None:
+        isolated_read = _ReadConnection(parent_read.connection)
+        isolated_read.authenticated = parent_read.authenticated
+        return isolated_read, isolated_read, None, parent_read
+    return conn, None, None, None
+
+
 def _read_dump_threads(conn, reader, variables):
     """Collect and classify Binlog Dump sessions on a MySQL source (5 s budget)."""
-    if variables.get('performance_schema') is not None and _on(variables.get('performance_schema')) is False:
-        return [], [], True
-    dump_notes = []
-    lost_rows = _optional(reader, _DUMP_ATTRS_LOST_SQL, dump_notes, timeout=DUMP_QUERY_SECONDS)
-    conn.check()
+    pfs_state = _on(variables.get('performance_schema'))
+    if pfs_state is False:
+        return [], [], True, False
+
+    def _run_dump_query(sql):
+        dump_conn, dump_read, parent_ev, parent_read = _dump_guard(conn)
+        dump_reader = Reader(dump_conn, TAG) if dump_conn is not conn else reader
+        try:
+            return dump_reader.rows(sql, timeout=DUMP_QUERY_SECONDS), False
+        except ConnectorError as exc:
+            if (dump_read is not None and _is_query_timeout(dump_read.failure)) or _is_query_timeout(exc):
+                return None, True
+            if isinstance(dump_conn, dbops.TargetEvidenceConnection) and dump_conn.problem:
+                if dump_read is None or dump_read.failure is None:
+                    if parent_ev is not None:
+                        parent_ev.problem = dump_conn.problem
+                        parent_ev.check()
+                    raise
+            if dump_read is not None and dump_read.failure is not None:
+                if parent_ev is not None and isinstance(dump_conn, dbops.TargetEvidenceConnection) and dump_conn.problem:
+                    parent_ev.problem = dump_conn.problem
+                if parent_read is not None:
+                    parent_read.failure = dump_read.failure
+                    parent_read.check()
+                raise
+            return None, False
+
+    pfs_var_rows, pfs_vars_timed_out = _run_dump_query(_DUMP_PFS_VARS_SQL)
+    if pfs_vars_timed_out:
+        return [], [], True, False
+    pfs_vars = {}
+    for row in pfs_var_rows or ():
+        if len(row) >= 2 and row[0]:
+            pfs_vars[str(row[0]).strip().lower()] = row[1]
+    if 'performance_schema' in pfs_vars:
+        pfs_state = _on(pfs_vars.get('performance_schema'))
+        if pfs_state is False:
+            return [], [], True, False
+    attrs_size = _number(pfs_vars.get('performance_schema_session_connect_attrs_size'))
+    attrs_storage_enabled = (
+        pfs_state is True
+        and isinstance(attrs_size, int)
+        and attrs_size > 0
+    )
+
     attrs_lost = None
-    if lost_rows:
-        for row in lost_rows:
-            if len(row) >= 2 and str(row[0] or '').lower() == 'performance_schema_session_connect_attrs_lost':
-                val = _number(row[1])
-                if isinstance(val, int):
-                    attrs_lost = val
-                break
-    rows = _optional(reader, _DUMP_THREADS_SQL, dump_notes, timeout=DUMP_QUERY_SECONDS)
-    conn.check()
+    if attrs_storage_enabled:
+        lost_rows, lost_timed_out = _run_dump_query(_DUMP_ATTRS_LOST_SQL)
+        if lost_timed_out:
+            return [], [], True, False
+        if lost_rows:
+            for row in lost_rows:
+                if len(row) >= 2 and str(row[0] or '').lower() == 'performance_schema_session_connect_attrs_lost':
+                    val = _number(row[1])
+                    if isinstance(val, int):
+                        attrs_lost = val
+                    break
+    rows, dump_timed_out = _run_dump_query(_DUMP_THREADS_SQL)
+    dump_attrs_lost = bool(attrs_lost is not None and attrs_lost > 0)
     if rows is None:
-        return [], [], True
+        return [], [], True, dump_attrs_lost
     truncated = len(rows) > MAP_DUMP_ATTR_ROWS
     if truncated:
         rows = rows[:MAP_DUMP_ATTR_ROWS]
@@ -637,7 +730,11 @@ def _read_dump_threads(conn, reader, variables):
     has_none_class = False
     for key in order:
         item = sessions[key]
-        dclass = _classify_dump_attrs(item['attrs'], attrs_lost, attrs_unreadable=item['unreadable'])
+        dclass = _classify_dump_attrs(
+            item['attrs'], attrs_lost,
+            attrs_unreadable=item['unreadable'],
+            attrs_storage_enabled=attrs_storage_enabled,
+        )
         if dclass == 'none':
             has_none_class = True
         dump_threads.append({
@@ -649,17 +746,26 @@ def _read_dump_threads(conn, reader, variables):
 
     readyset_clients = []
     if has_none_class:
-        client_rows = _optional(reader, _READYSET_CLIENTS_SQL, dump_notes, timeout=DUMP_QUERY_SECONDS)
-        conn.check()
-        for row in (client_rows or [])[:MAP_PEERS_PER_MEMBER]:
-            if len(row) < 2:
-                continue
-            chost = _map_host(row[0])
-            cuser = _map_user(row[1])
-            if chost and cuser:
-                readyset_clients.append({'host': chost, 'user': cuser})
-    dump_read_failed = bool(attrs_lost is None and not dump_threads)
-    return dump_threads, readyset_clients, dump_read_failed
+        client_rows, clients_timed_out = _run_dump_query(_READYSET_CLIENTS_SQL)
+        if clients_timed_out:
+            for item in dump_threads:
+                if item['class'] != 'mysqld':
+                    item['class'] = 'unknown'
+        else:
+            for row in (client_rows or [])[:MAP_PEERS_PER_MEMBER]:
+                if len(row) < 2:
+                    continue
+                chost = _map_host(row[0])
+                cuser = _map_user(row[1])
+                if chost:
+                    readyset_clients.append({'host': chost, 'user': cuser})
+    dump_read_failed = bool(
+        not dump_threads and (
+            pfs_state is None
+            or (attrs_storage_enabled and attrs_lost is None)
+        )
+    )
+    return dump_threads, readyset_clients, dump_read_failed, dump_attrs_lost
 
 
 def _map_probe(conn, profile, member, variables, has_readyset=False):
@@ -722,10 +828,12 @@ def _map_probe(conn, profile, member, variables, has_readyset=False):
             _uuid(probe['server_uuid']) != _uuid(member['server_uuid'])):
         raise ConnectorError('The member identity changed during the topology read.')
     if has_readyset and member['engine'] == 'mysql' and probe.get('replicas'):
-        dump_threads, readyset_clients, dump_read_failed = _read_dump_threads(conn, reader, variables)
+        dump_threads, readyset_clients, dump_read_failed, dump_attrs_lost = _read_dump_threads(
+            conn, reader, variables)
         probe['dump_threads'] = dump_threads
         probe['readyset_clients'] = readyset_clients
         probe['dump_read_failed'] = dump_read_failed
+        probe['dump_attrs_lost'] = dump_attrs_lost
     group = _uuid(variables.get('group_replication_group_name'))
     provider = variables.get('wsrep_provider')
     wsrep = _on(variables.get('wsrep_on')) or (provider and str(provider).lower() != 'none')
@@ -1135,17 +1243,11 @@ def _build_map(entries, probes, profiles):
         cdc_port = _map_port(cdc_raw_port) if cdc_host else None
 
         upstreams = [dict(u, _from_cdc_server=False) for u in raw_upstreams]
-        has_explicit_cdc = any(
-            _is_truthy(u.get('active_cdc')) or ('cdc' in str(u.get('purpose') or '').lower())
-            for u in upstreams
-        )
-        has_single_no_purpose = (
-            len(upstreams) == 1 and not str(upstreams[0].get('purpose') or '').strip()
-        )
-        if cdc_host and not has_explicit_cdc and not has_single_no_purpose:
+        if cdc_host:
+            cdc_eff_port = cdc_port or 3306
             already_present = any(
-                _cached_host_key(u.get('host')) == cdc_host_key and
-                (_map_port(u.get('port')) or 3306) == (cdc_port or 3306)
+                _cached_host_key(u.get('host')) == cdc_host_key
+                and (_map_port(u.get('port')) or 3306) == cdc_eff_port
                 for u in upstreams
             )
             if not already_present:
@@ -1324,15 +1426,19 @@ def _build_map(entries, probes, profiles):
                         and rs_deploy_keys.get(item['profile_id']) in adapter_keys)
             ]
 
-            # Build normalized READYSET% client (host_key, user) set once per source.
+            # Build normalized READYSET% client host and (host_key, user) sets once per source.
+            rs_client_hosts = set()
             rs_client_pairs = set()
             for crow in probe.get('readyset_clients') or ():
                 if not isinstance(crow, dict):
                     continue
                 chkey = _cached_host_key(crow.get('host'))
                 cuser = _map_user(crow.get('user'))
-                if chkey and cuser:
-                    rs_client_pairs.add((chkey, cuser))
+                if chkey:
+                    rs_client_hosts.add(chkey)
+                    if cuser:
+                        rs_client_pairs.add((chkey, cuser))
+            rs_client_has_loopback = any(_cached_is_loopback(h) for h in rs_client_hosts)
 
             # Re-validate dump rows in _build_map: drop rejected hosts before
             # calling _host_key, cap users at 32 chars, and ignore any UUID
@@ -1340,7 +1446,6 @@ def _build_map(entries, probes, profiles):
             legacy_dump = 'dump_threads' not in probe and 'readyset_replicas' in probe
             raw_dumps = probe.get('readyset_replicas') if legacy_dump else probe.get('dump_threads')
             dump_by_uuid = {}
-            all_dump_classes = []
             for row in raw_dumps or ():
                 if not isinstance(row, dict):
                     continue
@@ -1355,19 +1460,25 @@ def _build_map(entries, probes, profiles):
                 dclass = row.get('class')
                 if dclass not in class_rank:
                     dclass = 'none' if legacy_dump else 'unknown'
-                all_dump_classes.append(dclass)
+                dh_loop = _cached_is_loopback(dhkey)
                 has_rs_client = bool(row.get('readyset_client')) or (
                     bool(duser) and (dhkey, duser) in rs_client_pairs
+                )
+                has_rs_client_host = (
+                    bool(row.get('readyset_client'))
+                    or dhkey in rs_client_hosts
+                    or (dh_loop and rs_client_has_loopback)
                 )
                 existing = dump_by_uuid.get(duuid)
                 if existing is None:
                     dump_by_uuid[duuid] = {
                         'host_key': dhkey,
-                        'is_loopback': _cached_is_loopback(dhkey),
+                        'is_loopback': dh_loop,
                         'ambiguous_host': False,
                         'users': {duser} if duser else set(),
                         'class': dclass,
                         'readyset_client': has_rs_client,
+                        'readyset_client_host': has_rs_client_host,
                     }
                 else:
                     if existing['host_key'] != dhkey:
@@ -1376,6 +1487,8 @@ def _build_map(entries, probes, profiles):
                         existing['users'].add(duser)
                     if has_rs_client:
                         existing['readyset_client'] = True
+                    if has_rs_client_host:
+                        existing['readyset_client_host'] = True
                     if class_rank[dclass] > class_rank[existing['class']]:
                         existing['class'] = dclass
 
@@ -1391,7 +1504,11 @@ def _build_map(entries, probes, profiles):
                         and member_is_loopback[rs_pid]
                     ),
                 }
-            sole_verified_cdc = len(rs_owners) == 1 and bool(rs_owners[0]['verified_cdc'])
+            sole_verified_cdc = (
+                len(rs_owners) == 1
+                and bool(rs_owners[0]['verified_cdc'])
+                and bool(rs_owners[0]['replication_running'])
+            )
             match_cache = {}
 
             def _resolve_candidate(replica):
@@ -1435,49 +1552,76 @@ def _build_map(entries, probes, profiles):
                                 result = ('host', host_candidates[0])
                             elif len(host_candidates) > 1:
                                 result = None
-                            elif sole_verified_cdc and len(user_candidates) == 1:
+                            elif (sole_verified_cdc and len(user_candidates) == 1
+                                  and info['readyset_client_host']):
                                 result = ('sole', user_candidates[0])
                 match_cache[ckey] = result
                 return result
 
-            # Pass A claims direct host matches before Pass B (sole verified CDC),
-            # and each Readyset member claims at most one registration per source.
+            # Pass A claims direct host matches first (at most one per Readyset
+            # member). Pass B ("sole") claims only when the owner is unclaimed,
+            # its Replication Status is running, a READYSET% client attribute
+            # exists on the dump row's host, and exactly one remaining unmatched
+            # row resolves to that owner; otherwise competing rows stay peers.
             evaluated = [(replica, _resolve_candidate(replica)) for replica in unmatched_replicas]
             claimed_rs = set()
             matched_indices = set()
-            for tier in ('host', 'sole'):
-                for idx, (replica, match) in enumerate(evaluated):
-                    if idx in matched_indices or match is None or match[0] != tier:
-                        continue
-                    owner = match[1]
-                    if owner['profile_id'] in claimed_rs:
-                        continue
-                    claimed_rs.add(owner['profile_id'])
-                    matched_indices.add(idx)
-                    _attach_replica_note(edges, owner['edge_key'], source_name,
-                                         replica.get('server_id'), estimate=False,
-                                         note_state=edge_note_state)
+            for idx, (replica, match) in enumerate(evaluated):
+                if match is None or match[0] != 'host':
+                    continue
+                owner = match[1]
+                if owner['profile_id'] in claimed_rs:
+                    continue
+                claimed_rs.add(owner['profile_id'])
+                matched_indices.add(idx)
+                _attach_replica_note(edges, owner['edge_key'], source_name,
+                                     replica.get('server_id'), estimate=False,
+                                     note_state=edge_note_state)
+            sole_by_owner = {}
+            for idx, (replica, match) in enumerate(evaluated):
+                if idx in matched_indices or match is None or match[0] != 'sole':
+                    continue
+                owner = match[1]
+                if owner['profile_id'] in claimed_rs:
+                    continue
+                sole_by_owner.setdefault(owner['profile_id'], []).append((idx, replica, owner))
+            for rs_pid, items in sole_by_owner.items():
+                if len(items) != 1:
+                    continue
+                idx, replica, owner = items[0]
+                claimed_rs.add(rs_pid)
+                matched_indices.add(idx)
+                _attach_replica_note(edges, owner['edge_key'], source_name,
+                                     replica.get('server_id'), estimate=False,
+                                     note_state=edge_note_state)
             remaining_unmatched = [
                 replica for idx, (replica, _) in enumerate(evaluated) if idx not in matched_indices
             ]
 
-            # Estimate fallback: only when dump evidence is unavailable for S
-            # (every dump session is unknown or the dump read failed), S is R's
-            # verified CDC upstream, S has one unmatched row with no reported
-            # Host, one Readyset uses S, R's Replication Status is running, and
-            # the row's dump class is neither mysqld nor other.
-            dump_unavailable = bool(probe.get('dump_read_failed')) or (
-                bool(all_dump_classes) and all(c == 'unknown' for c in all_dump_classes)
-            )
-            if (dump_unavailable and len(unmatched_replicas) == 1 and len(remaining_unmatched) == 1
+            # Estimate fallback: inspect the unmatched row's own evidence (dump
+            # read failed, its dump class is unknown, or connect attrs were
+            # lost), never all dump classes on S. Refuse when the row's dump
+            # user is known and disjoint from the owner's upstream users.
+            if (len(unmatched_replicas) == 1 and len(remaining_unmatched) == 1
                     and len(rs_owners) == 1 and rs_owners[0]['verified_cdc']
                     and rs_owners[0]['replication_running']):
                 only_row = remaining_unmatched[0]
                 raw_host = str(only_row.get('host') or '').strip()
                 row_uuid = _uuid(only_row.get('uuid'))
-                row_class = dump_by_uuid[row_uuid]['class'] if (row_uuid and row_uuid in dump_by_uuid) else None
-                if not raw_host and row_class not in ('mysqld', 'other'):
-                    _attach_replica_note(edges, rs_owners[0]['edge_key'], source_name,
+                row_info = dump_by_uuid.get(row_uuid) if row_uuid else None
+                row_class = row_info['class'] if row_info is not None else None
+                row_users = row_info['users'] if row_info is not None else set()
+                owner = rs_owners[0]
+                row_evidence_unavailable = (
+                    bool(probe.get('dump_read_failed'))
+                    or row_class == 'unknown'
+                    or bool(probe.get('dump_attrs_lost'))
+                )
+                contrary_user = bool(row_users and owner['users'] and not (row_users & owner['users']))
+                if (row_evidence_unavailable and not raw_host
+                        and row_class not in ('mysqld', 'other', 'none')
+                        and not contrary_user):
+                    _attach_replica_note(edges, owner['edge_key'], source_name,
                                          only_row.get('server_id'), estimate=True,
                                          note_state=edge_note_state)
                     remaining_unmatched = []
@@ -1832,15 +1976,23 @@ def read_group(store, group_name, section, active_member_profile_id,
             return read_one(profile)
 
     if section == 'map':
-        phase1_states = []
+        stacks_lock = threading.Lock()
+        open_stacks = []
 
         def phase1_member(profile):
-            with read_cancel.scope(request_cancel, request_guard):
-                stack = contextlib.ExitStack()
-                state = _open_and_identify(profile, stack)
-                if not state['ok']:
-                    stack.close()
-                return state
+            stack = contextlib.ExitStack()
+            with stacks_lock:
+                open_stacks.append(stack)
+            try:
+                with read_cancel.scope(request_cancel, request_guard):
+                    state = _open_and_identify(profile, stack)
+            except BaseException:
+                stack.close()
+                raise
+            if not state['ok']:
+                stack.close()
+                state['stack'] = None
+            return state
 
         try:
             with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
@@ -1851,37 +2003,40 @@ def read_group(store, group_name, section, active_member_profile_id,
                 )
 
                 def phase2_member(state):
-                    with read_cancel.scope(request_cancel, request_guard):
-                        if not state['ok']:
-                            return state['result']
-                        stack = state['stack']
-                        profile, entry = state['profile'], state['entry']
-                        position, multi_primary = state['position'], state['multi_primary']
-                        conn, transport = state['conn'], state['transport']
-                        variables, began = state['variables'], state['began']
-                        try:
-                            probe, notes = _map_probe(conn, profile, entry, variables,
-                                                      has_readyset=has_readyset)
-                            snapshot, exclusion = {'probe': probe, 'notes': notes}, None
-                            _finalize_member(profile, entry, variables, conn, transport, exclusion)
-                            entry['elapsed_s'] = round(time.monotonic() - began, 3)
-                            return entry, snapshot, position, exclusion, multi_primary
-                        except _NotReached:
-                            entry['elapsed_s'] = round(time.monotonic() - began, 3)
-                            return entry, None, None, entry['message'], False
-                        except Exception as exc:
-                            return _record_member_failure(profile, exc, began)
-                        finally:
-                            state['stack'] = None
+                    stack = state.get('stack')
+                    try:
+                        with read_cancel.scope(request_cancel, request_guard):
+                            if not state['ok']:
+                                return state['result']
+                            profile, entry = state['profile'], state['entry']
+                            position, multi_primary = state['position'], state['multi_primary']
+                            conn, transport = state['conn'], state['transport']
+                            variables, began = state['variables'], state['began']
+                            try:
+                                probe, notes = _map_probe(conn, profile, entry, variables,
+                                                          has_readyset=has_readyset)
+                                snapshot, exclusion = {'probe': probe, 'notes': notes}, None
+                                _finalize_member(profile, entry, variables, conn, transport, exclusion)
+                                entry['elapsed_s'] = round(time.monotonic() - began, 3)
+                                return entry, snapshot, position, exclusion, multi_primary
+                            except _NotReached:
+                                entry['elapsed_s'] = round(time.monotonic() - began, 3)
+                                return entry, None, None, entry['message'], False
+                            except Exception as exc:
+                                return _record_member_failure(profile, exc, began)
+                    finally:
+                        state['stack'] = None
+                        if stack is not None:
                             stack.close()
 
                 results = list(pool.map(phase2_member, phase1_states))
         finally:
-            for state in phase1_states:
-                stack = state.get('stack')
-                if stack is not None:
-                    state['stack'] = None
-                    stack.close()
+            with stacks_lock:
+                remaining_stacks = list(open_stacks)
+                open_stacks.clear()
+            with contextlib.ExitStack() as cleanup:
+                for stack in remaining_stacks:
+                    cleanup.callback(stack.close)
     else:
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as pool:
             results = list(pool.map(read_member, members))
