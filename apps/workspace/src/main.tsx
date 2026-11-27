@@ -1,7 +1,7 @@
 // First: the stylesheets, in cascade order (styles.ts).
 import "./styles";
 import { setUnsavedWorkCheck } from "./unsavedWork";
-import { PrivilegesProvider } from "./privileges";
+import { PrivilegesProvider, PrivilegeWhyHost } from "./privileges";
 import { ConnectionInUseProvider } from "./connectionInUse";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { createRoot } from "react-dom/client";
@@ -2402,6 +2402,7 @@ function App() {
   return (
     <ConnectionInUseProvider connection={placeRequest} connected={placeConnected}>
     <PrivilegesProvider connection={placeRequest} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={placeConnected}>
+    <PrivilegeWhyHost resetKey={`${mode}:${serverViewNow || ""}:${navKey}`}>
     <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <a href="#main" className="skip">
         Skip to content
@@ -3157,6 +3158,7 @@ function App() {
         />
       )}
     </div>
+    </PrivilegeWhyHost>
     </PrivilegesProvider>
     </ConnectionInUseProvider>
   );

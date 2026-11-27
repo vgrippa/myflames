@@ -18,7 +18,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chooseConnection, connectionOption, openRefreshMenu } from "./chrome-helpers.mjs";
-import { load, open, pause } from "./perf-harness.mjs";
+import { load, open, pause, setUiPreferences } from "./perf-harness.mjs";
 
 const R = {};
 for (const name of ["galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two-of-three", "galera-11.8-non-primary", "pxc-8.4-healthy",
@@ -65,6 +65,23 @@ await fs.mkdir(whyShots, { recursive: true });
 const whyShot = (file) => page.screenshot({ path: path.join(whyShots, file), fullPage: false });
 async function answer(report) {
   state.fallback = { status: 200, body: report };
+}
+async function setTheme(theme) {
+  await setUiPreferences(page, { theme });
+  await page.evaluate((t) => {
+    if (t === "system") localStorage.removeItem("myflames.theme");
+    else localStorage.setItem("myflames.theme", t);
+  }, theme);
+  await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: theme === "dark" ? "dark" : "light" }]);
+}
+async function reloadCluster(report) {
+  await answer(report);
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForSelector(".workspace");
+  const active = await page.$eval(nav, (b) => b.classList.contains("active")).catch(() => false);
+  if (!active) await page.$eval(nav, (b) => b.click());
+  await page.waitForSelector(`${view} .summary-line`, { visible: true });
+  await pause(150);
 }
 async function refreshTo(report, { preservePopover = false } = {}) {
   const before = state.seen.length;
@@ -467,16 +484,24 @@ try {
   assert.ok(await page.$(".view-inspector"), "Escape dismisses only the message, keeping its inspector open");
   assert.equal(await page.evaluate(() => document.activeElement?.textContent?.trim()), "Stop Group Replication…",
     "Escape from inside the message returns focus to the action");
-  await clickMemberAction("Stop Group Replication…");
-  await page.waitForSelector(`${memberWhy} .ops-pre`, { visible: true });
-  // A long GRANT scrolls inside its box instead of stretching the page, in both themes.
+  // A long GRANT scrolls inside its box instead of stretching the page, in both
+  // real appearances (persisted theme + prefers-color-scheme + reload).
+  const grantBg = {};
   for (const theme of ["light", "dark"]) {
-    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    await setTheme(theme);
+    await reloadCluster(grantReport);
+    await tab("Members");
+    await h.select(`${view} tr[data-row-key="${grantMember.key}"]`);
+    await clickMemberAction("Stop Group Replication…");
+    await page.waitForSelector(`${memberWhy} .ops-pre`, { visible: true });
     await pause(150);
     const box = await page.evaluate(() => {
-      const e = document.querySelector(".view-inspector .cluster-action-why:popover-open .ops-pre");
+      const msg = document.querySelector(".view-inspector .cluster-action-why:popover-open");
+      const e = msg?.querySelector(".ops-pre");
       return {
         found: !!e,
+        bg: msg ? getComputedStyle(msg).backgroundColor : "",
+        scheme: getComputedStyle(document.documentElement).colorScheme,
         maxH: e ? getComputedStyle(e).maxHeight : "",
         scroll: e ? e.scrollHeight : 0, client: e ? e.clientHeight : 0,
         pre: e ? e.scrollHeight - e.clientHeight : null,
@@ -484,9 +509,14 @@ try {
     });
     assert.ok(box.pre > 0, `a long GRANT scrolls inside its box (${theme}): ${JSON.stringify(box)}`);
     assert.ok(box.page <= 0, `no horizontal page scroll with the GRANT open (${theme}): ${box.page}`);
+    assert.equal(box.scheme, theme, `document color-scheme matches ${theme}: ${JSON.stringify(box)}`);
+    grantBg[theme] = box.bg;
     await whyShot(`cluster-why-grant-1440-${theme}.png`);
   }
-  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  assert.notEqual(grantBg.light, grantBg.dark, `GRANT message background differs between light and dark: ${JSON.stringify(grantBg)}`);
+  await setTheme("system");
+  await pause(150);
+  await page.evaluate(() => { window.__grants = []; navigator.clipboard.writeText = (t) => (window.__grants.push(t), Promise.resolve()); });
   await shot("cluster-grant.png");
   await page.click(".view-inspector .cluster-action-why:popover-open .ops-commands button");
   await page.waitForFunction(() => /Copied\./.test(document.querySelector(".view-inspector .cluster-action-why:popover-open .ops-commands [role=status]")?.textContent || ""));
@@ -1067,22 +1097,26 @@ try {
   assert.equal(narrow.frame, 0, "the cards wrap instead of running off the right edge");
   assert.ok(narrow.top < narrow.fold - 24, `the topology starts above the fold: ${JSON.stringify(narrow)}`);
   // The action band wraps at 720 px, and a disabled action's open message
-  // stays inside the viewport without horizontal page scroll, in both themes.
-  await page.evaluate((sel) => document.querySelector(`${sel} .cluster-actions`)?.scrollIntoView({ block: "end" }), view);
-  await pause(150);
-  await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
-    .find((b) => b.getAttribute("aria-disabled") === "true").click(), view);
-  await page.waitForFunction((sel) => {
-    const open = document.querySelector(sel);
-    return !!open && open.getClientRects().length > 0 && (open.textContent || "").length > 0;
-  }, {}, `${view} .cluster-actions .cluster-action-why:popover-open`);
+  // stays inside the viewport without horizontal page scroll, in both real appearances.
+  const narrowBg = {};
   for (const theme of ["light", "dark"]) {
-    await page.evaluate((t) => { document.documentElement.dataset.theme = t; }, theme);
+    await setTheme(theme);
+    await reloadCluster(R["ic-8.4-degraded"]);
+    await page.evaluate((sel) => document.querySelector(`${sel} .cluster-actions`)?.scrollIntoView({ block: "end" }), view);
+    await pause(150);
+    await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
+      .find((b) => b.getAttribute("aria-disabled") === "true").click(), view);
+    await page.waitForFunction((sel) => {
+      const open = document.querySelector(sel);
+      return !!open && open.getClientRects().length > 0 && (open.textContent || "").length > 0;
+    }, {}, `${view} .cluster-actions .cluster-action-why:popover-open`);
     await pause(200);
     const wrap = await page.evaluate((sel) => {
       const msg = document.querySelector(`${sel} .cluster-actions .cluster-action-why:popover-open`);
       const r = msg ? msg.getBoundingClientRect() : null;
       return {
+        bg: msg ? getComputedStyle(msg).backgroundColor : "",
+        scheme: getComputedStyle(document.documentElement).colorScheme,
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         band: document.querySelector(`${sel} .cluster-actions`) ? 1 : 0,
         message: r ? { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: window.innerWidth, vh: window.innerHeight } : null };
@@ -1090,12 +1124,16 @@ try {
     assert.equal(wrap.band, 1, "the overview action band is present at 720 px");
     assert.ok(wrap.overflow <= 0, `horizontal page scroll at 720 px (${theme}): ${wrap.overflow}`);
     assert.ok(wrap.message, `the disabled action's message is open at 720 px (${theme})`);
+    assert.equal(wrap.scheme, theme, `document color-scheme matches ${theme} at 720 px`);
     assert.ok(wrap.message.left >= 0 && wrap.message.top >= 0 && wrap.message.right <= wrap.message.vw && wrap.message.bottom <= wrap.message.vh,
       `the open message is inside the viewport at 720 px (${theme}): ${JSON.stringify(wrap.message)}`);
+    narrowBg[theme] = wrap.bg;
     await shot(`cluster-720-${theme}.png`);
     await whyShot(`cluster-why-720-${theme}.png`);
   }
-  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  assert.notEqual(narrowBg.light, narrowBg.dark, `720 px message background differs between light and dark: ${JSON.stringify(narrowBg)}`);
+  await setTheme("system");
+  await pause(150);
   await page.evaluate((sel) => [...document.querySelectorAll(`${sel} .cluster-actions .review-actions > button`)]
     .find((b) => b.getAttribute("aria-disabled") === "true").click(), view);
   await page.waitForFunction((sel) => !document.querySelector(`${sel} .cluster-action-why:popover-open`), {}, view);

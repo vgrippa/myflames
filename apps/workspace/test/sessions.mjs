@@ -5,8 +5,10 @@
 // for it and for a metadata lock, long statements, and a load. Show plan and
 // the guarded Kill are in the inspector and in each row's ⋯ menu.
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import path from "node:path";
-import { assertPrivilege, privilegeAnswer, load, open, pause, SERVER_GROUPS, WORKLOAD_GROUPS } from "./perf-harness.mjs";
+import { fileURLToPath } from "node:url";
+import { assertPrivilege, privilegeAnswer, load, open, pause, setUiPreferences, SERVER_GROUPS, WORKLOAD_GROUPS } from "./perf-harness.mjs";
 
 const active = await load("sessions-mysql-8.4-active.json");
 const all = await load("sessions-mysql-8.4.json");
@@ -769,19 +771,118 @@ try {
   await h.refresh(); await h.idle(view); await h.select(row(100));
   const gatedKill = '.view-inspector [aria-label="Kill: connection 100"]';
   await assertPrivilege(page, gatedKill, "denied", "CONNECTION_ADMIN");
-  await page.click(gatedKill); await page.keyboard.press("Enter"); await page.keyboard.press("Space");
+  const killSentBefore = state.other.filter(o => o.path === "/api/live/kill").length;
+  await page.click(gatedKill);
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  const killWhy = await page.$eval(".why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(killWhy.text, /CONNECTION_ADMIN/);
+  assert.match(killWhy.text, /Run it as an administrator, then Refresh\./);
+  assert.equal(killWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO `root`@`localhost`;");
   assert.equal(await page.$("dialog.kill-dialog"), null, "a denied Kill cannot open its sheet");
+  assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, killSentBefore, "a denied Kill sends nothing");
+  // Escape closes only the message and returns focus to Kill, keeping the inspector open.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.ok(await page.$(".view-inspector"), "Escape from the message keeps the Sessions inspector open");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Kill: connection 100",
+    "Escape returns focus to the disabled Kill button");
+  // Enter opens it and Space toggles it closed; neither opens the sheet.
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.keyboard.press("Space");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.$("dialog.kill-dialog"), null, "keyboard activation on denied Kill never opens its sheet");
+  // Light and dark screenshots of the privilege-disabled message at 1440 and 720 px,
+  // with real theme persistence + prefers-color-scheme + reload.
+  const whyShots = fileURLToPath(new URL("../../../local/why-shots/", import.meta.url));
+  await fs.mkdir(whyShots, { recursive: true });
+  const setSessionsTheme = async (theme) => {
+    await setUiPreferences(page, { theme });
+    await page.evaluate((t) => {
+      if (t === "system") localStorage.removeItem("myflames.theme");
+      else localStorage.setItem("myflames.theme", t);
+    }, theme);
+    await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: theme === "dark" ? "dark" : "light" }]);
+  };
+  const sessionWhyBg = {};
+  for (const width of [1440, 720]) {
+    await page.setViewport({ width, height: width === 1440 ? 1000 : 600 });
+    for (const theme of ["light", "dark"]) {
+      await setSessionsTheme(theme);
+      await page.reload({ waitUntil: "networkidle0" });
+      await page.waitForSelector(".workspace");
+      if (!(await page.$eval('.main-nav button[data-place="workload"]', b => b.classList.contains("active")).catch(() => false))) {
+        await page.$eval('.main-nav button[data-place="workload"]', b => b.click());
+      }
+      await h.views();
+      if (!(await page.$(row(100)))) await h.view("sessions");
+      await page.waitForSelector(row(100), { visible: true });
+      await h.idle(view);
+      await h.select(row(100));
+      await assertPrivilege(page, gatedKill, "denied", "CONNECTION_ADMIN");
+      await page.click(gatedKill);
+      await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+      await pause(150);
+      const metrics = await page.evaluate(() => {
+        const msg = document.querySelector(".why-disabled:popover-open");
+        const rect = msg?.getBoundingClientRect();
+        return {
+          bg: msg ? getComputedStyle(msg).backgroundColor : "",
+          scheme: getComputedStyle(document.documentElement).colorScheme,
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          inside: !!rect && rect.left >= 0 && rect.top >= 0 && rect.right <= window.innerWidth && rect.bottom <= window.innerHeight,
+        };
+      });
+      assert.equal(metrics.scheme, theme, `Sessions ${width} ${theme}: color-scheme matches`);
+      assert.ok(metrics.overflow <= 0, `Sessions ${width} ${theme}: no horizontal scroll (${metrics.overflow})`);
+      assert.equal(metrics.inside, true, `Sessions ${width} ${theme}: message inside viewport`);
+      if (width === 1440) sessionWhyBg[theme] = metrics.bg;
+      await page.screenshot({ path: path.join(whyShots, `sessions-why-kill-${width}-${theme}.png`), fullPage: false });
+      await page.keyboard.press("Escape");
+      await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+    }
+  }
+  assert.notEqual(sessionWhyBg.light, sessionWhyBg.dark, `Sessions message background differs between light and dark: ${JSON.stringify(sessionWhyBg)}`);
+  await page.setViewport({ width: 1440, height: 1000 });
+  await setSessionsTheme("system");
+  await pause(150);
+  // Becoming enabled closes the open message automatically.
+  await page.click(gatedKill);
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
   await assertPrivilege(page, '.view-inspector [aria-label="Show plan for connection 100"]', "unknown");
   await h.setPrivileges({ kill: privilegeAnswer("allowed") });
   await assertPrivilege(page, gatedKill, "allowed");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   await page.click(gatedKill); await page.waitForSelector("dialog.kill-dialog[open]");
   const gatedConfirm = "dialog.kill-dialog .sheet-actions button:last-of-type";
   await h.setPrivileges({ kill: privilegeAnswer("denied", "SYSTEM_USER") });
   await assertPrivilege(page, gatedConfirm, "denied", "SYSTEM_USER");
   const sentBefore = state.other.filter(o => o.path === "/api/live/kill").length;
-  await page.click(gatedConfirm); await page.keyboard.press("Enter");
+  await page.click(gatedConfirm);
+  await page.waitForSelector("dialog.kill-dialog .why-disabled:popover-open", { visible: true });
+  const confirmWhy = await page.$eval("dialog.kill-dialog .why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(confirmWhy.text, /SYSTEM_USER/);
+  assert.equal(confirmWhy.grant, "GRANT SYSTEM_USER ON *.* TO `root`@`localhost`;");
+  assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, sentBefore);
+  // First Escape closes only the message and returns focus to the confirm button.
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.ok(await page.$("dialog.kill-dialog[open]"), "Escape from confirm message keeps the Kill sheet open");
+  assert.equal(await page.$eval(gatedConfirm, b => document.activeElement === b), true,
+    "Escape returns focus to the disabled confirm button");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("dialog.kill-dialog .why-disabled:popover-open", { visible: true });
   assert.equal(state.other.filter(o => o.path === "/api/live/kill").length, sentBefore);
   await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("dialog.kill-dialog[open]"));
   await h.setPrivileges({ kill: privilegeAnswer("unknown") });
   await assertPrivilege(page, gatedKill, "unknown");
   const owned = structuredClone(active);

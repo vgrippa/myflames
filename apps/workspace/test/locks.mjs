@@ -937,9 +937,33 @@ try {
   await reload();
   await select(blockerRow);
   await assertPrivilege(page, killButton, "denied", "CONNECTION_ADMIN");
-  await page.click(killButton); await page.keyboard.press("Enter"); await page.keyboard.press("Space");
+  await page.click(killButton);
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  const locksKillWhy = await page.$eval(".why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(locksKillWhy.text, /CONNECTION_ADMIN/);
+  assert.equal(locksKillWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO `viewer`@`%`;");
   assert.equal(await page.$("dialog.kill-dialog"), null, "denied Kill stays visible but cannot open");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.ok(await page.$(".view-inspector"), "Escape closes only the message, keeping the Locks inspector open");
+  assert.equal(await page.$eval(killButton, b => document.activeElement === b), true,
+    "Escape returns focus to the disabled Kill button in Locks");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.keyboard.press("Space");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.$("dialog.kill-dialog"), null, "keyboard activation on denied Kill never opens");
   assert.ok(await page.$('.view-inspector [aria-label="Copy KILL 53"]'));
+  // Opening the message and switching away from the view closes the message.
+  await page.click(killButton);
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.click('.main-nav button[data-place="home"]');
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await page.click('.main-nav button[data-place="server"]');
+  await page.waitForSelector(".view-inspector .inspector-title", { visible: true });
   await select(treeRow(53));
   await inspectorHas(/CONNECTION_ADMIN/);
   assert.equal((await page.$$(killButton)).length, 1, 'one Kill control for the selected tree target');

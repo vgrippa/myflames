@@ -12,6 +12,7 @@ import { ActionButton, ActionStatus, Checkbox, ConfirmSheet, CountBadge, DataTab
   SearchField, Segmented, Select, StatusDot, SummaryLine, ViewLayout, ViewStatus,
   type Column, type InspectorContent, type Selection } from "./kit";
 import { PrivilegeGate, privilegeButtonProps, privilegeResult, usePrivilege, usePrivileges, type PrivilegeGateResult } from "./privileges";
+import { openWhyDisabled } from "./WhyDisabled";
 import { accountKey, accountLabel, roleLabel, applyAccountGroups, declineAccountGroups, listAccounts, observedScopes, mergeGrantScopes, grantScopeKey, readScopeObjects, planAccountGroups, readAccount, previewAccountPlan, accountPlanProblem,
   type AccountChange, type AccountGroup, type AccountGroupResult, type AccountDetail, type AccountEdit, type AccountName, type AccountPlan, type AccountRow,
   type ScopeObjects, type AccountsReport, type GrantLevel, type GrantScope, type PrivilegeDefinition } from "./accountsApi";
@@ -501,7 +502,10 @@ function GrantMatrix({ detail, connection, accounts, draft, setDraft, pending, b
     {level !== "global" && <>
       <button type="button" className="button privilege-action" aria-disabled={!!addScopeReason}
         aria-describedby={addScopeReason ? addScopeReasonId : undefined} title={addScopeReason || undefined}
-        aria-expanded={newScope} onClick={() => { if (!addScopeReason) update({ newScope: !newScope }); }}>Add scope</button>
+        aria-expanded={newScope} onClick={e => {
+          if (addScopeReason) { e.preventDefault(); e.stopPropagation(); openWhyDisabled({ anchor: e.currentTarget, reason: addScopeReason }); }
+          else update({ newScope: !newScope });
+        }}>Add scope</button>
       {addScopeReason && <p id={addScopeReasonId} className="account-note">{addScopeReason}</p>}
     </>}
     {newScope && <ScopeForm key={level} level={level} connection={connection} engine={detail.engine} version={detail.version} scopes={all} accounts={accounts} blocked={blocked}

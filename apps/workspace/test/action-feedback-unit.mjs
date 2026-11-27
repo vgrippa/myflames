@@ -19,6 +19,8 @@ const bundle = await build({
   import { createRoot } from "react-dom/client";
   import { ActionButton, ActionStatus, useAction } from "./kit";
   import { KillResultNote, type KillNote } from "./Locks";
+  import { privilegeButtonProps, privilegeResult } from "./privileges";
+  import { WhyDisabledHost } from "./WhyDisabled";
   function Act({ id, done, failed, fail }: { id: string; done?: (n: number) => string; failed?: (e: unknown) => string; fail?: boolean }) {
     const action = useAction();
     const [runs, setRuns] = useState(0);
@@ -38,8 +40,17 @@ const bundle = await build({
     const ref = useRef<HTMLDivElement>(null);
     return <div id={id}><KillResultNote note={n} noteRef={ref} currentKey={currentKey} onDismiss={() => {}} onRefresh={() => {}} /></div>;
   }
+  function WhyProbe() {
+    const [runs, setRuns] = useState(0);
+    const denied = privilegeResult({ state: "denied", missing: [["CONNECTION_ADMIN"], ["SUPER"]], reason: "Needs CONNECTION_ADMIN or SUPER.", grey_out: true });
+    return <div id="why-probe">
+      <ActionButton id="why-denied-btn" {...privilegeButtonProps(denied, () => setRuns((n) => n + 1))}>Run gated</ActionButton>
+      <ActionButton id="why-busy-btn" busy busyLabel="Working…" {...privilegeButtonProps(privilegeResult(), () => setRuns((n) => n + 1), "Working…")}>Busy gated</ActionButton>
+      <output className="runs">{runs}</output>
+    </div>;
+  }
   function Demo() {
-    return <>
+    return <WhyDisabledHost account="dba@%">
       <Act id="throws-done" done={() => { throw new Error("formatter bug"); }} />
       <Act id="throws-failed" fail failed={() => { throw new Error("formatter bug"); }} />
       <Act id="plain" done={(n) => n + " rows."} />
@@ -47,7 +58,8 @@ const bundle = await build({
       <Note id="note-same" n={note({})} currentKey="A" />
       <Note id="note-late" n={note({ late: true })} />
       <Note id="note-unknown" n={note({})} />
-    </>;
+      <WhyProbe />
+    </WhyDisabledHost>;
   }
   createRoot(document.getElementById("root")!).render(<Demo />);
 `,
@@ -55,7 +67,7 @@ const bundle = await build({
   bundle: true, platform: "browser", format: "iife", write: false, jsx: "automatic", loader: { ".css": "empty" },
   define: { "process.env.NODE_ENV": '"production"' },
 });
-const css = (await Promise.all(["style.css", "kit.css"].map((file) => readFile(path.join(here, "../src", file), "utf8")))).join("\n");
+const css = (await Promise.all(["style.css", "kit.css", "catalog-actions.css"].map((file) => readFile(path.join(here, "../src", file), "utf8")))).join("\n");
 const browser = await puppeteer.launch({ headless: "shell", pipe: true });
 try {
   const page = await browser.newPage();
@@ -102,8 +114,26 @@ try {
   assert.deepEqual(await kill("note-late"), { on: "Sent on Prod (app@db1:3306).", refresh: true });
   assert.deepEqual(await kill("note-unknown"), { on: "", refresh: true });
 
+  // 5. Privilege-disabled ActionButton opens WhyDisabled with reason and GRANT
+  // without invoking onClick; Escape returns focus; busy ActionButton opens nothing.
+  await page.click("#why-denied-btn");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  const whyText = await page.$eval(".why-disabled:popover-open", (e) => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(whyText.text, /CONNECTION_ADMIN/);
+  assert.equal(whyText.grant, "GRANT CONNECTION_ADMIN ON *.* TO `dba`@`%`;");
+  assert.equal(await page.$eval("#why-probe .runs", (e) => e.textContent), "0");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.id), "why-denied-btn", "Escape returns focus to the disabled ActionButton");
+  await page.click("#why-busy-btn");
+  assert.equal(await page.$(".why-disabled:popover-open"), null, "a busy ActionButton opens no disabled message");
+  assert.equal(await page.$eval("#why-probe .runs", (e) => e.textContent), "0");
+
   assert.deepEqual(errors, [], "no page errors");
-  console.log("action-feedback-unit: 4 checks passed");
+  console.log("action-feedback-unit: 5 checks passed");
 } finally {
   await browser.close();
 }

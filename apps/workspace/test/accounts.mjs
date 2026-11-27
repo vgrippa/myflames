@@ -21,13 +21,23 @@ if (process.argv.includes("--unit")) {
     plugins: [{ name: "account-unit", resolveId(value) { if (value === id) return id; }, load(value) {
       if (value === id) return `export { compactChanges, AccountsView } from ${source("Accounts.tsx")};
         export { privilegeResult, privilegeButtonProps } from ${source("privileges.ts")};
+        export { privilegeGrantSql } from ${source("WhyDisabled.tsx")};
         export { observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel } from ${source("accountsApi.ts")};`;
     } }], build: { ssr: true, write: false, rollupOptions: { input: id, output: { inlineDynamicImports: true } } } });
   const temporary = await fs.mkdtemp(path.join(workspace, ".accounts-unit-"));
   try {
     const module = path.join(temporary, "unit.mjs");
     await fs.writeFile(module, result.output.find(f => f.type === "chunk").code);
-    const { compactChanges, privilegeResult, privilegeButtonProps, observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel, AccountsView } = await import(pathToFileURL(module));
+    const { compactChanges, privilegeResult, privilegeButtonProps, privilegeGrantSql, observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel, AccountsView } = await import(pathToFileURL(module));
+    assert.equal(privilegeGrantSql(["CONNECTION_ADMIN", "SUPER"], "app@%"), "GRANT CONNECTION_ADMIN ON *.* TO `app`@`%`;");
+    assert.equal(privilegeGrantSql(["CONNECTION_ADMIN or SUPER"], "app@localhost"), "GRANT CONNECTION_ADMIN ON *.* TO `app`@`localhost`;");
+    assert.equal(privilegeGrantSql(["CREATE USER and UPDATE on mysql.*"], "app@%"), "GRANT CREATE USER ON *.* TO `app`@`%`;\nGRANT UPDATE ON `mysql`.* TO `app`@`%`;");
+    assert.equal(privilegeGrantSql(["SELECT on performance_schema.*"], "app@%", false), "GRANT SELECT ON `performance\\_schema`.* TO `app`@`%`;");
+    assert.equal(privilegeGrantSql(["SELECT on performance_schema.*"], "app@%", true), "GRANT SELECT ON `performance_schema`.* TO `app`@`%`;");
+    assert.equal(privilegeGrantSql(["SELECT on performance_schema.*"], "app@%"), null);
+    assert.equal(privilegeGrantSql(["donor account"], "app@%"), null);
+    assert.equal(privilegeGrantSql(["server is read-only (super_read_only=ON)"], "app@%"), null);
+    assert.equal(privilegeGrantSql(["CONNECTION_ADMIN"], ""), null);
     assert.equal(privilegeResult().state, "unknown");
     assert.equal(privilegeResult().disabledReason, "");
     const gate = privilegeResult({ state: "denied", missing: [["SUPER"], ["CONNECTION_ADMIN"]], reason: "Denied" }, "app@%");
@@ -196,7 +206,7 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
       import React, {useState} from ${JSON.stringify(path.join(workspace, "node_modules/react/index.js"))};
       import {createRoot} from ${JSON.stringify(path.join(workspace, "node_modules/react-dom/client.js"))};
       import {AccountsView, compactChanges} from ${source("Accounts.tsx")};
-      import {PrivilegesProvider, PrivilegeGate, usePrivileges, privilegeResult} from ${source("privileges.ts")};
+      import {PrivilegesProvider, PrivilegeWhyHost, PrivilegeGate, usePrivileges, privilegeResult} from ${source("privileges.ts")};
       import {InspectorContext, ColumnStoreContext, useColumnStore} from ${source("kit.tsx")};
       import {ViewOnScreenContext} from ${source("viewOnScreen.ts")};
       import {WritePolicyContext} from ${source("Connections.tsx")};
@@ -220,6 +230,7 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
         React.useEffect(() => { const f = () => setWidth(window.innerWidth); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
         return <WritePolicyContext.Provider value={{blocked:"",check:async()=>connection}}>
           <PrivilegesProvider connection={connection} connectRevision={revision}>
+            <PrivilegeWhyHost>
             <div className="test-probes"><button onClick={()=>setConnection(c=>({...c,host:c.host === "127.0.0.1" ? "127.0.0.2" : "127.0.0.1"}))}>Switch connection</button>
               <button onClick={()=>setConnection(c=>({...c,read_only:!c.read_only}))}>Toggle read-only</button>
               <button onClick={()=>setRevision(n=>n+1)}>Reconnect</button>
@@ -232,6 +243,7 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
                 </div></ViewOnScreenContext.Provider>
               </ColumnStoreContext.Provider>
             </InspectorContext.Provider>
+            </PrivilegeWhyHost>
           </PrivilegesProvider>
         </WritePolicyContext.Provider>;
       }
@@ -514,9 +526,42 @@ try {
   assert.equal(state.seen.length, 2, "reopening keeps the current report");
 
   // Exact global denials stay visible and focusable, unknown remains enabled.
+  // Clicking or activating a denied button opens WhyDisabled with the reason
+  // and advisory GRANT without calling the handler; Escape and Close return focus.
   assert.equal(await page.$eval('[data-privilege-action="kill"]', e => e.getAttribute("aria-disabled")), "true");
   assert.match(await page.$eval('[data-privilege-action="kill"]', e => e.title), /CONNECTION_ADMIN.*SUPER/);
-  await page.focus('[data-privilege-action="kill"]'); await page.keyboard.press("Enter"); await page.keyboard.press("Space");
+  await page.focus('[data-privilege-action="kill"]');
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  const killWhy = await page.$eval(".why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(killWhy.text, /CONNECTION_ADMIN.*SUPER/);
+  assert.match(killWhy.text, /Run it as an administrator, then Refresh\./);
+  assert.equal(killWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO `operator`@`localhost`;");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-privilege-action")), "kill",
+    "Escape returns focus to the privilege-disabled button");
+  await page.keyboard.press("Space");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.click(".why-disabled:popover-open .why-disabled-close");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-privilege-action")), "kill",
+    "Close returns focus to the privilege-disabled button");
+  await click("Toggle read-only");
+  await page.click('[data-privilege-action="kill"]');
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  const readOnlyWhy = await page.$eval(".why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre")?.textContent || "",
+  }));
+  assert.match(readOnlyWhy.text, /This connection is read-only\./);
+  assert.equal(readOnlyWhy.grant, "", "a read-only block shows no GRANT command");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await click("Toggle read-only");
   assert.equal(await page.evaluate(() => window.killCalls || 0), 0);
   await page.click('[data-privilege-action="explain"]');
   assert.equal(await page.evaluate(() => window.explainCalls), 1);
@@ -644,6 +689,14 @@ try {
   actions = { ...actions, lock_account: { state: "denied", missing: ["CREATE USER"], reason: "Needs CREATE USER.", grey_out: true } };
   await click("Refresh privileges");
   await page.waitForFunction(() => document.querySelector('.account-actions [data-privilege-action="lock_account"]')?.getAttribute("aria-disabled") === "true");
+  await page.click('.account-actions [data-privilege-action="lock_account"]');
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /CREATE USER/);
+  assert.equal(await page.$eval(".why-disabled:popover-open .ops-pre code", e => e.textContent || ""), "GRANT CREATE USER ON *.* TO `operator`@`localhost`;");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-privilege-action")), "lock_account",
+    "Escape returns focus to the disabled Lock button");
   actions.lock_account = allowed; await click("Refresh privileges");
 
   // Account administration and grant controls remain keyboard reachable
@@ -651,10 +704,26 @@ try {
   actions.create_user = { ...denied, missing: ["CREATE USER"], need: "CREATE USER" };
   actions.grant = actions.revoke = { ...denied, missing: ["GRANT OPTION"], need: "GRANT OPTION" };
   await click("Refresh privileges");
+  await backToAccounts();
   await page.waitForFunction(() => document.querySelector('[data-privilege-action="create_user"]')?.getAttribute("aria-disabled") === "true");
   assert.match(await page.$eval('[data-privilege-action="create_user"]', e => document.getElementById(e.getAttribute("aria-describedby")).textContent), /CREATE USER/);
   await page.focus('[data-privilege-action="create_user"]'); await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /CREATE USER/);
+  assert.equal(await page.$eval(".why-disabled:popover-open .ops-pre code", e => e.textContent || ""), "GRANT CREATE USER ON *.* TO `operator`@`localhost`;");
   assert.equal(await page.$("dialog[open]"), null);
+  // Hiding the view closes an open privilege-disabled message.
+  await click("Toggle Accounts visibility");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await click("Toggle Accounts visibility");
+  // Becoming enabled closes an open privilege-disabled message.
+  await page.click('[data-privilege-action="create_user"]');
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  actions.create_user = allowed;
+  await page.evaluate(() => [...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Refresh privileges").click());
+  await page.waitForFunction(() => document.querySelector('[data-privilege-action="create_user"]')?.getAttribute("aria-disabled") === "false");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await inspect();
   const matrixInput = '.account-inspector .account-matrix input';
   assert.equal(await page.$eval(matrixInput, e => e.disabled), false);
   assert.equal(await page.$eval(matrixInput, e => e.getAttribute("aria-disabled")), "true");
@@ -662,9 +731,8 @@ try {
   await page.focus(matrixInput); await page.keyboard.press("Space");
   assert.equal(await page.$eval(matrixInput, e => e.checked), checked);
   assert.equal(await page.$(".account-pending"), null);
-  actions.create_user = actions.grant = actions.revoke = allowed;
+  actions.grant = actions.revoke = allowed;
   await click("Refresh privileges");
-  await page.waitForFunction(() => document.querySelector('[data-privilege-action="create_user"]')?.getAttribute("aria-disabled") === "false");
 
   // Password input is uncontrolled and cleared as soon as the request
   // starts. A plan failure cannot leave it in a form or storage.

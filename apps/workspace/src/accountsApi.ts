@@ -34,6 +34,7 @@ export type PrivilegesReport = {
   schema_version: "privileges-1.0"; account: string; engine?: string; version?: string;
   current_roles?: RoleGrant[]; read_at?: string; actions: Record<string, ActionPrivilege>;
   model?: GrantModel;
+  partial_revokes?: boolean;
 };
 export type AccountRow = AccountName & {
   plugin?: string | null; locked?: boolean | null; expired?: boolean | null;

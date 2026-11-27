@@ -1177,8 +1177,29 @@ try {
       }
       if (wanted === "denied") {
         const before = applied.length;
-        await page.click(singleConfirm); await page.keyboard.press("Enter");
+        await page.click(singleConfirm);
+        await page.waitForSelector(`${single} .why-disabled:popover-open`, { visible: true });
+        const why = await page.$eval(`${single} .why-disabled:popover-open`, e => ({
+          text: e.textContent || "",
+          grant: e.querySelector(".ops-pre code")?.textContent || "",
+        }));
+        assert.match(why.text, /SYSTEM_VARIABLES_ADMIN/);
+        assert.match(why.text, /Run it as an administrator, then Refresh\./);
+        assert.equal(why.grant, "GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO `root`@`localhost`;");
         assert.equal(applied.length, before, "a denied mode sends no write");
+        // Escape closes only the message and returns focus to the confirm button.
+        await page.keyboard.press("Escape");
+        await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+        assert.ok(await page.$(`${single}[open]`), "Escape from message keeps the variable sheet open");
+        assert.equal(await page.$eval(singleConfirm, b => document.activeElement === b), true,
+          "Escape returns focus to the disabled Config SET confirm button");
+        await page.keyboard.press("Enter");
+        await page.waitForSelector(`${single} .why-disabled:popover-open`, { visible: true });
+        assert.equal(applied.length, before, "Enter on a denied Config SET sends no write");
+        await page.click(`${single} .why-disabled:popover-open .why-disabled-close`);
+        await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+        assert.equal(await page.$eval(singleConfirm, b => document.activeElement === b), true,
+          "Close returns focus to the disabled Config SET confirm button");
       }
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => !document.querySelector("dialog.variable-sheet"));

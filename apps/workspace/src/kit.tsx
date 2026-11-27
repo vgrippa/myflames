@@ -986,7 +986,15 @@ export function ActionButton({
       aria-busy={busy || undefined}
       aria-disabled={busy || rest["aria-disabled"] || undefined}
       onClick={(e) => {
-        if (busy || rest["aria-disabled"] === true || rest["aria-disabled"] === "true") {
+        if (busy) {
+          e.preventDefault();
+          return;
+        }
+        if (rest["aria-disabled"] === true || rest["aria-disabled"] === "true") {
+          if (onClick && (onClick as { whyDisabled?: boolean }).whyDisabled) {
+            onClick(e);
+            return;
+          }
           e.preventDefault();
           return;
         }

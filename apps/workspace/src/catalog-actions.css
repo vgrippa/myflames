@@ -1,11 +1,11 @@
-/* The shared ActionGroup (CatalogActions.tsx): an enabled action's note is
-   visible text under the buttons, full width; a disabled action's reason and
-   fix are not a caption but a message anchored to the button (WhyDisabled.tsx),
-   opened on click, Enter or Space: the HTML Popover API keeps it in the top
-   layer (no scroll container clips it) and CSS anchor positioning places it
-   under its button, flipping instead of leaving the viewport. A long GRANT
-   scrolls inside its box instead of stretching the message. The class name
-   stays .cluster-action-why: Cluster and Readyset share it. */
+/* The shared ActionGroup (CatalogActions.tsx) and the app-level WhyDisabled
+   host (WhyDisabled.tsx, wired into privileges.ts): an enabled action's note
+   is visible text under the buttons, full width; a disabled action's reason
+   and fix open as a message anchored to the button on click, Enter or Space.
+   The HTML Popover API keeps it in the top layer (no scroll container clips
+   it) and CSS anchor positioning places it under its button, flipping instead
+   of leaving the viewport. A long GRANT scrolls inside its box instead of
+   stretching the message. */
 .cluster-action-why {
   flex-basis: 100%;
   min-width: 0;
@@ -43,7 +43,21 @@
   max-height: min(60vh, calc(100vh - 32px));
   overflow: auto;
   position-area: block-end span-inline-end;
-  position-try-fallbacks: flip-block, flip-inline;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+}
+
+.why-disabled .ops-pre {
+  max-width: 100%;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-code-sm);
+  padding: var(--space-2);
+  background: var(--surface-pane);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
 }
 
 .why-disabled::backdrop {

@@ -5,6 +5,7 @@ import { api, type Connection } from "./api";
 import { connectionKey, sharedRead } from "./binding";
 import { useWritePolicy } from "./Connections";
 import type { ActionPrivilege, PrivilegesReport, PrivilegeState } from "./accountsApi";
+import { WhyDisabledHost, openWhyDisabled } from "./WhyDisabled";
 
 // The same read as accountsApi.readPrivileges, spelled out here: gating
 // write actions is shell code, so this one endpoint stays in the entry chunk
@@ -235,15 +236,29 @@ export function targetPrivilege(generic: PrivilegeGateResult, hint?: { allowed: 
     reason: hint.note || (allowed === false && !need ? "The server report denies this action." : ""), grey_out: true });
 }
 
+/** App-level WhyDisabled host wired to the active PrivilegesProvider's account
+ * so privilege-disabled buttons show their reason and advisory GRANT on click. */
+export function PrivilegeWhyHost({ resetKey, children }: PropsWithChildren<{ resetKey?: string }>) {
+  const privileges = usePrivileges();
+  return createElement(WhyDisabledHost, {
+    account: privileges?.report?.account,
+    partialRevokes: privileges?.report?.partial_revokes,
+    resetKey,
+  }, children);
+}
+
 /** ConfirmSheet currently accepts a label but no button attributes. Attach
- * accessibility metadata through that label, without changing its native
- * busy/form guards. The caller must also guard its onConfirm handler. */
+ * accessibility metadata and the disabled-click message through that label,
+ * without changing its native busy/form guards. The caller must also guard
+ * its onConfirm handler. */
 export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: PropsWithChildren<{
   gate: PrivilegeGateResult;
   /** Omit the badge when the dialog already displays permission details. */
   showStatus?: boolean;
 }>) {
   const label = useRef<HTMLSpanElement>(null);
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
   const id = useId();
   useLayoutEffect(() => {
     const button = label.current?.closest("button");
@@ -254,6 +269,24 @@ export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: Pro
     button.title = gate.disabledReason || gate.reason;
     button.dataset.privilegeState = gate.state;
   });
+  useEffect(() => {
+    const button = label.current?.closest("button");
+    if (!button) return;
+    const onClick = (event: MouseEvent) => {
+      const current = gateRef.current;
+      if (!current.disabledReason || button.disabled || button.getAttribute("aria-busy") === "true") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const privilegeDenial = current.state === "denied" && current.disabledReason === current.reason;
+      openWhyDisabled({
+        anchor: button,
+        reason: current.disabledReason,
+        missing: privilegeDenial ? current.missing : undefined,
+      });
+    };
+    button.addEventListener("click", onClick);
+    return () => button.removeEventListener("click", onClick);
+  }, []);
   return createElement("span", { ref: label }, children,
     showStatus && gate.state === "unknown" ? createElement("span", { className: "privilege-unverified" }, "Unverified") : null,
     // The reason describes the button (aria-describedby) without becoming
@@ -261,16 +294,33 @@ export function PrivilegeConfirmLabel({ gate, children, showStatus = true }: Pro
     createElement("span", { id, className: "account-sr", "aria-hidden": "true" }, gate.disabledReason || gate.reason));
 }
 
-/** Focusable disabled button: keyboard and pointer activation are both
- * suppressed, while the reason remains reachable. Spread these props LAST.
- * The server's write preflight remains the enforcement boundary. */
+/** Focusable disabled button: keyboard and pointer activation send nothing and
+ * stop propagation, while opening the app-level WhyDisabled message anchored
+ * to the button. Spread these props LAST. The server's write preflight remains
+ * the enforcement boundary. */
 export function privilegeButtonProps(gate: PrivilegeGateResult, onClick: ButtonHTMLAttributes<HTMLButtonElement>["onClick"], blocked = "", describedBy?: string): ButtonHTMLAttributes<HTMLButtonElement> {
   const reason = blocked || gate.disabledReason;
+  const privilegeDenial = !blocked && gate.state === "denied" && !!gate.disabledReason && gate.disabledReason === gate.reason;
+  const handler: NonNullable<ButtonHTMLAttributes<HTMLButtonElement>["onClick"]> & { whyDisabled?: boolean } = e => {
+    if (reason) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof HTMLElement !== "undefined" && e.currentTarget instanceof HTMLElement &&
+          e.currentTarget.getAttribute("aria-busy") !== "true") {
+        openWhyDisabled({
+          anchor: e.currentTarget,
+          reason,
+          missing: privilegeDenial ? gate.missing : undefined,
+        });
+      }
+    } else onClick?.(e);
+  };
+  if (reason) handler.whyDisabled = true;
   // Only a blocking reason replaces the caller's title (its shortcut hint or
   // why a row cannot run); otherwise the reason stays in aria-describedby.
   return { type: "button", "aria-disabled": !!reason, ...(reason ? { title: reason } : {}),
     "aria-describedby": describedBy,
-    onClick: e => { if (reason) { e.preventDefault(); e.stopPropagation(); } else onClick?.(e); } };
+    onClick: handler };
 }
 
 /** A tiny button helper; use usePrivilege for existing controls. Unknown is

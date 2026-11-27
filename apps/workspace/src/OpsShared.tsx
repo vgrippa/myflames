@@ -1,7 +1,8 @@
 // Small pieces shared by Replication and Maintenance (Server > Workload and
 // Setup): exact commands with a neutral Copy, engine facts as label and value
 // rows, and the plain names of replication channels.
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef } from "react";
+export { Commands } from "./Commands";
 import { ActionButton, ActionStatus, Fields, useAction } from "./kit";
 import { Duration } from "./PerfShared";
 import { chooseBackupDirectory, factText, type Facts, type Json } from "./opsApi";
@@ -75,38 +76,6 @@ export function DumpFolderField({ value, stem, onChange, onPicking, disabled }: 
       <ActionStatus state={action} />
     </div>
   </div>;
-}
-
-/** The exact statements or commands a confirmation will send. They may be
- * SQL, a Shell expression or an external program, so Copy says only that the
- * text was copied (never "run it yourself", since myflames sends it). */
-export function Commands({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState("");
-  return (
-    <div className="perf-sql ops-commands">
-      <pre className="ops-pre" tabIndex={0} aria-label={label}>
-        <code>{text}</code>
-      </pre>
-      <button
-        type="button"
-        className="text-button"
-        aria-label={`Copy: ${label}`}
-        onClick={() => {
-          void navigator.clipboard.writeText(text).then(
-            () => setCopied("Copied."),
-            () => setCopied("Select the text to copy it."),
-          );
-        }}
-      >
-        Copy
-      </button>
-      {copied && (
-        <span className="hint" role="status">
-          {copied}
-        </span>
-      )}
-    </div>
-  );
 }
 
 /** "heartbeat_age_s" as "Heartbeat age"; values carry their duration units. */
