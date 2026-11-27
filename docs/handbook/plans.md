@@ -34,6 +34,16 @@ From a statement worth investigating, **Workload > Top statements** and **Query 
 
 Selecting an operator opens the inspector with its measurements and **Execution context**. **Focus branch** keeps only the branch below the operator; **All occurrences** lists every occurrence of it in the plan, which the **Stats** view also totals. When the plan was captured from a live server with an account that can read the server's statistics tables, and the operator's table maps unambiguously to a single base table in the captured schema evidence, the Row estimate section shows when the table's statistics were last refreshed and an **ANALYZE TABLE statement** to copy and run yourself; myflames never runs it. The **Go to** menu jumps to **Largest self time** or **Largest estimate mismatch**, and **Expand all** restores collapsed branches.
 
+## VillageSQL nearest-neighbor scans
+
+VillageSQL custom-index nearest-neighbor scans appear as **KNN SCAN** in the plan views, using the index-access card in Visual Explain. myflames recognizes both the **Custom index distance scan** plans emitted by VillageSQL 0.0.8 and main (0.0.9-dev) **Index KNN scan** plans, in both JSON format versions. Table and index names appear when the plan supplies them; missing names remain unknown.
+
+The label shows K when the scan reports it or a finite Limit sits directly above it. For released plans, inherited K excludes OFFSET: LIMIT 10 OFFSET 5 shows K=10. A Filter, Join or other operator between the Limit and scan prevents inheritance, as do an unbounded limit and a limit that counts all rows. An explicit K in the scan stays as reported. K is the requested count, so the description says **Up to N nearest rows requested**; filters, joins, offsets and exhausted candidates can affect the measured rows returned per loop.
+
+Long query points show a preview bounded at 128 characters, including the value count or character-count annotation. **Hide literal values** removes point literals and previews from shared plans and charts.
+
+The extension chooses the search algorithm. myflames leaves Big O complexity unspecified and makes no exact-search guarantee. KNN scans are not treated as ordinary full scans or as evidence of a missing index; words inside index names and query points do not become join or sort findings.
+
 ## Plan findings
 
 The plan header opens with **Investigate first** when the advisor has a primary finding, naming it and why it matters; without one it shows **Plan summary**. **Plan findings** lists every finding with its severity and an **Inspect operator** link to the operator behind it.

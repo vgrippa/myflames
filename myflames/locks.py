@@ -2242,6 +2242,8 @@ def _assemble(r, deadlock, waits_only):
         "schema_version": SCHEMA_VERSION, "engine": r.engine,
         "flavor": getattr(r, "identity", {}).get("flavor"),
         "server_product": getattr(r, "identity", {}).get("server_product"),
+        **({"server_base": r.identity["server_base"]}
+           if "server_base" in getattr(r, "identity", {}) else {}),
         "server_version": r.version, "server_identity": r.server_identity,
         "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "trx_checked": r.caps["transactions"] and not r.truncated["transactions"],

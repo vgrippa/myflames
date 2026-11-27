@@ -24,7 +24,7 @@ from .exploration import METRICS, metric_value
 from .output_workbench import (
     JOIN_LABELS, _arrow_width, _details, _join_type, _kind, _number, _phase,
 )
-from .parser import enhance_tooltip_flame, flatten_nodes, operator_family
+from .parser import enhance_tooltip_flame, flatten_nodes, is_knn_scan, knn_description, operator_family
 from .plan_matching import timing_available
 
 SCHEMA_VERSION = "chart-data-1.0"
@@ -282,6 +282,16 @@ def build_chart_data(root, title="Query plan", engine=None,
         # serializes exactly as before.
         if misestimate:
             row["misestimate"] = misestimate
+        if is_knn_scan(d):
+            row["access_description"] = knn_description(d)
+            if d.get("lookup_condition") is not None:
+                # Parsed KNN fields are bounded for the inspector too. No
+                # chart consumes the full point; source JSON retains it.
+                row["lookup_condition"] = d["lookup_condition"]
+        # Optional and additive: existing index nodes without a limit keep
+        # byte-identical payloads in both chart-data versions.
+        if kind in ("index", "lookup", "range") and d.get("limit") is not None:
+            row["limit"] = d["limit"]
         rows.append(row)
         for i, child in enumerate(children):
             visit(child, node, i, depth + 1)

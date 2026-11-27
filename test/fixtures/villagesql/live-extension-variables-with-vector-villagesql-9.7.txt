@@ -1,0 +1,96 @@
+vsql_oauth2.audience	
+vsql_oauth2.auto_create	OFF
+vsql_oauth2.auto_grant	OFF
+vsql_oauth2.issuer	
+vsql_oauth2.jwks_http_timeout	5
+vsql_oauth2.jwks_refresh_interval	3600
+vsql_oauth2.jwks_url	
+vsql_oauth2.public_key	
+vsql_oauth2.roles_claim	
+vsql_oauth2.roles_filter	
+vsql_oauth2.roles_transform_pattern	
+vsql_oauth2.roles_transform_replacement	
+vsql_oauth2.username_claim	sub
+vsql_rest.allowed_routines	
+vsql_rest.allowed_tables	
+vsql_rest.jwt_public_key	
+vsql_rest.jwt_secret	
+vsql_rest.max_rows	1000
+vsql_rest.port	3000
+vsql_rest.require_auth	OFF
+vsql_rest.schema	
+vsql_rest.schema_ttl	60
+vsql_rest.ssl_cert	
+vsql_rest.ssl_key	
+vsql_rest.ssl_port	3443
+vsql_rest.table_methods	
+vsql_rest.vsql_rest_enabled	OFF
+vsql_vector.ef_search	40
+vsql_oauth2.jwks_fetch_failures	0
+vsql_rest.connections_total	0
+vsql_rest.http_port	0
+vsql_rest.https_port	0
+vsql_rest.requests_active	0
+vsql_rest.requests_total	0
+vsql_oauth2.audience	
+vsql_oauth2.auto_create	OFF
+vsql_oauth2.auto_grant	OFF
+vsql_oauth2.issuer	
+vsql_oauth2.jwks_http_timeout	5
+vsql_oauth2.jwks_refresh_interval	3600
+vsql_oauth2.jwks_url	
+vsql_oauth2.public_key	
+vsql_oauth2.roles_claim	
+vsql_oauth2.roles_filter	
+vsql_oauth2.roles_transform_pattern	
+vsql_oauth2.roles_transform_replacement	
+vsql_oauth2.username_claim	sub
+vsql_rest.allowed_routines	
+vsql_rest.allowed_tables	
+vsql_rest.jwt_public_key	
+vsql_rest.jwt_secret	
+vsql_rest.max_rows	1000
+vsql_rest.port	3000
+vsql_rest.require_auth	OFF
+vsql_rest.schema	
+vsql_rest.schema_ttl	60
+vsql_rest.ssl_cert	
+vsql_rest.ssl_key	
+vsql_rest.ssl_port	3443
+vsql_rest.table_methods	
+vsql_rest.vsql_rest_enabled	OFF
+vsql_vector.ef_search	40
+vsql_oauth2.audience	COMPILED	
+vsql_oauth2.auto_create	COMPILED	
+vsql_oauth2.auto_grant	COMPILED	
+vsql_oauth2.issuer	COMPILED	
+vsql_oauth2.jwks_http_timeout	COMPILED	
+vsql_oauth2.jwks_refresh_interval	COMPILED	
+vsql_oauth2.jwks_url	COMPILED	
+vsql_oauth2.public_key	COMPILED	
+vsql_oauth2.roles_claim	COMPILED	
+vsql_oauth2.roles_filter	COMPILED	
+vsql_oauth2.roles_transform_pattern	COMPILED	
+vsql_oauth2.roles_transform_replacement	COMPILED	
+vsql_oauth2.username_claim	COMPILED	
+vsql_rest.allowed_routines	COMPILED	
+vsql_rest.allowed_tables	COMPILED	
+vsql_rest.jwt_public_key	COMPILED	
+vsql_rest.jwt_secret	COMPILED	
+vsql_rest.max_rows	COMPILED	
+vsql_rest.port	COMPILED	
+vsql_rest.require_auth	COMPILED	
+vsql_rest.schema	COMPILED	
+vsql_rest.schema_ttl	COMPILED	
+vsql_rest.ssl_cert	COMPILED	
+vsql_rest.ssl_key	COMPILED	
+vsql_rest.ssl_port	COMPILED	
+vsql_rest.table_methods	COMPILED	
+vsql_rest.vsql_rest_enabled	COMPILED	
+vsql_vector.ef_search	COMPILED	
+vsql_oauth2.jwks_fetch_failures	0
+vsql_rest.connections_total	0
+vsql_rest.http_port	0
+vsql_rest.https_port	0
+vsql_rest.requests_active	0
+vsql_rest.requests_total	0

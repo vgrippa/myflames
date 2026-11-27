@@ -5,7 +5,8 @@
 // the command palette) opens SaveQuerySheet.
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { deleteSavedQuery, listSavedQueries, moveSavedQuery, renameSavedQuery, saveQuery, type SavedQuery } from "./api";
+import type { SavedQuery } from "./api";
+import { deleteSavedQuery, listSavedQueries, moveSavedQuery, renameSavedQuery, saveQuery } from "./savedQueriesApi";
 import { Icon } from "./components";
 import { ActionButton, ActionStatus, ConfirmSheet, ContextMenu, FormGrid, FormRow, SearchField, Select, useAction, useFocusScope, useSince } from "./kit";
 import "./editor-panels.css";

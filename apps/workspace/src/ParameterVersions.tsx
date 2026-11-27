@@ -4,6 +4,7 @@
 // catalog shipped with myflames (param_versions.py); nothing here reads a
 // server. Python writes every sentence; this view lays them out.
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { hasPerconaFeatures } from "./serverIdentity";
 import type { ConfigReport, Connection } from "./api";
 import { connectionKey, type Bound } from "./binding";
 import { Icon } from "./components";
@@ -180,7 +181,8 @@ export function ParameterVersions({ connection, controls, onBack, parameters, se
   // Only the report of the connection in use says what that server is.
   const own = parameters && parameters.key === activeKey ? parameters.report : null;
   const ownEngine: VersionEngine | null = own ? (own.engine === "mariadb" ? "mariadb" : "mysql") : null;
-  const percona = !!own && (own.flavor === "percona" || /percona/i.test(own.server_product || ""));
+  const percona = !!own && (hasPerconaFeatures(own.flavor, own.server_base) || (!own.flavor && /percona/i.test(own.server_product || "")));
+  const villagesql = !!own && (own.flavor === "villagesql" || own.server_product === "VillageSQL");
   const serverName = connection.name || `${connection.host}:${connection.port}`;
 
   const [mode, setMode] = useState<Mode>("compare");
@@ -317,7 +319,8 @@ export function ParameterVersions({ connection, controls, onBack, parameters, se
 
   // One line each: Percona uses the MySQL catalog; a server release the catalog lacks.
   const notes: ReactNode[] = [];
-  if (percona && engine === "mysql") notes.push("Percona Server uses the MySQL catalog. Variables Percona Server adds are not cataloged.");
+  if (villagesql && engine === "mysql") notes.push(`VillageSQL uses the MySQL catalog. Variables VillageSQL${percona ? " and Percona Server" : ""} add are not cataloged.`);
+  else if (percona && engine === "mysql") notes.push("Percona Server uses the MySQL catalog. Variables Percona Server adds are not cataloged.");
   if (cat && serverVersion) {
     const at = serverRelease(cat, serverVersion);
     const product = own?.server_product || cat.product;

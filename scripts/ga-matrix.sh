@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/ga-matrix.sh
 #
-# Bring up every GA MySQL, Percona Server and MariaDB version in Docker with
+# Bring up every GA MySQL, Percona Server, VillageSQL and MariaDB version in Docker with
 # realistic data, plus one replica pair per engine family, and create saved
 # myflames connections to them in an ISOLATED home (never the real
 # ~/.myflames). For review and compatibility testing only: the servers are
@@ -10,7 +10,7 @@
 # Usage:
 #   scripts/ga-matrix.sh up [NAME...]        pull, start, configure, seed, workload (idempotent)
 #   scripts/ga-matrix.sh down [NAME...]      remove containers and anonymous volumes
-#   scripts/ga-matrix.sh status              one line per server
+#   scripts/ga-matrix.sh status [NAME...]    one line per selected server
 #   scripts/ga-matrix.sh seed NAME           seed testdb + review schema if absent
 #   scripts/ga-matrix.sh workload NAME       warm-up statements (digests) + one deadlock
 #   scripts/ga-matrix.sh locks NAME SECONDS  row lock held by one session, a second waits
@@ -19,12 +19,13 @@
 #   scripts/ga-matrix.sh idle-trx NAME SECONDS   open transaction left idle
 #   scripts/ga-matrix.sh mdl NAME SECONDS    metadata lock wait (open trx + waiting ALTER)
 #   scripts/ga-matrix.sh profiles            create the saved connections in $MYFLAMES_HOME
-#   scripts/ga-matrix.sh env                 print the matrix as JSON
+#   scripts/ga-matrix.sh env [NAME...]       print the selected matrix as JSON
 #
 # Names: mysql-5.7 mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4
 #        mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3
 #        mariadb-13.0 mysql-9.7-replica percona-8.4-replica mariadb-11.8-replica
 #        mysql-5.7-replica
+#        villagesql-8.4 villagesql-percona-8.4 villagesql-9.7
 #
 # Percona Server for MySQL is a MySQL flavor: it uses the mysql client and
 # MySQL rules, from the official percona/percona-server images (arm64 and
@@ -32,6 +33,11 @@
 # and the slow log with log_slow_verbosity=full; percona-8.4 runs with
 # userstat=ON (INFORMATION_SCHEMA.INDEX_STATISTICS, TABLE_STATISTICS) and
 # GTIDs, replicated to percona-8.4-replica.
+#
+# VillageSQL is a MySQL fork with extensions: it uses the mysql client and
+# MySQL rules. The three official villagesql/server images cover the MySQL
+# 8.4, Percona 8.4 (userstat=ON) and MySQL 9.7 codebases. The Percona codebase
+# and MySQL 9.7 run with GTIDs; only VillageSQL MySQL 8.4 enables the slow log.
 #
 # mysql-5.7 (5.7.44, the last 5.7 release) has only linux/amd64 images, so it
 # runs under emulation on arm64 hosts. MySQL 5.7 has no WITH RECURSIVE, so its
@@ -43,13 +49,14 @@
 #   MYFLAMES_HOME   isolated HOME for myflames profiles (default local/ga-matrix/home)
 #   CREDS_FILE      default local/ga-matrix/credentials.env (gitignored, chmod 600)
 #   GA_PREFIX       container and network name prefix (default myflames-ga)
+#   GA_LAB          lab state and logs directory (default local/ga-matrix)
 #
 # All ports are bound to 127.0.0.1. Requirements: Docker, openssl, python3.
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-LAB="$REPO/local/ga-matrix"
+LAB="${GA_LAB:-$REPO/local/ga-matrix}"
 CREDS_FILE="${CREDS_FILE:-$LAB/credentials.env}"
 MYFLAMES_HOME="${MYFLAMES_HOME:-$LAB/home}"
 STATE="$LAB/state"
@@ -57,7 +64,7 @@ LOGS="$LAB/logs"
 GA_PREFIX="${GA_PREFIX:-myflames-ga}"
 case "$GA_PREFIX" in ''|*[!a-z0-9-]*|-*) echo "[ga-matrix] ERROR: GA_PREFIX must be lowercase letters, digits and dashes" >&2; exit 1 ;; esac
 NET="$GA_PREFIX-net"
-ALL="mysql-5.7 mysql-5.7-replica mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4 mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3 mariadb-13.0 mysql-9.7-replica percona-8.4-replica mariadb-11.8-replica"
+ALL="mysql-5.7 mysql-5.7-replica mysql-8.0 mysql-8.4 mysql-9.7 mysql-26.7 percona-8.0 percona-8.4 villagesql-8.4 villagesql-percona-8.4 villagesql-9.7 mariadb-10.6 mariadb-10.11 mariadb-11.4 mariadb-11.8 mariadb-12.3 mariadb-13.0 mysql-9.7-replica percona-8.4-replica mariadb-11.8-replica"
 
 log() { echo "[ga-matrix] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -73,6 +80,9 @@ spec() {
     mysql-26.7)         echo "mysql:26.7.0 mysql 33267 primary 104 off -" ;;
     percona-8.0)        echo "percona/percona-server:8.0.46-37.1 mysql 33180 primary 113 on -" ;;
     percona-8.4)        echo "percona/percona-server:8.4.11-11.1 mysql 33184 primary 114 off -" ;;
+    villagesql-8.4)     echo "villagesql/server:mysql-8.4_0.0.8 mysql 33384 primary 119 on -" ;;
+    villagesql-percona-8.4) echo "villagesql/server:percona-8.4_0.0.8 mysql 33386 primary 120 off -" ;;
+    villagesql-9.7)     echo "villagesql/server:mysql-9.7_0.0.8 mysql 33397 primary 121 off -" ;;
     mariadb-10.6)       echo "mariadb:10.6.28 mariadb 33106 primary 105 on -" ;;
     mariadb-10.11)      echo "mariadb:10.11.19 mariadb 33111 primary 106 off -" ;;
     mariadb-11.4)       echo "mariadb:11.4.13 mariadb 33114 primary 107 on -" ;;
@@ -94,8 +104,8 @@ platform_args() { local p; p="$(platform "$1")"; [ -z "$p" ] || echo "--platform
 is_57() { case "$(f "$1" 1)" in mysql:5.7.*) return 0 ;; esac; return 1; }
 # f NAME index (1=image 2=engine 3=port 4=role 5=server-id 6=slow-log 7=source)
 f() { local n="$1" i="$2" s; s="$(spec "$n")"; set -- $s; eval "echo \${$i}"; }
-# The product family for reports: percona (a MySQL flavor), mysql or mariadb.
-flavor() { case "$(f "$1" 1)" in percona/*) echo percona ;; *) f "$1" 2 ;; esac; }
+# The product family for reports, independently of the MySQL/MariaDB engine.
+flavor() { case "$(f "$1" 1)" in villagesql/*) echo villagesql ;; percona/*) echo percona ;; *) f "$1" 2 ;; esac; }
 client() { [ "$(f "$1" 2)" = mariadb ] && echo mariadb || echo mysql; }
 is_up() { docker ps --format '{{.Names}}' | grep -Fxq "$(cname "$1")"; }
 
@@ -151,11 +161,17 @@ start_container() {
     args=(--performance-schema=ON --innodb-buffer-pool-size=128M --log-bin=mysql-bin --server-id="$sid"
           --slow-query-log="$sl" --long-query-time=0.2 --slow-query-log-file=/var/lib/mysql/slow.log)
     case "$n" in mysql-9.7|mysql-9.7-replica|percona-8.4|percona-8.4-replica) args+=(--gtid-mode=ON --enforce-gtid-consistency=ON) ;; esac
+    case "$n" in villagesql-percona-8.4|villagesql-9.7) args+=(--gtid-mode=ON --enforce-gtid-consistency=ON) ;; esac
     # Percona Server features the views read when the server reports them.
     case "$n" in
       percona-8.0) args+=(--thread-handling=pool-of-threads --log-slow-verbosity=full) ;;
-      percona-8.4) args+=(--userstat=ON) ;;
+      percona-8.4|villagesql-percona-8.4) args+=(--userstat=ON) ;;
     esac
+    # The lab's MySQL-family containers share the Docker VM's Linux AIO context
+    # pool (fs.aio-max-nr 65536, 64983 in use with the full matrix up), so later
+    # servers fail with "io_setup() failed with EAGAIN". VillageSQL starts with
+    # InnoDB's simulated AIO instead; no view reads AIO behavior.
+    case "$n" in villagesql-*) args+=(--innodb-use-native-aio=0) ;; esac
   else
     envname=MARIADB_ROOT_PASSWORD
     args=(--performance-schema=ON --innodb-buffer-pool-size=128M --log-bin=mysql-bin --server-id="$sid"
@@ -496,7 +512,7 @@ cmd_up() {
     rc=0; wait "${p%%:*}" || rc=$?
     if [ "$rc" -ne 0 ] || [ -f "$STATE/${p##*:}.fail" ]; then failed=$((failed + 1)); log "FAILED ${p##*:}: $(cat "$STATE/${p##*:}.fail" 2> /dev/null || echo "exit $rc")"; fi
   done
-  cmd_status
+  cmd_status $names
   [ "$failed" -eq 0 ] || { log "$failed server(s) failed; the rest are usable."; return 1; }
 }
 
@@ -513,7 +529,8 @@ cmd_status() {
   local n image engine port role sid slow source v
   printf '%-22s %-22s %-8s %-6s %-9s %s\n' NAME IMAGE STATE PORT ROLE VERSION
   load_creds
-  for n in $ALL; do
+  local names; names="$(selected "$@")"
+  for n in $names; do
     read -r image engine port role sid slow source <<< "$(spec "$n")"
     if is_up "$n"; then v="$(rq "$n" "SELECT VERSION()" || true)"; printf '%-22s %-22s %-8s %-6s %-9s %s\n' "$n" "$image" running "$port" "$role" "${v:-?}"
     else printf '%-22s %-22s %-8s %-6s %-9s %s\n' "$n" "$image" down "$port" "$role" "-"; fi
@@ -688,7 +705,8 @@ cmd_env() {
   check_myflames_home
   load_creds
   local n image engine port role sid slow source v rows=""
-  for n in $ALL; do
+  local names; names="$(selected "$@")"
+  for n in $names; do
     read -r image engine port role sid slow source <<< "$(spec "$n")"
     v=""; is_up "$n" && v="$(rq "$n" "SELECT VERSION()" || true)"
     local profs; profs="$(profile_names "$n" | awk '{print $1}' | paste -sd, -)"
@@ -729,7 +747,7 @@ main() {
   case "$cmd" in
     up) cmd_up "$@" ;;
     down) cmd_down "$@" ;;
-    status) cmd_status ;;
+    status) cmd_status "$@" ;;
     seed) [ "$#" -eq 1 ] || die "usage: seed NAME"; valid "$1"; load_creds; seed_one "$1" ;;
     workload) [ "$#" -eq 1 ] || die "usage: workload NAME"; valid "$1"; load_creds; workload_one "$1" ;;
     locks) [ "$#" -eq 2 ] || die "usage: locks NAME SECONDS"; cmd_locks "$@" ;;
@@ -738,8 +756,8 @@ main() {
     idle-trx) [ "$#" -eq 2 ] || die "usage: idle-trx NAME SECONDS"; cmd_idle_trx "$@" ;;
     mdl) [ "$#" -eq 2 ] || die "usage: mdl NAME SECONDS"; cmd_mdl "$@" ;;
     profiles) cmd_profiles ;;
-    env) cmd_env ;;
-    *) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$cmd" ] || exit 2 ;;
+    env) cmd_env "$@" ;;
+    *) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; [ -z "$cmd" ] || exit 2 ;;
   esac
 }
 main "$@"

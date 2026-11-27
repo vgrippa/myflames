@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _schema_replay as replay  # noqa: E402
+from test_vsql_fix2_fx8a import SchemaReplayConnection as ReplayConn  # noqa: E402
 
 from myflames import schema_versions, schema_versions_api, ui  # noqa: E402
 from myflames.connector import ConnectorError  # noqa: E402
@@ -65,7 +66,7 @@ class TestCaptureDeterministic(unittest.TestCase):
                 with self.subTest(server=server, which=which):
                     record = replay.recording(server, which)
                     captured = schema_versions.capture(
-                        replay.ReplayConn(record), record['database'], record['source'])
+                        ReplayConn(record), record['database'], record['source'])
                     fixture = replay.load('%s-%s' % (server, which))
                     self.assertEqual(captured['checksum'], fixture['checksum'])
                     self.assertEqual(captured['database'], fixture['database'])
@@ -83,7 +84,7 @@ class TestCaptureStatements(unittest.TestCase):
         for server in replay.SERVERS:
             with self.subTest(server=server):
                 record = replay.recording(server, 'before')
-                conn = replay.ReplayConn(record)
+                conn = ReplayConn(record)
                 schema_versions.capture(conn, record['database'], record['source'])
                 scripts = [sent for sent in conn.sent if sent[0] == 'run_script']
                 runs = [sent for sent in conn.sent if sent[0] == 'run']
@@ -166,7 +167,7 @@ class TestCaptureErrors(unittest.TestCase):
             if 'SHOW CREATE TABLE `sv_m`.`customers`' in line)
 
     def capture(self, edit):
-        conn = replay.ReplayConn(self.record, edit=edit)
+        conn = ReplayConn(self.record, edit=edit)
         return schema_versions.capture(conn, self.record['database'], self.record['source'])
 
     def edit_script(self, call, stderr='', drop_prefix=None):
@@ -874,7 +875,7 @@ class TestSshTarget(IsolatedStoreTest):
             store = WorkspaceStore()
         self.workspace = Workspace()
         patcher = mock.patch('myflames.schema_versions_api.MySQLConnection',
-                             side_effect=lambda **options: replay.ReplayConn(self.record))
+                             side_effect=lambda **options: ReplayConn(self.record))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -884,11 +885,11 @@ class TestSshTarget(IsolatedStoreTest):
         return schema_versions.validate_snapshot(snapshot)
 
     def test_capture_records_the_ssh_target_only_through_ssh(self):
-        direct = schema_versions.capture(replay.ReplayConn(self.record), self.record['database'],
+        direct = schema_versions.capture(ReplayConn(self.record), self.record['database'],
                                          self.record['source'])
         self.assertFalse(set(schema_versions.SSH_FIELDS) & set(direct['server']), 'a direct read is unchanged')
         source = dict(self.record['source'], ssh_host='bastion', ssh_user='deploy', ssh_port=2222)
-        through = schema_versions.capture(replay.ReplayConn(self.record), self.record['database'], source)
+        through = schema_versions.capture(ReplayConn(self.record), self.record['database'], source)
         self.assertEqual({key: through['server'][key] for key in schema_versions.SSH_FIELDS},
                          {'ssh_host': 'bastion', 'ssh_user': 'deploy', 'ssh_port': 2222})
         self.assertEqual(through['checksum'], direct['checksum'], 'the definitions are compared, not the route')
@@ -957,7 +958,7 @@ class TestApi(IsolatedStoreTest):
         self.workspace = Workspace()
         self.record = replay.recording('mysql-8.4', 'before')
         patcher = mock.patch('myflames.schema_versions_api.MySQLConnection',
-                             side_effect=lambda **options: replay.ReplayConn(self.record))
+                             side_effect=lambda **options: ReplayConn(self.record))
         patcher.start()
         self.addCleanup(patcher.stop)
 

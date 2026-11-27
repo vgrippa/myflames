@@ -1,0 +1,45 @@
+.extension-protocol {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+.extension-names,
+.extension-usage {
+  padding-left: var(--space-4);
+  margin: var(--space-2) 0;
+  overflow-wrap: anywhere;
+}
+.extension-usage li {
+  margin-bottom: var(--space-2);
+}
+.extension-usage li > span {
+  display: block;
+  color: var(--ink-muted);
+  font-size: var(--text-sm);
+}
+.extension-variables {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.extension-variables > div {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.extension-variables dd {
+  margin: var(--space-1) 0 0;
+  white-space: pre-wrap;
+}
+.extension-error {
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-pane);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.extensions-panel .fact-strip dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

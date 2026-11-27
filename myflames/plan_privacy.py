@@ -199,17 +199,51 @@ def hide_prose_literals(text, ansi_quotes=False):
 # Raw-plan fields, including MySQL format 1/2 and MariaDB expressions. Numeric
 # counters/costs and identifier fields are deliberately never rewritten.
 LITERAL_FIELDS = frozenset((
-    'operation', 'condition', 'attached_condition', 'index_condition',
+    'operation', 'condition', 'lookup_condition', 'attached_condition', 'index_condition',
     'pushed_index_condition', 'having_condition', 'const_condition',
+    'extra_condition', 'functions', 'filesort_key', 'outer_ref_condition',
+    'group_items', 'index_condition_bka', 'pseudo_bits_condition',
     'hash_condition', 'ranges', 'range', 'sort_key', 'sort_fields',
     'grouping_operation', 'expression', 'cache', 'query', 'query_text',
     'query_sql', 'sql',
 ))
 
 
+def _hide_lookup_preview(value):
+    """Hide lookup values in generated prose without hiding its measurements.
+
+    Shortened points must be hidden whole before a cut token can look like
+    a SQL name. Complete KNN expressions use the SQL lexer, including function
+    arguments that a prose lexer cannot distinguish from measurements.
+    """
+    lookup = value.get('lookup_condition')
+    if not isinstance(lookup, str):
+        return value
+    if '…' in lookup and re.search(r' \(\d+ (?:values|characters)\)$', lookup):
+        _column, separator, point = lookup.partition(' <-> ')
+        target, replacement = (point if separator else lookup), '?'
+    elif ' <-> ' in lookup:
+        # Match the whole lookup, not an isolated point such as "5", which
+        # could also occur in row counts, timings or the requested K.
+        target, replacement = lookup, hide_literals(lookup)
+    else:
+        return value
+
+    def hide_preview(item):
+        if isinstance(item, str):
+            return item.replace(target, replacement)
+        if isinstance(item, list):
+            return [hide_preview(part) for part in item]
+        return item
+
+    return {key: hide_preview(item) if key in _SHARE_SQL_FIELDS or key in _SHARE_PROSE_FIELDS else item
+            for key, item in value.items()}
+
+
 def hide_plan_literals(value, field=''):
     """Copy raw plan data, hiding only literal-bearing expression fields."""
     if isinstance(value, dict):
+        value = _hide_lookup_preview(value)
         return {key: hide_plan_literals(item, key) for key, item in value.items()}
     if isinstance(value, list):
         return [hide_plan_literals(item, field) for item in value]
@@ -229,6 +263,7 @@ _SHARE_SQL_FIELDS = LITERAL_FIELDS | _LABEL_FIELDS | frozenset((
 _SHARE_PROSE_FIELDS = frozenset((
     'text', 'action', 'why', 'reason', 'note', 'rationale', 'executive_summary',
     'message', 'explanation', 'description', 'hint', 'summary', 'recommendation',
+    'access_description', 'details_text', 'flame_details',
 ))
 
 
@@ -268,14 +303,19 @@ def _hide_schema_literals(value, field='', ddl_values=False):
 
 
 def plan_literal_labels(*roots):
-    """Map original labels to canonical redacted labels, retaining identifiers."""
+    """Map labels and SQL hook notes from the canonical redacted trees."""
     from .parser import flatten_nodes, hide_parsed_plan_literals
+    from .teach_hooks import _note_for_hook
     labels = {}
     for root in roots:
         redacted = hide_parsed_plan_literals(root)
         for old, new in zip(flatten_nodes(root), flatten_nodes(redacted)):
             for key in ('short_label', 'full_label', 'folded_label'):
                 labels[old[key]] = new[key]
+            # Hook notes copy operator SQL, sometimes with a cut KNN preview.
+            # Rebuild before lexing that incomplete SQL can expose a later
+            # literal. Keep these mappings separate from ordinary prose notes.
+            labels[('note', _note_for_hook(old))] = _note_for_hook(new)
     return labels
 
 
@@ -292,11 +332,14 @@ def hide_analysis_literals(value, labels=None, field=''):
         return {key: _hide_schema_literals(item, ddl_values=True)
                 for key, item in value.items()}
     if isinstance(value, dict):
+        value = _hide_lookup_preview(value)
         return {key: hide_analysis_literals(item, labels, key)
                 for key, item in value.items()}
     if isinstance(value, list):
         return [hide_analysis_literals(item, labels, field) for item in value]
     if isinstance(value, str):
+        if field == 'note' and ('note', value) in labels:
+            return labels[('note', value)]
         if field in _LABEL_FIELDS and value in labels:
             return labels[value]
         if field in _SHARE_SQL_FIELDS:

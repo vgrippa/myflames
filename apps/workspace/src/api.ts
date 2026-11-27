@@ -177,16 +177,6 @@ export type ClientTools = {
   server_error?: { code: string; error: string } | null;
   used?: ClientToolsUsed;
 };
-/** The client tools on this computer; with a connection, also the programs the
- * resolver picked for its server. refresh re-probes every copy. */
-export const clientTools = (connection?: Connection, refresh = false, signal?: AbortSignal) =>
-  api<ClientTools>("client/tools", { ...(connection ? { connection } : {}), ...(refresh ? { refresh: true } : {}) }, signal);
-/** Store the choice for one engine: the absolute path of a client program or
- * its folder, "bundled" for the bundled one, or null for Automatic. A refused
- * path answers 400 with a plain sentence. */
-export const chooseClientTools = (engine: ClientToolsEngine, path: string | null, connection?: Connection) =>
-  api<ClientTools>("client/tools/choose", { engine, path, ...(connection ? { connection } : {}) });
-
 // ---- Managed MySQL Shell (Settings > Client tools > MySQL Shell) ----------
 // managed-shell-status-1.0 (docs/DEVELOPER_REFERENCE.md): the backend's
 // managed_shell module downloads the pinned Oracle MySQL Shell into
@@ -207,12 +197,6 @@ export type ManagedShellStatus = {
   installed: { path: string; version: string; origin: string; origin_label: string } | null;
   job: ManagedShellJob | null;
 };
-/** Read-only status of the managed MySQL Shell; never starts a download. */
-export const shellStatus = () => api<ManagedShellStatus>("client/shell/status", {});
-/** Start (or rejoin) the single download flight; a refusal answers 400. */
-export const shellInstall = () => api<ManagedShellStatus>("client/shell/install", {});
-/** Stop the running download; the id must be the running job's. */
-export const shellCancel = (id: string) => api<ManagedShellStatus>("client/shell/cancel", { id });
 // Capture and erase the fragment as soon as this module loads. It is never
 // written to storage, the DOM, a request URL, or the saved workspace.
 let launchSecret = "";
@@ -728,7 +712,7 @@ export type WatchReport = {
   schema_version: "watch-1.0";
   engine?: string | null;
   server_version?: string | null;
-  server_product?: string | null;
+  server_product?: string | null; server_base?: string | null;
   threads_running: number | null;
   longest_statement: {
     id: number;
@@ -891,7 +875,7 @@ export type DigestHistogram = {
   engine: string;
   server_version: string | null;
   flavor?: string;
-  server_product?: string | null;
+  server_product?: string | null; server_base?: string | null;
   schema: string | null;
   digest: string;
   available: boolean;
@@ -957,7 +941,7 @@ export type TopReport = {
   schema_version: "top-1.0";
   engine: string;
   server_version: string;
-  server_product?: string | null;
+  server_product?: string | null; server_base?: string | null;
   order: string;
   notes: string[];
   statements: TopStatement[];
@@ -1162,7 +1146,7 @@ export type LocksReport = {
   /** mysql, percona or mariadb: Percona Server keeps engine "mysql". */
   flavor?: string | null;
   /** MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
-  server_product?: string | null;
+  server_product?: string | null; server_base?: string | null;
   server_version: string;
   captured_at: string;
   scope: "all" | "waits" | "deadlock";
@@ -1453,9 +1437,9 @@ export type HealthReport = {
   schema_version: "health-1.0";
   engine: string;
   /** mysql, percona or mariadb: Percona Server keeps engine "mysql" (MySQL rules apply). */
-  flavor?: "mysql" | "percona" | "mariadb";
+  flavor?: "mysql" | "percona" | "mariadb" | "villagesql";
   /** The name to show: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
-  server_product?: string;
+  server_product?: string; server_base?: string | null;
   server_version: string | null;
   interval: number;
   elapsed_s: number | null;
@@ -1525,9 +1509,9 @@ export type HealthDiagnostic = {
 type PerfBase = {
   engine: string;
   /** mysql, percona or mariadb: Percona Server keeps engine "mysql" (MySQL rules apply). */
-  flavor?: "mysql" | "percona" | "mariadb";
+  flavor?: "mysql" | "percona" | "mariadb" | "villagesql";
   /** The name to show: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
-  server_product?: string;
+  server_product?: string; server_base?: string | null;
   server_version: string | null;
   taken_at: string;
   uptime_s: number | null;
@@ -1811,6 +1795,7 @@ export type ConfigCheck = {
 };
 /** parameters-1.0: catalog metadata; null preserves an unknown or SQL NULL. */
 export type ConfigParameter = {
+  sensitive?: boolean;
   name: string;
   value: string | null;
   truncated: boolean;
@@ -1837,13 +1822,13 @@ export type ConfigParameter = {
   documentation?: { url: string; source: string } | null;
   checks: string[];
   /** "percona": a variable Percona Server adds (on Percona Server only); null otherwise. */
-  vendor?: "percona" | null;
+  vendor?: "percona" | "villagesql" | null;
 };
 export type ConfigParameters = {
   schema_version: "parameters-1.0";
   complete: boolean;
   /** mysql, percona or mariadb (which product's documentation describes the items); absent in older reports. */
-  flavor?: "mysql" | "percona" | "mariadb";
+  flavor?: "mysql" | "percona" | "mariadb" | "villagesql";
   notes: string[];
   items: ConfigParameter[];
 };
@@ -1960,6 +1945,47 @@ export type InstrumentsReport = PerfBase & {
   rules: string[];
   privileges: string;
   read_only_note: string;
+};
+/** extensions-1.0: read-only VillageSQL extension inventory. A null value is
+ * unavailable; an empty list or zero is a successful, empty server read. */
+export type ExtensionVariable = { name: string; value: string | null; kind: "system" | "status" };
+export type ExtensionColumn = { schema: string; table: string; column: string; data_type: string };
+export type ExtensionRoutine = { schema: string; routine: string; routine_type: string; parameter: string | null; data_type: string };
+export type ExtensionUsage<T> = { count: number | null; sample: T[]; truncated: boolean | null };
+export type ServerExtension = {
+  name: string;
+  version: string | null;
+  pending: { version: string | null; requested_at: string | null; last_error: string | null; error_truncated: boolean; last_error_at: string | null } | null;
+  protocol: number | null;
+  protocol_state: "current" | "deprecated" | "unsupported" | "unknown";
+  protocol_note?: string | null;
+  sdk_version: string | null;
+  functions: string[] | null;
+  types: string[] | null;
+  functions_truncated: boolean | null;
+  types_truncated: boolean | null;
+  columns: ExtensionUsage<ExtensionColumn>;
+  routines: ExtensionUsage<ExtensionRoutine>;
+  variables: ExtensionVariable[] | null;
+  variables_truncated: boolean | null;
+};
+export type ExtensionsReport = PerfBase & {
+  schema_version: "extensions-1.0";
+  available: boolean;
+  reason: string | null;
+  settings: {
+    veb_dir: string | null;
+    preview_extensions: boolean | null;
+    server_protocol: number | null;
+    schema_version: string | null;
+    codebase: string | null;
+    build: { git_sha: string | null; is_dirty: boolean | null } | null;
+  };
+  status: { veb_cache_repaired: number | null; install_count: number | null; uninstall_count: number | null };
+  extensions: ServerExtension[] | null;
+  other_variables: ExtensionVariable[] | null;
+  other_variables_truncated: boolean | null;
+  summary: { installed: number | null; pending: number | null; failing: number | null; deprecated_protocol: number | null; unsupported_protocol: number | null };
 };
 /** schemas-1.0: the schema picker's list (perf_common.schema_catalog). */
 export type SchemaInfo = { name: string; tables: number; system: boolean };
@@ -2107,8 +2133,8 @@ export type DdlProgress = {
 export type DdlProgressReport = DdlProgress & {
   schema_version: "ddl-progress-1.0";
   engine?: string | null;
-  flavor?: "mysql" | "percona" | "mariadb" | null;
-  server_product?: string | null;
+  flavor?: "mysql" | "percona" | "mariadb" | "villagesql" | null;
+  server_product?: string | null; server_base?: string | null;
   server_version?: string | null;
   taken_at?: string;
   uptime_s?: number | null;
@@ -2408,15 +2434,15 @@ export type AnalysisReport = {
   myflames_version: string;
   engine: string;
   /** mysql, percona or mariadb: Percona Server keeps engine "mysql" (MySQL rules apply). */
-  flavor?: "mysql" | "percona" | "mariadb";
+  flavor?: "mysql" | "percona" | "mariadb" | "villagesql";
   /** The name to show: MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
-  server_product?: string;
+  server_product?: string; server_base?: string | null;
   server_version: string | null;
   taken_at: string;
   uptime_s: number | null;
   performance_schema: boolean;
   header: {
-    server: { engine: string; flavor?: string; product?: string; version: string | null; version_comment: string | null; uptime_s: number | null; performance_schema: boolean };
+    server: { engine: string; flavor?: string; product?: string; server_base?: string | null; version: string | null; version_comment: string | null; uptime_s: number | null; performance_schema: boolean };
     started_at: string | null;
     elapsed_s: number | null;
     interval: number;
@@ -2478,7 +2504,7 @@ export type EditorSession = {
   engine: "mysql" | "mariadb" | null;
   server_version: string | null;
   /** From the version alone: Percona's release suffix names Percona Server. */
-  server_product?: string | null;
+  server_product?: string | null; server_base?: string | null;
   connection_id: number | null;
   autocommit: boolean | null;
   /** True or false, or null when this server cannot tell. */
@@ -2655,14 +2681,6 @@ export type SavedQuery = {
   updated: string;
 };
 export type SavedQueryList = { items: SavedQuery[]; max_entries: number; max_bytes: number; max_sql: number };
-/** The saved queries, most recently saved, renamed or moved first. */
-export const listSavedQueries = (signal?: AbortSignal) => api<SavedQueryList>("editor/saved/list", {}, signal);
-/** Save a query; *redacted* says a credential in it was replaced by [redacted]. */
-export const saveQuery = (query: { name: string; folder: string; sql: string; note?: string; database?: string | null }) =>
-  api<{ saved: SavedQuery; redacted: boolean }>("editor/saved/save", query);
-export const renameSavedQuery = (id: string, name: string) => api<{ saved: SavedQuery }>("editor/saved/rename", { id, name });
-export const moveSavedQuery = (id: string, folder: string) => api<{ saved: SavedQuery }>("editor/saved/move", { id, folder });
-export const deleteSavedQuery = (id: string) => api<{ deleted: number }>("editor/saved/delete", { id });
 export type EditorExport = { format: string; content: string; mime: string; filename: string };
 /** catalog-1.0: the schema browser's tables of one schema, or one table's columns and indexes. */
 export type CatalogTables = {
@@ -2808,6 +2826,7 @@ export const downloadAppUpdate = (asset_url?: string | null, release_url?: strin
 // Connection readiness and imports: read-only facts, never credentials.
 export type Readiness = {
   engine: string; flavor: string; product: string; version: string;
+  server_base?: string | null;
   read_only: boolean | null; super_read_only: boolean | null;
   performance_schema: boolean | null; replica: boolean | null;
   group_member: boolean | null; galera_member: boolean | null;

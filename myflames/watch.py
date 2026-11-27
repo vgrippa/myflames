@@ -20,8 +20,8 @@ from .connector import ConnectorError
 from .discover import _processlist_source
 from . import innodb_status
 from . import locks
-from .perf_common import Reader, _number, _round, _server, check_limit, denied, now, reason
-from .server_info import product_name
+from .perf_common import Reader, _number, _round, _server, check_limit, conn_identity, denied, now, reason
+from .server_info import product_name, server_label
 from . import sessions
 
 SCHEMA_VERSION = "watch-1.0"
@@ -204,9 +204,16 @@ def watch_report(conn, limit=DEFAULT_LIMIT):
             "notes": notes,
         }
 
-    comment_reader = getattr(conn, "server_version_comment", None)
-    comment = comment_reader() if callable(comment_reader) else ""
-    product = product_name({"engine": engine, "server_version": version, "version_comment": comment})
+    # Watch historically reads this cached metadata on MariaDB too. The
+    # generic identity helper skips it there; preserve Watch's statement order.
+    if engine == "mariadb":
+        comment_reader = getattr(conn, "server_version_comment", None)
+        if callable(comment_reader):
+            try:
+                comment_reader()
+            except ConnectorError:
+                pass
+    identity = conn_identity(conn, engine, version)
     reader = Reader(conn, WATCH_TAG)
     threads_running = _read_threads_running(reader, errors, notes)
     parsed_sessions = _read_processlist_sessions(reader, engine, ver, ps_on, errors, notes)
@@ -227,7 +234,7 @@ def watch_report(conn, limit=DEFAULT_LIMIT):
         "schema_version": SCHEMA_VERSION,
         "engine": engine,
         "server_version": version,
-        "server_product": product,
+        **identity,
         "threads_running": threads_running,
         "longest_statement": longest_statement,
         "longest_lock_wait": longest_lock_wait,
@@ -243,7 +250,7 @@ def format_text(report):
     """Plain-text summary of a ``watch-1.0`` report."""
     if not isinstance(report, dict):
         return "Watch snapshot unavailable.\n"
-    head = "%s %s" % (product_name(report), report.get("server_version") or "?")
+    head = server_label(report)
     if report.get("read_at"):
         head += " at %s" % report["read_at"]
     lines = [head]

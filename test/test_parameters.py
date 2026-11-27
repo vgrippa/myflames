@@ -3,7 +3,7 @@ import json
 import unittest
 from unittest import mock
 
-from _perf_replay import FakeFactory, ReplayConn, assert_read_only, batch, replay
+from _perf_replay import FakeFactory, ReplayConn, assert_read_only, batch, expanded_preflight_sql, replay
 from myflames import config_review, mysql_sysvar_help, mysql_sysvars, parameters as P, ui
 from myflames.connector import ConnectorError
 from myflames.perf_common import Reader, Server
@@ -376,7 +376,8 @@ class TestParameterReads(unittest.TestCase):
                 conn, recording = replay("config", name)
                 report = config_review.config_report(conn)
                 self.assertNotIn("parameters", report)
-                self.assertEqual([sql for sql, _ in conn.calls], [call[0] for call in recording["calls"]])
+                self.assertEqual([sql for sql, _ in conn.calls],
+                                 [expanded_preflight_sql(call[0], call[1]) for call in recording["calls"]])
 
     def test_config_opt_in_reads_after_existing_checks(self):
         _, recording = replay("config", "mysql-8.4")

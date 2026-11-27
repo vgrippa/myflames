@@ -34,7 +34,7 @@ import {
 import { Icon } from "./components";
 import { PrivilegeGate, PrivilegeConfirmLabel, targetPrivilege, useLoginUser, usePrivilege } from "./privileges";
 import { InstrumentsLink } from "./Instruments";
-import { PriorityTable, CompactNumber, Duration } from "./PerfShared";
+import { PriorityTable, CompactNumber, Duration, engineLabel } from "./PerfShared";
 import { connectionKey, connectionLabel, useConnectionReads, type Bound } from "./binding";
 import { ConnectionTypeBand, useWritePolicy, type WritePolicy } from "./Connections";
 import { copyFeedback, copyToClipboardResult } from "./clipboard";
@@ -1431,7 +1431,7 @@ export function LocksView({
   const rowLocks = (report?.row_locks || []).filter((l) => !rowTable || objectName(l.schema, l.table) === rowTable);
   const transactions = report?.transactions || [];
   const deadlock = report?.deadlock || null;
-  const engineName = report ? `${report.server_product || (report.engine === "mariadb" ? "MariaDB" : "MySQL")} ${report.server_version}` : "";
+  const engineName = report ? engineLabel(report) : "";
   const idleRoot = report?.blocking_tree.find((n) => n.root && n.idle_in_transaction);
 
   // ---- The inspector for the selected row ----

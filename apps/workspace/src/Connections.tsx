@@ -1,6 +1,7 @@
 // Saved connections (the API calls them profiles) and the active connection
 // that the Query editor and Server use. The UI says "connection"; requests
 // keep the `profiles/*` endpoints and `profile_id`.
+import { villageSQLLabel } from "./serverIdentity";
 import { lazy, Suspense, createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, clientMissingCode, profileGroups, type Connection, type ConnectionType, type GroupSaveResult, type Profile, type SecretStore } from "./api";
@@ -31,6 +32,7 @@ type ConnectionTestResult = {
   engine?: string;
   flavor?: string;
   product?: string;
+  server_base?: string | null;
   schemas?: string[];
   databases?: string[];
   databases_truncated?: boolean;
@@ -38,16 +40,18 @@ type ConnectionTestResult = {
   /** "Through SSH host bastion" for a test that went through an SSH tunnel. */
   through_ssh?: string;
 };
-const SYSTEM_DATABASES = new Set(["mysql", "sys", "performance_schema", "information_schema"]);
+const SYSTEM_DATABASES = ["mysql", "sys", "performance_schema", "information_schema", "villagesql"];
 const TYPE_DATABASE_OPTION = "__type_database__";
 const SHOW_SYSTEM_DATABASES_OPTION = "__show_system_databases__";
 const HIDE_SYSTEM_DATABASES_OPTION = "__hide_system_databases__";
-function isSystemDatabase(name: string) {
-  return SYSTEM_DATABASES.has(name.trim().toLowerCase());
+function isSystemDatabase(name: string, flavor?: string) {
+  const database = name.trim().toLowerCase();
+  return SYSTEM_DATABASES.includes(database) && (database !== "villagesql" || flavor === "villagesql");
 }
 /** "8.4.11", "11.8.9-MariaDB-log" (they name themselves), "Percona Server 8.4.11-11". */
 function testedServer(r: ConnectionTestResult) {
-  return r.flavor === "percona" && r.product ? `${r.product} ${r.version}` : r.version;
+  return villageSQLLabel(r.version, r.server_base, r.product)
+    || (r.flavor === "percona" && r.product ? `${r.product} ${r.version}` : r.version);
 }
 /** "Connected · 8.4.11", with " · Through SSH host bastion" through SSH. */
 function testedText(r: ConnectionTestResult) {
@@ -421,7 +425,9 @@ export function Connections({
   const [readinessNote, setReadinessNote] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Connection>(blank);
+  // Names and flavor belong to the same accepted test of the form's settings.
   const [schemas, setSchemas] = useState<string[]>([]);
+  const [schemaFlavor, setSchemaFlavor] = useState("");
   const [schemasError, setSchemasError] = useState("");
   const [showSystemSchemas, setShowSystemSchemas] = useState(false);
   const [typingSchema, setTypingSchema] = useState(false);
@@ -539,8 +545,8 @@ export function Connections({
   const nameProblem = duplicateProfile
     ? `A saved connection named ${(duplicateProfile.name || "").trim()} already exists.`
     : "";
-  const userSchemas = schemas.filter((s) => !isSystemDatabase(s));
-  const systemSchemas = schemas.filter((s) => isSystemDatabase(s));
+  const userSchemas = schemas.filter((s) => !isSystemDatabase(s, schemaFlavor));
+  const systemSchemas = schemas.filter((s) => isSystemDatabase(s, schemaFlavor));
   const visibleSchemas = showSystemSchemas ? [...userSchemas, ...systemSchemas] : userSchemas;
   const showSchemaSelect = schemas.length > 0 && !typingSchema && !schemasError;
   const canRemember = !!secretStore?.available;
@@ -753,9 +759,10 @@ export function Connections({
       if (draftGen.current !== gen || testSeq.current !== seq) return;
       const dbs = Array.isArray(r.databases) ? r.databases : Array.isArray(r.schemas) ? r.schemas : [];
       setSchemas(dbs);
+      setSchemaFlavor(r.flavor || "");
       setSchemasError(r.databases_error || "");
       setTypingSchema(false);
-      setShowSystemSchemas(!!draft.database && isSystemDatabase(draft.database));
+      setShowSystemSchemas(!!draft.database && isSystemDatabase(draft.database, r.flavor));
       statusFromTest.current = true;
       setStatus(readiness.status === "fulfilled" ? `Connected · ${readinessModule.readinessLine(readiness.value)}` : testedText(r));
       setReadinessNote(readiness.status === "fulfilled" ? readinessModule.readinessHint(readiness.value) : "Readiness could not be checked; try Check now.");

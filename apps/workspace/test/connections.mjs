@@ -294,23 +294,36 @@ print(json.dumps([s._profile(p['id']) is None and get_secret(p['ref'],'vault') i
   // Test connection populates the Default database pick list, hiding system databases behind "Show system databases".
   testReply = {
     version: '8.4.3',
-    schemas: ['information_schema', 'mysql', 'orders', 'performance_schema', 'shop', 'sys'],
-    databases: ['information_schema', 'mysql', 'orders', 'performance_schema', 'shop', 'sys'],
+    flavor: 'mysql',
+    schemas: ['information_schema', 'mysql', 'orders', 'performance_schema', 'shop', 'sys', 'villagesql'],
+    databases: ['information_schema', 'mysql', 'orders', 'performance_schema', 'shop', 'sys', 'villagesql'],
     databases_truncated: false,
   };
   await exact('.connection-panel button', 'Test connection');
   await page.waitForSelector('.connection-panel select[aria-label="Default database"]');
   assert.deepEqual(
     await page.$$eval('.connection-panel select[aria-label="Default database"] option', els => els.map(e => e.textContent)),
-    ['None', 'orders', 'shop', 'Show system databases', 'Type a name…'],
+    ['None', 'orders', 'shop', 'villagesql', 'Show system databases', 'Type a name…'],
   );
   await page.select('.connection-panel select[aria-label="Default database"]', '__show_system_databases__');
   assert.deepEqual(
     await page.$$eval('.connection-panel select[aria-label="Default database"] option', els => els.map(e => e.textContent)),
-    ['None', 'orders', 'shop', 'information_schema', 'mysql', 'performance_schema', 'sys', 'Hide system databases', 'Type a name…'],
+    ['None', 'orders', 'shop', 'villagesql', 'information_schema', 'mysql', 'performance_schema', 'sys', 'Hide system databases', 'Type a name…'],
   );
   await page.select('.connection-panel select[aria-label="Default database"]', 'orders');
   assert.equal(await page.$eval('.connection-panel select[aria-label="Default database"]', e => e.value), 'orders');
+  for (const [index, flavor] of ['percona', 'mariadb', 'readyset', 'villagesql', 'mysql', undefined].entries()) {
+    testReply = { ...testReply, flavor, version: `8.4.${20 + index}` };
+    await exact('.connection-panel button', 'Test connection');
+    await page.waitForFunction(version => document.querySelector('.connection-panel .connections-status')?.textContent.includes(version), {}, testReply.version);
+    const databases = await page.$$eval('.connection-panel select[aria-label="Default database"] option', options => options.map(option => option.value));
+    assert.equal(databases.includes('villagesql'), flavor !== 'villagesql', `${flavor || 'unknown'} keeps its own system database classification`);
+    if (flavor === 'villagesql') {
+      await page.select('.connection-panel select[aria-label="Default database"]', '__show_system_databases__');
+      assert.ok(await page.$('.connection-panel select[aria-label="Default database"] option[value="villagesql"]'),
+        'VillageSQL internal database remains available behind Show system databases');
+    }
+  }
   await page.select('.connection-panel select[aria-label="Default database"]', '__type_database__');
   await page.waitForSelector('.connection-panel input[aria-label="Default database"]');
   // When the database list could not be read, the field stays a text field with a short hint why.

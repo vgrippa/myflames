@@ -7,7 +7,7 @@ details name the estimate; charts/tree.ts draws the same.
 import math
 from ._labels import fit_label
 from .output_workbench import MARK_COLOR, MARK_FILL, _misestimate, mark_width
-from .parser import xml_escape, flatten_nodes, render_info_panel
+from .parser import knn_description, xml_escape, flatten_nodes, render_info_panel
 
 #: Row-estimate chip height and its gap to the number columns (charts/tree.ts).
 MARK_ROW_H = 16
@@ -107,6 +107,9 @@ def _row_info(node, root_total, unit_display):
     if cond:
         ellipsis = "\u2026"
         parts.append(f"Cond: {cond[:50] + ellipsis if len(cond) > 52 else cond}")
+    nearest = knn_description(details)
+    if nearest:
+        parts.append(nearest)
     return sep.join(parts)
 
 

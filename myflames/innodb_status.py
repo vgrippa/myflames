@@ -114,7 +114,7 @@ and 26.7.0 and MariaDB 11.4.13 and 13.0.2:
 """
 import re
 
-from .server_info import product_name
+from .server_info import product_name, server_label
 from .connector import ConnectorError
 from .health import (HIT_RATIO_PCT, MIN_DISK_READS_PER_S, MIN_PAGE_REQUESTS, REDO_POINTS_MARIADB,
                      REDO_POINTS_MYSQL)
@@ -1594,7 +1594,7 @@ _MARK = {"ok": "ok", "watch": "WATCH", "problem": "PROBLEM", "info": "-", "unkno
 
 def format_text(report):
     import textwrap
-    head = "%s %s" % (product_name(report), report["server_version"] or "?")
+    head = server_label(report)
     header = report["header"]
     if header.get("printed_at"):
         head += ", status printed %s" % header["printed_at"]

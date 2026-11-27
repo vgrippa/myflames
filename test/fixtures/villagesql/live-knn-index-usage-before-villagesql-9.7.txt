@@ -1,0 +1,3 @@
+review	vsql_knn	NULL	18002	16002	16002
+review	vsql_knn	knn_vec	0	0	0
+review	vsql_knn	PRIMARY	2001	2001	2001

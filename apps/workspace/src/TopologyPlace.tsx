@@ -21,6 +21,7 @@ import {
   ViewLayout, ViewStatus, type BadgeTone, type Column, type InspectorContent, type InspectorShared, type Selection,
 } from "./kit";
 import { plural } from "./OpsShared";
+import { villageSQLLabel } from "./serverIdentity";
 import { useViewOnScreen } from "./viewOnScreen";
 import { openWhyDisabled } from "./whyDisabledBus";
 import {
@@ -82,7 +83,7 @@ function rollingChangeBlock(row: ParameterRow, report: TopologyGroupReport, conn
 }
 
 function engineText(m: TopologyMember): string {
-  return [m.product || (m.engine === "mariadb" ? "MariaDB" : m.engine === "mysql" ? "MySQL" : ""), m.version || ""]
+  return villageSQLLabel(m.version, m.server_base, m.product) || [m.product || (m.engine === "mariadb" ? "MariaDB" : m.engine === "mysql" ? "MySQL" : ""), m.version || ""]
     .filter(Boolean).join(" ");
 }
 

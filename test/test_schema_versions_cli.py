@@ -10,7 +10,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _schema_replay import ReplayConn, recording, snapshot  # noqa: E402
+from _schema_replay import recording, snapshot  # noqa: E402
+from test_vsql_fix2_fx8a import SchemaReplayConnection as ReplayConn  # noqa: E402
 from myflames import cli, schema_versions, schema_versions_cli  # noqa: E402
 from myflames.connector import ConnectorError  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402

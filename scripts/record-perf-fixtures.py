@@ -17,7 +17,7 @@ local/ga-matrix/credentials.env), goes to the client in a defaults file and is
 never printed; a recording whose answers contain it is not written. Your real
 home and ~/.myflames are refused as ``HOME``. Every view here only reads:
 indexes, tables, config, io, waits, health, locks, sessions, innodb,
-error-log, instruments, top, replication, watch, ddl-progress (``--ids``),
+error-log, instruments, extensions, top, replication, watch, ddl-progress (``--ids``),
 cluster, checks, report (the Full analysis, one view at a time) and variable
 (``--name``, one system variable as Parameters reads it).
 """
@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover - Windows
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PASSWORD_KEYS = {"root": "ROOT_PASSWORD", "mf_admin": "MF_ADMIN_PASSWORD", "mf_read": "MF_READ_PASSWORD"}
 VIEWS = ("indexes", "tables", "config", "io", "waits", "health", "locks", "sessions", "innodb", "error-log",
-         "instruments", "top", "replication", "watch", "ddl-progress", "cluster", "checks", "report", "variable")
+         "instruments", "extensions", "top", "replication", "watch", "ddl-progress", "cluster", "checks", "report", "variable")
 
 
 def die(message):
@@ -133,6 +133,9 @@ def main():
         view_args = {}
     elif args.view == "instruments":
         from myflames.ps_instruments import instruments_report as read
+        view_args = {}
+    elif args.view == "extensions":
+        from myflames.extensions import extensions_report as read
         view_args = {}
     elif args.view == "top":
         from myflames.discover import top_report as read

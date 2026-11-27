@@ -1,0 +1,4 @@
+-> Limit: 10 row(s)  (cost=401 rows=10) (actual time=0.871..0.88 rows=10 loops=1)
+    -> Filter: (t.id > 2)  (cost=401 rows=2003) (actual time=0.871..0.879 rows=10 loops=1)
+        -> Custom index distance scan on idx_v  (cost=401 rows=2003) (actual time=0.86..0.872 rows=12 loops=1)
+

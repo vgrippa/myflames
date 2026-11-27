@@ -56,9 +56,9 @@ export type ClusterReport = {
   schema_version: "cluster-1.0";
   engine: "mysql" | "mariadb";
   /** mysql, percona or mariadb; Percona XtraDB Cluster is engine "mysql", flavor "percona". */
-  flavor?: "mysql" | "percona" | "mariadb";
+  flavor?: "mysql" | "percona" | "mariadb" | "villagesql";
   /** MySQL, Percona Server, Percona XtraDB Cluster or MariaDB. */
-  server_product?: string;
+  server_product?: string; server_base?: string | null;
   server_version: string | null;
   version_comment: string | null;
   captured_at: string;

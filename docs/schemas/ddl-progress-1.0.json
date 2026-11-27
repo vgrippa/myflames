@@ -54,11 +54,12 @@
     "flavor": {
       "enum": [
         "mysql",
-        "percona",
+        "percona", "villagesql",
         "mariadb",
         null
       ]
     },
+    "server_base": {"enum": ["mysql", "percona", null]},
     "server_product": {
       "type": [
         "string",

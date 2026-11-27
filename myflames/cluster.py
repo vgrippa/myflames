@@ -217,7 +217,7 @@ import re
 from .connection_groups import grouped_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import PREFLIGHT_VARIABLES, Reader, Server, _LOST_SQL, _number, denied, now, preflight, reason
-from .server_info import galera_enabled, galera_provider_loaded, product_name
+from .server_info import galera_enabled, galera_provider_loaded, product_name, server_label
 
 SCHEMA_VERSION = "cluster-1.0"
 CLUSTER_TAG = "/*myflames:cluster*/ "
@@ -1966,7 +1966,7 @@ def format_text(report):
     if not report.get("available"):
         return terminal_text(report.get("message") or "Cluster status is not available.") + "\n"
     if report.get("kind") == "none":
-        return terminal_text("%s %s: %s" % (engine, report.get("server_version") or "?",
+        return terminal_text("%s: %s" % (server_label(report),
                                             report.get("message") or "Not part of a cluster.")) + "\n"
     cluster = report["cluster"]
     head = "%s %s  [%s]" % (kind_label(report), cluster.get("name") or "(unnamed)", report["status"])
@@ -3103,7 +3103,7 @@ def plan_action(report, action, member_key=None, checks=None, target=None):
     plan = {"schema_version": ACTION_SCHEMA_VERSION, "action": action, "member_key": member_key, "typed_guard": None,
             "warnings": [], "next": None, "verified": ["server identity", "member state and role"],
             "facts": [["Runs on", _connected_text(report, local)],
-                      ["Server", "%s %s" % (product_name(report), report.get("server_version") or "")],
+                      ["Server", server_label(report)],
                       ["Cluster", "%s%s" % (kind_label(report), " %s" % cluster["name"] if cluster.get("name") else "")]]}
     kind = report.get("kind")
     if kind in ("innodb_cluster", "group_replication") and _via_shell(report, action):

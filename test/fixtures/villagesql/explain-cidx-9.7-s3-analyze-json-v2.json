@@ -1,0 +1,69 @@
+{
+  "query": "/* select#1 */ select `review_knn`.`t`.`id` AS `id`,`review_knn`.`labels`.`label` AS `label` from `review_knn`.`t` join `review_knn`.`labels` where (`review_knn`.`labels`.`id` = `review_knn`.`t`.`id`) order by vsql_knn_index_test.kvec_l2_distance(`review_knn`.`t`.`v`,'[1,0,0,0]') limit 10",
+  "query_plan": {
+    "limit": 10,
+    "inputs": [
+      {
+        "inputs": [
+          {
+            "operation": "Custom index distance scan on idx_v",
+            "access_type": "index_distance_scan",
+            "actual_rows": 10.0,
+            "actual_loops": 1,
+            "estimated_rows": 2005.0,
+            "actual_last_row_ms": 0.923957,
+            "actual_first_row_ms": 0.91725,
+            "estimated_total_cost": 202.0
+          },
+          {
+            "covering": false,
+            "operation": "Single-row index lookup on labels using PRIMARY (id = t.id)",
+            "index_name": "PRIMARY",
+            "table_name": "labels",
+            "access_type": "index",
+            "actual_rows": 1.0,
+            "key_columns": [
+              "id"
+            ],
+            "schema_name": "review_knn",
+            "actual_loops": 10,
+            "used_columns": [
+              "id",
+              "label"
+            ],
+            "estimated_rows": 1.0,
+            "lookup_condition": "id = t.id",
+            "index_access_type": "index_lookup",
+            "lookup_references": [
+              "review_knn.t.id"
+            ],
+            "actual_last_row_ms": 0.0011289,
+            "actual_first_row_ms": 0.001108,
+            "estimated_total_cost": 0.25004987531172074
+          }
+        ],
+        "join_type": "inner join",
+        "operation": "Nested loop inner join",
+        "access_type": "join",
+        "actual_rows": 10.0,
+        "actual_loops": 1,
+        "estimated_rows": 2005.0,
+        "join_algorithm": "nested_loop",
+        "actual_last_row_ms": 0.938041,
+        "actual_first_row_ms": 0.925416,
+        "estimated_total_cost": 903.75
+      }
+    ],
+    "operation": "Limit: 10 row(s)",
+    "access_type": "limit",
+    "actual_rows": 10.0,
+    "actual_loops": 1,
+    "limit_offset": 0,
+    "estimated_rows": 10.0,
+    "actual_last_row_ms": 0.93921,
+    "actual_first_row_ms": 0.92625,
+    "estimated_total_cost": 903.75
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

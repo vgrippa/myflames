@@ -1,0 +1,1 @@
+ERROR 6412 (0A000) at line 1: EXPLAIN ANALYZE does not support FORMAT=JSON with explain_json_format_version=1.

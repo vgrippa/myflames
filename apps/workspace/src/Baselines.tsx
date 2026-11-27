@@ -11,6 +11,7 @@ import {
   type Baseline, type BaselineItem, type BaselineKind, type ReadingServer,
 } from "./baselinesApi";
 import { baselineMismatch, savedAtText } from "./baselineCompare";
+import { villageSQLLabel } from "./serverIdentity";
 import { ActionButton, ActionStatus, ConfirmSheet, FormGrid, FormRow, closePopovers, useAction } from "./kit";
 import "./baselines.css";
 
@@ -99,7 +100,7 @@ export function SaveBaselineSheet({ kind, connection, server, defaultName, repor
 
 /** One line about a saved baseline: its server version and what it held. */
 function itemDetail(item: BaselineItem) {
-  const server = `${item.server.product} ${item.server.version}`;
+  const server = villageSQLLabel(item.server.version, item.server.server_base, item.server.product) || `${item.server.product} ${item.server.version}`;
   if (item.kind === "health") {
     const counts = [item.problem ? `${item.problem} ${item.problem === 1 ? "problem" : "problems"}` : "",
       item.watch ? `${item.watch} to watch` : ""].filter(Boolean).join(", ");

@@ -161,7 +161,8 @@ def normalize_privilege(name, engine):
     return _MARIADB_DISPLAY_NAMES.get(name, name) if engine == 'mariadb' else name
 
 
-def builtin_dynamic_privileges(version):
+def builtin_dynamic_privileges(version, flavor=None):
+    flavor = flavor or identity_from_version(version)["flavor"]
     version = version_tuple(version)
     names = set()
     for since, added in _MYSQL_DYNAMIC_SINCE:
@@ -169,10 +170,13 @@ def builtin_dynamic_privileges(version):
             names.update(added.split())
     if version >= (8, 4, 0):
         names.discard('SET_USER_ID')
+    # Registered by VillageSQL init_extension_infrastructure, independent of codebase.
+    if flavor == 'villagesql':
+        names.add('EXTENSION_ADMIN')
     return names
 
 
-def privilege_catalog(engine, version, rows=None):
+def privilege_catalog(engine, version, rows=None, flavor=None):
     """Valid ON privileges by level. SHOW PRIVILEGES supplies presence only.
 
     ``None`` means the read failed and uses the versioned static fallback.
@@ -180,10 +184,11 @@ def privilege_catalog(engine, version, rows=None):
     dynamic privilege identifiers. USAGE, ALL and GRANT OPTION are separate
     statement semantics, not privilege checkboxes.
     """
+    flavor = flavor or identity_from_version(version)["flavor"]
     source = 'server' if rows else 'static'
     present = None if not rows else {normalize_privilege(row[0], engine) for row in rows if row}
     if engine == 'mysql':
-        dynamic = (builtin_dynamic_privileges(version) if present is None else
+        dynamic = (builtin_dynamic_privileges(version, flavor) if present is None else
                    {n for n in present - STATIC - {'PROXY'} if re.fullmatch(r'[A-Z][A-Z0-9_]*', n)})
     else:
         dynamic = set()
@@ -195,8 +200,10 @@ def privilege_catalog(engine, version, rows=None):
         if level == 'global':
             names |= dynamic
         catalog[level] = [dict(name=name,
-                               description=_PRIVILEGE_DESCRIPTIONS.get(name,
-                                   'Server-registered privilege.' if name in dynamic else 'Server administration.'),
+                               description=('Install, uninstall and change VillageSQL extensions.'
+                                   if name == 'EXTENSION_ADMIN' and flavor == 'villagesql' else
+                                   _PRIVILEGE_DESCRIPTIONS.get(name,
+                                   'Server-registered privilege.' if name in dynamic else 'Server administration.')),
                                dynamic=name in dynamic, grantable_here=True)
                           for name in sorted(names)]
     return catalog, {'engine': engine, 'version': version, 'source': source}

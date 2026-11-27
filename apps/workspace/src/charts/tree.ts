@@ -86,6 +86,7 @@ export function rowInfo(node: ChartNode, rootTotal: number): string {
   if (estimate) parts.push(estimate);
   const cond = node.condition;
   if (cond) parts.push("Cond: " + (cpLength(cond) > 52 ? cpSlice(cond, 0, 50) + "…" : cond));
+  if (node.access_description) parts.push(node.access_description);
   return parts.join(SEP);
 }
 

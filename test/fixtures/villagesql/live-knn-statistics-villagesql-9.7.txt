@@ -1,0 +1,2 @@
+def	review	vsql_knn	1	review	knn_vec	1	vec	A	1	NULL	NULL		HNSW			YES	NULL
+def	review	vsql_knn	0	review	PRIMARY	1	id	A	2000	NULL	NULL		BTREE			YES	NULL

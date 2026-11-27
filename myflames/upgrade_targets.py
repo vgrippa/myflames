@@ -491,6 +491,11 @@ def install_method(variables):
     if out['build_id']:
         evidence.append('build_id %s identifies this exact build (no public index maps it to a package)'
                         % out['build_id'][:16])
+    if product_identity(version, comment)['flavor'] == 'villagesql':
+        out['label'] = 'VillageSQL packaging (not identified)'
+        evidence.append('VillageSQL publishes its own packages; MySQL installation layouts do not establish '
+                        'how this server was packaged.')
+        return out
     archive = re.search(r'((?:mysql|Percona-Server)-[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,3}(?:-[0-9]{1,4})?'
                         r'-(?:linux|Linux)[A-Za-z0-9._-]{0,60})', basedir)
     if os_name.startswith('win'):
@@ -689,6 +694,13 @@ def build_report(layout, mysql=None, percona=None, kinds=None, shell=None, avail
                                                     'product': identity['product'], 'version': server.get('version')},
               'install': install, 'targets': [], 'recommended': None, 'not_direct': [], 'unclassified': [],
               'unavailable': [], 'notes': []}
+    if identity['flavor'] == 'villagesql':
+        report['source'] = {'kind': 'none',
+                            'label': 'VillageSQL publishes its own releases (0.0.x); upgrade targets are not listed here.',
+                            'urls': [], 'checked_at': None, 'error': None}
+        report['guidance'] = {'text': 'Use VillageSQL release and upgrade guidance for this server.',
+                              'command': None, 'url': None}
+        return report
     if identity['engine'] == 'mariadb':
         report['source'] = {'kind': 'none', 'label': 'MariaDB versions are not listed here yet; type the target.',
                             'urls': [], 'checked_at': None, 'error': None}
@@ -762,7 +774,7 @@ def upgrade_targets(conn, tools=None, fetch=None, deadline=None):
     identity = product_identity(layout['version'], layout.get('version_comment', ''))
     mysql = percona = None
     kinds = series_kinds()
-    if identity['engine'] == 'mysql' and identity['flavor'] != 'percona':
+    if identity['engine'] == 'mysql' and identity['flavor'] not in ('percona', 'villagesql'):
         mysql = _cached(('mysql', fetch), _load_mysql(fetch), deadline)
     elif identity['flavor'] == 'percona' and 'XtraDB Cluster' not in identity['product']:
         root = _cached(('percona-root', fetch), lambda d: _load_root(fetch, d), deadline)

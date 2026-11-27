@@ -28,6 +28,7 @@ import uuid
 
 from _client_tools_fixture import private_client_dir
 from _grants_fixtures import grants_batch
+from _perf_replay import expanded_preflight_sql
 from _reviewed_replay import answer_evidence, evidence_options
 
 from myflames import connector, dbops, lifecycle as lc, privileges
@@ -215,6 +216,12 @@ class StrictReplay(object):
     """Exact recorded SQL replies plus explicitly labelled synthetic supplements."""
     def __init__(self, calls, deny=None):
         self.answers = {call['sql']: call['result'] for call in calls}
+        # SHOW omits unknown names on non-VillageSQL servers. Reuse the
+        # strict optional-name alias without replacing any recorded reply.
+        for call in calls:
+            expanded = expanded_preflight_sql(call['sql'], call['result'])
+            if expanded != call['sql'] and expanded not in self.answers:
+                self.answers[expanded] = call['result']
         self.deny = deny
         self.calls = []
 

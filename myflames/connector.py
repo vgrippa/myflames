@@ -39,7 +39,7 @@ import tempfile
 import threading
 import time
 
-from .server_info import detect_flavor, server_version_tuple
+from .server_info import detect_flavor, product_identity, server_version_tuple
 
 # Bound both pipes independently: stderr can be large even for a tiny result.
 MAX_STDOUT_BYTES = 64 * 1024 * 1024
@@ -933,6 +933,7 @@ class MySQLConnection:
         self._defaults_file_path = None
         self._version_cache = None
         self._version_comment_cache = None
+        self._villagesql_version_cache = None
         self._is_mariadb_cache = None
 
     # ---- binary + defaults-file plumbing --------------------------------
@@ -1832,6 +1833,28 @@ class MySQLConnection:
             rows = self.query_rows("SELECT @@version_comment")
             self._version_comment_cache = rows[0][0] if rows and rows[0] else ""
         return self._version_comment_cache
+
+    def villagesql_server_version(self, version=None, version_comment=None):
+        """Optional VillageSQL codebase, cached even when unavailable.
+
+        The product is checked first: other servers reject this variable.
+        Callers that already read identity can avoid duplicate metadata reads.
+        """
+        version = self.server_version() if version is None else version
+        if version_comment is None:
+            try:
+                version_comment = self.server_version_comment()
+            except ConnectorError:
+                version_comment = ""
+        if product_identity(version, version_comment)["flavor"] != "villagesql":
+            return None
+        if self._villagesql_version_cache is None:
+            try:
+                rows = self.query_rows("SELECT @@villagesql_server_version")
+                self._villagesql_version_cache = rows[0][0] if rows and rows[0] else ""
+            except ConnectorError:
+                self._villagesql_version_cache = ""
+        return self._villagesql_version_cache or None
 
     def is_mariadb(self):
         """Return True if the server is MariaDB (cached)."""

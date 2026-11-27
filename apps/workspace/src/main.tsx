@@ -100,7 +100,7 @@ import {
   type SessionConnection,
   type SlowState,
 } from "./session";
-import { engineName, metrics, views } from "./planDisplay";
+import { captureServerLabel, metrics, views } from "./planDisplay";
 import logo from "../../../docs/brand/myflames-app-logo.png";
 // Places and views that are not on the first screen load their chunk when
 // they first mount (lazy.tsx); Home, the sidebar and the shell stay here.
@@ -3607,7 +3607,7 @@ function App() {
         </main>
         {ready && <WindowStatusBar scope={statusScope} lead={safetyStatus}
           fallback={plansStatus ? {
-            engineVersion: mode === "inspect" && active?.capture?.server_version ? `${engineName(active.capture.engine)} ${active.capture.server_version}` : undefined,
+            engineVersion: captureServerLabel(mode, active?.capture),
             connectionState: mode === "compare" ? "Compared plans" : active?.capture ? "Captured plan" : active?.origin === "sample" ? "Sample plan" : active ? "Imported plan" : "No plan selected",
           } : connectionPlace ? { connectionState: placeRequest.host ? connectionLabel(placeRequest) : "No connection" } : {}} />}
       </div>

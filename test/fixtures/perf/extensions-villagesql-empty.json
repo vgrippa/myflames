@@ -1,0 +1,79 @@
+{
+ "server": "villagesql-empty",
+ "source": "synthetic empty state derived from extensions-villagesql-8.4.json; installed extension, registration, dependency and dotted variable rows removed; server settings and lifetime status counters retained from live recording",
+ "args": {},
+ "calls": [
+  [
+   "/*myflames:extensions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('performance_schema', 'userstat', 'version', 'version_comment', 'villagesql_server_version')",
+   "performance_schema\tON\nversion\t8.4.11-villagesql-0.0.8\nversion_comment\tSource distribution\nvillagesql_server_version\tmysql-8.4_0.0.8\n"
+  ],
+  [
+   "/*myflames:extensions*/ SHOW GLOBAL STATUS WHERE Variable_name = 'Uptime'",
+   "Uptime\t2951\n"
+  ],
+  [
+   "/*myflames:extensions*/ SELECT EXTENSION_NAME, EXTENSION_VERSION, PENDING_VERSION, PENDING_REQUESTED_AT, PENDING_LAST_ERROR, PENDING_LAST_ERROR_AT FROM INFORMATION_SCHEMA.EXTENSIONS ORDER BY EXTENSION_NAME",
+   ""
+  ],
+  [
+   "/*myflames:extensions*/ SELECT EXTENSION_NAME, NEGOTIATED_PROTOCOL, REGISTRATION_JSON FROM INFORMATION_SCHEMA.EXTENSION_REGISTRATION",
+   ""
+  ],
+  [
+   "/*myflames:extensions*/ SHOW GLOBAL VARIABLES WHERE Variable_name IN ('veb_dir','vsql_allow_preview_extensions','villagesql_vef_server_protocol','villagesql_schema_version','villagesql_server_version','villagesql_build_info') OR Variable_name LIKE '%.%'",
+   "veb_dir\t/usr/lib/veb/\nvillagesql_build_info\t{\"git_sha\":\"unknown\",\"is_dirty\":false,\"files_added\":0,\"files_deleted\":0,\"files_modified\":0,\"build_timestamp\":\"\",\"build_host\":\"\",\"build_os\":\"Linux-7.0.0-1017-azure\",\"build_arch\":\"aarch64\"}\nvillagesql_schema_version\tmysql-8.4_0.0.8\nvillagesql_server_version\tmysql-8.4_0.0.8\nvillagesql_vef_server_protocol\t6\nvsql_allow_preview_extensions\tON\n"
+  ],
+  [
+   "/*myflames:extensions*/ SHOW GLOBAL STATUS WHERE Variable_name IN ('Villagesql_veb_cache_repaired','Com_install_extension','Com_uninstall_extension') OR Variable_name LIKE '%.%'",
+   "Com_install_extension\t28\nCom_uninstall_extension\t8\nVillagesql_veb_cache_repaired\t0\n"
+  ],
+  [
+   "/*myflames:extensions*/ SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE DATA_TYPE LIKE '%.%' AND TABLE_SCHEMA NOT IN ('mysql', 'performance_schema', 'information_schema', 'sys', 'villagesql') ORDER BY 1,2,3 LIMIT 501",
+   ""
+  ],
+  [
+   "/*myflames:extensions*/ SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE, PARAMETER_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.PARAMETERS WHERE DATA_TYPE LIKE '%.%' AND SPECIFIC_SCHEMA NOT IN ('mysql', 'performance_schema', 'information_schema', 'sys', 'villagesql') ORDER BY 1,2,3,4 LIMIT 201",
+   ""
+  ]
+ ],
+ "report": {
+  "schema_version": "extensions-1.0",
+  "engine": "mysql",
+  "flavor": "villagesql",
+  "server_product": "VillageSQL",
+  "server_version": "8.4.11-villagesql-0.0.8",
+  "taken_at": "2026-11-27T13:06:57.380473+00:00",
+  "uptime_s": 2951,
+  "performance_schema": true,
+  "server_base": "mysql",
+  "available": true,
+  "reason": null,
+  "settings": {
+   "veb_dir": "/usr/lib/veb/",
+   "preview_extensions": true,
+   "server_protocol": 6,
+   "schema_version": "mysql-8.4_0.0.8",
+   "codebase": "mysql-8.4_0.0.8",
+   "build": {
+    "git_sha": "unknown",
+    "is_dirty": false
+   }
+  },
+  "status": {
+   "veb_cache_repaired": 0,
+   "install_count": 28,
+   "uninstall_count": 8
+  },
+  "extensions": [],
+  "other_variables": [],
+  "other_variables_truncated": false,
+  "summary": {
+   "installed": 0,
+   "pending": 0,
+   "failing": 0,
+   "deprecated_protocol": 0,
+   "unsupported_protocol": 0
+  },
+  "notes": []
+ }
+}

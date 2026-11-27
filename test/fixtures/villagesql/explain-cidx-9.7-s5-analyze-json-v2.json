@@ -1,0 +1,59 @@
+{
+  "query": "/* select#1 */ select `s`.`id` AS `id` from (/* select#2 */ select `review_knn`.`t`.`id` AS `id` from `review_knn`.`t` order by vsql_knn_index_test.kvec_l2_distance(`review_knn`.`t`.`v`,'[1,0,0,0]') limit 10) `s`",
+  "query_plan": {
+    "inputs": [
+      {
+        "inputs": [
+          {
+            "limit": 10,
+            "inputs": [
+              {
+                "operation": "Custom index distance scan on idx_v",
+                "access_type": "index_distance_scan",
+                "actual_rows": 10.0,
+                "actual_loops": 1,
+                "estimated_rows": 2005.0,
+                "actual_last_row_ms": 0.912626,
+                "actual_first_row_ms": 0.905666,
+                "estimated_total_cost": 202.0
+              }
+            ],
+            "operation": "Limit: 10 row(s)",
+            "access_type": "limit",
+            "actual_rows": 10.0,
+            "actual_loops": 1,
+            "limit_offset": 0,
+            "estimated_rows": 10.0,
+            "actual_last_row_ms": 0.91396,
+            "actual_first_row_ms": 0.906667,
+            "estimated_total_cost": 202.0
+          }
+        ],
+        "operation": "Materialize",
+        "access_type": "materialize",
+        "actual_rows": 10.0,
+        "actual_loops": 1,
+        "estimated_rows": 10.0,
+        "actual_last_row_ms": 0.92325,
+        "actual_first_row_ms": 0.92325,
+        "estimated_total_cost": 204.30414746543778,
+        "estimated_first_row_cost": 204.30414746543778
+      }
+    ],
+    "operation": "Table scan on s",
+    "table_name": "s",
+    "access_type": "table",
+    "actual_rows": 10.0,
+    "actual_loops": 1,
+    "used_columns": [
+      "id"
+    ],
+    "estimated_rows": 10.0,
+    "actual_last_row_ms": 0.925623,
+    "actual_first_row_ms": 0.924875,
+    "estimated_total_cost": 206.92914746543778,
+    "estimated_first_row_cost": 204.56664746543777
+  },
+  "query_type": "select",
+  "json_schema_version": "2.0"
+}

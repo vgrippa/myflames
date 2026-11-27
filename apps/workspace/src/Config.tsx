@@ -51,6 +51,7 @@ type ModeInfo = { available: boolean; reason: string | null; recommended: boolea
 /** variable-1.0: one variable as the server reports it. */
 export type VariableInfo = {
   schema_version: "variable-1.0";
+  sensitive?: boolean;
   engine: "mysql" | "mariadb";
   server_version: string | null;
   name: string;
@@ -109,6 +110,7 @@ export type VariableChange = {
   message: string;
   statement: string | null;
   adjusted: boolean;
+  value_matched?: boolean | null;
   before: VariableValues | null;
   after: (VariableValues & { resize_status?: string | null }) | null;
 };
@@ -207,13 +209,17 @@ function firstMode(info: VariableInfo, wanted: VariableMode | null): VariableMod
 }
 
 function startValue(info: VariableInfo, mode: VariableMode | null) {
+  if (info.sensitive) return "";
   const raw = (mode === "session" ? info.session_value : info.global_value) ?? info.session_value ?? "";
   if (info.type === "boolean") return ["1", "ON", "TRUE", "YES"].includes(raw.toUpperCase()) ? "ON" : "OFF";
   if (info.type === "enum" && info.values) return info.values.find((v) => v.toLowerCase() === raw.toLowerCase()) || info.values[0] || raw;
   return raw;
 }
 
+const SENSITIVE_VALUE_HINT = "The current value is hidden. Type the complete new value; the server checks it.";
+
 function rangeHint(info: VariableInfo) {
+  if (info.sensitive) return SENSITIVE_VALUE_HINT;
   const fmt = (n: number | null) => (n === null ? "?" : info.type === "bytes" ? bytes(n) : n.toLocaleString());
   const range = info.min !== null || info.max !== null ? ` from ${fmt(info.min)} to ${fmt(info.max)}` : "";
   switch (info.type) {
@@ -351,6 +357,7 @@ function VariableSheet({
   const [readError, setReadError] = useState("");
   const [mode, setMode] = useState<VariableMode | null>(null);
   const [value, setValue] = useState("");
+  const [valueEntered, setValueEntered] = useState(false);
   const [isNull, setIsNull] = useState(false);
   const [plan, setPlan] = useState<VariablePlan | null>(null);
   const [planning, setPlanning] = useState(false);
@@ -372,7 +379,9 @@ function VariableSheet({
         const m = request.exactMode ? request.mode : firstMode(v, request.mode);
         setInfo(v);
         setMode(m);
-        setValue(request.draft ?? startValue(v, m));
+        const draft = v.sensitive && request.draft?.includes("[redacted]") ? undefined : request.draft;
+        setValue(draft ?? startValue(v, m));
+        setValueEntered(draft !== undefined);
         setIsNull(request.draft === null || (request.draft === undefined && v.nullable && (m === "session" ? v.session_value : v.global_value) === null));
       })
       .catch((e) => {
@@ -389,8 +398,13 @@ function VariableSheet({
   const planMode: VariableMode | null = undoUnavailable ? null : mode ?? (info?.exists ? "global" : null);
   const requestedValue = (planMode ?? request.mode) === "reset_persist" || isNull ? null : value;
   const loaded = !!info;
+  const needsValue = !!info?.sensitive && planMode !== "reset_persist" && !valueEntered;
   useEffect(() => {
-    if (!loaded || !planMode) return;
+    if (!loaded || !planMode || needsValue) {
+      setPlanning(false);
+      setPlan(null);
+      return;
+    }
     const id = ++seq.current;
     const controller = new AbortController();
     setPlanning(true);
@@ -421,14 +435,14 @@ function VariableSheet({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [loaded, planMode, requestedValue, via, name]);
+  }, [loaded, planMode, requestedValue, via, name, needsValue]);
 
   const current = !!plan && plan.mode === planMode && plan.requested === requestedValue && !planning;
   const generic = usePrivilege(MODE_ACTION[planMode || "global"]);
   // Neither the variable nor an ordinary SET SESSION can be judged by a
   // generic restricted-variable answer. Wait for this mode's exact hint.
   const gate = current && plan?.privileges ? targetPrivilege(generic, plan.privileges) : privilegeResult();
-  const ready = !undoUnavailable && current && !!mode && plan?.status === "ready";
+  const ready = !needsValue && !undoUnavailable && current && !!mode && plan?.status === "ready";
   const stale = activeKey !== via.key;
   const refused = current && plan?.policy?.action === "refuse";
   const blocked = policy?.blocked || (via.connection.read_only ? "This connection is read-only." : "");
@@ -594,7 +608,7 @@ function VariableSheet({
           {info.exists && mode !== "reset_persist" && (
             <div className="variable-field">
               <label htmlFor={valueId}>New value</label>
-              <ValueField info={info} value={value} onChange={setValue} id={valueId} hintId={hintId} disabled={busy || isNull} />
+              <ValueField info={info} value={value} onChange={v => { setValue(v); setValueEntered(true); }} id={valueId} hintId={hintId} disabled={busy || isNull} />
               {info.nullable && (
                 <label><input type="checkbox" checked={isNull} disabled={busy} onChange={(e) => setIsNull(e.target.checked)} /> Set SQL NULL</label>
               )}
@@ -718,13 +732,14 @@ function ChangeResultNote({ note, currentKey, onDismiss, noteRef }: { note: Chan
     if (note.mode === "session") rows.push(["Session", valueText(note.type, r.before.session), valueText(note.type, r.after.session)]);
     if (note.mode !== "global" && note.mode !== "session") rows.push(["mysqld-auto.cnf", persistedText(note.type, r.before.persisted_state, r.before.persisted), persistedText(note.type, r.after.persisted_state, r.after.persisted)]);
   }
-  const tone = note.status === "changed" ? "ok" : note.status === "denied" || note.status === "error" || note.status === "failed" ? "danger" : "warn";
+  const alreadySet = note.status === "unchanged" && r?.value_matched === true;
+  const tone = note.status === "changed" || alreadySet ? "ok" : note.status === "denied" || note.status === "error" || note.status === "failed" ? "danger" : "warn";
   // The rows already show before and after; the message adds only what they cannot (a rounding, a session, a reset).
   const plain = note.status === "changed" && !r?.adjusted && rows.length > 0 && ["global", "persist", "persist_only"].includes(note.mode);
   return (
     <div ref={noteRef} tabIndex={-1} className={`variable-result is-${tone}`} role={note.status === "changed" ? "status" : "alert"} data-status={note.status}>
       <p>
-        <strong>{HEADLINE[note.status] || "Nothing was sent."}</strong> {plain ? `${note.name}, ${MODES[note.mode].label.toLowerCase()}.` : note.message}
+        <strong>{alreadySet ? "Already set." : HEADLINE[note.status] || "Nothing was sent."}</strong> {plain ? `${note.name}, ${MODES[note.mode].label.toLowerCase()}.` : note.message}
       </p>
       {note.via && note.via.key !== currentKey && <p className="hint">Sent on {note.via.label}, not the connection in use.</p>}
       {rows.length > 0 && (
@@ -804,6 +819,7 @@ function unmodifiable(p: ConfigParameter, engine: string | null) {
   return "myflames cannot tell whether it can change while running.";
 }
 function draftValue(p: ConfigParameter) {
+  if (p.sensitive) return "";
   if (p.type === "boolean") return ["1", "ON", "TRUE", "YES"].includes((p.value || "").toUpperCase()) ? "ON" : "OFF";
   if (p.type === "enum") return p.values?.find(v => v.toLowerCase() === (p.value || "").toLowerCase()) || p.value || "";
   return p.value ?? "";
@@ -1004,7 +1020,7 @@ function findings(checks: ConfigCheck[]) {
   return checks.filter(c => c.status in SEVERITY).sort((a, b) => SEVERITY[a.status] - SEVERITY[b.status]);
 }
 /** Only the official manuals the desktop app opens (apps/desktop/backend.cjs). */
-const DOC_HOSTS = new Set(["dev.mysql.com", "mariadb.com", "docs.percona.com"]);
+const DOC_HOSTS = new Set(["dev.mysql.com", "mariadb.com", "docs.percona.com", "villagesql.com"]);
 export function documentationLink(doc: ConfigParameter["documentation"]): { url: string; source: string } | null {
   if (!doc || typeof doc.url !== "string") return null;
   try {
@@ -1139,7 +1155,7 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
   function discard(name: string) { setDrafts(d => { const next = { ...d }; delete next[name]; return next; }); }
   function stage(p: ConfigParameter, value: string) {
     if (editOff || unmodifiable(p, report?.engine || null)) return;
-    setDrafts(d => { const next = { ...d }; if (value === draftValue(p)) delete next[p.name]; else next[p.name] = value; return next; });
+    setDrafts(d => { const next = { ...d }; if (!p.sensitive && value === draftValue(p)) delete next[p.name]; else next[p.name] = value; return next; });
   }
   function cancelEditing() { setDrafts({}); setEditing(false); setPreview(false); if (filter === "pending") setFilter("all"); }
   function editParameter(p: ConfigParameter) {
@@ -1174,7 +1190,7 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
     await load(true);
   }
   const columns: Column<ConfigParameter>[] = [
-    { key: "name", label: "Name", primary: true, width: 260, sort: p => p.name, render: p => <span className="parameter-name">{recommendation(p) && <StatusDot tone={recommendation(p)!.status} />}<code>{p.name}</code>{p.vendor === "percona" && <Pill title="A variable Percona Server adds to MySQL">Percona</Pill>}</span> },
+    { key: "name", label: "Name", primary: true, width: 260, sort: p => p.name, render: p => <span className="parameter-name">{recommendation(p) && <StatusDot tone={recommendation(p)!.status} />}<code>{p.name}</code>{p.vendor === "percona" && <Pill title="A variable Percona Server adds to MySQL">Percona</Pill>}{p.vendor === "villagesql" && <Pill title="A variable VillageSQL adds to MySQL">VillageSQL</Pill>}</span> },
     { key: "value", label: "Value", width: editing ? 320 : 180, minWidth: editing ? 300 : undefined, sort: p => p.value, render: p => {
       const staged = Object.prototype.hasOwnProperty.call(drafts, p.name);
       const reason = unmodifiable(p, report?.engine || null);
@@ -1183,10 +1199,10 @@ function ConfigListView({ connection, disabled, onBack, selection, report: bound
         return <span title={reason || (p.truncated ? "Value truncated" : f.raw || f.text)}>{f.text}{p.truncated ? "…" : ""}</span>;
       }
       const id = `parameter-value-${p.name}`;
-      return <span className="parameter-cell-editor" onKeyDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
+      return <span className={`parameter-cell-editor${p.sensitive ? " parameter-cell-editor-sensitive" : ""}`} onKeyDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
         {staged && drafts[p.name] === "DEFAULT" ? <code>DEFAULT</code> : <ValueField info={p} label={p.name} value={staged ? drafts[p.name] : draftValue(p)} onChange={v => stage(p, v)} id={id} hintId={`${id}-hint`} disabled={editOff} />}
-        <span className="account-sr" id={`${id}-hint`}>{p.name}. {allowedValues(p)}</span>
         {staged && <><span className="hint parameter-current" title={`Current value: ${valueText(p.type, p.value)}`}>{valueText(p.type, p.value)}</span><button type="button" className="text-button" aria-label={`Discard ${p.name}`} onClick={() => discard(p.name)}>Discard</button></>}
+        <span className={p.sensitive ? "hint" : "account-sr"} id={`${id}-hint`}>{p.sensitive ? SENSITIVE_VALUE_HINT : `${p.name}. ${allowedValues(p)}`}</span>
       </span>;
     } },
     { key: "allowed", label: "Allowed values", width: 190, render: p => <span title={allowedValues(p)}>{allowedValues(p)}</span> },

@@ -5,11 +5,6 @@
 // (clientToolsText.ts) appears everywhere; nothing else builds that text.
 import { useEffect, useRef, useState, type Ref, type RefObject } from "react";
 import {
-  chooseClientTools,
-  clientTools,
-  shellCancel,
-  shellInstall,
-  shellStatus,
   type ClientToolUse,
   type ClientTools,
   type ClientToolsEngine,
@@ -19,6 +14,7 @@ import {
   type ManagedShellJob,
   type ManagedShellStatus,
 } from "./api";
+import { chooseClientTools, clientTools, shellCancel, shellInstall, shellStatus } from "./clientToolsApi";
 import { connectionLabel } from "./binding";
 import { toolUseLine, type ToolLineServer } from "./clientToolsText";
 import { useConnectionInUse } from "./connectionInUse";

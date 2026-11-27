@@ -12,7 +12,7 @@ const digest = src('QueryDigest.tsx');
 const report = /function textReport\(\) \{([\s\S]*?)\n  \}/.exec(digest);
 assert.ok(report, 'digest text report exists');
 assert.match(report[1], /"# myflames query digest"/);
-assert.match(report[1], /# Server: \$\{engineName\(report\.engine, report\.version, report\.server_product\)\}/);
+assert.match(report[1], /# Server: \$\{engineName\(report\.engine, report\.version, report\.server_product, report\.server_base\)\}/);
 assert.match(report[1], /# Source: \$\{sourceOf\(report\)\}/, 'the report names where its numbers come from');
 assert.doesNotMatch(report[1], /95%|percentile|\bmin\b/i, 'no statistic the digest table does not record');
 assert.doesNotMatch(digest, /pt-query-digest/i, 'Query digest never describes itself as pt-query-digest');

@@ -4,6 +4,7 @@ import { useId, useMemo } from "react";
 import type { Selection } from "./kit";
 import { Icon } from "./components";
 import { ServerGlyph } from "./TopologyPresentation";
+import { villageSQLLabel } from "./serverIdentity";
 import type { MapCluster, MapEdge, MapNode, TopologyMap as MapReport } from "./topologyApi";
 
 const CARD_W = 220;
@@ -438,7 +439,7 @@ export function TopologyMap({ map, selection, onOpenNode, openPlaceName }: { map
               : null;
             const tone = peer ? "unknown" : node.outcome === "failed" ? "problem" : node.outcome === "not_reached" ? "watch" : stateTone(node.state);
             const status = peer ? "Not in this group" : node.outcome !== "read" ? OUTCOME[node.outcome] : node.state || "State not reported";
-            const engine = peer ? "Reported peer" : [node.product || (node.engine === "mariadb" ? "MariaDB" : node.engine === "mysql" ? "MySQL" : "Server"), node.version].filter(Boolean).join(" ");
+            const engine = peer ? "Reported peer" : villageSQLLabel(node.version, node.server_base, node.product) || [node.product || (node.engine === "mariadb" ? "MariaDB" : node.engine === "mysql" ? "MySQL" : "Server"), node.version].filter(Boolean).join(" ");
             const nodeLabel = peer && !node.host && /^\?(?::\d+)?$/.test(node.label) ? "Replica without a reported address" : node.label;
             // A member card navigates to its place (onOpenNode); only a peer
             // card toggles the inspector, so only a peer is a pressed toggle.

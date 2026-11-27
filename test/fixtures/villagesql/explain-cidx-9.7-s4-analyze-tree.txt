@@ -1,0 +1,3 @@
+-> Sort: vsql_knn_index_test.kvec_l2_distance(t.v,'[1,0,0,0]')  (cost=202 rows=2005) (actual time=1.06..1.12 rows=2005 loops=1)
+    -> Table scan on t  (cost=202 rows=2005) (actual time=0.0906..0.84 rows=2005 loops=1)
+

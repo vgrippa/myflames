@@ -203,6 +203,59 @@ class TestGaMatrixServers(unittest.TestCase):
         self.assertIn("percona-8.4-replica", out)
         self.assertIn("CREDS_FILE", out)  # the whole header, through Settings
 
+    def test_villagesql_servers_are_pinned_with_unique_ports_and_server_ids(self):
+        import re
+        expected = (("villagesql-8.4", "mysql-8.4", "33384", "119"),
+                    ("villagesql-percona-8.4", "percona-8.4", "33386", "120"),
+                    ("villagesql-9.7", "mysql-9.7", "33397", "121"))
+        names = re.search(r'^ALL="([^"]+)"', self.text, re.M).group(1).split()
+        server_ids = [self.spec(name)[4] for name in names]
+        ports = [self.spec(name)[2] for name in names]
+        self.assertEqual(len(server_ids), len(set(server_ids)), "server IDs must be unique across the entire lab")
+        self.assertEqual(len(ports), len(set(ports)), "ports must be unique across the entire lab")
+        result = subprocess.run(["bash", str(SCRIPTS / "ga-matrix.sh")], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        names_help = result.stdout.decode().split("Names:", 1)[1].split("\n\n", 1)[0]
+        for name, codebase, port, sid in expected:
+            with self.subTest(name=name):
+                self.assertIn(name, names)
+                self.assertIn(name, names_help.split())
+                spec = self.spec(name)
+                self.assertEqual(spec[:5], ["villagesql/server:%s_0.0.8" % codebase,
+                                             "mysql", port, "primary", sid])
+
+    def test_villagesql_flags_and_flavor_without_calling_docker(self):
+        # Exercise the real argument construction with a shell function that
+        # records Docker arguments. No Docker executable or service is used.
+        functions = self.text.rsplit('\nmain "$@"', 1)[0]
+        harness = r'''
+docker() {
+  case "$1" in
+    ps|network) return 0 ;;
+    run) printf '%s\n' "$@" >&2 ;;
+    *) return 97 ;;
+  esac
+}
+ROOT_PASSWORD=synthetic
+printf 'FLAVOR|%s\n' "$(flavor "$1")"
+start_container "$1"
+'''
+        for name, sid, gtid, userstat in (("villagesql-8.4", "119", False, False),
+                                          ("villagesql-percona-8.4", "120", True, True),
+                                          ("villagesql-9.7", "121", True, False)):
+            with self.subTest(name=name):
+                result = subprocess.run(["bash", "-c", functions + harness, "ga-flags-test", name],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.decode(), "FLAVOR|villagesql\n")
+                args = result.stderr.decode().splitlines()
+                self.assertIn("--server-id=" + sid, args)
+                self.assertIn("--innodb-use-native-aio=0", args)
+                self.assertEqual("--gtid-mode=ON" in args, gtid)
+                self.assertEqual("--enforce-gtid-consistency=ON" in args, gtid)
+                self.assertEqual("--userstat=ON" in args, userstat)
+
 
 @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "needs bash")
 class TestKillLabScenarios(unittest.TestCase):

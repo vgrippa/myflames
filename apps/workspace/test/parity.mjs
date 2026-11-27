@@ -17,17 +17,80 @@ import puppeteer from 'puppeteer';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'myflames-parity-'));
+// Exercise large point expressions without checking large, artificial fixture
+// files into the recorded VillageSQL lab-fixture directory.
+const extraSources = `
+def extra_sources():
+    import copy
+    base = json.loads(Path('test/fixtures/villagesql/explain-knn-synthetic-analyze.json').read_text())['inputs'][0]
+    result = []
+    for name, point in [('1536 values', "'[" + ', '.join(['0.12', '0.98'] * 768) + "]'"),
+                        ('51200 characters', "'" + 'x' * 51198 + "'")]:
+        node = dict(base)
+        node['lookup_condition'] = 'embedding <-> ' + point
+        node['condition'] = 'distance(embedding, %s) < 1' % point
+        node['operation'] = 'Index KNN scan on vectors using idx_embedding (%s), limit 5, with index condition: %s' % (node['lookup_condition'], node['condition'])
+        result.append(('synthetic KNN ' + name, json.dumps(node)))
+    for subtype in ('index_scan', 'index_knn_scan'):
+        for loops, rows in [(1, 5), (0, 0), (None, None), (3, 2.5)]:
+            node = dict(base, index_access_type=subtype, actual_loops=loops, actual_rows=rows)
+            if subtype == 'index_scan':
+                node['operation'] = 'Index scan on vectors using idx_embedding'
+                del node['lookup_condition']
+                del node['limit']
+            result.append(('synthetic folded %s %s %s' % (subtype, loops, rows), json.dumps(node)))
+    # Released stop counts include OFFSET; main's own K must survive it.
+    # Include each real envelope and a nested Limit inside materialization.
+    def limit_node(value):
+        if isinstance(value, dict):
+            if value.get('access_type') == 'limit':
+                return value
+            for child in value.values():
+                found = limit_node(child)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = limit_node(child)
+                if found is not None:
+                    return found
+        return None
+    for server in ('8.4', '9.7'):
+        for scenario in ('s1', 's5'):
+            for plan_format in ('json-v2', 'analyze-json-v2'):
+                name = 'explain-cidx-%s-%s-%s.json' % (server, scenario, plan_format)
+                recorded = json.loads((Path('test/fixtures/villagesql') / name).read_text())
+                for variant, count, count_all in [('offset', 15, False), ('negative', -1, False),
+                                                  ('maximum', 18446744073709551615, False),
+                                                  ('count-all', 15, True)]:
+                    node = copy.deepcopy(recorded)
+                    limit_node(node).update(limit=count, limit_offset=5, count_all_rows=count_all)
+                    result.append(('fix1 released ' + variant + ' ' + name, json.dumps(node)))
+    result.append(('fix1 main v1', json.dumps({'query_block': {'select_id': 1, 'table': {
+        'table_name': base['table_name'], 'key': base['index_name'], 'access_type': 'knn_scan',
+        'rows_examined_per_scan': 2005, 'filtered': '100.00'}}})))
+    node = dict(base, estimated_rows=2005.0, actual_rows=3.0)
+    result.append(('fix1 main standalone cap', json.dumps(node)))
+    result.append(('fix1 main own offset', json.dumps({'access_type': 'limit',
+        'operation': 'Limit/Offset: 10/5 row(s)', 'limit': 15, 'limit_offset': 5,
+        'inputs': [dict(base, limit=15)]})))
+    return result
+`;
 execFileSync(process.env.PYTHON || 'python3', ['-c', `
 import glob, json, sys
 from pathlib import Path
 from myflames.exploration import render_exploration, project_tree
 from myflames.output_html_report import _render_svg
-from myflames.parser import parse_explain, flatten_nodes
+from myflames.parser import parse_explain, flatten_nodes, is_knn_scan
 out = Path(sys.argv[1])
 cases = []
-files = sorted(glob.glob('test/fixtures/*.json') + glob.glob('test/*.json'))
-for i, name in enumerate(files):
-    root = parse_explain(Path(name).read_text())
+files = sorted(glob.glob('test/fixtures/*.json') + glob.glob('test/*.json')
+               + glob.glob('test/fixtures/villagesql/explain-knn-*.json')
+               + glob.glob('test/fixtures/villagesql/explain-cidx-*.json'))
+${extraSources}
+sources = [(name, Path(name).read_text()) for name in files] + extra_sources()
+for i, (name, text) in enumerate(sources):
+    root = parse_explain(text)
     nodes = list(flatten_nodes(root))
     variants = [('', [])]
     inner = [n for n in nodes if n.get('children') and n is not root]
@@ -41,11 +104,37 @@ for i, name in enumerate(files):
         (out / (key + '.svg')).write_text(_render_svg(projected, 'workbench', 1200, 'Query plan', 'ms', node_identity=True))
         (out / (key + '.html')).write_text(render_exploration(root, 'workbench', focus_id=focus, collapsed_ids=collapsed))
         cases.append({'key': key, 'name': name, 'focus': focus, 'collapsed': collapsed,
+                      'knn_ids': [n['node_id'] for n in flatten_nodes(projected)
+                                  if is_knn_scan(n['details'])],
                       'visible': len(list(flatten_nodes(projected)))})
 (out / 'cases.json').write_text(json.dumps(cases))
 `, directory], { cwd: root, maxBuffer: 1 << 26 });
 
 const cases = JSON.parse(await fs.readFile(path.join(directory, 'cases.json'), 'utf8'));
+for (const fixture of ['analyze', 'join']) {
+  const name = 'test/fixtures/villagesql/explain-knn-synthetic-' + fixture + '.json';
+  const original = cases.find((item) => item.name === name && !item.focus && !item.collapsed.length);
+  assert.ok(original, name + ': included in Visual Explain parity');
+  assert.equal(original.knn_ids.length, 1, name + ': preserves the KNN operator');
+}
+for (const name of ['fix1 main v1', 'fix1 main standalone cap', 'fix1 main own offset']) {
+  const original = cases.find((item) => item.name === name && !item.focus && !item.collapsed.length);
+  assert.ok(original, name + ': regression included in Visual Explain parity');
+  assert.equal(original.knn_ids.length, 1, name + ': preserves the KNN operator');
+}
+assert.equal(cases.filter(item => item.name.startsWith('fix1 released ') && !item.focus && !item.collapsed.length).length,
+  32, 'offset and unbounded variants cover all eight recorded Limit envelopes');
+for (const server of ['8.4', '9.7']) {
+  for (const shape of ['s1', 's2', 's3', 's4', 's5']) {
+    for (const format of ['json-v1', 'json-v2', 'analyze-json-v2']) {
+      const name = `test/fixtures/villagesql/explain-cidx-${server}-${shape}-${format}.json`;
+      const original = cases.find((item) => item.name === name && !item.focus && !item.collapsed.length);
+      assert.ok(original, name + ': genuine released fixture included in Visual Explain parity');
+      assert.equal(original.knn_ids.length, shape === 's4' ? 0 : 1,
+        name + ': routed custom index or ordinary fallback preserved');
+    }
+  }
+}
 
 // Tree, bar chart and flame graph cases: Python reference SVG + chart data.
 execFileSync(process.env.PYTHON || 'python3', ['-c', `
@@ -57,7 +146,9 @@ from myflames.output_html_report import _render_svg
 from myflames.parser import parse_explain, flatten_nodes
 out = Path(sys.argv[1])
 cases = []
-files = sorted(glob.glob('test/fixtures/*.json') + glob.glob('test/*.json'))
+files = sorted(glob.glob('test/fixtures/*.json') + glob.glob('test/*.json')
+               + glob.glob('test/fixtures/villagesql/explain-knn-*.json')
+               + glob.glob('test/fixtures/villagesql/explain-cidx-*.json'))
 # A 4.1 ms plan whose operators are mostly under 0.5 ms: both renderers must
 # switch to whole microseconds instead of rounding operators away.
 table = lambda op, name, ms, access='table': {'operation': op, 'access_type': access, 'table_name': name, 'actual_last_row_ms': ms}
@@ -68,7 +159,8 @@ small = json.dumps({'operation': 'Nested loop inner join', 'access_type': 'join'
         table('Index lookup on i using item_order (order_id = o.id)', 'items', 2.0, 'index')]},
     {'operation': 'Filter: (u.active = 1)', 'access_type': 'filter', 'actual_last_row_ms': 0.45,
      'inputs': [table('Single-row index lookup on u using PRIMARY (id = o.user_id)', 'users', 0.3, 'index')]}]})
-sources = [(name, Path(name).read_text()) for name in files] + [('synthetic sub-0.5 ms operators', small)]
+${extraSources}
+sources = [(name, Path(name).read_text()) for name in files] + [('synthetic sub-0.5 ms operators', small)] + extra_sources()
 for i, (name, text) in enumerate(sources):
     root = parse_explain(text)
     nodes = list(flatten_nodes(root))
@@ -139,6 +231,7 @@ function extractView(svgRoot, view) {
       return { id: g.getAttribute('data-node-id'), ...rect(r), label: t.textContent,
         tx: num(t.getAttribute('x')), ty: num(t.getAttribute('y')),
         title: (g.querySelector('title')?.textContent || '').split('\n')[0],
+        tooltip: g.querySelector('title')?.textContent || '',
         mark: line ? ['x1', 'y1', 'x2', 'y2'].map((k) => num(line.getAttribute(k))).concat(line.getAttribute('stroke')) : null };
     }) : [];
     result.texts = [];
@@ -199,6 +292,7 @@ let compared = 0;
 let nodesCompared = 0;
 let markedCards = 0;
 let markedRows = 0;
+let knnCards = 0;
 try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1300, height: 1100 });
@@ -254,6 +348,17 @@ try {
       for (const field of ['label', 'aria', 'details', 'teach', 'tooltip', 'role', 'tabindex', 'join', 'vennLabel']) {
         assert.equal(actual[field], expected[field], at + ': ' + field);
       }
+      if (item.knn_ids.includes(actual.id)) {
+        assert.equal(actual.kind, 'index', at + ': KNN uses an index-access card');
+        assert.match(actual.details, /(?:Up to \d+ nearest rows requested|Nearest rows)(?: by .+)? through custom index .+/, at + ': KNN meaning in inspector');
+        assert.doesNotMatch(actual.details, /full table scan|full index scan|reads every index entry/i, at + ': KNN is not an exhaustive scan');
+        if (item.name.startsWith('synthetic KNN ')) {
+          assert.ok(actual.details.includes(item.name.slice('synthetic KNN '.length)), at + ': full point size');
+          assert.ok(actual.details.includes('…'), at + ': shortened point');
+          assert.ok(actual.details.length < 2000, at + ': bounded inspector text');
+        }
+        knnCards++;
+      }
       assert.deepEqual(actual.regions, expected.regions, at + ': Venn regions');
       assert.deepEqual(actual.marks, expected.marks, at + ': row-estimate chip and outline');
       if (expected.marks.length) markedCards++;
@@ -304,6 +409,7 @@ try {
   const fixtures = new Set(cases.map((c) => c.name)).size;
   // Fixtures with a row misestimate exist (the parser's rule), so the marks were compared.
   assert.ok(markedCards >= 6, 'misestimated cards compared: ' + markedCards);
+  assert.ok(knnCards >= 2, 'KNN index-access cards compared: ' + knnCards);
   console.log(`Parity: ${compared} renders across ${fixtures} fixtures (${nodesCompared} nodes, ${markedCards} with row-estimate marks) match the Python SVG: identity, order, kinds, joins, geometry, text, edges, widths, attachment, no overlap`);
 
   // ---- Execution tree, bar chart, flame graph -------------------------
@@ -311,12 +417,63 @@ try {
   const counts = { tree: 0, bargraph: 0, flamegraph: 0 };
   let marks = 0;
   let flameFrames = 0;
+  const knnViews = new Set();
+  const foldedKinds = new Set();
   for (const item of viewCases) {
     const where = item.name + ' ' + item.view + (item.options.inverted ? ' inverted' : '') + (item.focus ? ' focus' : '') + (item.collapsed.length ? ' collapse' : '');
     const [pythonSvg, json] = await Promise.all([
       fs.readFile(path.join(directory, item.key + '.svg'), 'utf8'),
       fs.readFile(path.join(directory, item.key + '.json'), 'utf8'),
     ]);
+    const chartNodes = JSON.parse(json).nodes;
+    const isKnn = (node) => node.index_access_type === 'index_knn_scan'
+      || ['index_distance_scan', 'index_distance', 'knn_scan'].includes(node.access_type);
+    const knnNodes = chartNodes.filter(isKnn);
+    for (const node of chartNodes) {
+      const knn = isKnn(node);
+      if (!knn && !/^Index scan\b/i.test(node.operation)) continue;
+      const metrics = [];
+      if (node.loops !== null) metrics.push(`starts=${node.loops}`);
+      if (node.actual_rows !== null) metrics.push(`rows=${Math.floor(node.actual_rows + 0.5)}`);
+      const identity = knn ? [node.table, node.index].filter(Boolean).join('.') : `${node.table}.${node.index}`;
+      const label = `${knn ? 'KNN SCAN' : 'INDEX SCAN'} [${identity}]`
+        + (knn && node.limit != null ? ` K=${node.limit}` : '')
+        + (metrics.length ? ' ' + metrics.join(' ') : '');
+      assert.equal(node.folded_label, label.replaceAll(';', '_'), where + ': shared folded metrics convention');
+      foldedKinds.add(knn ? 'knn' : 'index');
+    }
+    for (const node of knnNodes) {
+      assert.equal(node.family, 'index_scan', where + ': existing KNN family');
+      assert.equal(node.wb_kind, 'index', where + ': KNN card kind');
+      if (node.limit != null) {
+        assert.ok(Number.isInteger(node.limit) && node.limit >= 0, where + ': KNN limit preserved');
+      }
+      const nearest = node.limit != null ? `Up to ${node.limit} nearest rows requested` : 'Nearest rows';
+      const lookup = node.lookup_condition ? ` by ${node.lookup_condition}` : '';
+      assert.equal(node.access_description, `${nearest}${lookup} through custom index ${node.index || '(not reported)'}`,
+        where + ': Python supplies the KNN description');
+      if (item.name.startsWith('fix1 ')) {
+        const expectedK = item.name.startsWith('fix1 released offset ') ? 10
+          : item.name === 'fix1 main standalone cap' ? 5
+          : item.name === 'fix1 main own offset' ? 15 : undefined;
+        assert.equal(node.limit, expectedK, where + ': source-specific K and missing caps');
+        assert.equal(node.misestimate, undefined, where + ': KNN cap is not a statistics error');
+      }
+      if (item.name.includes('/explain-cidx-')) {
+        assert.equal(node.table, item.name.endsWith('-json-v1.json') ? 't' : '',
+          where + ': only v1 reports the table');
+        const expectedK = !item.name.endsWith('-json-v1.json') && /-s[15]-/.test(item.name) ? 10 : undefined;
+        assert.equal(node.limit, expectedK, where + ': only a direct Limit parent supplies K');
+        assert.equal(node.lookup_condition, undefined, where + ': no invented lookup expression');
+        assert.equal(node.misestimate, undefined, where + ': early stop is not a row misestimate');
+      }
+      if (item.name.startsWith('synthetic KNN ')) {
+        assert.ok(node.lookup_condition.includes(item.name.slice('synthetic KNN '.length)), where + ': full point size');
+        assert.ok(node.lookup_condition.includes('…'), where + ': shortened point');
+        assert.ok(node.lookup_condition.length < 250, where + ': bounded chart-data point');
+        assert.ok(node.full_label.length < 400 && node.operation.length < 400, where + ': bounded labels');
+      }
+    }
     const result = await page.evaluate((source, data, view, options, extractSource) => {
       const extractor = new Function('return ' + extractSource)();
       const host = document.getElementById('host');
@@ -347,6 +504,30 @@ try {
       continue;
     }
     const { python, ts } = result;
+    for (const node of knnNodes) {
+      const rendered = item.view === 'tree' ? ts.rows.find((row) => row.id === node.id)
+        : item.view === 'bargraph' ? ts.bars.find((bar) => bar.id === node.id)
+        : ts.frames.find((frame) => frame.id === node.id);
+      // Focus/collapse can hide an operator. Estimated plans still show all
+      // tree rows, but time charts cannot draw an unmeasured access.
+      if (!rendered) {
+        if (!item.focus && !item.collapsed.length
+            && (item.view === 'tree' || (node.measured && node.total_ms > 0))) {
+          assert.fail(where + ': KNN operator missing');
+        }
+        continue;
+      }
+      const description = item.view === 'flamegraph' ? rendered.tooltip : rendered.info;
+      assert.ok(description.includes(node.access_description), where + ': KNN description survives rendering');
+      assert.doesNotMatch(description, /full table scan|full index scan|reads every index entry/i,
+        where + ': KNN does not claim an exhaustive scan');
+      if (item.view === 'flamegraph') {
+        assert.ok(rendered.tooltip.startsWith(node.folded_label), where + ': runtime keeps folded metrics');
+        assert.equal(rendered.tooltip, python.frames.find((frame) => frame.id === node.id).tooltip,
+          where + ': complete KNN flame tooltip parity');
+      }
+      knnViews.add(item.name + ' ' + item.view);
+    }
     assert.equal(result.wired, 'true', where);
     assert.deepEqual(ts.size, python.size, where + ': size and viewBox (height + viewBox in lockstep)');
     const sameTexts = (a, b, at) => {
@@ -422,6 +603,8 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.ok(markedRows >= 12, 'row-estimate chips and underlines compared: ' + markedRows);
+  assert.ok(knnViews.size >= 6, 'both KNN fixtures compared in tree, bar and flame charts: ' + knnViews.size);
+  assert.deepEqual(foldedKinds, new Set(['knn', 'index']), 'KNN and ordinary index folded labels checked');
   const viewFixtures = new Set(viewCases.map((c) => c.name)).size;
   console.log(`Parity: tree ${counts.tree}, bar chart ${counts.bargraph}, flame graph ${counts.flamegraph} renders (${flameFrames} frames) across ${viewFixtures} fixtures (${marks} rows/bars/frames) match the Python SVG: identity, order, geometry, colors, labels, details, nesting`);
 } finally {
