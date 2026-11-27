@@ -9540,31 +9540,44 @@ logs in.
   more; its views moved to <member>.`). `usingNote` derives
   `Using <member> from group <group>.` from each place's own request when it
   reads a member other than the group's active member (`req.profile_id !==
-  labState.profile_id`), yielding to `memberNote` when set: Readyset,
-  ProxySQL, Cluster and Replication render `memberNote || placeMemberNote` in
-  the top bar (`.nav-member-note`), whereas Server passes `memberNote ||
-  serverMemberNote` via `groupServer.note` to `Server.tsx`, which renders it in
-  each view header (`.group-server-note` via `ViewServerContext` in
-  `kit.tsx`); the connection's group label (`Group connection <group> · N
-  servers · <member>`) names the active member in use. Because Server views
-  use `useOpenRead`, a Server view that already showed another member's report
-  keeps that report greyed (`otherConnection`) until an explicit **Refresh**.
-  Focus lands on the place heading after a card opens a place, and the Back
-  chip returns to Topology with its tab, scroll and selection, returning focus
-  to the card that was activated. In `main.tsx`, `Server` currently receives
-  `topologyConnection={request}`, so `Server`'s Refresh all for `cluster` and
-  `replication` and its skip-loop banner (`loopsBound`, `loopServer`,
-  `stopLoopNow`) follow `topologyConnection` (the active connection) rather
-  than `clusterRequest`/`replicationRequest`, and `ReplicationPlace`
-  `clusterKind` checks `clusterReport?.key` against `clusterRequest`. Sidebar
-  badges and staleness (`clusterState`, `proxyNav`, `readysetDbStale`/
-  `readysetNavState`, `replicationState`) compare each place's report against
-  `connectionKey` of its own request (`clusterRequest`, `proxyRequest`,
-  `readysetRequest`, `replicationRequest`), `isProxyHere` and `isReadysetHere`
-  check `proxyReport`/`proxyRequest` and `readysetReport`/`readysetRequest`,
-  and `clusterMuted`, `proxyMuted`, `readysetMuted` and `replicationMuted`
-  currently OR in those two flags across places; the connection type strip
-  shows `placeRequest.read_only`, so a member read through a non-active saved
+  labState.profile_id`). The removal notice no longer hides it: the two show
+  together, joined with a space. Readyset, ProxySQL, Cluster and Replication
+  render `[memberNote, placeMemberNote].filter(Boolean).join(" ")` in the top
+  bar (`.nav-member-note`), whereas Server passes `[memberNote,
+  serverMemberNote].filter(Boolean).join(" ")` via `groupServer.note` to
+  `Server.tsx`, which renders it in each view header (`.group-server-note` via
+  `ViewServerContext` in `kit.tsx`). `go()` clears `memberNote` when a place
+  that rendered it (Server's view header, or the top bar of Readyset, ProxySQL,
+  Cluster or Replication) is left; places without a note never showed it, so
+  leaving them keeps it until it is seen once. The connection's group label
+  (`Group connection <group> · N servers · <member>`) names the active member
+  in use. Because Server views use `useOpenRead`, a Server view that already
+  showed another member's report keeps that report greyed (`otherConnection`)
+  until an explicit **Refresh**. Focus lands on the place heading after a card
+  opens a place, and the Back chip returns to Topology with its tab, scroll and
+  selection, returning focus to the card that was activated. `Server` receives
+  `placeConnections={{ replication: replicationRequest, cluster:
+  clusterRequest }}` (`main.tsx`), so its Refresh all reads the `cluster` and
+  `replication` reports on the members the Cluster and Replication places read
+  (`latestPlaceConnections` in `Server.tsx`, falling back to Server's own
+  connection when `placeConnections` is absent), and its skip-loop banner
+  (`loopsBound`, `loopServer`) and a loop's **Stop** (`stopLoopNow`) act on the
+  member the Replication place reads while the Server: control shows another.
+  `ReplicationPlace`'s `clusterKind` checks `clusterReport?.key` against
+  `connectionKey(replicationRequest)`. Sidebar badges and staleness
+  (`clusterState`, `proxyNav`, `readysetDbStale`/`readysetNavState`,
+  `replicationState`) compare each place's report against `connectionKey` of
+  its own request (`clusterRequest`, `proxyRequest`, `readysetRequest`,
+  `replicationRequest`), and `proxyHere(req)` / `readysetHere(req)` prove a
+  product only for the one member that report was read on, so the muted states
+  check them per place: `clusterMuted` adds `proxyHere(clusterRequest)` and
+  `readysetHere(clusterRequest)`, `proxyMuted` adds
+  `readysetHere(proxyRequest)`, `readysetMuted` adds
+  `proxyHere(readysetRequest)` and `replicationMuted` adds
+  `readysetHere(replicationRequest)`; `shownClusterReport` drops the shared
+  cluster report while the Cluster place's member is proven ProxySQL or
+  Readyset by a report read there. The connection type strip shows
+  `placeRequest.read_only`, so a member read through a non-active saved
   connection keeps its own Read-only badge.
 - **Rolling change UI (`RollingChangeSheet.tsx`, `rollingRuns.ts`)**: a
   **Parameters** row's inspector offers **Change on every member…** (disabled
