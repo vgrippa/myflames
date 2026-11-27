@@ -3366,7 +3366,7 @@ def required_privileges(operation, engine, version=(0, 0, 0), variable=None, rea
                 any_of.append(["SUPER"])
             note = "read_only=NO_LOCK_NO_ADMIN (12.0.1 and later) blocks even READ_ONLY ADMIN."
         else:
-            any_of = [["SUPER"], ["CONNECTION_ADMIN"]]
+            any_of = [["CONNECTION_ADMIN"], ["SUPER"]]
             note = "Nobody can write while super_read_only=ON."
     elif operation in _OBJECT_PRIVILEGES:
         any_of = [[_OBJECT_PRIVILEGES[operation]]]

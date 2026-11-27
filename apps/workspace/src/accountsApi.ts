@@ -9,6 +9,7 @@ export type ActionPrivilege = {
   allowed?: boolean | null;
   // privileges.can returns alternatives; the endpoint may flatten them.
   missing: string[] | string[][];
+  grant_sql?: string | null;
   reason: string;
   need?: string;
   note?: string;
@@ -34,6 +35,7 @@ export type PrivilegesReport = {
   schema_version: "privileges-1.0"; account: string; engine?: string; version?: string;
   current_roles?: RoleGrant[]; read_at?: string; actions: Record<string, ActionPrivilege>;
   model?: GrantModel;
+  partial_revokes?: boolean;
 };
 export type AccountRow = AccountName & {
   plugin?: string | null; locked?: boolean | null; expired?: boolean | null;

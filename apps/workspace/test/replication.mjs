@@ -771,6 +771,12 @@ try {
   const loopsBeforeGate = calls(START).length;
   await page.click(confirmButton);
   assert.equal(calls(START).length, loopsBeforeGate);
+  // The denied confirm opens its reason message inside the sheet: the first
+  // Escape closes only the message (focus is on its button), the second the sheet.
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.ok(await page.$("dialog.ops-confirm"), "the first Escape closes only the reason message");
   await page.keyboard.press("Escape"); await closedSheet();
   // MariaDB's counter method must not accidentally use the MySQL GTID key.
   await h.setPrivileges({ skip_gtid: privilegeAnswer("allowed"), skip_counter: privilegeAnswer("denied", "REPLICATION SLAVE ADMIN") });

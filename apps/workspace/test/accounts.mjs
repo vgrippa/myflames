@@ -20,14 +20,67 @@ if (process.argv.includes("--unit")) {
   const result = await build({ root: workspace, configFile: false, publicDir: false, logLevel: "error",
     plugins: [{ name: "account-unit", resolveId(value) { if (value === id) return id; }, load(value) {
       if (value === id) return `export { compactChanges, AccountsView } from ${source("Accounts.tsx")};
-        export { privilegeResult, privilegeButtonProps } from ${source("privileges.ts")};
+        export { privilegeResult, privilegeButtonProps, targetPrivilege } from ${source("privileges.ts")};
         export { observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel } from ${source("accountsApi.ts")};`;
     } }], build: { ssr: true, write: false, rollupOptions: { input: id, output: { inlineDynamicImports: true } } } });
   const temporary = await fs.mkdtemp(path.join(workspace, ".accounts-unit-"));
   try {
     const module = path.join(temporary, "unit.mjs");
     await fs.writeFile(module, result.output.find(f => f.type === "chunk").code);
-    const { compactChanges, privilegeResult, privilegeButtonProps, observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel, AccountsView } = await import(pathToFileURL(module));
+    const { compactChanges, privilegeResult, privilegeButtonProps, targetPrivilege, observedScopes, planAccount, applyAccount, declineAccount, planAccountGroups, applyAccountGroups, declineAccountGroups, previewAccountPlan, roleLabel, AccountsView } = await import(pathToFileURL(module));
+    assert.equal(privilegeResult({ state: "denied", missing: [["CONNECTION_ADMIN"]], reason: "Denied", grant_sql: "GRANT CONNECTION_ADMIN ON *.* TO 'app'@'%';" }).grantSql,
+      "GRANT CONNECTION_ADMIN ON *.* TO 'app'@'%';");
+    assert.equal(privilegeResult({ state: "denied", missing: [["CONNECTION_ADMIN"]], reason: "Denied", grant_sql: null }).grantSql, null);
+    assert.equal(privilegeResult({ state: "denied", missing: [["CONNECTION_ADMIN"]], reason: "Denied" }).grantSql, null);
+    assert.equal(privilegeResult({ state: "allowed", missing: [], reason: "OK", grant_sql: "GRANT SELECT ON *.* TO 'app'@'%';" }).grantSql, null);
+    // V3: targetPrivilege reuses generic.grantSql only when it grants exactly
+    // the hint's need (never for a later alternative or an empty need).
+    const multiAltGeneric = privilegeResult({
+      state: "denied",
+      missing: [["SYSTEM_VARIABLES_ADMIN"], ["SUPER"]],
+      reason: "Needs SYSTEM_VARIABLES_ADMIN or SUPER.",
+      grant_sql: "GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO 'app'@'%';",
+    });
+    assert.equal(
+      targetPrivilege(multiAltGeneric, { allowed: false, need: "SYSTEM_VARIABLES_ADMIN" }).grantSql,
+      "GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO 'app'@'%';",
+      "V3: hint matching the primary alternative reuses generic.grantSql",
+    );
+    assert.equal(
+      targetPrivilege(multiAltGeneric, { allowed: false, need: "SYSTEM_VARIABLES_ADMIN or SUPER" }).grantSql,
+      "GRANT SYSTEM_VARIABLES_ADMIN ON *.* TO 'app'@'%';",
+      "V3: hint matching the exact generic alternatives reuses generic.grantSql",
+    );
+    assert.equal(
+      targetPrivilege(multiAltGeneric, { allowed: false, need: "SUPER" }).grantSql,
+      null,
+      "V3: hint matching a later alternative never reuses generic.grantSql for the first alternative",
+    );
+    assert.equal(
+      targetPrivilege(multiAltGeneric, { allowed: false, need: "" }).grantSql,
+      null,
+      "V3: empty hint.need never reuses generic.grantSql",
+    );
+    assert.equal(
+      targetPrivilege(multiAltGeneric, { allowed: false }).grantSql,
+      null,
+      "V3: omitted hint.need never reuses generic.grantSql",
+    );
+    assert.equal(
+      targetPrivilege(multiAltGeneric, { allowed: false, need: "SYSTEM_VARIABLES_ADMIN and PERSIST_RO_VARIABLES_ADMIN" }).grantSql,
+      null,
+      "V3: stricter compound hint.need never reuses generic.grantSql",
+    );
+    assert.equal(
+      targetPrivilege(multiAltGeneric, { allowed: false, need: "SUPER", grant_sql: "GRANT SUPER ON *.* TO 'app'@'%';" }).grantSql,
+      "GRANT SUPER ON *.* TO 'app'@'%';",
+      "V3: explicit hint.grant_sql always wins",
+    );
+    assert.equal(
+      targetPrivilege(multiAltGeneric, { allowed: false, need: "SYSTEM_VARIABLES_ADMIN", grant_sql: null }).grantSql,
+      null,
+      "V3: explicit null hint.grant_sql suppresses generic.grantSql",
+    );
     assert.equal(privilegeResult().state, "unknown");
     assert.equal(privilegeResult().disabledReason, "");
     const gate = privilegeResult({ state: "denied", missing: [["SUPER"], ["CONNECTION_ADMIN"]], reason: "Denied" }, "app@%");
@@ -196,7 +249,7 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
       import React, {useState} from ${JSON.stringify(path.join(workspace, "node_modules/react/index.js"))};
       import {createRoot} from ${JSON.stringify(path.join(workspace, "node_modules/react-dom/client.js"))};
       import {AccountsView, compactChanges} from ${source("Accounts.tsx")};
-      import {PrivilegesProvider, PrivilegeGate, usePrivileges, privilegeResult} from ${source("privileges.ts")};
+      import {PrivilegesProvider, PrivilegeWhyHost, PrivilegeGate, usePrivileges, privilegeResult} from ${source("privileges.ts")};
       import {InspectorContext, ColumnStoreContext, useColumnStore} from ${source("kit.tsx")};
       import {ViewOnScreenContext} from ${source("viewOnScreen.ts")};
       import {WritePolicyContext} from ${source("Connections.tsx")};
@@ -220,6 +273,7 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
         React.useEffect(() => { const f = () => setWidth(window.innerWidth); window.addEventListener("resize", f); return () => window.removeEventListener("resize", f); }, []);
         return <WritePolicyContext.Provider value={{blocked:"",check:async()=>connection}}>
           <PrivilegesProvider connection={connection} connectRevision={revision}>
+            <PrivilegeWhyHost>
             <div className="test-probes"><button onClick={()=>setConnection(c=>({...c,host:c.host === "127.0.0.1" ? "127.0.0.2" : "127.0.0.1"}))}>Switch connection</button>
               <button onClick={()=>setConnection(c=>({...c,read_only:!c.read_only}))}>Toggle read-only</button>
               <button onClick={()=>setRevision(n=>n+1)}>Reconnect</button>
@@ -232,6 +286,7 @@ const built = await build({ root: workspace, configFile: false, publicDir: false
                 </div></ViewOnScreenContext.Provider>
               </ColumnStoreContext.Provider>
             </InspectorContext.Provider>
+            </PrivilegeWhyHost>
           </PrivilegesProvider>
         </WritePolicyContext.Provider>;
       }
@@ -247,7 +302,14 @@ const html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewp
 const content = (contentType, body) => (_body, request) => { void request.respond({ status: 200, contentType, body }); return null; };
 const allowed = { state: "allowed", missing: [], reason: "Required privileges are present." };
 const unknown = { state: "unknown", missing: ["SELECT"], reason: "Object privileges cannot be proven absent." };
-const denied = { state: "denied", missing: [["CONNECTION_ADMIN"], ["SUPER"]], need: "CONNECTION_ADMIN or SUPER", reason: "Global privileges are absent.", grey_out: true };
+const denied = {
+  state: "denied",
+  missing: [["CONNECTION_ADMIN"], ["SUPER"]],
+  need: "CONNECTION_ADMIN or SUPER",
+  reason: "Global privileges are absent.",
+  grey_out: true,
+  grant_sql: "GRANT CONNECTION_ADMIN ON *.* TO 'operator'@'localhost';",
+};
 let actions = Object.fromEntries(["create_user", "create_role", "lock_account", "unlock_account", "expire_password", "set_own_password", "rename_user", "drop_user", "drop_role", "set_password", "grant", "revoke", "grant_role", "revoke_role", "default_roles"].map(k => [k, allowed]));
 let privilegeReads = 0, privilegeDelay = 0, planDelay = 0, planFailure = false, applyFailure = false;
 let planFailureAt = -1, applyRefusalAt = -1, applyCount = 0;
@@ -291,7 +353,7 @@ try {
   h = await open("/api/accounts/list", "accounts", {
     "/api/audit/object": objectAuditFixture,
     "/": content("text/html", html), "/__accounts.js": content("text/javascript", js), "/__accounts.css": content("text/css", css),
-    "/api/live/privileges": () => { privilegeReads++; return { status: 200, delay: privilegeDelay, body: { schema_version: "privileges-1.0", account: "operator@localhost", actions: { ...actions, kill: denied, explain: unknown } } }; },
+    "/api/live/privileges": () => { privilegeReads++; return { status: 200, delay: privilegeDelay, body: { schema_version: "privileges-1.0", account: "operator@localhost", actions: { kill: denied, explain: unknown, ...actions } } }; },
     "/api/accounts/read": body => ({ status: 200, body: readDetail(body.user) }),
     "/api/accounts/scope-objects": body => ({status:scopeFailure ? 400 : 200, delay:scopeDelay,
       body:scopeFailure ? {error:"Object list unavailable."} : {database:body.database,tables:[{name:body.database==="shop"?"orders":"items"}],procedures:[{name:"recount"}],functions:[{name:"total"}],truncated:true,warnings:[]}}),
@@ -514,9 +576,59 @@ try {
   assert.equal(state.seen.length, 2, "reopening keeps the current report");
 
   // Exact global denials stay visible and focusable, unknown remains enabled.
+  // Clicking or activating a denied button opens WhyDisabled with the reason
+  // and advisory GRANT without calling the handler; Escape and Close return focus.
   assert.equal(await page.$eval('[data-privilege-action="kill"]', e => e.getAttribute("aria-disabled")), "true");
   assert.match(await page.$eval('[data-privilege-action="kill"]', e => e.title), /CONNECTION_ADMIN.*SUPER/);
-  await page.focus('[data-privilege-action="kill"]'); await page.keyboard.press("Enter"); await page.keyboard.press("Space");
+  await page.focus('[data-privilege-action="kill"]');
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  const killWhy = await page.$eval(".why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre code")?.textContent || "",
+  }));
+  assert.match(killWhy.text, /CONNECTION_ADMIN.*SUPER/);
+  assert.match(killWhy.text, /Run it as an administrator, then Refresh\./);
+  assert.equal(killWhy.grant, "GRANT CONNECTION_ADMIN ON *.* TO 'operator'@'localhost';");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-privilege-action")), "kill",
+    "Escape returns focus to the privilege-disabled button");
+  await page.keyboard.press("Space");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.click(".why-disabled:popover-open .why-disabled-close");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-privilege-action")), "kill",
+    "Close returns focus to the privilege-disabled button");
+  // V1: refreshing to a different denial (and then toggling read-only) while
+  // the message stays open updates its reason and advisory GRANT live.
+  await page.click('[data-privilege-action="kill"]');
+  await page.waitForSelector(".why-disabled:popover-open .ops-pre", { visible: true });
+  const origKill = actions.kill;
+  actions = { ...actions, kill: { ...denied, missing: [["SYSTEM_USER"]], need: "SYSTEM_USER", reason: "Needs SYSTEM_USER.", grant_sql: "GRANT SYSTEM_USER ON *.* TO 'operator'@'localhost';" } };
+  await page.evaluate(() => [...document.querySelectorAll(".test-probes button")].find(b => b.textContent.trim() === "Fresh privileges")?.click());
+  await page.waitForFunction(() => document.querySelector(".why-disabled:popover-open .ops-pre code")?.textContent === "GRANT SYSTEM_USER ON *.* TO 'operator'@'localhost';");
+  assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /Needs SYSTEM_USER\./,
+    "V1: open host message updates reason live on privilege refresh");
+  await page.evaluate(() => [...document.querySelectorAll(".test-probes button")].find(b => b.textContent.trim() === "Toggle read-only")?.click());
+  await page.waitForFunction(() => /This connection is read-only\./.test(document.querySelector(".why-disabled:popover-open")?.textContent || "") && !document.querySelector(".why-disabled:popover-open .ops-pre"));
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  actions = { ...actions, kill: denied };
+  await click("Toggle read-only");
+  await page.waitForFunction(() => document.querySelector('[data-privilege-action="kill"]')?.getAttribute("aria-disabled") === "true");
+  await click("Toggle read-only");
+  await page.click('[data-privilege-action="kill"]');
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  const readOnlyWhy = await page.$eval(".why-disabled:popover-open", e => ({
+    text: e.textContent || "",
+    grant: e.querySelector(".ops-pre")?.textContent || "",
+  }));
+  assert.match(readOnlyWhy.text, /This connection is read-only\./);
+  assert.equal(readOnlyWhy.grant, "", "a read-only block shows no GRANT command");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await click("Toggle read-only");
   assert.equal(await page.evaluate(() => window.killCalls || 0), 0);
   await page.click('[data-privilege-action="explain"]');
   assert.equal(await page.evaluate(() => window.explainCalls), 1);
@@ -641,20 +753,90 @@ try {
   await h.refresh(); await inspect();
 
   // Directly denied administration greys the action, without hiding it.
-  actions = { ...actions, lock_account: { state: "denied", missing: ["CREATE USER"], reason: "Needs CREATE USER.", grey_out: true } };
+  actions = { ...actions, lock_account: { state: "denied", missing: ["CREATE USER"], reason: "Needs CREATE USER.", grey_out: true, grant_sql: "GRANT CREATE USER ON *.* TO 'operator'@'localhost';" } };
   await click("Refresh privileges");
   await page.waitForFunction(() => document.querySelector('.account-actions [data-privilege-action="lock_account"]')?.getAttribute("aria-disabled") === "true");
+  await page.click('.account-actions [data-privilege-action="lock_account"]');
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /CREATE USER/);
+  assert.equal(await page.$eval(".why-disabled:popover-open .ops-pre code", e => e.textContent || ""), "GRANT CREATE USER ON *.* TO 'operator'@'localhost';");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-privilege-action")), "lock_account",
+    "Escape returns focus to the disabled Lock button");
   actions.lock_account = allowed; await click("Refresh privileges");
 
   // Account administration and grant controls remain keyboard reachable
   // on denial, and their descriptions name the missing privilege.
-  actions.create_user = { ...denied, missing: ["CREATE USER"], need: "CREATE USER" };
-  actions.grant = actions.revoke = { ...denied, missing: ["GRANT OPTION"], need: "GRANT OPTION" };
+  actions.create_user = { ...denied, missing: ["CREATE USER"], need: "CREATE USER", grant_sql: "GRANT CREATE USER ON *.* TO 'operator'@'localhost';" };
+  actions.create_role = { ...denied, missing: ["CREATE ROLE"], need: "CREATE ROLE", grant_sql: null };
+  actions.grant = actions.revoke = { ...denied, missing: ["GRANT OPTION"], need: "GRANT OPTION", grant_sql: null };
   await click("Refresh privileges");
+  await backToAccounts();
   await page.waitForFunction(() => document.querySelector('[data-privilege-action="create_user"]')?.getAttribute("aria-disabled") === "true");
   assert.match(await page.$eval('[data-privilege-action="create_user"]', e => document.getElementById(e.getAttribute("aria-describedby")).textContent), /CREATE USER/);
   await page.focus('[data-privilege-action="create_user"]'); await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /CREATE USER/);
+  assert.equal(await page.$eval(".why-disabled:popover-open .ops-pre code", e => e.textContent || ""), "GRANT CREATE USER ON *.* TO 'operator'@'localhost';");
   assert.equal(await page.$("dialog[open]"), null);
+  // A denied action with null grant_sql opens the reason without a GRANT block.
+  await page.click('[data-privilege-action="create_role"]');
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  assert.match(await page.$eval(".why-disabled:popover-open", e => e.textContent || ""), /CREATE ROLE/);
+  assert.equal(await page.$(".why-disabled:popover-open .ops-pre"), null, "null grant_sql renders no GRANT block");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  actions.create_role = allowed;
+  await page.focus('[data-privilege-action="create_user"]'); await page.keyboard.press("Enter");
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  // Hiding the view closes an open privilege-disabled message.
+  await click("Toggle Accounts visibility");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  await click("Toggle Accounts visibility");
+  // Becoming enabled closes an open privilege-disabled message; focus inside
+  // the host (Copy) never drops to body and never moves onto the newly enabled button (V9, S-F1).
+  await page.click('[data-privilege-action="create_user"]');
+  await page.waitForSelector(".why-disabled:popover-open .ops-commands button", { visible: true });
+  await page.focus(".why-disabled:popover-open .ops-commands button");
+  actions.create_user = allowed;
+  await page.evaluate(() => [...document.querySelectorAll("button")].find(b => b.textContent.trim() === "Refresh privileges").click());
+  await page.waitForFunction(() => document.querySelector('[data-privilege-action="create_user"]')?.getAttribute("aria-disabled") === "false");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  const createUserFocus = await page.evaluate(() => ({
+    isBody: !document.activeElement || document.activeElement === document.body,
+    visible: !!document.activeElement && document.activeElement.getClientRects().length > 0,
+    isCreateUser: document.activeElement?.getAttribute("data-privilege-action") === "create_user",
+  }));
+  assert.equal(createUserFocus.isBody, false, "V9: host focus never drops to body when button enables");
+  assert.equal(createUserFocus.visible, true, "V9: host focus lands on a visible fallback when button enables");
+  assert.equal(createUserFocus.isCreateUser, false, "S-F1: host focus never moves onto newly enabled create_user");
+  await inspect();
+  // V8: opening and closing WhyDisabled on Accounts Add scope restores the
+  // aria-expanded="false" attribute that React owns instead of removing it.
+  await page.select('.account-inspector select[aria-label="Grant level"]', "database");
+  const findAddScope = () => page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".account-inspector button")].find(b => b.textContent.trim() === "Add scope");
+    return btn ? {
+      ariaDisabled: btn.getAttribute("aria-disabled"),
+      ariaExpanded: btn.getAttribute("aria-expanded"),
+      ariaHaspopup: btn.getAttribute("aria-haspopup"),
+    } : null;
+  });
+  await page.waitForFunction(() => [...document.querySelectorAll(".account-inspector button")].find(b => b.textContent.trim() === "Add scope")?.getAttribute("aria-disabled") === "true");
+  assert.deepEqual(await findAddScope(), { ariaDisabled: "true", ariaExpanded: "false", ariaHaspopup: null },
+    "V8: Add scope starts with React's aria-expanded=false");
+  await page.evaluate(() => {
+    const btn = [...document.querySelectorAll(".account-inspector button")].find(b => b.textContent.trim() === "Add scope");
+    btn?.focus();
+    btn?.click();
+  });
+  await page.waitForSelector(".why-disabled:popover-open", { visible: true });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
+  assert.deepEqual(await findAddScope(), { ariaDisabled: "true", ariaExpanded: "false", ariaHaspopup: null },
+    "V8: closing WhyDisabled restores React's aria-expanded=false on Add scope");
+  await page.select('.account-inspector select[aria-label="Grant level"]', "global");
   const matrixInput = '.account-inspector .account-matrix input';
   assert.equal(await page.$eval(matrixInput, e => e.disabled), false);
   assert.equal(await page.$eval(matrixInput, e => e.getAttribute("aria-disabled")), "true");
@@ -662,9 +844,8 @@ try {
   await page.focus(matrixInput); await page.keyboard.press("Space");
   assert.equal(await page.$eval(matrixInput, e => e.checked), checked);
   assert.equal(await page.$(".account-pending"), null);
-  actions.create_user = actions.grant = actions.revoke = allowed;
+  actions.grant = actions.revoke = allowed;
   await click("Refresh privileges");
-  await page.waitForFunction(() => document.querySelector('[data-privilege-action="create_user"]')?.getAttribute("aria-disabled") === "false");
 
   // Password input is uncontrolled and cleared as soon as the request
   // starts. A plan failure cannot leave it in a form or storage.

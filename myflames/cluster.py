@@ -216,7 +216,7 @@ import re
 
 from .connection_groups import grouped_read
 from .connector import ConnectorError, terminal_text
-from .perf_common import Reader, Server, _number, denied, now, preflight, reason
+from .perf_common import PREFLIGHT_VARIABLES, Reader, Server, _LOST_SQL, _number, denied, now, preflight, reason
 from .server_info import product_name
 
 SCHEMA_VERSION = "cluster-1.0"
@@ -236,7 +236,7 @@ GALERA_VARIABLES = (
     "wsrep_node_name", "wsrep_node_address", "wsrep_node_incoming_address", "wsrep_desync", "pxc_strict_mode",
     "pxc_maint_mode",
 )
-#: Variables read with the standard preflight. A name the server does not
+#: Variables read with the initial preflight. A name the server does not
 #: have is simply absent from the answer (SHOW GLOBAL VARIABLES WHERE ... IN).
 EXTRA_VARIABLES = GALERA_VARIABLES + (
     "report_port", "server_uuid", "server_id", "partial_revokes",
@@ -244,6 +244,28 @@ EXTRA_VARIABLES = GALERA_VARIABLES + (
     "group_replication_group_seeds", "group_replication_bootstrap_group",
     "group_replication_preemptive_garbage_collection",
 )
+_CURRENT_USER_MARKER = "myflames_current_user"
+
+
+def _preflight_variables_sql():
+    names = sorted(set(PREFLIGHT_VARIABLES + EXTRA_VARIABLES))
+    return ("SHOW GLOBAL VARIABLES WHERE Variable_name IN (%s); %sSELECT '%s', CURRENT_USER()"
+            % (", ".join("'%s'" % n for n in names), CLUSTER_TAG, _CURRENT_USER_MARKER))
+
+
+def _preflight(reader):
+    """Read preflight variables and CURRENT_USER() in one client invocation,
+    then Uptime and Performance Schema lost counters.
+    """
+    variables = {}
+    current_user = None
+    for row in reader.rows(_preflight_variables_sql()):
+        if len(row) == 2 and row[0] == _CURRENT_USER_MARKER:
+            current_user = row[1]
+        elif row:
+            variables[row[0]] = row[1] if len(row) > 1 else ""
+    status = reader.pairs(_LOST_SQL)
+    return Server(variables, status), current_user
 
 WSREP_STATUS_SQL = "SHOW GLOBAL STATUS WHERE Variable_name LIKE 'wsrep\\_%'"
 WSREP_MEMBERS_SQL = "SELECT node_uuid, node_name, node_incoming_address FROM mysql.wsrep_cluster_members"
@@ -671,7 +693,7 @@ def read_status(conn, _identity=None):
     """
     reader = Reader(conn, CLUSTER_TAG)
     try:
-        server = preflight(reader, EXTRA_VARIABLES)
+        server, current_user = _preflight(reader)
     except ConnectorError as exc:
         if "Access denied" not in str(exc):
             from . import proxysql
@@ -708,7 +730,7 @@ def read_status(conn, _identity=None):
                 _finish(report)
                 return report
         raise
-    report = _ActionReport(_base(server), conn, server.variables)
+    report = _ActionReport(_base(server), conn, server.variables, current_user=current_user)
     report["statements"].append("SHOW GLOBAL VARIABLES")
     wsrep_on = _on(server.var("wsrep_on"))
     if is_galera_node(server.variables):
@@ -838,6 +860,53 @@ def _pxc_state(state):
     return text[:1].upper() + text[1:].lower(), "watch", "Not Synced (pxc_cluster_view reads %s)." % text
 
 
+def _partial_revokes_for_server(server):
+    """Database-pattern matching mode for advisory schema GRANTs.
+
+    MariaDB and MySQL before 8.0.16 always use wildcard matching (False).
+    MySQL 8.0.16+ uses the server's partial_revokes variable; absence or an
+    incomplete/unknown version leaves it None so grant_sql refuses names with
+    '_' or '%' rather than guessing.
+    """
+    if server.engine == "mariadb":
+        return False
+    version = tuple(server.version_tuple)
+    if len(version) >= 3 and (5, 7, 0) <= version[:3] < (8, 0, 16):
+        return False
+    raw = server.variables.get("partial_revokes")
+    if raw is None:
+        return None
+    text = str(raw).strip().upper()
+    if text in ("ON", "1"):
+        return True
+    if text in ("OFF", "0"):
+        return False
+    return None
+
+
+def _denied_read_grant_sql(server, schema=None, report=None):
+    """Advisory SELECT GRANT for a denied table read, built from the
+    CURRENT_USER() kept privately on *report* (captured in the initial
+    preflight without an extra login) through privileges.grant_sql
+    (printable-ASCII allowlist without backslash).
+
+    Never opens another connection or login, and never derives anything from
+    error text. Returns None when no table schema applies, CURRENT_USER() was
+    not read or lacks '@', or grant_sql refuses the names.
+    """
+    if not schema:
+        return None
+    account = getattr(report, "_current_user", None)
+    if not isinstance(account, str) or "@" not in account:
+        return None
+    from . import privileges
+    partial = _partial_revokes_for_server(server)
+    try:
+        return privileges.grant_sql([(("SELECT",), schema, False)], account, partial, engine=server.engine)
+    except ValueError:
+        return None
+
+
 def _read_galera(reader, server, report):
     report["kind"] = galera_kind(server.variables)
     try:
@@ -846,6 +915,7 @@ def _read_galera(reader, server, report):
         if denied(exc):
             report["available"] = False
             report["message"] = "This account cannot read the wsrep status variables: %s" % reason(exc)
+            report["grant_sql"] = _denied_read_grant_sql(server, report=report)
             return
         raise
     report["statements"].append("SHOW GLOBAL STATUS (wsrep_%)")
@@ -875,6 +945,7 @@ def _read_galera_off(reader, server, report):
         report["message"] = ("wsrep_on is OFF with a Galera provider loaded, and this account cannot read the wsrep "
                              "status variables, so whether this node is still in a cluster is not known: %s"
                              % reason(exc))
+        report["grant_sql"] = _denied_read_grant_sql(server, report=report)
         return
     connected = _on(status.get("wsrep_connected"))
     size = _number(status.get("wsrep_cluster_size"))
@@ -1227,6 +1298,7 @@ def _read_group_replication(reader, server, report, wsrep_on=None):
             report["cluster"]["uuid"] = group_name
             report["message"] = ("This account cannot read performance_schema.replication_group_members (it needs "
                                  "SELECT on performance_schema): %s" % reason(exc))
+            report["grant_sql"] = _denied_read_grant_sql(server, "performance_schema", report=report)
             return
         raise
     report["statements"].append("SELECT performance_schema.replication_group_members")
@@ -2083,17 +2155,20 @@ _GR_PRIVILEGE = "GROUP_REPLICATION_ADMIN or SUPER"
 
 
 class _ActionReport(dict):
-    """Request-local catalog inputs, never fields in the public JSON report.
+    """Request-local inputs, never fields in the public JSON report.
 
     Plain status/CLI reads do not need grants. Keep the originating connection
     only for a lazy catalog read, shared by every member and overview action.
-    MariaDB's additional reviewed identity comes from the same preflight as
-    hostname/port and the wsrep variables, without changing cluster-1.0.
+    The session's CURRENT_USER() (used for denied-read GRANT suggestions without
+    an extra login) and MariaDB's additional reviewed identity come from the
+    same initial preflight as hostname/port and the wsrep variables, without
+    changing cluster-1.0.
     """
-    def __init__(self, report, conn, variables):
+    def __init__(self, report, conn, variables, current_user=None):
         super().__init__(report)
         self._action_conn = conn
         self._action_grants = None
+        self._current_user = current_user if isinstance(current_user, str) and "@" in current_user else None
         self._clusterset_groups = {}
         self._galera_identity = ({"server_id": _number(variables.get("server_id")),
                                   "wsrep_node_name": _text(variables.get("wsrep_node_name"))}
@@ -2228,6 +2303,8 @@ _SHELL_RUNTIME_PRIVILEGES = "MySQL Shell checks the privileges it needs when it 
 _GRANT_FIX = "Run the statement below as an administrator, then Refresh."
 _GRANT_MODE_UNKNOWN = ("The GRANT could not be built because partial_revokes could not be read "
                        "in this account's session. Refresh and try again.")
+_GRANT_UNAVAILABLE = ("The GRANT could not be built for this account name. Grant the missing "
+                      "privileges as an administrator, then Refresh.")
 
 
 def _grant_model(report, grants):
@@ -2318,24 +2395,8 @@ def _privilege_label(privilege, database, grantable):
 
 def _grant_sql(missing, account, partial_revokes=None):
     """Advisory text only. No statement built here enters the write plan."""
-    from .privileges import quote_account, quote_identifier
-    account = quote_account(*account.rsplit("@", 1))
-    grouped = {}
-    for alternatives, database, grantable in missing:
-        if database and any(c in database for c in "\\_%"):
-            if not isinstance(partial_revokes, bool):
-                return None
-            if partial_revokes is False:
-                # mysql-server/sql/auth/sql_auth_cache.cc:1426-1430:
-                # wildcard comparison with partial_revokes OFF, literal ON.
-                database = database.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
-        names = grouped.setdefault((database, grantable), [])
-        if alternatives[0] not in names:
-            names.append(alternatives[0])
-    return "\n".join("GRANT %s ON %s TO %s%s;" %
-                     (", ".join(names), "%s.*" % quote_identifier(database) if database else "*.*", account,
-                      " WITH GRANT OPTION" if grantable else "")
-                     for (database, grantable), names in grouped.items())
+    from .privileges import grant_sql
+    return grant_sql(missing, account, partial_revokes)
 
 
 from .reviewed_writes import ActionUnavailable  # re-exported; ui.py imports it from here
@@ -2709,13 +2770,26 @@ def _action_privileges(report, action, checks):
         action["missing_privileges"] = [[_privilege_label(p, database, grantable) for p in alternatives]
                                          for alternatives, database, grantable in missing]
         if missing:
-            action["grant_sql"] = _grant_sql(missing, model["account"], model.get("grant_partial_revokes"))
+            try:
+                action["grant_sql"] = _grant_sql(missing, model["account"], model.get("grant_partial_revokes"))
+            except ValueError:
+                action["grant_sql"] = None
+            if not action["grant_sql"]:
+                account = model.get("account")
+                unsafe_name = (not isinstance(account, str) or bool(privileges._UNSAFE_GRANT_SQL.search(account)) or
+                               any(database is not None and (not isinstance(database, str) or
+                                                             bool(privileges._UNSAFE_GRANT_SQL.search(database)))
+                                   for _, database, _ in missing))
+                fallback = (_GRANT_MODE_UNKNOWN
+                            if not unsafe_name and model.get("grant_partial_revokes") is None
+                            and any(database and any(c in database for c in "_%") for _, database, _ in missing)
+                            else _GRANT_UNAVAILABLE)
             if action["enabled"]:
                 action.update(enabled=False,
                               why_not="Needs " + "; and ".join(" or ".join(a) for a in action["missing_privileges"]) + ".",
-                              fix=_GRANT_FIX if action["grant_sql"] else _GRANT_MODE_UNKNOWN)
+                              fix=_GRANT_FIX if action["grant_sql"] else fallback)
             elif not action["grant_sql"]:
-                note = " ".join(n for n in (note, _GRANT_MODE_UNKNOWN) if n)
+                note = " ".join(n for n in (note, fallback) if n)
     if note:
         action["why_not"] = " ".join(n for n in (action["why_not"], note) if n)
     return action

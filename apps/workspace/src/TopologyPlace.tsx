@@ -8,7 +8,7 @@
 // Reports are kept per group connection key, membership and tab: an edit of
 // the group's members makes the old membership's reports stale, and
 // switching the group drops the reads on their way.
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Connection, GroupConnection, Profile } from "./api";
 import { connectionKey } from "./binding";
 import { ConnectionGroupBar } from "./ConnectionGroupBar";
@@ -22,6 +22,7 @@ import {
 } from "./kit";
 import { plural } from "./OpsShared";
 import { useViewOnScreen } from "./viewOnScreen";
+import { openWhyDisabled } from "./whyDisabledBus";
 import {
   readTopology, type AccountRow, type MapEdge, type MemberRole, type ParameterRow, type PluginRow, type TopologyGroupReport,
   type TopologyMember, type TopologySection,
@@ -146,6 +147,8 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
   const [inspectorWidth, setInspectorWidth] = useState(360);
   const [changeRow, setChangeRow] = useState<ParameterRow | null>(null);
   const [changeDone, setChangeDone] = useState(false);
+  // The blocked rolling change's reason is the button's hidden description.
+  const changeWhyId = useId();
   // The rolling change run outlives its sheet (rollingRuns.ts): a connection
   // change, a group switch or a Refresh here never loses it; the banner
   // reopens the sheet on the run's own connection and report snapshot.
@@ -479,9 +482,19 @@ export function TopologyPlace({ connection, group = null, profiles, disabled = f
       meta: <Pill tone={tone}>{word}</Pill>,
       actions: (
         <div className="topology-member-actions">
-          <ToolbarButton className="small" primary disabled={!!blocked} title={blocked || undefined}
-            onClick={() => { if (!blocked) setChangeRow(row); }}>Change on every member…</ToolbarButton>
-          {blocked && <p className="hint topology-change-blocked">{blocked}</p>}
+          {/* A blocked change stays focusable (aria-disabled): the reason is
+              its hidden description and title, and click, Enter or Space
+              opens the shared WhyDisabled message; it never opens the sheet. */}
+          <ToolbarButton className="small" primary
+            aria-disabled={!!blocked} aria-describedby={blocked ? changeWhyId : undefined}
+            title={blocked || undefined} data-why-reason={blocked || undefined}
+            onClick={(event) => {
+              if (!blocked) { setChangeRow(row); return; }
+              event.preventDefault();
+              event.stopPropagation();
+              openWhyDisabled({ anchor: event.currentTarget, reason: blocked });
+            }}>Change on every member…</ToolbarButton>
+          {blocked && <span id={changeWhyId} className="visually-hidden">{blocked}</span>}
         </div>
       ),
       body: (

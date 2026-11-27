@@ -1,7 +1,7 @@
 // First: the stylesheets, in cascade order (styles.ts).
 import "./styles";
 import { setUnsavedWorkCheck } from "./unsavedWork";
-import { PrivilegesProvider } from "./privileges";
+import { PrivilegesProvider, PrivilegeWhyHost, preloadWhyDisabled } from "./privileges";
 import { ConnectionInUseProvider } from "./connectionInUse";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { createRoot } from "react-dom/client";
@@ -38,7 +38,6 @@ import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, endpointKey, keyGroupName, keyProfileId, type Bound } from "./binding";
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { useSchemaCatalog } from "./PerfShared";
-import { showCreateSql } from "./sqlHighlight";
 import { LOOP_POLL_MS, loopActive, NOT_A_REPLICA, readSkipLoops, replicationNav, stopSkipLoop, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
@@ -2622,7 +2621,7 @@ function App() {
     // A session restored on Plans or Compare gets its chunks now (all three
     // together), not when the idle queue reaches them.
     if (mode === "inspect" || mode === "compare") void PlanScreen.preload().catch(() => {});
-    if (ready) preloadWhenIdle([CommandPalette, Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
+    if (ready) preloadWhenIdle([CommandPalette, Server, ReplicationPlace, TopologyPlace, ClusterPlace, ProxySqlPlace, ReadysetPlace, FilesPlace, QueryDigestView, SchemaVersionsPlace, { preload: preloadWhyDisabled }, { preload: () => PlanScreen.preload().then(() => import("./PlanScreen")).then((m) => m.preloadPlanViews()) }]);
   }, [ready]);
   // Replication's and Query digest's "How to turn it on" open Server > Instruments at that row.
   const [instrumentsLink, setInstrumentsLink] = useState<{ row: string; n: number } | null>(null);
@@ -2955,7 +2954,7 @@ function App() {
       if (kind === "procedure" || kind === "function" || kind === "trigger" || kind === "event")
         // Open the tab in the same update as finishLink: deferring this until
         // after history records the destination loses a same-place Back stop.
-        lab.openSql(showCreateSql(kind, o.schema, o.name));
+        lab.openShowCreate(kind, o.schema, o.name);
       else lab.revealInSchemaBrowser(o.schema, kind === "schema" ? null : o.name);
       finishLink(back);
     });
@@ -3077,6 +3076,7 @@ function App() {
   return (
     <ConnectionInUseProvider connection={placeRequest} connected={placeConnected}>
     <PrivilegesProvider connection={placeRequest} connectRevision={connectRevision + resetKey} passwordRevision={passwordRevision} connected={placeConnected}>
+    <PrivilegeWhyHost resetKey={`${mode}:${serverViewNow || ""}:${mode === "query" ? labState.tab_id : ""}:${connectionKey(placeRequest)}:${connectRevision}:${resetKey}:${passwordRevision}`}>
     <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <a href="#main" className="skip">
         Skip to content
@@ -3845,6 +3845,7 @@ function App() {
         />
       )}
     </div>
+    </PrivilegeWhyHost>
     </PrivilegesProvider>
     </ConnectionInUseProvider>
   );
