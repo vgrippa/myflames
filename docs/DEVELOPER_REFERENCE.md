@@ -1716,11 +1716,17 @@ checks never skip missing output. The separate chart bundle
 The workspace build (`apps/workspace`, `npm run build`) keeps the first screen
 in the entry chunk: React, the shell (`main.tsx`), Home, the sidebar, saved
 connections, the investigation notebook, `ClientMissingNotice` (`CLIENT_HINT`)
-and the shared kit (about 451 KB, `451,196` bytes, down from `499,503` bytes in
+and the shared kit (about 464 KB, `463,662` bytes, down from `499,503` bytes in
 3.5.1 and 1.1 MB before the original split, after moving `CommandPalette`,
 `ClientToolsDialog`, the `accountsApi` runtime code, `example.json`,
 `UpdateCheck` controls (`UpdateOpenError` / `useMinuteClock` moved into
-`UpdateBadge.tsx`) and the `readiness` module behind lazy chunks; the shell
+`UpdateBadge.tsx`), the `readiness` module, the Import dialog
+(`ImportPlanDialog.tsx`, preloaded beside the first screen so opening it never
+waits), the palette's workspace command list (`workspaceCommands.ts`, built
+inside the palette's chunk from the shell's actions) and the skip-loop polling
+of restored workspaces and other members plus the other-member Stop
+(`loopPolling.ts`, preloaded beside the first screen; the polls and the Stop
+import it on demand) behind lazy chunks; the shell
 still statically imports `sqlHighlight` and the shared database catalog cache
 in `schemaCatalog.ts`). `CommandPalette` warms on
 toolbar hover/focus and loads in `preloadWhenIdle`; `ClientToolsDialog` warms on
@@ -1806,7 +1812,9 @@ Rules for code that splits:
   also imported statically by `main.tsx`, `Server.tsx`, `QueryLab.tsx` or
   `PlanScreen.tsx`,
   that the build in `myflames/ui_assets` has exactly one stylesheet, and that the entry
-  chunk stays under 474,000 bytes (`451,196` bytes in r352-b1, down from 3.5.1's
+  chunk stays under 474,000 bytes (`463,662` bytes after the Import dialog,
+  the palette command list and the skip-loop polling left the entry, down from
+  3.5.1's
   `499,503`-byte entry, keeping about 5% headroom). The source guard
   covers all dynamic imports, including PlanChart and ContextPanel preloads
   beside PlanScreen, and rejects static value and side-effect imports while

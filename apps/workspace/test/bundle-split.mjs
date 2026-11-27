@@ -110,6 +110,15 @@ for (const module of ["PlanScreen", "Teach"]) {
   assert.match(main, new RegExp(`const ${module} = lazyComponent\\(`),
     `main.tsx loads ${module} through lazyComponent`);
 }
+// The Import dialog and the skip-loop polling of restored workspaces and other
+// members are not first-paint code: both load dynamically (the dialog through
+// lazyComponent with a startup preload, the pollers preloaded beside the first
+// screen); the shell guard above already rejects a static import of either.
+for (const module of ["ImportPlanDialog", "loopPolling"]) {
+  assert.ok(dynamicIn(main).includes(module), `main.tsx loads ${module} dynamically`);
+}
+assert.match(main, /const ImportDialog = lazyComponent\(\(\) => import\("\.\/ImportPlanDialog"\)/,
+  "main.tsx loads the Import dialog through lazyComponent");
 
 // The committed build: one stylesheet, and the entry chunk stays small.
 const assets = path.join(here, "../../../myflames/ui_assets");

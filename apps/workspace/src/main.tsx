@@ -26,19 +26,18 @@ import {
   type TopStatement,
   type View,
 } from "./api";
-import { Icon, ImportDialog, type IconName } from "./components";
+import { Icon, type IconName } from "./components";
 import { currentUiPreferences, loadUiPreferencesWithin, setUiPreference, useUiPreferences } from "./uiPreferences";
-import { THEME_CHOICES, applyTheme } from "./themes";
 import "./fonts";
 import type { WorkspaceCommand } from "./CommandPalette";
 import type { EditorState, QueryLabHandle, QueryNavigation } from "./QueryLab";
 import { Home } from "./Home";
-import { SERVER_VIEWS, WORKLOAD_VIEWS, WORKLOAD_KINDS, ALL_SERVER_VIEWS } from "./serverViews";
+import { WORKLOAD_KINDS, ALL_SERVER_VIEWS } from "./serverViews";
 import { lazyComponent, preloadWhenIdle } from "./lazy";
 import { connectionKey, connectionLabel, endpointKey, keyGroupName, keyProfileId, type Bound } from "./binding";
 import { refreshSavedConnections, useSavedConnections } from "./savedConnections";
 import { useSchemaCatalog } from "./PerfShared";
-import { LOOP_POLL_MS, loopActive, NOT_A_REPLICA, readSkipLoops, replicationNav, stopSkipLoop, type ReplicationReport, type SkipLoop } from "./opsApi";
+import { loopActive, NOT_A_REPLICA, replicationNav, type ReplicationReport, type SkipLoop } from "./opsApi";
 import { clusterNav, NOT_A_CLUSTER, type ClusterFailure, type ClusterReport } from "./clusterApi";
 import { NOT_A_PROXYSQL, proxySqlNav, type ProxySqlFailure, type ProxySqlReport } from "./proxysqlApi";
 import { NOT_A_READYSET, readysetNav, type ReadysetFailure, type ReadysetReport } from "./readysetApi";
@@ -64,6 +63,15 @@ import {
 import { groupConnectionLabel } from "./binding";
 import { unavailableMemberConnection } from "./queryConnection";
 const GroupEditorSheet = lazyComponent(() => import("./GroupEditorSheet").then((m) => m.GroupEditorSheet));
+// The Import dialog opens only from Import… (shell) and Investigations, so its
+// code stays out of the entry chunk; it preloads beside the first screen, the
+// ReadinessFacts pattern, so opening it never waits on the chunk.
+const ImportDialog = lazyComponent(() => import("./ImportPlanDialog").then((m) => m.ImportDialog));
+void ImportDialog.preload().catch(() => {});
+// Skip-loop polling for restored workspaces and other members' loops lives in
+// its own chunk, out of the entry (the polls and the other-member Stop import
+// it on demand); load it beside the first screen so neither ever waits.
+void import("./loopPolling").catch(() => {});
 import type { DigestAction } from "./SlowQueries";
 import type { SettingsSection } from "./SettingsPage";
 import { ActionButton, ActionStatus, useAction, ColumnStoreContext, Popover, useColumnStore, useFocusScope, type ColumnPrefs } from "./kit";
@@ -2329,60 +2337,24 @@ function App() {
     if (!ready || restoredOtherMembers.length === 0 || !profilesLoaded || profilesFailed) return;
     if (restoredMembersPolled.current === resetKey) return;
     restoredMembersPolled.current = resetKey;
-    const list = profilesRef.current;
-    const currentGroup = (list.find((p) => p.id === activeRef.current.id)?.group || "").trim();
-    const toPoll: { id: string; c: Connection; key: string; label: string; name: string }[] = [];
-    const outsideGroup: { id: string; name: string; group: string; hadGroup: boolean }[] = [];
-    for (const id of restoredOtherMembers) {
-      const target = list.find((p) => p.id === id);
-      const c = loopMemberRequest(id);
-      if (c) {
-        toPoll.push({ id, c, key: connectionKey(c), label: connectionLabel(c), name: target?.name || connectionLabel(c) });
-        continue;
-      }
-      if (target) {
-        const targetGroup = (target.group || "").trim();
-        outsideGroup.push({
-          id,
-          name: target.name || id,
-          group: targetGroup,
-          hadGroup: !!targetGroup || !!currentGroup || seenProfileGroups.current.has(id),
-        });
-      }
-    }
-    if (toPoll.length === 0) {
-      setRestoredMembers({ reset: resetKey, activeKeys: [], stoppedKeys: [], outsideGroup, failedMembers: [] });
-      if (!restoredLoopForCurrent) {
-        if (outsideGroup.length === 0) syncLoopSession(false, []);
-        else syncLoopSession(true, outsideGroup.map((m) => m.id));
-      }
-      return;
-    }
     const controller = new AbortController();
     let done = false;
-    void Promise.allSettled(
-      toPoll.map(async (item) => ({ item, loops: (await readSkipLoops(item.c, controller.signal)).loops })),
-    ).then((results) => {
-      if (controller.signal.aborted) return;
-      done = true;
-      const activeKeys: string[] = [];
-      const stoppedKeys: string[] = [];
-      const failedMembers: { id: string; name: string }[] = [];
-      for (let i = 0; i < results.length; i++) {
-        const r = results[i], item = toPoll[i];
-        if (r.status === "fulfilled") {
-          publishReplicationLoops({ key: item.key, label: item.label, report: r.value.loops });
-          if (r.value.loops.some(loopActive)) activeKeys.push(item.key);
-          else if (r.value.loops.length === 0) stoppedKeys.push(item.key);
-        } else {
-          failedMembers.push({ id: item.id, name: item.name });
-        }
-      }
-      setRestoredMembers({ reset: resetKey, activeKeys, stoppedKeys, outsideGroup, failedMembers });
-      if (!failedMembers.length && !activeKeys.length && !outsideGroup.length && !restoredLoopForCurrent) {
-        syncLoopSession(false, []);
-      }
-    });
+    // The poll runs in loopPolling.ts (preloaded beside the first screen); a
+    // chunk that cannot be read re-arms the poll for the next change.
+    void import("./loopPolling")
+      .then((m) => controller.signal.aborted ? false : m.pollRestoredMembers({
+        resetKey,
+        members: restoredOtherMembers,
+        profiles: profilesRef.current,
+        activeId: activeRef.current.id,
+        seenProfileGroups: seenProfileGroups.current,
+        loopMemberRequest,
+        restoredLoopForCurrent,
+        publishReplicationLoops,
+        setRestoredMembers,
+        syncLoopSession,
+      }, controller.signal))
+      .then((applied) => { done = applied; }, () => { if (!controller.signal.aborted) restoredMembersPolled.current = -1; });
     return () => {
       if (!done) restoredMembersPolled.current = -1;
       controller.abort();
@@ -2407,59 +2379,25 @@ function App() {
     const reachIds = reachPart ? reachPart.split(",") : [];
     const failIds = failPart ? failPart.split(",") : [];
     const ids = [...new Set([...reachIds, ...failIds])];
-    const failSet = new Set(failIds);
     const controller = new AbortController();
-    let timer: number | undefined;
-    async function tick(batch: string[]) {
-      const known = profilesStatusRef.current.loaded && !profilesStatusRef.current.failed;
-      const toTry: { id: string; c: Connection; key: string; label: string }[] = [];
-      const dropped = new Set<string>();
-      const movedOutside: { id: string; name: string; group: string; hadGroup: boolean }[] = [];
-      for (const id of batch) {
-        const c = loopMemberRequest(id);
-        if (c) toTry.push({ id, c, key: connectionKey(c), label: connectionLabel(c) });
-        else if (known && failSet.has(id)) {
-          const t = profilesRef.current.find((p) => p.id === id);
-          if (!t) dropped.add(id);
-          else movedOutside.push({ id, name: t.name || id, group: (t.group || "").trim(), hadGroup: true });
-        }
-      }
-      const ok = new Set<string>(), newlyActive: string[] = [], newlyStopped: string[] = [];
-      if (toTry.length) {
-        const results = await Promise.allSettled(toTry.map(async (item) => ({ item, loops: (await readSkipLoops(item.c, controller.signal)).loops })));
-        if (controller.signal.aborted) return;
-        for (const r of results) {
-          if (r.status !== "fulfilled") continue;
-          const { item, loops } = r.value;
-          ok.add(item.id);
-          publishReplicationLoops({ key: item.key, label: item.label, report: loops });
-          if (loops.some(loopActive)) newlyActive.push(item.key);
-          else if (loops.length === 0) newlyStopped.push(item.key);
-        }
-      }
+    let stop: (() => void) | undefined;
+    // The retry loop runs in loopPolling.ts (preloaded beside the first
+    // screen); a chunk that cannot be read retries with the next change.
+    void import("./loopPolling").then((m) => {
       if (controller.signal.aborted) return;
-      const done = new Set([...dropped, ...ok, ...movedOutside.map((m) => m.id)]);
-      if (done.size) {
-        setRestoredMembers((prev) => {
-          if (!prev || prev.reset !== resetKey) return prev;
-          const seen = new Set(prev.outsideGroup.map((m) => m.id));
-          return {
-            ...prev,
-            activeKeys: [...new Set([...prev.activeKeys, ...newlyActive])],
-            stoppedKeys: [...new Set([...prev.stoppedKeys, ...newlyStopped])],
-            outsideGroup: [...prev.outsideGroup.filter((m) => !ok.has(m.id)), ...movedOutside.filter((m) => !seen.has(m.id))],
-            failedMembers: prev.failedMembers.filter((m) => !done.has(m.id)),
-          };
-        });
-      }
-      const left = ids.filter((id) => !done.has(id));
-      if (!controller.signal.aborted && left.length) {
-        timer = window.setTimeout(() => { void tick(left); }, LOOP_POLL_MS);
-      }
-    }
-    if (reachIds.length) void tick(reachIds);
-    else timer = window.setTimeout(() => { void tick(ids); }, LOOP_POLL_MS);
-    return () => { controller.abort(); window.clearTimeout(timer); };
+      stop = m.startRestoreRetry({
+        ids,
+        failIds,
+        reachIds,
+        resetKey,
+        profilesStatus: () => ({ loaded: profilesStatusRef.current.loaded, failed: !!profilesStatusRef.current.failed }),
+        profiles: () => profilesRef.current,
+        loopMemberRequest,
+        publishReplicationLoops,
+        setRestoredMembers,
+      }, controller.signal);
+    }).catch(() => {});
+    return () => { controller.abort(); stop?.(); };
   }, [ready, resetKey, restoreRetrySpec, loopMemberRequest, publishReplicationLoops]);
   const restoreCurrentPending =
     restoredLoopForCurrent &&
@@ -2515,46 +2453,20 @@ function App() {
       return kept.length === prev.length ? prev : kept;
     });
     const controller = new AbortController();
-    let timer: number | undefined;
-    const updateStale = (staleSet: Set<string>) => {
-      const next = [...staleSet].sort();
-      setPollerStaleEndpoints((prev) =>
-        prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next,
+    let stop: (() => void) | undefined;
+    // The poll runs in loopPolling.ts (preloaded beside the first screen); a
+    // chunk that cannot be read retries with the next change.
+    void import("./loopPolling").then((m) => {
+      if (controller.signal.aborted) return;
+      stop = m.startOtherLoopPoll(
+        keys,
+        (boundKey) => resolveBoundLoopConnection(boundKey).connection,
+        publishReplicationLoops,
+        setPollerStaleEndpoints,
+        controller.signal,
       );
-    };
-    async function poll() {
-      const resolved = keys.map((boundKey) => ({
-        boundKey,
-        ep: endpointKey(boundKey),
-        c: resolveBoundLoopConnection(boundKey).connection,
-      }));
-      const targets = resolved.filter((item): item is { boundKey: string; ep: string; c: Connection } => !!item.c);
-      const stale = new Set(resolved.filter((item) => !item.c).map((item) => item.ep));
-      if (targets.length) {
-        const answers = await Promise.allSettled(
-          targets.map(async (t) => ({ t, answer: await readSkipLoops(t.c, controller.signal) })),
-        );
-        if (controller.signal.aborted) return;
-        for (let i = 0; i < answers.length; i++) {
-          const r = answers[i];
-          if (r.status === "fulfilled") {
-            publishReplicationLoops({
-              key: connectionKey(r.value.t.c),
-              label: connectionLabel(r.value.t.c),
-              report: r.value.answer.loops,
-            });
-          } else {
-            stale.add(targets[i].ep);
-          }
-        }
-      }
-      if (!controller.signal.aborted) {
-        updateStale(stale);
-        timer = window.setTimeout(() => { void poll(); }, LOOP_POLL_MS);
-      }
-    }
-    timer = window.setTimeout(() => { void poll(); }, LOOP_POLL_MS);
-    return () => { controller.abort(); window.clearTimeout(timer); };
+    }).catch(() => {});
+    return () => { controller.abort(); stop?.(); };
   }, [otherActiveLoopKeys, resolveBoundLoopConnection, publishReplicationLoops]);
   const staleLoopEndpoints = useMemo(() => {
     const set = new Set(pollerStaleEndpoints);
@@ -2587,8 +2499,8 @@ function App() {
     otherLoopStoppingRef.current.add(stopKey);
     setOtherLoopStopping({ key: bound.key, id });
     try {
-      await stopSkipLoop(c, id);
-      const answer = await readSkipLoops(c);
+      const { stopAndReadSkipLoops } = await import("./loopPolling");
+      const answer = await stopAndReadSkipLoops(c, id);
       publishReplicationLoops({ key: connectionKey(c), label: connectionLabel(c), report: answer.loops });
     } catch {
       // Banner stays quiet; the member's own view shows status errors.
@@ -3006,65 +2918,6 @@ function App() {
     return out;
   }, [paletteQuery, objectSearch, objectSearchHere, objectCatalog.catalog, paletteConnected, navKey]);
 
-  const workspaceCommands: WorkspaceCommand[] = [
-    // Places in the sidebar's order, then what belongs to one of them.
-    { id: "place-home", label: "Home", group: "Places", icon: "home", run: () => go("home") },
-    { id: "place-server", label: "Server", group: "Places", icon: "server", keywords: "database status", run: () => go("server") },
-    { id: "place-workload", label: "Workload", group: "Places", icon: "statements", keywords: "queries top processes waits io", run: () => go("workload") },
-    { id: "place-topology", label: "Topology", group: "Places", icon: "topology", keywords: "connection group members parameters accounts plugins map servers fleet drift", run: () => go("topology") },
-    { id: "place-replication", label: "Replication", group: "Places", icon: "replication", keywords: "slave replica topology channels lag gtid", run: () => go("replication") },
-    { id: "place-cluster", label: "Cluster", group: "Places", icon: "cluster", keywords: "galera percona xtradb pxc innodb cluster group replication wsrep members quorum router", run: () => go("cluster") },
-    { id: "place-proxysql", label: "ProxySQL", group: "Places", icon: "proxy", keywords: "proxysql proxy hostgroups mysql_servers query rules digest connection pool admin", run: () => go("proxysql") },
-    { id: "place-readyset", label: "Readyset", group: "Places", icon: "readyset", keywords: "readyset cache shallow deep querypilot resnapshot cdc replication", run: () => go("readyset") },
-    { id: "place-tuning", label: "Tuning", group: "Places", icon: "tuning", keywords: "mysql tuning mariadb tuning advisor health score optimization", run: () => go("tuning") },
-    { id: "place-files", label: "File transfer", group: "Places", icon: "files", keywords: "files sftp ssh transfer upload download scp filezilla logs dump", run: () => go("files") },
-    { id: "place-query", label: "Query editor", group: "Places", icon: "query", keywords: "sql run query editor", run: () => go("query") },
-    { id: "place-digest", label: "Query digest", group: "Places", icon: "analysis", keywords: "pt-query-digest digest profile statements workload slow queries", run: () => go("digest") },
-    { id: "place-diagram", label: "Database diagram", group: "Places", icon: "diagram", keywords: "schema diagram er erd mermaid tables relationships foreign keys", run: () => go("diagram") },
-    { id: "place-schema", label: "Schema versions", group: "Places", icon: "branches", keywords: "schema version versions snapshot compare diff migration drift ddl alter", run: () => go("schema") },
-    { id: "place-plans", label: "Plans", group: "Places", icon: "plan", keywords: "explain analyze flame graph visual explain", run: () => go("plans") },
-    { id: "place-investigations", label: "Investigations", group: "Places", icon: "investigation", keywords: "saved library notes", run: () => go("investigations") },
-    { id: "place-learn", label: "Learn", group: "Places", icon: "learn", keywords: "lessons teach algorithms", run: () => go("learn") },
-    // The Full analysis is the Tuning place's second tab (Server.tsx choose).
-    { id: "tuning-report", label: "Full analysis", group: "Tuning", icon: "analysis", keywords: "full analysis report findings tuner", run: () => { go("tuning"); setServerNavigation((n) => ({ view: "report", n: (n?.n || 0) + 1 })); } },
-    // Compare is a mode of Plans (vocabulary), not a place.
-    { id: "plans-compare", label: "Compare", group: "Plans", icon: "compare", keywords: "diff compare plans before after", run: () => setMode("compare") },
-    ...SERVER_VIEWS.map((v) => ({
-      id: `server-${v.id}`,
-      label: v.label,
-      group: `Server · ${v.group}`,
-      icon: v.icon,
-      keywords: `${v.label} ${v.group} server`,
-      run: () => { go("server"); chooseServerView(v.id); },
-    })),
-    ...WORKLOAD_VIEWS.map((v) => ({
-      id: `workload-${v.id}`,
-      label: v.label,
-      group: `Workload · ${v.group}`,
-      icon: v.icon,
-      keywords: `${v.label} ${v.group} workload`,
-      run: () => { go("workload"); chooseServerView(v.id); },
-    })),
-    ...THEME_CHOICES.map(theme => ({
-      id: `theme-${theme.id}`, label: `Theme: ${theme.name}`, group: "Appearance",
-      icon: "settings" as const,
-      run: () => applyTheme(theme.id),
-    })),
-    { id: "action-import", label: "Import plan", group: "Actions", icon: "import", keywords: "open json explain analyze", run: openImport },
-    { id: "action-audit", label: "Audit log", group: "Actions", icon: "audit", keywords: "writes changes kill declined refused log", run: openAuditLog },
-    { id: "action-account", label: "Account and privileges", group: "Actions", icon: "key", keywords: "privileges grants roles user account connected as permissions show grants", run: () => setAccountOpen(true) },
-    { id: "action-new-connection", label: "New connection", group: "Actions", icon: "plus", keywords: "add connection server host profile new", run: newConnection },
-    // Settings is a page (the gear, ⌘,): the palette's one Settings action
-    // opens it, at the Query editor section when that is what was asked for.
-    { id: "action-settings", label: "Settings", group: "Actions", icon: "settings", keywords: "settings preferences appearance theme dark light query editor startup restore updates news client tools about zoom", run: () => openSettings(/editor/.test(paletteQuery.toLowerCase()) ? "editor" : "appearance") },
-    // Query editor actions on the current tab (QueryLabHandle).
-    { id: "query-rename-tab", label: "Rename query tab", group: "Query editor", icon: "edit", keywords: "rename tab name title query editor", run: () => { go("query"); withLab((lab) => lab.renameTab()); } },
-    { id: "query-format-sql", label: "Format SQL", group: "Query editor", icon: "format", keywords: "format indent beautify pretty sql query editor", run: () => { go("query"); withLab((lab) => lab.formatSql()); } },
-    { id: "query-find", label: "Find", group: "Query editor", icon: "search", keywords: "find search text sql query editor", run: () => { go("query"); withLab((lab) => lab.runEditorCommand("find")); } },
-    { id: "query-replace", label: "Find and replace", group: "Query editor", icon: "replace", keywords: "find replace search text sql query editor", run: () => { go("query"); withLab((lab) => lab.runEditorCommand("replace")); } },
-    { id: "query-go-to-line", label: "Go to line", group: "Query editor", icon: "query", keywords: "go to line jump sql query editor", run: () => { go("query"); withLab((lab) => lab.runEditorCommand("goToLine")); } },
-    { id: "query-save", label: "Save query…", group: "Query editor", icon: "plus", keywords: "save saved query favorite bookmark snippet folder keep query editor", run: () => { go("query"); withLab((lab) => lab.saveQuery()); } },
-  ];
 
   const anotherDialogOpen = importOpen || confirmFresh || accountOpen || commandPaletteOpen;
   const notebookVisible = notebookOpen && !anotherDialogOpen && ready && plans.length > 0 &&
@@ -3836,7 +3689,18 @@ function App() {
       )}
       {commandPaletteOpen && (
         <CommandPalette
-          commands={workspaceCommands}
+          actions={{
+            go,
+            setModeCompare: () => setMode("compare"),
+            chooseServerView,
+            openFullAnalysis: () => setServerNavigation((n) => ({ view: "report", n: (n?.n || 0) + 1 })),
+            openImport,
+            openAuditLog,
+            openAccount: () => setAccountOpen(true),
+            newConnection,
+            openSettings,
+            withLab,
+          }}
           recent={recentCommands}
           objects={objectCommands}
           objectStatus={objectSearchHere ? objectSearch : { searching: paletteConnected && paletteQuery.trim().length >= 2, error: "", truncated: false }}
