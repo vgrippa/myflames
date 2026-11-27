@@ -113,8 +113,21 @@ function clearCopyNotice(): void {
   copyNotice = null;
 }
 
+/** The topmost open dialog when one is open (the last in document order owns
+ * the top layer), else the document body. A modal sheet would hide and silence
+ * a notice appended to document.body. */
+function noticeHost(): HTMLElement {
+  const dialogs = typeof document.querySelectorAll === "function"
+    ? document.querySelectorAll<HTMLElement>("dialog[open]")
+    : [];
+  return (dialogs.length ? dialogs[dialogs.length - 1] : document.body) as HTMLElement;
+}
+
 /** One shared status reaches every copy caller, including the boolean helper.
- * Text content is used because copied text and command names are untrusted. */
+ * Text content is used because copied text and command names are untrusted.
+ * While a modal dialog is open (showModal makes the rest of the page inert),
+ * the notice mounts inside the topmost open dialog so it stays visible and
+ * stays in the accessibility tree; otherwise it mounts in the page. */
 function showCopyNotice(message: string): void {
   if (typeof document === "undefined" || !document.body) return;
   try {
@@ -128,7 +141,7 @@ function showCopyNotice(message: string): void {
     // Reuse the workspace toast's theme; allow time to read a longer note
     // and keep it above the caller's short confirmation at the window foot.
     notice.style.cssText = "bottom:64px;width:max-content;max-width:min(70ch,calc(100vw - 32px));white-space:normal;animation:none;z-index:2147483647";
-    document.body.appendChild(notice);
+    noticeHost().appendChild(notice);
     notice.textContent = message;
     copyNotice = notice;
     noticeTimer = setTimeout(() => {

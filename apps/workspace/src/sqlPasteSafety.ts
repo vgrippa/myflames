@@ -38,17 +38,30 @@ const CLIENT_COMMAND_NAMES = new Set([
 // The client tests an input byte, not JavaScript's Unicode whitespace class.
 const asciiSpace = (ch: string | undefined) => !!ch && /[ \t\n\r\v\f]/.test(ch);
 
-function findCommandInMode(sql: string, backslashEscapes: boolean, ansiQuotes: boolean): string | null {
+type ClientMode = {
+  client: "mysql" | "mariadb";
+  backslashEscapes: boolean;
+  dollarQuotes?: boolean;
+  ansiQuotes?: boolean;
+};
+
+function findCommandInMode(sql: string, mode: ClientMode): string | null {
   let quote = "";
+  let dollarTag = "";
   let lineComment = false;
   let blockComment = false;
-  let hint = false;
+  let serverComment: "" | "conditional" | "hint" = "";
   let commandStart = true;
+  // Unlike commandStart, this survives newlines in a buffered statement.
+  // MariaDB accepts -- without whitespace only with an empty SQL buffer.
+  let statementStart = true;
   const n = sql.length;
   for (let i = 0; i < n; i++) {
     const ch = sql[i];
     if (ch === "\n" || ch === "\r") {
       lineComment = false;
+      // MySQL's ss_comment is local to add_line; MariaDB passes it by pointer.
+      if (mode.client === "mysql") serverComment = "";
       commandStart = true;
       continue;
     }
@@ -57,10 +70,18 @@ function findCommandInMode(sql: string, backslashEscapes: boolean, ansiQuotes: b
     }
     if (quote) {
       commandStart = false;
+      statementStart = false;
       // MariaDB ANSI_QUOTES changes double quotes independently of single
       // quotes. Backticks close even after a backslash in either client.
-      if (ch === "\\" && backslashEscapes && quote !== "`" && !(ansiQuotes && quote === '"')) {
-        i++;
+      if (ch === "\\" && mode.backslashEscapes && quote !== "`" && !(mode.ansiQuotes && quote === '"')) {
+        if (sql[i + 1] !== "\n" && sql[i + 1] !== "\r") i++;
+        continue;
+      }
+      if (quote === "$") {
+        if (ch === "$" && sql.startsWith(dollarTag, i)) {
+          quote = "";
+          i += dollarTag.length - 1;
+        }
         continue;
       }
       if (ch === quote) {
@@ -74,38 +95,57 @@ function findCommandInMode(sql: string, backslashEscapes: boolean, ansiQuotes: b
     }
     if (blockComment) {
       if (ch === "*" && sql[i + 1] === "/") {
-        blockComment = false;
-        i++;
+        // A nested server comment changes ss_comment even inside a plain
+        // comment. Its closing pair clears that state before ml_comment.
+        if (serverComment) {
+          serverComment = "";
+          if (mode.client === "mariadb") i++;
+        } else {
+          blockComment = false;
+          i++;
+        }
+      } else if (ch === "/" && sql[i + 1] === "*") {
+        const kind = sql[i + 2];
+        if (kind === "!") serverComment = "conditional";
+        else if (kind === "+") serverComment = "hint";
+        else if (serverComment !== "hint"
+          && !(mode.client === "mariadb" && kind === "M" && sql[i + 3] === "!")) i++;
       }
       continue;
     }
-    // Optimizer hints ignore quotes, line-comment markers and nested /*.
-    // Only */ ends the hint; backslash commands remain live throughout it.
-    if (hint && ch === "*" && sql[i + 1] === "/") {
-      hint = false;
-      i++;
+    // Hints ignore quotes and line comments, but a nested /*! switches to
+    // conditional-comment parsing, where quotes and semicolons are live.
+    if (serverComment && ch === "*" && sql[i + 1] === "/") {
+      serverComment = "";
+      // MySQL visits the slash again; MariaDB consumes the whole pair.
+      if (mode.client === "mariadb") i++;
       continue;
     }
-    if (!hint && ch === "#") {
+    if (serverComment !== "hint" && ch === "#") {
       lineComment = true;
       continue;
     }
-    if (!hint && ch === "-" && sql[i + 1] === "-" && (i + 2 >= n || asciiSpace(sql[i + 2]))) {
+    if (serverComment !== "hint" && ch === "-" && sql[i + 1] === "-"
+      && (i + 2 >= n || asciiSpace(sql[i + 2]) || (mode.client === "mariadb" && statementStart))) {
       lineComment = true;
       continue;
     }
-    if (!hint && ch === "/" && sql[i + 1] === "*") {
+    if (ch === "/" && sql[i + 1] === "*") {
       const kind = sql[i + 2];
-      if (kind === "+") hint = true;
-      else if (kind !== "!" && !(kind === "M" && sql[i + 3] === "!")) blockComment = true;
+      const mariaExecutable = mode.client === "mariadb" && kind === "M" && sql[i + 3] === "!";
+      if (kind === "!") serverComment = "conditional";
+      else if (kind === "+") serverComment = "hint";
+      else if (serverComment !== "hint" && !mariaExecutable) blockComment = true;
+      if (!blockComment) statementStart = false;
       // In a plain comment the third character can already be the closing
       // star of /**/. Consume only its opening pair, or later commands hide.
-      i += blockComment ? 1 : kind === "M" && sql[i + 3] === "!" ? 3 : 2;
+      i += blockComment ? 1 : mariaExecutable ? 3 : kind === "!" || kind === "+" ? 2 : 0;
       continue;
     }
     if (asciiSpace(ch)) continue;
-    if (!hint && ch === ";") {
+    if (serverComment !== "hint" && ch === ";") {
       commandStart = true;
+      statementStart = true;
       continue;
     }
     if (commandStart) {
@@ -117,9 +157,22 @@ function findCommandInMode(sql: string, backslashEscapes: boolean, ansiQuotes: b
       if (word && CLIENT_COMMAND_NAMES.has(word[0].toLowerCase())) return word[0].toLowerCase();
     }
     commandStart = false;
-    if (!hint && (ch === "'" || ch === '"' || ch === "`")) {
+    statementStart = false;
+    if (serverComment !== "hint" && (ch === "'" || ch === '"' || ch === "`")) {
       quote = ch;
       continue;
+    }
+    if (mode.dollarQuotes && serverComment !== "hint" && ch === "$"
+      && !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[i - 1] || "")) {
+      // MySQL's check_for_dollar_quote requires an identifier boundary and
+      // an exact closing tag, including $$ and tags beginning with digits.
+      const tag = /^\$[A-Za-z0-9_\u0080-\uffff]*\$/.exec(sql.slice(i));
+      if (tag) {
+        dollarTag = tag[0];
+        quote = "$";
+        i += dollarTag.length - 1;
+        continue;
+      }
     }
     if (ch === "\\") {
       const c = sql[i + 1];
@@ -132,9 +185,12 @@ function findCommandInMode(sql: string, backslashEscapes: boolean, ansiQuotes: b
   return null;
 }
 
-/** A possible client command, or null. Dollar quotes deliberately do not hide
- * commands because their support depends on the destination server. Scan both
- * backslash modes and MariaDB's independent ANSI_QUOTES mode. */
+/** A possible client command, or null. Keep each client's parsing rules in
+ * separate passes, with both backslash modes and MySQL dollar quoting on/off.
+ * MariaDB also needs its independent ANSI_QUOTES mode. A match in any pass
+ * warns, because the destination client and session settings are unknown.
+ * This does not track sql_mode changes within the script or DELIMITER prefixes
+ * such as delimiterX; a recognized DELIMITER command already warns. */
 export function findMysqlClientCommand(sql: string): string | null {
   // Deliberately over-warn on the first word of every physical line, even
   // when a quote/comment state or a nonempty client buffer might suppress a
@@ -145,9 +201,15 @@ export function findMysqlClientCommand(sql: string): string | null {
     const command = word[1].toLowerCase();
     if (CLIENT_COMMAND_NAMES.has(command)) return command;
   }
-  return findCommandInMode(sql, true, false)
-    || findCommandInMode(sql, false, false)
-    || findCommandInMode(sql, true, true);
+  for (const backslashEscapes of [true, false]) {
+    for (const dollarQuotes of [false, true]) {
+      const command = findCommandInMode(sql, { client: "mysql", backslashEscapes, dollarQuotes });
+      if (command) return command;
+    }
+    const command = findCommandInMode(sql, { client: "mariadb", backslashEscapes });
+    if (command) return command;
+  }
+  return findCommandInMode(sql, { client: "mariadb", backslashEscapes: true, ansiQuotes: true });
 }
 
 /** A plain-words note about a possible client command; empty when none was

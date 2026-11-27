@@ -316,7 +316,8 @@
           "properties": {
             "text": {"type": "string"},
             "sql": {"type": ["string", "null"]},
-            "config": {"type": "string"}
+            "config": {"type": "string"},
+            "names": {"type": "array", "items": {"type": "string"}}
           }
         },
         "numbers": {"type": "array", "items": {"$ref": "#/$defs/number"}},

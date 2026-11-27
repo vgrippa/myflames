@@ -677,6 +677,30 @@ try {
       defineStatusGlobal('navigator', successfulNavigator);
       expireNotices();
       assert.equal(visibleNotices().length, 0);
+
+      // R3-3: while a dialog is open (a showModal sheet makes the rest of the
+      // page inert), the notice mounts inside the topmost open dialog.
+      const dialogNodes = new Set();
+      const bodyNoticesBeforeDialog = appendedNotices;
+      const fakeDialog = {
+        appendChild(node) { dialogNodes.add(node); statusNodes.add(node); },
+      };
+      statusDocument.querySelectorAll = (selector) => (selector === 'dialog[open]' ? [fakeDialog] : []);
+      try {
+        assert.equal(await clip.copyToClipboard('SELECT 1 \\G'), true);
+        assert.equal(dialogNodes.size, 1, 'R3-3: the notice mounts inside the open dialog');
+        assert.equal([...dialogNodes][0].id, 'myflames-copy-notice');
+        assert.equal(appendedNotices, bodyNoticesBeforeDialog, 'R3-3: the page body does not receive the notice');
+        assert.match(visibleNotices()[0].textContent, /mysql client command \(\\G\)/);
+        expireNotices();
+        assert.equal(visibleNotices().length, 0, 'R3-3: the notice still expires inside the dialog');
+      } finally {
+        delete statusDocument.querySelectorAll;
+      }
+      assert.equal(await clip.copyToClipboard('SELECT 1 \\G'), true);
+      assert.equal(visibleNotices().length, 1, 'R3-3: without an open dialog the notice mounts in the page');
+      expireNotices();
+      assert.equal(visibleNotices().length, 0);
     } finally {
       expireNotices();
       for (const [key, descriptor] of statusDescriptors) {

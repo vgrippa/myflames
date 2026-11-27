@@ -1,9 +1,9 @@
 // Unit contracts for sqlPasteSafety.ts: the name allowlist shared with
 // privileges._UNSAFE_GRANT_SQL and the mysql client command detector, which
 // conservatively covers the client's add_line (client/mysql.cc), including
-// both backslash-escape modes and client-side parsing in server comments.
-// Dollar quoting and destination session modes are deliberately not assumed. Socket-free;
-// run directly with Node.
+// both client families, backslash-escape modes, optional MySQL dollar quotes
+// and client-side parsing in server comments. Destination session modes are
+// deliberately not assumed. Socket-free; run directly with Node.
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -117,6 +117,54 @@ try {
     assert.ok(safety.findMysqlClientCommand(clean), `${id}: command flagged after sanitization`);
     assert.match(safety.clientCommandNote(clean), /mysql client command/, `${id}: warning produced`);
   }
+
+  // Security R3-1: a union of independently parsed MySQL and MariaDB modes.
+  // Combining their comment rules can hide executable text in a quote even
+  // though one real client considers it outside that quote. Check both raw
+  // input and the sanitized clipboard bytes, retaining the probe identifiers.
+  const round3Probes = [
+    ['r01_hint_eol_named', 'SELECT SLEEP(0) /*+\n; system touch MARK;\n*/;\n'],
+    ['r02_hint_nested_cond', 'SELECT SLEEP(0) /*+ /*! ; system touch MARK; */;\n'],
+    ['r03_dollar_quote_named', "SELECT $$'$$; system touch MARK;\n"],
+    ['r04_dollar_quote_bs', "SELECT $$'$$ \\! touch MARK # '\n;\n"],
+    ['r05_mysqlM_quote_named', "SELECT 1 /*M! ' */; system touch MARK;\n"],
+    ['r06_mysqlM_quote_bs', "SELECT 1 /*M! ' */ \\! touch MARK # '\n;\n"],
+    // Both r08 and r09 executed (RAN) with the mariadb:11.4 client, 11.4.13,
+    // against round3/fake_mysqld.py. The comment must not open a SQL quote.
+    ['r08_maria_dashdash_named', "--x '\nSELECT 1; system touch MARK;\n-- '\n"],
+    ['r09_maria_dashdash_bs', "SELECT 1;--x '\n\\! touch MARK # '\n;\n"],
+    ['r10_hint_eol_quote', "SELECT SLEEP(0) /*+\n' */ ' ; system touch MARK;\n"],
+    ['r11_hint_nested_cond_quote', "SELECT SLEEP(0) /*+ /*! ' */ ' ; system touch MARK;\n"],
+    ['r12_account_breakout', "DROP USER ''@'\\'' /*M! \" */; system touch MARK; #';\n"],
+  ];
+  for (const [id, sql] of round3Probes) {
+    for (const [kind, text] of [['raw', sql], ['sanitized', safety.sanitizeClipboardText(sql).text]]) {
+      assert.ok(safety.findMysqlClientCommand(text), `${id}: command flagged (${kind})`);
+      assert.match(safety.clientCommandNote(text), /mysql client command/, `${id}: warning produced (${kind})`);
+    }
+  }
+  assert.equal(safety.findMysqlClientCommand('SELECT SLEEP(0) /*+ ; system touch MARK; */;\n'), null,
+    'r02b_hint_single_line: a semicolon alone does not end an optimizer hint');
+
+  // Exercise the mode combinations and boundaries, rather than merely
+  // treating every dollar or newline as an unconditional quote terminator.
+  for (const [id, sql] of [
+    ['dollar_named_tag', "SELECT $body_9$'$body_9$; system touch MARK;\n"],
+    ['dollar_numeric_tag', "SELECT $9$'$9$; system touch MARK;\n"],
+    ['dollar_exact_tag', "SELECT $body$'$other$$body$; system touch MARK;\n"],
+    ['dollar_no_backslash_escapes', "SELECT $$'\\$$; system touch MARK;\n"],
+    ['mariadb_hint_survives_newline', "SELECT /*+\n# ' */; system touch MARK;\n"],
+    ['hint_overlapping_close', "SELECT /*+ /*/ ' */ ' ; system touch MARK;\n"],
+  ]) {
+    assert.equal(safety.findMysqlClientCommand(sql), 'system', id);
+  }
+  for (const [id, sql] of [
+    ['dollar_inside_identifier', "SELECT a$body$'; system touch MARK;\n"],
+    ['mariadb_dashdash_buffered', "SELECT 1\n--x '\n; system touch MARK;\n"],
+  ]) {
+    assert.equal(safety.findMysqlClientCommand(sql), null, id);
+  }
+
   for (const [id, sql] of [
     ['c13_plain_comment', 'SELECT SLEEP(0) /* \\! touch MARK # */;\n'],
     ['c16_trailing_backslash', 'SELECT 1 \\\n! touch MARK\n;\n'],

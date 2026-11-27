@@ -1037,13 +1037,15 @@ function sourceText(p: ConfigParameter) {
  * reason, the suggested change and one caveat line. */
 function ParameterRecommendation({ name, flagged }: { name: string; flagged: ConfigCheck[] }) {
   const [check, ...others] = flagged;
+  // Additive names metadata is absent from older config-1.0 payloads.
+  const action: (NonNullable<ConfigCheck["action"]> & { names?: string[] }) | null = check.action;
   return <InspectorSection title="Recommendation">
     <div className="parameter-finding" data-check={check.key}>
       <p className="parameter-finding-head"><StatusPill tone={check.status} /><strong>{check.label}</strong></p>
       <p>{check.why}</p>
-      {check.action?.text && <p>{check.action.text}</p>}
-      {check.action?.sql && <CopySql sql={check.action.sql} label={`Suggested statement for ${name}`} />}
-      {check.action?.config && <CopySql sql={check.action.config} label={`Option file line for ${name}`} />}
+      {action?.text && <p>{action.text}</p>}
+      {action?.sql && <CopySql sql={action.sql} names={action.names} label={`Suggested statement for ${name}`} />}
+      {action?.config && <CopySql sql={action.config} names={action.names} label={`Option file line for ${name}`} />}
       {check.caveat && <p className="hint">{check.caveat}</p>}
       {others.length > 0 && <p className="hint">Also flagged: {others.map(c => c.label).join(", ")}.</p>}
     </div>

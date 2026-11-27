@@ -2207,41 +2207,47 @@ and `ContextPanel.tsx` `ANALYZE TABLE` statements), `TableStructure.tsx`,
 `unsafeNamesReason`.
 
 Client-command warning (`sqlPasteSafety.findMysqlClientCommand`,
-`clientCommandNote`, `copyNote`): when a wired SQL copy contains a short
-backslash command matching `\` plus one character in `CLIENT_COMMAND_CHARS`
-(`?!#.cCdeGghnPpqRrstTuWwx`, excluding `\N`), the copy confirmation appends
-`clientCommandNote` naming the first match and warning that the mysql client
-would run it itself instead of sending it to the server. It currently appears at:
-`Tables.tsx` row menu (`copyNote`), `Indexes.tsx` row menu (`copyNote`),
-`PerfShared.tsx` `CopySql` (all callers, including `Tables.tsx`, `Indexes.tsx`,
-`StatementInspector.tsx`, `ContextPanel.tsx`, `IndexSuggestion.tsx`,
-`SlowQueries.tsx`, `ProxySqlPlace.tsx`, `ReadysetPlace.tsx`, `Accounts.tsx`,
-`ImportCsv.tsx`, `Report.tsx`, `Tuning.tsx`, `Config.tsx`, `Waits.tsx` and
-`Instruments.tsx`), `TableStructure.tsx` Copy CREATE TABLE,
-`SchemaVersions.tsx` `CodeBlock` / `SplitDiff` / `SyncPanel` copies,
-`Locks.tsx` `CopyCommand` (KILL and XA commands), and `ServerCompare.tsx`
-grants-export Copy (`copyNote`). It does not appear on `SchemaExport.tsx`
-(`Copy script`), `QueryDigest.tsx` (`CodeBlock` / `DigestValue`),
-`PlanScreen.tsx` (`Copy SQL`), `ObjectChanges.tsx`, `Audit.tsx`, `Commands.tsx`
-(`Maintenance.tsx`, `Replication.tsx`, `ClusterPlace.tsx`, `WhyDisabled.tsx`,
-`ActionReview.tsx`, `RollingChangeSheet.tsx`), `ErrorLog.tsx`, `Library.tsx`
-evidence Copy, `ResultsPane.tsx`, `TableData.tsx` or `Download .sql` exports.
-`findMysqlClientCommand` is a lexical **warning heuristic, not a guarantee**:
-it scans for two-character backslash commands outside `'...'`, `"..."`,
-`` `...` ``, `$tag$...$tag$`, `#...`, `-- <ws>`, and plain `/* ... */`
-comments while continuing to scan inside `/*! ... */` and `/*+ ... */` comments,
-and has known limits: it does not detect long-form client commands (`source`,
-`system`, `delimiter`, etc.) or track `DELIMITER` changes; it assumes backslash
-escaping in `'...'` and `"..."` strings (missing commands after `\'` under
-`NO_BACKSLASH_ESCAPES`); it treats `$tag$...$tag$` (not preceded by
-`[A-Za-z0-9_]`) as dollar-quoted even when the target server does not support
-dollar quoting or `$` appears in identifiers such as `a$$$`; it treats `/*M!
-... */` MariaDB executable comments as plain block comments; inside `/*+ ... */`
-optimizer hints it still enters quote, `#` and `--` states even though the
-client does not; it tests `--` using JS `/\s/` (matching non-ASCII spaces such
-as `\u00A0`) rather than ASCII-only whitespace; and `CopySql` also runs it on
-option-file (`my.cnf`) snippets where Windows backslash paths can trigger a
-false warning.
+`clientCommandNote`, `copyNote`): `copyToClipboardResult` scans the sanitized
+text once, so every copy through either clipboard helper and every selection
+copy (`handleSelectionCopy`) carries the note in `CopyResult.note`, and a
+successful copy with a note also shows it in the shared status
+(`#myflames-copy-notice`, `role="status"`, `aria-live="polite"`, twelve
+seconds). The status mounts inside the topmost open `dialog[open]` when one
+is open (a `showModal()` sheet makes the rest of the page inert, so a notice
+on `document.body` would be hidden and unsounded), else on `document.body`.
+Callers that keep their own confirmation (`PerfShared.tsx` `CopySql`,
+`SchemaExport.tsx`, `TableStructure.tsx`, the row menus of `Tables.tsx` and
+`Indexes.tsx`, `SchemaVersions.tsx`, `Locks.tsx`, `ServerCompare.tsx`) pass
+`CopyResult.note` to `copyFeedback`, which appends it once and strips any
+legacy inline copy (`withoutClientCommandNote`), so the warning never
+doubles. Copies inside sandboxed frames (plan fallback, Library comparisons,
+lessons) are sanitized but never scanned, and `Download .sql` exports do not
+copy at all.
+
+The scan runs in passes and warns when any pass flags. A first-word pass
+flags a line whose first word names a client command (the union of the MySQL
+and MariaDB COMMANDS tables: `source`, `system`, `delimiter`, `use` and the
+rest), even when a quote, a comment or a nonempty client buffer might
+suppress it. Three lexical passes then look for a backslash command (`\` plus
+one character of `?!#.cCdeGghnPpqQRrstTuWwx-`, excluding `\N`) or a named
+command at a statement start: one with backslash escapes (the default of both
+client families), one without (`NO_BACKSLASH_ESCAPES`), and one with
+MariaDB's ANSI_QUOTES mode, which changes double quotes independently of
+single quotes. Each pass treats `#` and `--` followed by ASCII whitespace or
+end of line as line comments and plain `/* ... */` as hidden, and keeps
+scanning inside `/*! ... */` and `/*M! ... */` executable comments; inside
+`/*+ ... */` optimizer hints only `*/` ends the hint, so quotes and comment
+markers there cannot hide a command. Dollar-quoted text deliberately does not
+hide commands, because support depends on the destination server.
+
+`findMysqlClientCommand` is a lexical **warning heuristic, not a guarantee**,
+with two accepted limits: a `sql_mode` change inside the copied script itself
+(`SET sql_mode='NO_BACKSLASH_ESCAPES'` before a backslash-quoted string) can
+hide a later command, because each pass scans one mode and never combines
+modes mid-script; and the client's DELIMITER prefix rule (the client accepts
+`delimiter;` as `delimiter` with argument `;`) is not recognized, so only the
+spaced form warns. `CopySql` also runs the scan on option-file (`my.cnf`)
+snippets where Windows backslash paths can trigger a false warning.
 Contracts: `apps/workspace/test/sql-paste-safety-unit.mjs`.
 
 ### Reviewed actions and session ownership
@@ -7170,6 +7176,8 @@ Numeric configuration literals use exact fixed-point text (for example `10` and 
 ### Full analysis report
 
 Health diagnostic findings preserve the optional `state` from `health-1.0` (`string | null`, absent in older reports). Tuning reads this state through `findingItem`, keeping `room` measured and `not_applicable` excluded just as when consuming Health directly. This is an additive `report-1.0` field; other finding types retain their existing shape.
+
+Finding actions optionally carry `names` (an array of strings containing the raw server names embedded in the suggested SQL), which the workspace copy guard uses to refuse copying when any name contains a backslash or is not printable ASCII.
 
 `python3 -m myflames report [--interval N] [--schema NAME ...] [--all-schemas] [--json | --markdown | --html | --digest] [--fail-on problem|watch] [-o PATH] [-q]` (`report-1.0`, `myflames/report.py`; endpoints `POST /api/live/report` and `POST /api/report/export`). One read-only run of every Server view on one connection: `report.preflight` (tag `/*myflames:report*/`; each subprocess owns its own temporary option file) and the all-schemas table count (`perf_common.require_choice`, `ALL_SCHEMAS_TABLE_LIMIT`; above it Indexes and Tables are `skipped` with a note unless `--all-schemas` / `all_schemas: true`), then `health`, `waits`, `io` (windowed, `--interval` 2 to 60, default 10, submitted first), `config`, `innodb`, `sessions`, `instruments`, `checks` (`server_checks.py`), `tables`, `indexes` (capped at `LIST_LIMIT` 50 each), at most `MAX_WORKERS` (3) at a time in a `ThreadPoolExecutor` (`_run_all`; wrapped in a `_Guarded` connection where Ctrl+C sets the cancel event that windowed sleeps wait on, cancels queued views, and does not wait for running ones), then the attribution (`discover.top_report` with `full_join`, and `no_index` + table for up to `ATTRIBUTION_TABLES` (3) tables read mostly without an index, `ATTRIBUTION_LIMIT` 5 rows each). The attribution jobs share one `_AttributionContext`: the metadata and coverage statements every `top_report` sends (version and Performance Schema state, the two digest consumers, `performance_schema_max_sql_text_length`, the digest overflow row, `Uptime` and `Performance_schema_digest_lost`, matched by their exact text) are read once per analysis, an error included, and each filter still reads its own digest rows: 9 client calls instead of 24 on the MySQL recordings, 8 instead of 20 on MariaDB. A failing view is caught per view (`_timed`; its error is redacted of the password) and listed in `header.failures`; the sections it feeds say what is missing. Never add SQL or thresholds to `report.py`: each family's rule lives in its module (`health.RULES`, `config_review.RULES`, `innodb_status`, `sessions`, `schema_health`, `server_checks.RULES`), and the report only maps items to findings (`_health_findings`, `_check_findings`, `_innodb_findings`, ...).
   Envelope: `schema_version`, `myflames_version`, `engine`, `server_version`, `taken_at`, `uptime_s`, `performance_schema`, `header {server {engine, version, version_comment, uptime_s, performance_schema}, started_at, elapsed_s, interval, scope {schemas, all_user_schemas, text}, views [{key, label, status ok|limited|failed|skipped, schema_version, started_at, taken_at, elapsed_s, error, notes}], failures [{view, label, status, error}]}`, `summary {problem, watch, unknown, info, ok, findings, status, text}`, `look_first` (a finding id or null), `findings[]`, `sections[] {key, title, status, summary, counts, findings (ids), views, notes}` in `SECTIONS` order (memory, redo, connections, temp_sorts, caches, query_cache, indexes, schema, waits, io, innodb, replication, security, observability), `attribution {available, gate (one sentence when unavailable), fix, label, caveats, coverage, health_window, full_joins {order, statements, taken_at}, full_scans [{schema, table, label, rows_without_index, fetch_ms_without_index, share_time, statements, capped, error}], notes}`, `checklist {covered, not_checked}`, `health_metrics` (every Health metric of the window with its status, the health-1.0 fields minus link, learn, sources and sparkline; `report.health_metrics`; empty when Health did not run; absent in older reports), `notes`. A finding: `id` (`<view>.<key>`), `family` (a section key), `status` (problem, watch, unknown, info, ok), `title`, `headline`, `verdict` (what this server shows, without the rule), `why`, `rule`, `caveat`, `action {text, sql, config}` (never applied), `numbers [{label, text, value?, unit?}]`, `settings`, `links [{view, label, key? | order?, table?}]` (views are the Server tab keys; `top` links carry `order` and `table` for attribution), `source {view, kind, key}`, `learn`, `impact`, `attribution` (`full_joins` or `full_scans`). Ranking is one function, `rank_findings`: status (problem, watch, unknown, info, ok), then `FAMILY_RANK` (replication, redo, memory, connections, innodb, security, temp_sorts, caches, schema, indexes, query_cache, io, waits, observability), then `impact`; `look_first` is the first problem, else the first watch. Sections and `summary.status` aggregate with problem > watch > unknown > info > ok (`_worst`, `summarize`): an unknown finding, or a view that failed or was skipped, never reads as ok, and the summary text counts unknowns. A finding that could not be judged (a privilege, Performance Schema off, tablespaces not readable for fragmentation, NULL replica lag with both threads running) is `unknown`, and every human format lists unknown findings with their reason (NOT JUDGED / Not judged). `coverage_lines` is the one projection of the attribution's scope (cumulative digest counters vs Health's window, uptime and the oldest FIRST_SEEN, the overflow row, `Performance_schema_digest_lost`, list caps) used by text, Markdown, HTML and the digest, and a table whose lookup failed shows its error, never an empty match. `at_or_worse` drives `--fail-on` (exit 1; 0 otherwise; 2 on bad input or when the server cannot be read, including when every attempted view fails). Total view failure prints the reasons on stderr, emits no payload and preserves any output file. Partial view failure keeps the report and existing exit code, and prints one warning line naming the failed views on stderr, including with `--json` or `-q`. Outputs are generated from the JSON only (`export(report, fmt)`): `format_text` (default; notes on stderr), `format_digest` (one line per non-ok finding with its numbers and rule, ok counted), `format_markdown` (`md` escapes HTML as entities and Markdown punctuation, `md_code` fences longer than any backtick run), `format_html` (static, `output_html_report._CSS`, every string through `html.escape`, the JSON embedded as `application/json` with `<`, `>`, `&` escaped, no script runs); every text format passes through `connector.terminal_text`. `/api/live/report` takes `connection`, `interval`, `schemas` (or `schema`), `all_schemas`; it uses the saved-password helper (`_SERVER_VIEW_PATHS`), `query_timeout` 60, and `run_single_flight` keyed by `report.flight_key` (the profile id, every effective connection and TLS setting, and an HMAC-SHA256 of the password under a per-process random key, never stored): only requests that would authenticate the same way share a run; an identical one joins it and gets the same report, one with other settings for the same connection is refused. `/api/report/export` takes `{report, format: json|text|digest|markdown|html, source?}` and returns `{format, content, mime, filename}`; `source` (`report.normalize_source`: label, host, port, user, `type` production or development; any other field, a password included, is dropped) is the connection the report was read from, added as the optional top-level `source` and named on a "Connection:" line in every human format.

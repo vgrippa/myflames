@@ -637,6 +637,34 @@ class TestPartitioning(IndexCase):
 
 
 class TestSQL(IndexCase):
+    def test_index_actions_retain_every_raw_target_name_for_the_copy_guard(self):
+        # Only the altered index belongs to the statement. A covering index's
+        # name and key column names are evidence, not SQL copy inputs.
+        for engine in ('mysql', 'mariadb'):
+            for field in range(3):
+                for unsafe in ('slash\\name', 'caf\u00e9', 'control\x1b', "tick`'name"):
+                    with self.subTest(engine=engine, field=field, unsafe=unsafe):
+                        target = ['shop', 'orders', 'k_a']
+                        target[field] = unsafe
+                        schema, table, index = target
+                        rows = [stat(table, index, 1, 'a', schema=schema, engine=engine),
+                                stat(table, 'cover\\index', 1, 'a', schema=schema, engine=engine),
+                                stat(table, 'cover\\index', 2, 'b', schema=schema, engine=engine)]
+                        usage = [[schema, table, index, '0', '0', '0'],
+                                 [schema, table, 'cover\\index', '1', '1', '1000'],
+                                 [schema, table, None, '4', '4', '1000']]
+                        result = indexes.compute_indexes(server(engine), raw(rows, usage=usage))
+                        for group in ('unused', 'redundant'):
+                            entry = next(r for r in result[group] if r['index'] == index)
+                            self.assertEqual(entry['names'], target)
+                            self.assertNotIn('cover\\index', entry['names'])
+                            sql_target = '`%s`.`%s`' % (schema.replace('`', '``'), table.replace('`', '``'))
+                            sql_index = '`' + index.replace('`', '``') + '`'
+                            self.assertEqual(entry['drop_sql'], 'ALTER TABLE %s DROP INDEX %s;' % (
+                                sql_target, sql_index))
+                            self.assertEqual(entry['test_sql'], 'ALTER TABLE %s ALTER INDEX %s %s;' % (
+                                sql_target, sql_index, 'IGNORED' if engine == 'mariadb' else 'INVISIBLE'))
+
     def test_schema_scope_uses_a_literal_and_server_wide_skips_system_schemas(self):
         mysql = server()
         scoped = indexes._statistics_sql(mysql, "it's")

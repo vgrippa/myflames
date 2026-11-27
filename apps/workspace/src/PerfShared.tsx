@@ -4,7 +4,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { formatNumber, type Connection, type SchemaCatalog } from "./api";
 import { copyFeedback, copyToClipboardResult } from "./clipboard";
-import { clientCommandNote, unsafeNamesReason } from "./sqlPasteSafety";
+import { unsafeNamesReason } from "./sqlPasteSafety";
 import { openWhyDisabled } from "./whyDisabledBus";
 import { DataTable, InfoPopover, Popover, Select, closePopovers } from "./kit";
 import { durationText } from "./duration";
@@ -171,7 +171,7 @@ export function CopySql({ sql, label, names }: { sql: string; label: string; nam
               setCopied({
                 text: target,
                 message: res.ok
-                  ? copyFeedback("Copied. Run it yourself in a SQL client if you decide to." + clientCommandNote(target), res.removed)
+                  ? copyFeedback("Copied. Run it yourself in a SQL client if you decide to.", res.removed, res.note)
                   : "Select the text to copy it.",
               });
             }
