@@ -2317,7 +2317,9 @@ function App() {
     }
     return parts.join(" ");
   }, [unreachedLoopMembers, failedRestoreMembers, restoreMemberPending, profilesFailed, restoredOtherMembers.length]);
-  const mountServer = visited.current.server || restoredLoop;
+  // Restored maintenance-job member ids make Server mount too: it lists each
+  // same-group member's job registry after reload (S14).
+  const mountServer = visited.current.server || restoredLoop || !!labInitial?.slow?.lifecycle_job_members;
   const mountReplication = visited.current.replication || restoredLoop;
   // When a restored workspace had skip loops on other members, poll each
   // same-group member's loop registry once saved connections load (no database
@@ -2330,7 +2332,6 @@ function App() {
     if (restoredMembersPolled.current === resetKey) return;
     restoredMembersPolled.current = resetKey;
     const list = profilesRef.current;
-    const currentGroup = (list.find((p) => p.id === activeRef.current.id)?.group || "").trim();
     const toPoll: { id: string; c: Connection; key: string; label: string; name: string }[] = [];
     const outsideGroup: { id: string; name: string; group: string; hadGroup: boolean }[] = [];
     for (const id of restoredOtherMembers) {
@@ -2346,7 +2347,7 @@ function App() {
           id,
           name: target.name || id,
           group: targetGroup,
-          hadGroup: !!targetGroup || !!currentGroup || seenProfileGroups.current.has(id),
+          hadGroup: !!targetGroup || seenProfileGroups.current.has(id),
         });
       }
     }
@@ -2425,21 +2426,24 @@ function App() {
         }
       }
       const ok = new Set<string>(), newlyActive: string[] = [], newlyStopped: string[] = [];
+      // A member that rejoined but cannot be read belongs in the failed list
+      // ("Status not refreshed"), not the outside-group list.
+      const failedReach = new Set<string>();
       if (toTry.length) {
         const results = await Promise.allSettled(toTry.map(async (item) => ({ item, loops: (await readSkipLoops(item.c, controller.signal)).loops })));
         if (controller.signal.aborted) return;
-        for (const r of results) {
-          if (r.status !== "fulfilled") continue;
-          const { item, loops } = r.value;
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i], item = toTry[i];
+          if (r.status !== "fulfilled") { if (!failSet.has(item.id)) failedReach.add(item.id); continue; }
           ok.add(item.id);
-          publishReplicationLoops({ key: item.key, label: item.label, report: loops });
-          if (loops.some(loopActive)) newlyActive.push(item.key);
-          else if (loops.length === 0) newlyStopped.push(item.key);
+          publishReplicationLoops({ key: item.key, label: item.label, report: r.value.loops });
+          if (r.value.loops.some(loopActive)) newlyActive.push(item.key);
+          else if (r.value.loops.length === 0) newlyStopped.push(item.key);
         }
       }
       if (controller.signal.aborted) return;
       const done = new Set([...dropped, ...ok, ...movedOutside.map((m) => m.id)]);
-      if (done.size) {
+      if (done.size || failedReach.size) {
         setRestoredMembers((prev) => {
           if (!prev || prev.reset !== resetKey) return prev;
           const seen = new Set(prev.outsideGroup.map((m) => m.id));
@@ -2447,8 +2451,9 @@ function App() {
             ...prev,
             activeKeys: [...new Set([...prev.activeKeys, ...newlyActive])],
             stoppedKeys: [...new Set([...prev.stoppedKeys, ...newlyStopped])],
-            outsideGroup: [...prev.outsideGroup.filter((m) => !ok.has(m.id)), ...movedOutside.filter((m) => !seen.has(m.id))],
-            failedMembers: prev.failedMembers.filter((m) => !done.has(m.id)),
+            outsideGroup: [...prev.outsideGroup.filter((m) => !ok.has(m.id) && !failedReach.has(m.id)), ...movedOutside.filter((m) => !seen.has(m.id))],
+            // failedRestoreMembers names each id from the profiles list.
+            failedMembers: [...prev.failedMembers.filter((m) => !done.has(m.id)), ...[...failedReach].map((id) => ({ id, name: "" }))],
           };
         });
       }

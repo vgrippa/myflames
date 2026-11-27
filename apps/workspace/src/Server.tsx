@@ -85,7 +85,7 @@ import {
   type Tone,
 } from "./kit";
 import { Icon } from "./components";
-import { serverKind, type ServerKind, type SlowState } from "./session";
+import { serverKind, loopMemberIds, type ServerKind, type SlowState } from "./session";
 import {
   connectionKey,
   connectionLabel,
@@ -115,12 +115,13 @@ import {
 import { LocksView } from "./Locks";
 import type { TableFocus } from "./Tables";
 import { InstrumentsLinkContext, InstrumentsView } from "./Instruments";
-import { MaintenanceView, emptyMaintenance, type MaintenanceMemory, type MaintenanceSection } from "./Maintenance";
+import { MaintenanceView, adoptJobs, emptyMaintenance, type MaintenanceMemory, type MaintenanceSection } from "./Maintenance";
 import { ReplicationLoopBanner } from "./Replication";
 import {
   JOB_POLL_MS,
   cancelLifecycleJob,
   jobActive,
+  listLifecycleJobs,
   loopActive,
   readLifecycleJob,
   readSkipLoops,
@@ -545,6 +546,37 @@ export function Server({
   const [ownColumns, setOwnColumns] = useState<Record<string, ColumnPrefs>>(initial?.columns_v1 || {});
   const columns = propColumns ?? ownColumns;
   const columnStore = useColumnStore(columns, propOnColumns ?? setOwnColumns);
+  /** Maintenance memory is ephemeral: reports, plans, jobs and donor secrets
+   * never reach the session (session.ts keeps the section, the loop flag and
+   * the running jobs' saved member ids). */
+  const [maintenance, setMaintenance] = useState<MaintenanceMemory>(emptyMaintenance);
+  // Members with running jobs when the workspace was saved (S14): after a
+  // reload each same-group member's job registry is listed (registry read
+  // only, no database login), members outside the active connection's group
+  // are named in a note and dropped only when their saved connection was
+  // deleted, and failed reads retry every JOB_POLL_MS. The ids stay saved
+  // until their jobs are listed again or their connection is gone.
+  const [restoredJobs, setRestoredJobs] = useState<{
+    pending: string[];
+    outside: { id: string; name: string; group: string; hadGroup: boolean; listFailed: boolean }[];
+    failed: { id: string; name: string }[];
+  }>(() => ({ pending: loopMemberIds(initial?.lifecycle_job_members), outside: [], failed: [] }));
+  // Saved member ids of running jobs: the jobs' own members plus the restored
+  // ids still unresolved (pending, outside, failed), deduped and capped like
+  // the skip-loop member ids.
+  const activeJobMemberIds = useMemo(() => {
+    const out: string[] = [];
+    for (const b of maintenance.jobs) {
+      if (!jobActive(b.report)) continue;
+      const pid = keyProfileId(b.key);
+      if (pid && !out.includes(pid)) out.push(pid);
+    }
+    return out;
+  }, [maintenance.jobs]);
+  const jobMembersSave = useMemo(
+    () => loopMemberIds([...activeJobMemberIds, ...restoredJobs.pending, ...restoredJobs.outside.map((o) => o.id), ...restoredJobs.failed.map((f) => f.id)]),
+    [activeJobMemberIds, restoredJobs],
+  );
   const reportRef = useRef(onStateChange);
   reportRef.current = onStateChange;
   const latestConnection = useRef(connection);
@@ -569,9 +601,10 @@ export function Server({
       sessions_scope: sessionsScope,
       maintenance_section: maintenanceSection,
       ...(reportRun ? { report_run: true } : {}),
+      ...(jobMembersSave.length ? { lifecycle_job_members: jobMembersSave } : {}),
       ...(Object.keys(columns).length ? { columns_v1: columns } : {}),
     });
-  }, [savedKind, order, minSeconds, healthInterval, schema, memoryInterval, waitsInterval, ioInterval, indexesSchemas, tablesSchemas, inspectorOpen, sessionsScope, maintenanceSection, reportRun, columns]);
+  }, [savedKind, order, minSeconds, healthInterval, schema, memoryInterval, waitsInterval, ioInterval, indexesSchemas, tablesSchemas, inspectorOpen, sessionsScope, maintenanceSection, reportRun, jobMembersSave, columns]);
 
   // Reports, kept while the place is mounted (never saved). Each one carries
   // the key of the connection it was read from (binding.ts): a report from
@@ -643,8 +676,8 @@ export function Server({
     [propReplicationLoops, propOnReplicationLoops],
   );
   /** Maintenance memory is ephemeral: reports, plans, jobs and donor secrets
-   * never reach the session (session.ts keeps the section and the loop flag). */
-  const [maintenance, setMaintenance] = useState<MaintenanceMemory>(emptyMaintenance);
+   * never reach the session (session.ts keeps the section, the loop flag and
+   * the running jobs' saved member ids). */
   const [analysis, setAnalysis] = useState<Bound<AnalysisReport> | null>(null);
   const [analysisSource, setAnalysisSource] = useState<AnalysisSource | null>(null);
   // Full analysis reads live here, not in its view, so a run survives switching views.
@@ -1400,9 +1433,20 @@ export function Server({
   }
   // Maintenance: jobs of the connection in use (plus running jobs of any
   // member of the active group, so switching Server: never hides a running
-  // dump, restore or clone); nothing is polled or read for a badge.
+  // dump, restore or clone). Restored members (S14) count too: the resolver
+  // is the same same-group rule the restore used, so a member that left its
+  // group after the restore falls back to the out-of-scope note. Nothing is
+  // polled or read for a badge.
+  const jobInScope = useCallback(
+    (key: string) => {
+      if (groupKeyInScope(key)) return true;
+      const pid = keyProfileId(key);
+      return !!pid && !!resolveMemberConnection && !!resolveMemberConnection(pid);
+    },
+    [groupKeyInScope, resolveMemberConnection],
+  );
   const maintenanceJobsNow = maintenance.jobs.filter(
-    (b) => b.key === activeKey || (jobActive(b.report) && groupKeyInScope(b.key)),
+    (b) => b.key === activeKey || (jobActive(b.report) && jobInScope(b.key)),
   );
   const maintenanceActive = maintenanceJobsNow.filter((b) => jobActive(b.report));
   const maintenanceFailed = maintenanceJobsNow.filter(
@@ -1557,6 +1601,120 @@ export function Server({
   for (const p of profiles) {
     if ((p.group || "").trim()) seenJobProfileGroups.current.add(p.id);
   }
+  // S14 restore: list the job registry of every saved job member that is a
+  // same-group member again (registry read only, no database login, no new
+  // connection). An outside member keeps its id saved and is named in the
+  // note; it is dropped only when its saved connection was deleted.
+  const restoredJobSpec = useMemo(
+    () => (restoredJobs.pending.length ? [...restoredJobs.pending].sort().join(",") : ""),
+    [restoredJobs],
+  );
+  useEffect(() => {
+    if (!restoredJobSpec || !profilesLoaded) return;
+    if (profilesFailed) {
+      // While the saved-connections list fails, nothing is read or dropped:
+      // the pending ids move to the note as "group unknown" and stay saved.
+      setRestoredJobs((prev) => {
+        const seen = new Set(prev.outside.map((o) => o.id));
+        const marked = prev.pending
+          .filter((id) => !seen.has(id))
+          .map((id) => ({ id, name: id, group: "", hadGroup: false, listFailed: true }));
+        if (!marked.length) return prev;
+        const markedIds = new Set(marked.map((m) => m.id));
+        return {
+          ...prev,
+          pending: prev.pending.filter((id) => seen.has(id)),
+          outside: [...prev.outside, ...marked],
+          failed: prev.failed.filter((f) => !markedIds.has(f.id)),
+        };
+      });
+      return;
+    }
+    const ids = restoredJobSpec.split(",");
+    const controller = new AbortController();
+    async function run() {
+      const resolve = latestResolveMember.current;
+      const known = latestProfiles.current;
+      const reads: { id: string; c: Connection }[] = [];
+      const outside: { id: string; name: string; group: string; hadGroup: boolean; listFailed: boolean }[] = [];
+      const dropped: string[] = [];
+      for (const id of ids) {
+        const c = resolve ? resolve(id) : null;
+        if (c) { reads.push({ id, c }); continue; }
+        const p = known.find((x) => x.id === id);
+        // Deleted saved connection: drop the id. Leaving a group does not
+        // stop a running job on the backend, so it stays named.
+        if (!p) { dropped.push(id); continue; }
+        const group = (p.group || "").trim();
+        outside.push({ id, name: p.name || id, group, hadGroup: !!group || seenJobProfileGroups.current.has(id), listFailed: false });
+      }
+      const doneIds: string[] = [];
+      const failed: { id: string; name: string }[] = [];
+      if (reads.length) {
+        const answers = await Promise.allSettled(
+          reads.map(async (r) => ({ ...r, jobs: (await listLifecycleJobs(r.c, controller.signal)).jobs })),
+        );
+        if (controller.signal.aborted) return;
+        for (let i = 0; i < answers.length; i++) {
+          const a = answers[i], r = reads[i];
+          if (a.status === "fulfilled") {
+            doneIds.push(r.id);
+            if (a.value.jobs.length) {
+              setMaintenance((m) => adoptJobs(m, connectionKey(r.c), connectionLabel(r.c), a.value.jobs));
+            }
+          } else {
+            failed.push({ id: r.id, name: known.find((x) => x.id === r.id)?.name || r.id });
+          }
+        }
+      }
+      setRestoredJobs((prev) => ({
+        pending: prev.pending.filter((id) => !ids.includes(id)),
+        outside: [...prev.outside.filter((o) => !doneIds.includes(o.id) && !dropped.includes(o.id) && !outside.some((n) => n.id === o.id)), ...outside],
+        failed: [...prev.failed.filter((f) => !doneIds.includes(f.id) && !dropped.includes(f.id) && !failed.some((n) => n.id === f.id)), ...failed],
+      }));
+    }
+    void run();
+    return () => controller.abort();
+  }, [restoredJobSpec, profilesLoaded, profilesFailed]);
+  // Failed registry reads retry every JOB_POLL_MS through the same resolver;
+  // a read that succeeds drops the member from the failed list.
+  useEffect(() => {
+    const failIds = restoredJobs.failed.map((f) => f.id);
+    if (!failIds.length || !profilesLoaded || profilesFailed) return;
+    const timer = window.setTimeout(() => {
+      setRestoredJobs((prev) => ({
+        ...prev,
+        pending: [...prev.pending, ...failIds.filter((id) => !prev.pending.includes(id))],
+      }));
+    }, JOB_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [restoredJobs, profilesLoaded, profilesFailed]);
+  // Outside members that became resolvable again (rejoined the group) queue
+  // for a fresh registry read; a deleted saved connection drops out of the
+  // note and the saved ids.
+  useEffect(() => {
+    if (!profilesLoaded || profilesFailed) return;
+    const resolve = latestResolveMember.current;
+    setRestoredJobs((prev) => {
+      let changed = false;
+      const keep: typeof prev.outside = [];
+      const requeue: string[] = [];
+      for (const o of prev.outside) {
+        const p = latestProfiles.current.find((x) => x.id === o.id);
+        if (!p) { changed = true; continue; }
+        if (resolve && resolve(o.id)) { changed = true; requeue.push(o.id); continue; }
+        if (o.listFailed) {
+          changed = true;
+          const group = (p.group || "").trim();
+          keep.push({ id: o.id, name: p.name || o.id, group, hadGroup: !!group || seenJobProfileGroups.current.has(o.id), listFailed: false });
+          continue;
+        }
+        keep.push(o);
+      }
+      if (!changed) return prev;
+      return { ...prev, outside: keep, pending: [...prev.pending, ...requeue.filter((id) => !prev.pending.includes(id))] };
+    });
+  }, [profiles, profilesLoaded, profilesFailed, resolveMemberConnection]);
   function resolveBoundConnection(boundKey: string, action: "Stop" | "Cancel"): { connection: Connection | null; reason: string } {
     const wanted = endpointKey(boundKey);
     if (endpointKey(connectionKey(latestConnection.current)) === wanted) {
@@ -1728,6 +1886,40 @@ export function Server({
     }
     return `Maintenance jobs were running (${labels.join(", ")}), which are outside the active connection's group. Switch to those connections or open their group to check or cancel them.`;
   }, [maintenance.jobs, jobsHere, activeKey, profiles, profilesLoaded, profilesFailed]);
+  // Restored job members (S14) that could not be listed after reload: outside
+  // the active connection's group gets the same wording as a member whose
+  // running job left the group in-window (the operation is not known until
+  // the member is listed again); a failed registry read is "Status not
+  // refreshed" and retries. Dropped only when the saved connection was deleted.
+  const restoredJobsNote = useMemo(() => {
+    const items = restoredJobs.outside;
+    const failedItems = restoredJobs.failed;
+    const parts: string[] = [];
+    if (items.length) {
+      const one = items.length === 1;
+      const lead = one ? "A maintenance job was running on " : "Maintenance jobs were running on ";
+      const verb = one ? "is" : "are", obj = one ? "it" : "them", poss = one ? "its" : "their";
+      const openText = one ? `Open ${items[0].name}` : "Open those connections";
+      const tail = `to check or cancel ${obj}.`;
+      if (items.every((o) => o.listFailed)) {
+        parts.push(`${lead}${items.map((o) => o.name).join(", ")}, and the saved connections list could not be read to check ${poss} group. ${openText} or retry loading saved connections ${tail}`);
+      } else if (items.every((o) => !o.group && !o.listFailed && o.hadGroup)) {
+        parts.push(`${lead}${items.map((o) => o.name).join(", ")}, which ${verb} no longer in a connection group. ${openText} ${tail}`);
+      } else if (items.every((o) => !o.group && !o.listFailed && !o.hadGroup)) {
+        parts.push(`${lead}${items.map((o) => o.name).join(", ")}, which ${verb} not in a connection group. ${openText} ${tail}`);
+      } else {
+        const names = one
+          ? items[0].name + (items[0].group ? ` (group ${items[0].group})` : "")
+          : items.map((o) => `${o.name} (${o.listFailed ? "group unknown" : o.group ? `group ${o.group}` : "not in a group"})`).join(", ");
+        parts.push(`${lead}${names}, which ${verb} outside the active connection's group. Switch to ${one ? "that connection" : "those connections"} or open ${poss} group ${tail}`);
+      }
+    }
+    if (failedItems.length) {
+      const one = failedItems.length === 1;
+      parts.push(`Status not refreshed for ${failedItems.map((f) => f.name).join(", ")}: ${one ? "a maintenance job was" : "maintenance jobs were"} running before reload, and myflames is checking again.`);
+    }
+    return parts.join(" ");
+  }, [restoredJobs]);
   // Poll maintenance jobs running on other group members (MaintenanceView
   // polls only the member on screen): registry only, no database login.
   const otherActiveJobs = useMemo(
@@ -2203,6 +2395,7 @@ export function Server({
               ))}
               {restoredOutsideNote && <p className="ops-note" role="status">{restoredOutsideNote}</p>}
               {outOfScopeJobsNote && <p className="ops-note" role="status">{outOfScopeJobsNote}</p>}
+              {restoredJobsNote && <p className="ops-note" role="status">{restoredJobsNote}</p>}
               {jobsHere
                 .filter((b) => kind !== "maintenance" || endpointKey(b.key) !== endpointKey(activeKey))
                 .map((b) => {
