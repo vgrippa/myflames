@@ -15,6 +15,8 @@ export function operationScenarios(h, fixtures) {
   const loopStart = `${replicationPath}/skip-loop/start`;
   const loopStop = `${replicationPath}/skip-loop/stop`;
   const loopStatus = `${replicationPath}/skip-loop/status`;
+  const skipReview = `${replicationPath}/skip/review`;
+  const loopReview = `${replicationPath}/skip-loop/review`;
   const killPath = "/api/live/kill";
   const sheet = "dialog.ops-confirm[open]";
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -204,6 +206,11 @@ export function operationScenarios(h, fixtures) {
         let registered = [];
         mocks[loopStatus] = () => ({ schema_version: "replication-skip-loop-1.0", loops: registered });
         mocks[loopStart] = () => { registered = [running]; return running; };
+        // Confirm mints the review on demand before the write goes out.
+        mocks[loop ? loopReview : skipReview] = (body) => {
+          assert.ok(body.statements?.length, "the review binds the displayed SQL");
+          return { review_token: loop ? "feedback-loop-review" : "feedback-skip-review" };
+        };
         await openReplication(page);
         await click(page, loop ? "Skip until stopped…" : "Skip this transaction…", ".view-inspector");
         await visible(page, sheet);

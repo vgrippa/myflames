@@ -1570,6 +1570,7 @@ const tableStructure = (body) => ok({ schema_version: "table-structure-1.0", sch
 let replicationSkipSent = false;
 const replicationMocks = {
   "/api/live/replication": () => ok(replicationSkipSent ? replicationHealthy : replicationError),
+  "/api/live/replication/skip/review": () => ok({ review_token: "review-skip" }),
   "/api/live/replication/skip": () => { replicationSkipSent = true; return ok(replicationSkipped); },
   "/api/live/replication/skip-loop/status": ok({ schema_version: "replication-skip-loop-1.0", loops: [] }),
   "/api/live/instruments": ok(instrumentsLive),
@@ -1628,6 +1629,7 @@ Object.assign(extra, {
   "/api/accounts/plan": accountPlanMock,
   "/api/accounts/apply": accountApplyMock,
   "/api/live/replication": replicationMocks["/api/live/replication"],
+  "/api/live/replication/skip/review": replicationMocks["/api/live/replication/skip/review"],
   "/api/live/replication/skip": replicationMocks["/api/live/replication/skip"],
   "/api/live/replication/skip-loop/status": replicationMocks["/api/live/replication/skip-loop/status"],
   "/api/live/cluster": clusterRead,
