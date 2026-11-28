@@ -1931,21 +1931,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
             except ProfileReadError as exc:
                 # Group consent or the write policy ended after the review.
                 message = str(exc)
-                # The login guard refused before transport. Finish the same
-                # pending row atomically with only the reviewed statement;
-                # earlier accepted statements retain their guarded attempts.
-                audit.finished = True
-                duration = (time.monotonic() - audit.started) * 1000.0 if audit.started is not None else None
-                try:
-                    fields = dbops._finish_fields('refused', outcome='changed', message=message,
-                                                 duration_ms=duration, password=audit.password)
-                    fields['statements'] = dbops._row(audit.operation, [display], audit.surface,
-                                                      'pending', password=audit.password)['statements']
-                    audit.store.audit_complete(audit.id, fields)
-                except Exception:
-                    # Match AuditTrail.complete when storage cannot finish:
-                    # retain its pending row and return the consent refusal.
-                    pass
+                audit.complete_unsent('refused', [display], outcome='changed', message=message)
                 out['statements'].append({'index': i, 'statement': display, 'status': 'not_sent'})
                 out.update(status='refused' if i == 0 else 'partial', outcome='changed',
                            message=message if i == 0 else
@@ -2018,7 +2004,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
         # Keep the only copy available to the user even when the next login's
         # identity guard refuses. Never attach it to an audit or after-state.
         out['generated_password'] = generated
-    if out.get('outcome') in ('identity_mismatch', 'identity_unavailable'):
+    if out.get('outcome') in ('identity_mismatch', 'identity_unavailable', 'changed'):
         return out
     if not out['sent']:
         # Nothing was sent (a consent or server refusal): there is no write

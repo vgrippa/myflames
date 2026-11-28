@@ -2422,33 +2422,13 @@ def _decision_for(statements=None):
     return dbops.decide(dbops.classify(";\n".join(statements) if statements else "START REPLICA SQL_THREAD"))
 
 
-def _complete_unsent_audit(audit, statements, status, message):
-    """Finish the prepared record without claiming its guard reached the server."""
-    if not audit.pending:
-        return audit.id
-    audit.finished = True
-    duration = (time.monotonic() - audit.started) * 1000.0 if audit.started is not None else None
-    try:
-        # Use the shared serialization/redaction and finish the same pending
-        # row atomically. Sent/error paths retain attempt()'s guard and SQL.
-        fields = dbops._finish_fields(status, outcome="unsent", message=message,
-                                     duration_ms=duration, password=audit.password)
-        fields["statements"] = dbops._row(audit.operation, _tagged(statements), audit.surface,
-                                         "pending", password=audit.password)["statements"]
-        audit.store.audit_complete(audit.id, fields)
-    except Exception:
-        # Match AuditTrail.complete: a storage failure leaves a pending row
-        # and must not replace the refusal with an unrelated audit exception.
-        pass
-    return audit.id
-
-
 def _unsent(result, audit, status, outcome, message, target, verified=None):
     result["status"], result["message"] = status, message
     if audit is not None:
         audit_status = status if status in ("refused", "declined") else "refused"
         if audit.pending:
-            result["audit_id"] = _complete_unsent_audit(audit, result.get("statements") or [], audit_status, message)
+            result["audit_id"] = audit.complete_unsent(audit_status, _tagged(result.get("statements") or []),
+                                                       outcome="unsent", message=message)
         else:
             result["audit_id"] = audit.outcome(_tagged(result.get("statements") or []) or [SKIP_TAG + "(nothing planned)"],
                                                audit_status, outcome=outcome, message=message, target=target,
@@ -2517,7 +2497,7 @@ def skip_one(conn, channel, expect, audit=None, decision=None, confirmed=False, 
                 audit.complete("unknown", outcome="unverified" if send_state["script_succeeded"] else "error",
                                message="The script was sent; its effect is unknown: " + str(exc))
             elif audit.pending:
-                _complete_unsent_audit(audit, send_state["statements"], "refused", str(exc))
+                audit.complete_unsent("refused", _tagged(send_state["statements"]), outcome="unsent", message=str(exc))
             else:
                 audit.outcome(_tagged(send_state["statements"]), "refused", outcome="unsent", message=str(exc), target=expect)
         raise

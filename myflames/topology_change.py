@@ -663,6 +663,16 @@ class _MemberAudit(dbops.AuditTrail):
             message=_message(status, outcome, error), error='ERROR %d' % code if code is not None else None,
             target=self.target, verified=verified)
 
+    def complete_unsent(self, status, statements, outcome=None, message=None, error=None):
+        if not self.pending:
+            return self.id
+        if status == 'refused' and outcome == 'changed':
+            outcome = 'changed_target'
+        code = dbops.error_code(str(error)) if error is not None else None
+        self.final_status, self.final_outcome = status, outcome
+        return super(_MemberAudit, self).complete_unsent(status, statements, outcome=outcome,
+            message=_message(status, outcome, error), error='ERROR %d' % code if code is not None else None)
+
 
 class _SendingConnection(object):
     def __init__(self, conn, before_send, progress, states, index, engine, identity, after_identity=None):
@@ -672,6 +682,7 @@ class _SendingConnection(object):
         self.after_identity = after_identity
         self.read_conn = _IdentityConnection(conn, identity) if engine == 'mariadb' else conn
         self.sent = False
+        self.client_called = False
         self.failure = None
 
     def __getattr__(self, name):
@@ -696,7 +707,12 @@ class _SendingConnection(object):
         self.progress.set('sending', self.states)
         self.sent = True
         try:
+            self.client_called = True
             answer = self.conn.run_write(sql, **kwargs)
+        except (connection_groups.ProfileReadError, reviewed_writes.Refusal):
+            # The final login-consent check ran before any client process.
+            self.sent = self.client_called = False
+            raise
         except ConnectorError as exc:
             self.failure = exc
             if dbops.target_not_connected(exc):
@@ -934,7 +950,11 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                     uncertain = uncertain or unknown
                     stop_reason = 'refused'
                     if trail.pending:
-                        trail.complete('unknown' if unknown else 'refused', outcome=outcome, error=exc)
+                        if sent is None or not sent.client_called:
+                            trail.complete_unsent('refused', [variables.TAG + member['statement']],
+                                                  outcome=outcome, error=exc)
+                        else:
+                            trail.complete('unknown' if unknown else 'refused', outcome=outcome, error=exc)
                     elif not trail.finished:
                         trail.outcome([], 'refused', outcome=outcome, error=exc)
             result['audit_id'] = trail.id

@@ -1426,18 +1426,59 @@ class TestVersionAwareClients(unittest.TestCase):
     def test_first_contact_caches_only_supported_statement_refusals(self):
         from myflames import client_tools as ct
         latest, _, _ = self.layout()
-        for code, message in ((1045, 'ProxySQL Admin Error: near "@version": syntax error'),
-                              (1064, 'Syntax error'), (1146, 'Table does not exist'),
-                              (1193, 'Unknown system variable'), (1235, 'Not supported yet')):
-            with self.subTest(code=code):
+        for index, (code, message) in enumerate((
+                (1045, 'ProxySQL Admin Error: near "@version": syntax error'),
+                (1045, 'ProxySQL Admin Error: no such table: main.stats_mysql_global'),
+                (1064, 'Syntax error'), (1146, 'Table does not exist'),
+                (1193, 'Unknown system variable'), (1235, 'Not supported yet'))):
+            with self.subTest(code=code, message=message):
                 failure = _fake_completed(stderr=(
                     'ERROR %d (HY000) at line 1: %s' % (code, message)).encode(), returncode=1)
-                first = MySQLConnection(host='cached-refusal-' + str(code))
+                first = MySQLConnection(host='cached-refusal-%d-%d' % (index, code))
                 with mock.patch.object(connector, '_run_bounded', return_value=failure) as run:
                     for conn in (first, first, MySQLConnection(host=first.host)):
                         self.assertEqual(conn._resolve_binary(), latest)
                         self.assertTrue(ct.first_contact_unidentified(conn._endpoint_key()))
                     self.assertEqual(run.call_count, 1)
+
+    def test_first_contact_proxysql_admin_access_denied_is_not_cached_or_retried(self):
+        from myflames import client_tools as ct
+        connector.set_client_choices({})
+        mysql = self.binary(folder='admin-denied-mysql')
+        maria = self.binary('mariadb', body='print("mariadb Ver 11.4.2-MariaDB")',
+                            folder='admin-denied-maria')
+        os.environ['PATH'] = os.pathsep.join(map(os.path.dirname, (mysql, maria)))
+        auth_2059 = _fake_completed(
+            stderr=b"ERROR 2059 (HY000): Authentication plugin 'client_ed25519' cannot be loaded",
+            returncode=1)
+        denied_cases = (
+            "ERROR 1045 (28000)  at line 1: ProxySQL Admin Error: Access denied for user 'admin'@'127.0.0.1'",
+            "ERROR 1045 (28000) at line 1: ProxySQL Admin Error: ACCESS DENIED",
+            "ERROR 1045 (28000)  at line 1: ProxySQL Admin Error: access denied",
+        )
+        self.assertFalse(connector._unsupported_identity_read(ConnectorError(
+            "mysql client exited 1:  ERROR 1045 (28000)  at line 1: ProxySQL Admin Error: Access denied")))
+        for index, diagnostic in enumerate(denied_cases):
+            with self.subTest(diagnostic=diagnostic):
+                self.assertFalse(connector._unsupported_identity_read(ConnectorError(diagnostic)))
+                conn = MySQLConnection(host='proxysql-denied-' + str(index))
+                with mock.patch.object(connector, '_run_bounded',
+                                       side_effect=[_fake_completed(stderr=diagnostic.encode(), returncode=1),
+                                                    auth_2059, _fake_completed(b'1\n')]) as run:
+                    with self.assertRaisesRegex(ConnectorError, 'ERROR 1045'):
+                        conn.run('SELECT 1')
+                self.assertFalse(ct.first_contact_unidentified(conn._endpoint_key()))
+                self.assertIsNone(ct.server_facts(conn._endpoint_key()))
+                self.assertEqual([call[0][0][0] for call in run.call_args_list], [mysql])
+        statement_error = "ERROR 1045 (28000)  at line 1: ProxySQL Admin Error: no such table: main.stats_mysql_global"
+        self.assertTrue(connector._unsupported_identity_read(ConnectorError(statement_error)))
+        admin_conn = MySQLConnection(host='proxysql-admin-no-such-table')
+        with mock.patch.object(connector, '_run_bounded',
+                               return_value=_fake_completed(stderr=statement_error.encode(), returncode=1)) as run:
+            for conn in (admin_conn, admin_conn, MySQLConnection(host=admin_conn.host)):
+                self.assertEqual(conn._resolve_binary(), mysql)
+                self.assertTrue(ct.first_contact_unidentified(conn._endpoint_key()))
+            self.assertEqual(run.call_count, 1)
 
     def test_unidentified_endpoint_still_retries_auth_plugin_for_another_account(self):
         from myflames import client_tools as ct

@@ -56,6 +56,36 @@ import time
 from .connector import ConnectorError
 
 
+def failed_read_login(exc):
+    """Whether a failed first evidence read lacks proof of a successful login.
+
+    A statement error permits an unbound read fallback. Only the first
+    diagnostic after echoed SQL and at most one client exit prefix counts: no
+    line number on it, a client error, or a login/host/handshake refusal (even
+    when a proxy supplies a line number) must not trigger another login.
+    """
+    from . import dbops
+    from .connector import PartialReadError, _unsupported_identity_read
+    if not isinstance(exc, PartialReadError):
+        return True
+    message = re.sub(r"\Amysql client exited -?\d+:[ \t]*", "", dbops._without_echo(str(exc)), count=1)
+    diagnostic = re.search(r"^ERROR[^\r\n]*", message, re.M)
+    if diagnostic is None:
+        return True
+    line = diagnostic.group()
+    match = re.match(r"ERROR\s+(\d+)(?:\s+\([^)]*\))?\s+at line \d+:\s*(.*)\Z", line)
+    if match is None:
+        return True
+    code = int(match.group(1))
+    if code == 1045 and _unsupported_identity_read(line):
+        # Reuse the connector's exact at-line ProxySQL Admin SQLite rule on the
+        # first diagnostic after SQL echo removal; it excludes echoed SQL and
+        # "Access denied" refusals.
+        return False
+    return (2000 <= code <= 2999 or
+            code in (1040, 1044, 1045, 1049, 1129, 1130, 1203, 1226, 1251, 1698, 1862, 3118, 3159, 3955, 4150, 4151))
+
+
 def same_reviewed_value(current, reviewed):
     """Compare JSON review evidence without Python's bool/int/float coercion.
 
@@ -385,15 +415,23 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
             audit.fail(exc, statements)
         raise
     except (Refusal, ProfileReadError) as exc:
-        # Login consent can change after the pending record is durable. No
-        # subprocess ran: finish that same record rather than logging an error
-        # or leaving a pending attempt that suggests an uncertain write.
+        # Consent can change after attempt(). A client-side adapter may also
+        # translate a submitted guard's diagnostic into Refusal, including
+        # Shell's direct JavaScript exception with no ConnectorError context.
         outcome = getattr(exc, "outcome", "changed")
         out.update(status="refused", outcome=outcome, message=str(exc), not_sent=list(statements),
                    states=["not_sent"] * len(statements))
         _set(progress, "finished", out["states"], "refused")
         if audit is not None:
-            audit.complete("refused", outcome=outcome, message=out["message"])
+            cause = exc.__context__
+            if isinstance(exc, Refusal) and (getattr(exc, "guard_sent", False) or
+                    isinstance(cause, ConnectorError) and target_guard_failed(cause)):
+                audit.complete("refused", outcome=outcome, message=out["message"])
+            elif hasattr(audit, "complete_unsent"):
+                # Let each adapter preserve its own redaction and prefix rules.
+                audit.complete_unsent("refused", statements, outcome=outcome, message=out["message"])
+            else:
+                audit.complete("refused", outcome=outcome, message=out["message"])
         return out
     except ConnectorError as exc:
         from .dbops import redact, target_error_text

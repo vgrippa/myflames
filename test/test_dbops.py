@@ -5467,6 +5467,60 @@ class TestAudit(TempHome):
             workspace_cli.cmd_audit([])
         self.assertIn('unknown', out.getvalue())
 
+    def test_unsent_completion_replaces_guard_and_finishes_atomically_with_redaction(self):
+        trail = self.trail()
+        reviewed = ["CREATE USER u IDENTIFIED BY 'new-secret' /* pw-not-stored */"]
+        audit_id = trail.attempt(['session guard'] + reviewed, target={'user': 'u'}, verified=['policy'])
+        original = self.store.audit_complete
+        writes = []
+        def finish(record_id, fields):
+            writes.append((record_id, fields.copy()))
+            return original(record_id, fields)
+        with mock.patch.object(self.store, 'audit_complete', side_effect=finish):
+            self.assertEqual(trail.complete_unsent('refused', reviewed, outcome='changed',
+                             message='Consent revoked for pw-not-stored', error='ERROR 1231: refused'), audit_id)
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][0], audit_id)
+        self.assertIn('statements', writes[0][1])
+        self.assertEqual(writes[0][1]['status'], 'refused')
+        records = self.store.audit_records()
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record['statements'], ["CREATE USER u IDENTIFIED BY '[redacted]' /* [redacted] */"])
+        self.assertEqual((record['status'], record['outcome'], record['error_code']), ('refused', 'changed', 1231))
+        self.assertEqual(record['message'], 'Consent revoked for [redacted]')
+        self.assertEqual((record['target'], record['verified']), ({'user': 'u'}, ['policy']))
+        self.assertIsNotNone(record['finished_at'])
+        self.assertGreaterEqual(record['duration_ms'], 0)
+        self.assertNotIn(b'new-secret', self.store.path.read_bytes())
+        self.assertNotIn(b'pw-not-stored', self.store.path.read_bytes())
+
+    def test_unsent_completion_does_not_replace_a_finished_or_absent_row(self):
+        fresh = self.trail()
+        self.assertIsNone(fresh.complete_unsent('refused', ['unsent']))
+        self.assertEqual(self.store.audit_records(), [])
+        for completed_elsewhere in (False, True):
+            with self.subTest(completed_elsewhere=completed_elsewhere):
+                trail = self.trail()
+                audit_id = trail.attempt(['session guard', 'KILL 4'])
+                if completed_elsewhere:
+                    dbops.complete(self.store, audit_id, 'ok', outcome='killed')
+                else:
+                    trail.complete('ok', outcome='killed')
+                before = next(row for row in self.store.audit_records() if row['id'] == audit_id)
+                self.assertEqual(trail.complete_unsent('refused', ['KILL 4']), audit_id)
+                after = next(row for row in self.store.audit_records() if row['id'] == audit_id)
+                self.assertEqual(after, before)
+
+    def test_unsent_completion_storage_failure_keeps_pending_guarded_record(self):
+        trail = self.trail()
+        audit_id = trail.attempt(['session guard', 'KILL 4'])
+        with mock.patch.object(self.store, 'audit_complete', side_effect=OSError('storage unavailable')):
+            self.assertEqual(trail.complete_unsent('refused', ['KILL 4']), audit_id)
+        record = self.store.audit_records()[0]
+        self.assertEqual(record['status'], 'pending')
+        self.assertEqual(record['statements'], ['session guard', 'KILL 4'])
+
     def test_error_codes_and_unsent_outcomes(self):
         trail = self.trail()
         trail.attempt(['/*myflames:kill*/ KILL CONNECTION 41'])

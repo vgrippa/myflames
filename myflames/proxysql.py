@@ -1694,11 +1694,13 @@ class _IdentityBoundAdmin(object):
                 reason = _without_controls(reason)
                 reason = dbops.redact(dbops.redact(reason, _without_controls(self.password)),
                                       _without_controls(self._password)).strip()[:240].rstrip(".")
-                raise reviewed_writes.Refusal(
+                refusal = reviewed_writes.Refusal(
                     "The ProxySQL instance is not the one you reviewed. Nothing was sent; refresh and review again."
                     if mismatch else "The ProxySQL instance identity could not be checked: %s. Nothing was sent; "
                                      "refresh and review again." % (reason or "no server reason was reported"),
-                    "identity_mismatch" if mismatch else "identity_unavailable") from None
+                    "identity_mismatch" if mismatch else "identity_unavailable")
+                refusal.guard_sent = True
+                raise refusal from None
             raise dbops.shift_guard_error(exc) from None
 
 
@@ -1712,6 +1714,18 @@ class _IdentityAudit(object):
     def password(self):
         return getattr(self.audit, "password", None)
 
+    @property
+    def pending(self):
+        return self.audit.pending
+
+    @property
+    def finished(self):
+        return self.audit.finished
+
+    @property
+    def id(self):
+        return self.audit.id
+
     def attempt(self, statements, **kwargs):
         return self.audit.attempt(self.guard + list(statements), **kwargs)
 
@@ -1722,6 +1736,13 @@ class _IdentityAudit(object):
 
     def complete(self, *args, **kwargs):
         return self.audit.complete(*args, **kwargs)
+
+    def complete_unsent(self, status, statements, **kwargs):
+        # Only attempt() prepends the Admin guard. A refused local login
+        # completes the same row with the reviewed statements alone.
+        if hasattr(self.audit, "complete_unsent"):
+            return self.audit.complete_unsent(status, statements, **kwargs)
+        return self.audit.complete(status, **kwargs)
 
     def fail(self, exc, statements=()):
         return self.audit.fail(exc, self.guard + list(statements))

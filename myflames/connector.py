@@ -844,21 +844,25 @@ def _unsupported_identity_read(exc):
     MySQL share/messages_to_clients.txt: ER_PARSE_ERROR (1064),
     ER_NO_SUCH_TABLE (1146), ER_UNKNOWN_SYSTEM_VARIABLE (1193),
     ER_NOT_SUPPORTED_YET (1235). ProxySQL Admin uses 1045 for SQLite
-    refusals with its own prefix (proxysql.py's _NO_SUCH_TABLE comment).
+    refusals with its own prefix (proxysql.py's _NO_SUCH_TABLE comment),
+    excluding "Access denied" diagnostics.
     Ordinary access denial, session state and transient failures say nothing
     about this endpoint's support for @@version/@@version_comment.
     """
-    message = re.sub(r'\Amysql client exited -?\d+: ', '', str(exc), count=1)
+    message = re.sub(r'\Amysql client exited -?\d+:[ \t]*', '', str(exc), count=1)
     diagnostic = re.search(r'^ERROR[^\r\n]*', message, re.M)
     if diagnostic is None:
         return False
-    match = re.match(r'ERROR\s+(\d+)(?:\s+\([^)]*\))? at line \d+:\s*(.*)\Z',
+    match = re.match(r'ERROR\s+(\d+)(?:\s+\([^)]*\))?\s+at line \d+:\s*(.*)\Z',
                      diagnostic.group())
     if match is None:
         return False
+    detail = match.group(2)
+    if 'access denied' in detail.lower():
+        return False
     code = int(match.group(1))
     return (code in (1064, 1146, 1193, 1235) or
-            (code == 1045 and match.group(2).startswith('ProxySQL Admin Error:')))
+            (code == 1045 and detail.startswith('ProxySQL Admin Error:')))
 
 
 class _InvocationDefaults(str):

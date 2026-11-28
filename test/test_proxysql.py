@@ -1947,6 +1947,31 @@ class Endpoints(Home):
                 self.assertEqual(records[0]['statements'], plan['session_guard'] + plan['statements'])
                 self.assertEqual(records[0]['target']['server_identity'], {'uuid': ADMIN_UUID})
 
+    def test_local_login_refusal_removes_only_the_unsent_guard_from_the_pending_row(self):
+        from myflames.connection_groups import ProfileReadError
+        plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+        attempted = []
+
+        def refuse_login(sql, **kwargs):
+            (record,) = self.audit()
+            self.assertEqual(record['status'], 'pending')
+            self.assertEqual(record['statements'], plan['session_guard'] + plan['statements'])
+            attempted.append(record['id'])
+            raise ProfileReadError('Group consent changed.')
+
+        with mock.patch.object(self.conn, 'run_write', side_effect=refuse_login) as send:
+            result = self.send(plan)
+        send.assert_called_once()
+        self.assertEqual(self.conn.writes, [])
+        self.assertEqual((result['status'], result['outcome'], result['sent']), ('refused', 'changed', []))
+        self.assertEqual(result['states'], ['not_sent'] * len(plan['statements']))
+        self.assertIsNone(result['after'])
+        (record,) = self.audit()
+        self.assertEqual(attempted, [record['id']])
+        self.assertEqual(record['id'], result['audit_id'])
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+        self.assertEqual(record['statements'], plan['statements'])
+
     def test_identity_disappearing_in_write_login_refuses_without_loading(self):
         for removed, outcome in (('row', 'identity_mismatch'), ('table', 'identity_unavailable')):
             with self.subTest(removed=removed):
@@ -2332,7 +2357,7 @@ class Endpoints(Home):
         self.assertEqual(self.conn.writes, [])
 
 
-class TestIdentityWrappers(unittest.TestCase):
+class TestIdentityWrappers(Home):
     def test_admin_wrapper_exposes_only_the_guarded_send_and_password(self):
         conn = mock.Mock(password='connection-secret')
         conn.run_write.return_value = 'answered'
@@ -2358,12 +2383,62 @@ class TestIdentityWrappers(unittest.TestCase):
         audit.outcome.assert_called_once_with(statements, 'refused', outcome='changed')
         bound.complete('ok', outcome='applied', after=None)
         audit.complete.assert_called_once_with('ok', outcome='applied', after=None)
+        bound.complete_unsent('refused', statements, outcome='changed', message='Consent revoked.')
+        audit.complete_unsent.assert_called_once_with('refused', statements, outcome='changed',
+                                                      message='Consent revoked.')
         error = ConnectorError('interrupted')
         bound.fail(error, statements)
         audit.fail.assert_called_once_with(error, guard + statements)
         for name in ('run', 'run_write', 'run_stdin', 'store', 'arbitrary_method', 'purge'):
             with self.subTest(name=name), self.assertRaises(AttributeError):
                 getattr(bound, name)
+
+    def test_guard_refusals_explicitly_record_that_the_guard_was_sent(self):
+        for message, outcome in ((GUARD_MISMATCH_ERROR, 'identity_mismatch'),
+                                 ('ERROR 1045 (28000) at line 1: ProxySQL Admin Error: '
+                                  'no such table: disk.global_settings', 'identity_unavailable')):
+            with self.subTest(outcome=outcome):
+                conn = mock.Mock(password=None)
+                conn.run_write.side_effect = ConnectorError(message)
+                guard = ['INSERT INTO main.global_variables SELECT NULL, NULL WHERE 0;']
+                bound = proxysql._IdentityBoundAdmin(conn, guard)
+                with self.assertRaises(reviewed_writes.Refusal) as caught:
+                    bound.run_write('LOAD MYSQL SERVERS TO RUNTIME;')
+                self.assertEqual(caught.exception.outcome, outcome)
+                self.assertIs(getattr(caught.exception, 'guard_sent', False), True)
+                conn.run_write.assert_called_once_with('\n'.join(guard + ['LOAD MYSQL SERVERS TO RUNTIME;']),
+                                                       extra_flags=None, timeout=None)
+
+    def test_unsent_audit_delegates_state_and_never_restores_the_guard(self):
+        from myflames.workspace_store import WorkspaceStore
+        store = WorkspaceStore()
+        trail = dbops.AuditTrail(store, 'proxysql_action', 'ui')
+        guard, statements = ['SELECT guard;'], ['LOAD MYSQL SERVERS TO RUNTIME;']
+        bound = proxysql._IdentityAudit(trail, guard)
+        self.assertEqual((bound.pending, bound.finished, bound.id), (False, False, None))
+        audit_id = bound.attempt(statements)
+        self.assertEqual((bound.pending, bound.finished, bound.id), (True, False, audit_id))
+        self.assertEqual(dbops.audit_report(store)['records'][0]['statements'], guard + statements)
+        bound.complete_unsent('refused', statements, outcome='changed', message='Consent revoked.')
+        self.assertEqual((bound.pending, bound.finished, bound.id), (False, True, audit_id))
+        (record,) = dbops.audit_report(store)['records']
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+        self.assertEqual(record['statements'], statements)
+        bound.complete_unsent('refused', ['SAVE MYSQL SERVERS TO DISK;'], outcome='changed')
+        self.assertEqual(dbops.audit_report(store)['records'], [record])
+
+    def test_unsent_audit_supports_an_underlying_complete_only_stub(self):
+        class Audit(object):
+            def __init__(self):
+                self.completed = []
+
+            def complete(self, status, **kwargs):
+                self.completed.append((status, kwargs))
+
+        trail = Audit()
+        bound = proxysql._IdentityAudit(trail, ['SELECT guard;'])
+        bound.complete_unsent('refused', ['LOAD MYSQL SERVERS TO RUNTIME;'], outcome='changed')
+        self.assertEqual(trail.completed, [('refused', {'outcome': 'changed'})])
 
 
 class TestReviewedWrites(unittest.TestCase):
