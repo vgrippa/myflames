@@ -328,21 +328,27 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
   };
 
   // Anchor naming and invoker relationship: the button carries the anchor name
-  // and popovertarget while clicks may open the message. Snapshot any prior
-  // aria-haspopup/aria-expanded values React set and restore them on cleanup (V8).
+  // and popovertarget while clicks may open the message. Use
+  // popovertargetaction="show" so a synchronous SyncLane mount during an
+  // opening click cannot trigger the browser's default toggle activation to
+  // close a popover that was just opened (the owner handles toggling off and
+  // the button's click listener still cancels default activation on later
+  // clicks). Snapshot any prior attributes React set and restore them on
+  // cleanup (V8).
   useEffect(() => {
     const button = resolve();
     const el = pop.current;
     if (!button || !el) return;
     const prevAnchorName = button.style.getPropertyValue("anchor-name");
     const prevPopoverTarget = button.getAttribute("popovertarget");
+    const prevPopoverTargetAction = button.getAttribute("popovertargetaction");
     const prevHasPopup = button.getAttribute("aria-haspopup");
     const prevExpanded = button.getAttribute("aria-expanded");
     button.style.setProperty("anchor-name", anchorName);
     el.style.setProperty("position-anchor", anchorName);
     const toggle = (event: MouseEvent) => {
       // Keep the invoker relationship for pointer light dismiss, but cancel
-      // its default toggle because the owner manages opening and closing.
+      // its default activation because the owner manages opening and closing.
       event.preventDefault();
       if (!attachClick) return;
       if (openRef.current || el.matches(":popover-open")) {
@@ -354,6 +360,7 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
     };
     if (mayOpen) {
       button.setAttribute("popovertarget", popId);
+      button.setAttribute("popovertargetaction", "show");
       button.setAttribute("aria-haspopup", "dialog");
       const expanded = String(openRef.current);
       button.setAttribute("aria-expanded", expanded);
@@ -365,6 +372,7 @@ export function WhyDisabled({ anchor, open, mayOpen = true, attachClick = true, 
       else button.style.removeProperty("anchor-name");
       if (mayOpen) {
         restoreAttr(button, "popovertarget", popId, prevPopoverTarget);
+        restoreAttr(button, "popovertargetaction", "show", prevPopoverTargetAction);
         restoreAttr(button, "aria-haspopup", "dialog", prevHasPopup);
         const appliedExpanded = appliedExpandedRef.current;
         if (appliedExpanded?.button === button) {

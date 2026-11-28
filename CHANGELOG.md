@@ -21,6 +21,7 @@ This file lists the changes merged since the last release. Add an entry under [U
 
 ### Bug fixes
 
+- Fixed an issue where the reason shown for an unavailable **Copy** on a suggested statement (Full analysis report, Configuration, Tables, Indexes and the plan's Row estimate) closed by itself right after it opened. It now stays open until Escape, a click outside, **Close** or a second click on the button.
 - Clarified why sensitive parameter editors start empty: the current value is hidden, and a replacement must be typed in full.
 - Fixed VillageSQL dump selection to use mysqldump, including for whole-instance dumps. When only MySQL Shell is available, myflames explains that mysqldump is needed for custom types. Explicit selection of the internal villagesql schema is refused; restore checks use the target server's schema classification.
 - Fixed Maintenance offering upstream MySQL releases and Oracle package guidance as VillageSQL upgrades. VillageSQL now has no suggested target; follow its own 0.0.x releases.
