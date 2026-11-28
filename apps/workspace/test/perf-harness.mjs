@@ -504,10 +504,95 @@ export async function open(endpoint, name, extra = {}, {
     }),
     /** Open an ⓘ popover by its label and return its text; Escape closes it again. */
     async popover(label) {
-      await page.click(`button[aria-label="${label}"]`);
-      const text = await page.$eval(`[role=dialog][aria-label="${label}"]`, (e) => e.textContent);
+      const cssAttr = (value) => String(value)
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, "\\a ")
+        .replace(/\r/g, "\\d ");
+      const xpathLiteral = (value) => {
+        const s = String(value);
+        if (!s.includes('"')) return `"${s}"`;
+        if (!s.includes("'")) return `'${s}'`;
+        return `concat(${s.split('"').map((part) => `"${part}"`).join(', \'"\', ')})`;
+      };
+      // Wait for any visible Server/Workload layout resize to settle, then find
+      // the target button (preferring the sole visible match when duplicates
+      // share the label), scroll it into view if obscured, and verify a click
+      // at its center hits it before dispatching a real mouse click.
+      const ready = await page.waitForFunction((wanted) => {
+        const placesReady = [...document.querySelectorAll(".server-place:not(.is-tuning-place)")]
+          .filter((e) => !e.closest("[hidden]") && e.offsetParent !== null)
+          .every((e) => {
+            const layout = e.querySelector(".server-layout");
+            return !layout || layout.classList.contains("is-compact") === (e.clientWidth < 720);
+          });
+        if (!placesReady) return false;
+        const isVisible = (el) => {
+          if (!el || !el.isConnected) return false;
+          if (el.closest("[hidden], [inert], dialog:not([open])")) return false;
+          const style = getComputedStyle(el);
+          if (style.visibility === "hidden" || style.visibility === "collapse") return false;
+          if (el.getClientRects().length === 0) return false;
+          const box = el.getBoundingClientRect();
+          return box.width > 0 && box.height > 0;
+        };
+        const matches = [...document.querySelectorAll("button[aria-label]")]
+          .filter((b) => b.getAttribute("aria-label") === wanted);
+        if (!matches.length) return false;
+        const visible = matches.filter(isVisible);
+        const target = matches.length > 1 && visible.length === 1 ? visible[0] : matches[0];
+        if (!isVisible(target)) return false;
+        const box = target.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        if (hit && target.contains(hit)) return { index: matches.indexOf(target) };
+        target.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+        return false;
+      }, {}, label);
+      const { index } = await ready.jsonValue();
+      await ready.dispose();
+      const selector = index === 0
+        ? `button[aria-label="${cssAttr(label)}"]`
+        : `xpath/(//button[@aria-label=${xpathLiteral(label)}])[${index + 1}]`;
+      await page.click(selector);
+      const opened = await page.waitForFunction((wanted) => {
+        const isOpenAndVisible = (d) => {
+          if (!d || !d.isConnected) return false;
+          if (d.hasAttribute("popover")) {
+            if (!d.matches(":popover-open")) return false;
+          } else {
+            if (d.closest("[hidden], [inert], dialog:not([open])")) return false;
+            if (d.tagName === "DIALOG" && !d.open) return false;
+          }
+          const style = getComputedStyle(d);
+          if (style.visibility === "hidden" || style.visibility === "collapse") return false;
+          if (d.getClientRects().length === 0) return false;
+          const box = d.getBoundingClientRect();
+          return box.width > 0 && box.height > 0;
+        };
+        const dialog = [...document.querySelectorAll("[role=dialog][aria-label]")]
+          .filter((d) => d.getAttribute("aria-label") === wanted)
+          .find(isOpenAndVisible);
+        return dialog ? { text: dialog.textContent } : false;
+      }, {}, label);
+      const { text } = await opened.jsonValue();
+      await opened.dispose();
       await page.keyboard.press("Escape");
-      await page.waitForFunction((l) => !document.querySelector(`[role=dialog][aria-label="${l}"]`), {}, label);
+      await page.waitForFunction((wanted) => {
+        const isGone = (d) => {
+          if (!d.isConnected) return true;
+          if (d.hasAttribute("popover")) return !d.matches(":popover-open");
+          if (d.tagName === "DIALOG") return !d.open;
+          if (d.closest("[hidden], [inert], dialog:not([open])")) return true;
+          const style = getComputedStyle(d);
+          if (style.visibility === "hidden" || style.visibility === "collapse") return true;
+          if (d.getClientRects().length === 0) return true;
+          const box = d.getBoundingClientRect();
+          return box.width <= 0 || box.height <= 0;
+        };
+        return [...document.querySelectorAll("[role=dialog][aria-label]")]
+          .filter((d) => d.getAttribute("aria-label") === wanted)
+          .every(isGone);
+      }, {}, label);
       return text;
     },
     /** Open the "N notes" popover of the open view and return its text. */
