@@ -57,7 +57,7 @@ def _operators(root):
 
 def _kill_sheet_report(conn, read_report, *args, **kwargs):
     """Keep an unidentified server readable, without authorizing any Kill."""
-    from . import dbops
+    from . import dbops, reviewed_writes
 
     class Transport(object):
         failed = False
@@ -70,16 +70,12 @@ def _kill_sheet_report(conn, read_report, *args, **kwargs):
             try:
                 return conn.run(*read_args, **read_kwargs)
             except BaseException as exc:
-                from .connector import PartialReadError
-                diagnostic = dbops._target_error_match(str(exc)) if isinstance(exc, PartialReadError) else None
-                code = int(diagnostic.group(1)) if diagnostic is not None else None
                 # Keep this even when an optional reader swallows the error:
                 # the poisoned evidence scope cannot make another client call.
                 # A server statement diagnostic proves the login worked even
                 # if the packet's identity cannot authorize a Kill, except for
                 # login and host refusals (which a proxy can report with a line).
-                self.failed = (code is None or 2000 <= code <= 2999 or
-                               code in (1045, 1129, 1130, 1698, 3118, 3955))
+                self.failed = reviewed_writes.failed_read_login(exc)
                 raise
 
     transport = Transport()
@@ -479,11 +475,22 @@ def _group_guarded_connection(options, connection, store, identity=None):
     return conn
 
 
-def _group_login_refusal(audit, statements, exc, target=None):
-    """A local consent rejection proves that this client never spawned."""
+def _group_login_refusal(audit, statements, exc, target=None, packet_unsent=False):
+    """Only a packet's owner can assert that its pending write never started.
+
+    A job/session may already have sent work when a later helper login loses
+    consent. Keep its row for the owner and audit only that refused login,
+    without copying the owner's statements or its separately redacted secrets.
+    """
+    if not packet_unsent:
+        from . import dbops
+        refusal = dbops.AuditTrail(audit.store, audit.operation, audit.surface,
+                                   connection=audit.connection, safety=audit.safety,
+                                   password=audit.password, policy=audit.policy)
+        refusal.server(audit.engine, audit.server_version)
+        audit, statements = refusal, []
     if audit.pending:
-        audit.complete("refused", outcome="changed", message=str(exc))
-        return audit.id
+        return audit.complete_unsent("refused", statements, outcome="changed", message=str(exc))
     return audit.outcome(statements, "refused", outcome="changed", message=str(exc), target=target)
 
 
@@ -491,8 +498,8 @@ def _group_guarded_options(options, connection, store, identity=None, audit=None
     """Carry trusted consent to clients owned by jobs and persistent sessions.
 
     The private hook is added after validating request fields, never accepted
-    from JSON or written to a client option file. Audit a rejected login at
-    the boundary so callers cannot mislabel it as a server or transport error.
+    from JSON or written to a client option file. Audit rejected logins
+    separately: this hook cannot know whether its owner's work already ran.
     """
     from .accounts_api import _group_login_guard
     from .connection_groups import ProfileReadError
@@ -505,17 +512,7 @@ def _group_guarded_options(options, connection, store, identity=None, audit=None
             guard()
         except ProfileReadError as exc:
             if audit is not None:
-                refusal = audit
-                if audit.finished:
-                    # A persistent session may open a cancellation helper
-                    # after its original write completed. Keep that completed
-                    # record and audit this newly refused login separately.
-                    from . import dbops
-                    refusal = dbops.AuditTrail(audit.store, audit.operation, audit.surface,
-                                               connection=audit.connection, safety=audit.safety,
-                                               password=audit.password, policy=audit.policy)
-                    refusal.server(audit.engine, audit.server_version)
-                _group_login_refusal(refusal, statements, exc, target)
+                _group_login_refusal(audit, statements, exc, target)
             raise
 
     return dict(options, _login_guard=checked)
@@ -597,7 +594,7 @@ def _kill_response(payload, workspace):
                                 confirmed=payload.get("confirmed") is True, connection=plain, before_send=consume)
     except ProfileReadError as exc:
         result = refused_result(connection_id, mode, str(exc))
-        result["audit_id"] = _group_login_refusal(audit, [KILL_TAG + statement], exc, expect)
+        result["audit_id"] = _group_login_refusal(audit, [KILL_TAG + statement], exc, expect, packet_unsent=True)
         return result
     except KeyboardInterrupt as exc:
         audit.fail(exc, [KILL_TAG + statement])
@@ -706,7 +703,7 @@ def _bulk_kill_response(payload, workspace):
                         if res.get("status") == "killed":
                             accepted.append((row, res, audit))
                     except ProfileReadError as exc:
-                        audit_id = _group_login_refusal(audit, [KILL_TAG + statement], exc, expect)
+                        audit_id = _group_login_refusal(audit, [KILL_TAG + statement], exc, expect, packet_unsent=True)
                         results.append({"connection_id": cid, "status": "refused", "message": str(exc),
                                         "audit_id": audit_id, "after": None})
                     except (ValueError, ConnectorError) as exc:
@@ -728,7 +725,7 @@ def _bulk_kill_response(payload, workspace):
         completed = {row["connection_id"] for row in results}
         for target, statement, audit in zip(targets, details["statements"], audits):
             if target["connection_id"] not in completed:
-                audit_id = _group_login_refusal(audit, [KILL_TAG + statement], exc, target["expect"])
+                audit_id = _group_login_refusal(audit, [KILL_TAG + statement], exc, target["expect"], packet_unsent=True)
                 results.append({"connection_id": target["connection_id"], "status": "refused", "message": str(exc),
                                 "audit_id": audit_id, "after": None})
     except (KeyboardInterrupt, ValueError, ConnectorError) as exc:
@@ -2460,7 +2457,8 @@ def _variable_apply(payload, workspace):
                                           before_send=before_send)
     except ProfileReadError as exc:
         result = variables.unsent_result(name, mode, request["requested"], "refused", str(exc))
-        result["audit_id"] = _group_login_refusal(audit, [variables.TAG + expect["statement"]], exc, expect)
+        result["audit_id"] = _group_login_refusal(audit, [variables.TAG + expect["statement"]], exc, expect,
+                                                   packet_unsent=True)
         return result
     except (ValueError, ConnectorError) as exc:
         audit.fail(exc, [variables.TAG + expect["statement"]])
@@ -2814,7 +2812,7 @@ def _action_response(path, payload, workspace):
         except reviewed_writes.Refusal as exc:
             return reviewed_writes.refused(out, str(exc), exc.outcome, audit, expect, progress)
         except ProfileReadError as exc:
-            audit_id = _group_login_refusal(audit, statements, exc, expect)
+            audit_id = _group_login_refusal(audit, statements, exc, expect, packet_unsent=True)
             result = reviewed_writes.refused(out, str(exc), "changed", target=expect, progress=progress)
             result["audit_id"] = audit_id
             return result

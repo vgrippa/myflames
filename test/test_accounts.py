@@ -1311,18 +1311,36 @@ class AccountsTest(unittest.TestCase):
         self.conn = FakeConn('mariadb', exists=False)
         plan = self.plan('create', password='s3cret')
         calls = []
+        revoked = [False]
+        reads_after_revoke = []
 
         def execute(sql, extra_flags=None, timeout=None):
             calls.append(sql)
             if len(calls) == 1:
                 self.conn.exists = True
                 return ''
+            revoked[0] = True
             raise ProfileReadError('This saved connection is outside the current connection group.')
         self.conn.run_stdin = execute
+        real_run = self.conn.run
+
+        def run(sql, **kwargs):
+            if revoked[0]:
+                reads_after_revoke.append(sql)
+                raise ProfileReadError('This saved connection is outside the current connection group.')
+            return real_run(sql, **kwargs)
+        self.conn.run = run
         result = self.apply(plan)
         self.assertEqual(len(calls), 2, 'the second statement is refused at the client boundary')
+        self.assertEqual(reads_after_revoke, [], 'post-write readback must not run over a revoked connection')
         self.assertEqual(result['status'], 'partial')
         self.assertEqual(result['outcome'], 'changed')
+        self.assertEqual(result['after'], {})
+        self.assertEqual(result['diff'], {})
+        self.assertIn('Earlier statements ran; the remaining statements were not sent.', result['message'])
+        self.assertNotIn('could not be verified afterwards', result['message'])
+        self.assertFalse(any('could not be read afterwards' in w for w in result['warnings']), result['warnings'])
+        self.assertTrue(any('stays locked' in w for w in result['warnings']), result['warnings'])
         self.assertEqual([s['status'] for s in result['statements']], ['ok', 'not_sent', 'not_sent'])
         records = self.store.audit_records()
         outcomes = [r['outcome'] for r in records]

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -291,9 +292,82 @@ class GuardTests(unittest.TestCase):
                 record = next(r for r in records if r['id'] == out['audit_id'])
                 self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
                 self.assertEqual(record['target'], plan['expect'])
-                self.assertEqual(record['statements'], [MYSQL_GUARD] + plan['statements'])
+                self.assertEqual(record['statements'], plan['statements'])
                 self.assertEqual(writer.writes, [])
                 after.assert_not_called()
+
+    def test_login_refusal_finishes_a_minimal_audit_without_unsent_support(self):
+        class Audit(object):
+            def __init__(self):
+                self.pending = False
+                self.completed = []
+
+            def attempt(self, statements, **kwargs):
+                self.pending = True
+                return 'minimal-audit'
+
+            def complete(self, status, **kwargs):
+                self.pending = False
+                self.completed.append((status, kwargs))
+
+        for error in (reviewed_writes.Refusal('Group consent changed.', 'changed'),
+                      ProfileReadError('Group consent changed.')):
+            with self.subTest(refusal=type(error).__name__):
+                audit, plan, after = Audit(), self.plan(), mock.Mock()
+                writer = mock.Mock(password=None)
+                writer.run_write.side_effect = error
+                out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test',
+                                               audit=audit, read_after=after)
+                self.assertEqual((out['status'], out['outcome'], out['sent']), ('refused', 'changed', []))
+                self.assertEqual(out['audit_id'], 'minimal-audit')
+                self.assertEqual(out['states'], ['not_sent', 'not_sent'])
+                self.assertFalse(audit.pending)
+                self.assertEqual(audit.completed, [('refused', {'outcome': 'changed', 'message': str(error)})])
+                writer.run_write.assert_called_once()
+                after.assert_not_called()
+
+    def test_unsent_variable_consent_refusal_finishes_audit_before_propagating(self):
+        from test_variables import mysql_variable, mariadb_variable
+        values = [mysql_variable('max_connections'),
+                  mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value='old-secret',
+                                   session_value=None, min=None, max=None)]
+        for value in values:
+            with self.subTest(name=value['name']):
+                secret = value['name'] == 'wsrep_sst_auth'
+                plan = variables.build_plan(value, 'new-secret' if secret else '200', 'global')
+                audit = self.audit()
+                writer = Writer()
+                def refuse_login(sql, **kwargs):
+                    self.assertTrue(audit.pending)
+                    raise ProfileReadError('Group consent changed: new-secret')
+                writer.run_write = refuse_login
+                with mock.patch.object(variables, 'read_variable', return_value=value), \
+                        self.assertRaises(ValueError):
+                    variables.apply_change(writer, plan, plan['expect'], confirmed=True, audit=audit)
+                record = next(row for row in self.records() if row['id'] == audit.id)
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+                self.assertEqual(record['statements'], [dbops.REDACTED] if secret else
+                                 [variables.TAG + plan['statement']])
+                if secret:
+                    self.assertNotIn('new-secret', json.dumps(record))
+                    self.assertNotIn('old-secret', json.dumps(record))
+                self.assertEqual(writer.writes, [])
+
+    def test_unsent_kill_consent_refusal_finishes_audit_before_propagating(self):
+        from test_locks import KillScenario, bound_kill_expect
+        scenario = KillScenario()
+        expect = bound_kill_expect(scenario.conn)
+        audit = self.audit()
+        def refuse_login(sql, **kwargs):
+            self.assertTrue(audit.pending)
+            raise ProfileReadError('Group consent changed.')
+        scenario.conn.run_write = refuse_login
+        with self.assertRaises(ProfileReadError):
+            locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True, audit=audit, settle_s=0)
+        record = self.records()[0]
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+        self.assertEqual(record['statements'], [locks.KILL_TAG + 'KILL CONNECTION 41'])
+        self.assertFalse(scenario.killed)
 
     def test_packet_start_line_names_second_user_statement(self):
         plan = self.plan()
@@ -454,6 +528,32 @@ class GuardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 reviewed_writes.review_details(bad)
 
+    def test_refusal_marked_guard_sent_keeps_the_guard_in_the_audit(self):
+        # A client adapter (MySQL Shell, ProxySQL Admin) that ran the identity
+        # guard and then raised Refusal must not have its guard dropped from
+        # the audit, even without a ConnectorError context.
+        plan = self.plan()
+        guard = reviewed_writes.session_guard(plan)
+        seen = []
+
+        class Writer(object):
+            def run_write(self, sql, extra_flags=None, timeout=None):
+                seen.append(sql)
+                refusal = reviewed_writes.Refusal(dbops.TARGET_IDENTITY_MISMATCH, 'identity_mismatch')
+                refusal.guard_sent = True
+                raise refusal
+
+        audit, after = self.audit(), mock.Mock()
+        out = reviewed_writes.execute(Writer(), plan, lambda: copy.deepcopy(plan), 'test',
+                                      audit=audit, read_after=after, verify_on_error=True)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual((out['status'], out['outcome'], out['sent']), ('refused', 'identity_mismatch', []))
+        self.assertFalse(audit.pending)
+        after.assert_not_called()
+        (record,) = self.records()
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_mismatch'))
+        self.assertEqual(record['statements'], guard + plan['statements'])
+
     def test_request_cannot_select_shell_to_suppress_a_sql_guard(self):
         fresh = self.plan()
         reviewed = dict(fresh, via='mysqlsh')
@@ -499,6 +599,8 @@ class GuardTests(unittest.TestCase):
                 self.assertEqual(out['sent'], [])
                 self.assertNotIn('fixture-secret', repr(out))
                 self.assertEqual(len(writer.writes), 1)
+                record = next(row for row in self.records() if row['id'] == out['audit_id'])
+                self.assertEqual(record['statements'], plan['session_guard'] + [variables.TAG + plan['statement']])
                 after.assert_not_called()
 
     def test_accounts_guard_each_engine_and_refuse_swapped_server(self):

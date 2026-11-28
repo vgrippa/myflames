@@ -5871,8 +5871,9 @@ def may_have_run(exc):
 class AuditTrail(object):
     """The audit records of one requested write, for a write path to call
     in order: :meth:`attempt` before sending, then :meth:`complete`; or
-    :meth:`outcome` when nothing is sent. :meth:`fail` records an exception
-    at whatever point it happened. Completion failures leave the record
+    :meth:`outcome` when nothing is sent, or :meth:`complete_unsent` when a
+    pending attempt is refused before its client runs. :meth:`fail` records
+    an exception at whatever point it happened. Completion failures leave the record
     pending ("outcome unknown") and never hide the write's own result."""
 
     def __init__(self, store, operation, surface, connection=None, safety=None, password=None, policy=None):
@@ -5906,6 +5907,30 @@ class AuditTrail(object):
                      rows_affected=rows_affected, after=after, duration_ms=duration, password=self.password)
         except Exception:
             pass
+
+    def complete_unsent(self, status, statements, outcome=None, message=None, error=None):
+        """Finish a prepared attempt with only the reviewed, unsent statements.
+
+        Call only when this packet's client never ran. Keep its guard for a
+        client/login error or a server guard refusal. The store replaces SQL
+        and completion fields in one pending-only update, so a completed row
+        cannot be changed, including by another AuditTrail instance.
+        """
+        if not self.pending:
+            return self.id
+        self.finished = True
+        duration = (time.monotonic() - self.started) * 1000.0 if self.started is not None else None
+        try:
+            fields = _finish_fields(status, outcome=outcome, error=error, message=message,
+                                    duration_ms=duration, password=self.password)
+            fields['statements'] = _row(self.operation, statements, self.surface,
+                                        'pending', password=self.password)['statements']
+            self.store.audit_complete(self.id, fields)
+        except Exception:
+            # As in complete(), a storage failure preserves the pending row
+            # and must never replace the write path's own refusal.
+            pass
+        return self.id
 
     def outcome(self, statements, status, outcome=None, message=None, error=None, target=None, verified=None):
         if self.finished:

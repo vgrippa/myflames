@@ -1746,6 +1746,11 @@ class _SensitiveAudit(object):
         return self.audit.complete(status, outcome=outcome, error=code,
                                    message='Sensitive variable change: values are redacted.', **kwargs)
 
+    def complete_unsent(self, status, statements, outcome=None, message=None, error=None):
+        code = dbops.error_code(str(error)) if error is not None else None
+        return self.audit.complete_unsent(status, [dbops.REDACTED for _ in statements], outcome=outcome,
+            message='Sensitive variable change: values are redacted.', error=code)
+
     def outcome(self, statements, status, outcome=None, message=None, error=None, target=None, verified=None):
         code = dbops.error_code(str(error)) if error is not None else None
         return self.audit.outcome([dbops.REDACTED for _ in statements], status, outcome=outcome,
@@ -1783,8 +1788,11 @@ def apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None,
         # Client/server diagnostics can quote arbitrary values without naming
         # the variable. Preserve the public exception family and error code,
         # never its free-form payload.
+        from .connection_groups import ProfileReadError
         code = dbops.error_code(str(exc))
-        error = ConnectorError if isinstance(exc, ConnectorError) else ValueError
+        error = (ConnectorError if isinstance(exc, ConnectorError)
+                 else ProfileReadError if isinstance(exc, ProfileReadError)
+                 else ValueError)
         unknown = dbops.may_have_run(exc)
         safe = error("Could not complete the sensitive variable change%s (%s). %s" % (
             " (ERROR %s)" % code if code is not None else "", dbops.REDACTED,
@@ -1889,6 +1897,7 @@ def _apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None
         except Exception as exc:
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     session_text = None
+    from .connection_groups import ProfileReadError
     try:
         if mode == "session":
             # One client call, so the read sees the same session.
@@ -1896,6 +1905,10 @@ def _apply_change(conn, plan, expect, decision=None, confirmed=False, audit=None
                 conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS)), packet_lines.markers)
         else:
             conn.run_write(script, extra_flags=list(dbops.WRITE_CLIENT_FLAGS))
+    except ProfileReadError as exc:
+        if audit is not None:
+            audit.complete_unsent("refused", [TAG + statement], outcome="changed", message=str(exc))
+        raise
     except KeyboardInterrupt:
         if audit is not None:
             audit.fail(KeyboardInterrupt())

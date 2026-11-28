@@ -1206,6 +1206,29 @@ class TestApply(unittest.TestCase):
         self.assertNotIn(old_secret, json.dumps(records))
         self.assertNotIn(new_secret, json.dumps(records))
 
+    def test_secret_variable_preserves_profile_read_error_with_redacted_message(self):
+        from myflames.connection_groups import ProfileReadError
+        old_secret = 'old-consent-secret'
+        new_secret = 'new-consent-secret'
+        variable = mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value=old_secret,
+                                    session_value=None, min=None, max=None)
+        plan = V.build_plan(variable, new_secret, 'global')
+        conn = ReplayConn([])
+        conn.run_write = mock.Mock(side_effect=ProfileReadError('Group consent changed: ' + new_secret))
+        with mock.patch.object(V, 'read_variable', return_value=variable), \
+                self.assertRaises(ProfileReadError) as raised:
+            V.apply_change(conn, plan, plan['expect'], confirmed=True, audit=self.audit('global'))
+        self.assertIs(type(raised.exception), ProfileReadError)
+        self.assertIn(dbops.REDACTED, str(raised.exception))
+        self.assertNotIn(old_secret, str(raised.exception))
+        self.assertNotIn(new_secret, str(raised.exception))
+        records = self.records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'changed'))
+        self.assertEqual(records[0]['statements'], [dbops.REDACTED])
+        self.assertNotIn(old_secret, json.dumps(records))
+        self.assertNotIn(new_secret, json.dumps(records))
+
     def test_lost_connection_is_unknown_not_an_error(self):
         from myflames.connector import ConnectorError
         conn, plan, _data = plan_from('mysql-8.4', 'global')
@@ -1564,6 +1587,35 @@ class TestEndpoints(unittest.TestCase):
             self.assertNotIn(secret, str(raised.exception))
             self.assertNotIn(secret, json.dumps(records))
         self.assertNotIn(expect['review_token'], json.dumps(records))
+
+    def test_sensitive_endpoint_consent_refusal_returns_structured_refused_result(self):
+        from myflames import ui
+        from myflames.connection_groups import ProfileReadError
+        old, new = 'old-consent-endpoint-secret', 'new-consent-endpoint-secret'
+        variable = mariadb_variable('wsrep_sst_auth', type='VARCHAR', global_value=old,
+                                    session_value=None, min=None, max=None)
+        plan = V.build_plan(variable, new, 'global')
+        safety, _ = ui._variable_policy('wsrep_sst_auth', 'global', self.connection, self.workspace.store)
+        expect = dict(plan['expect'], connection_identity=dbops.connection_identity(self.connection, safety))
+        details = {'name': 'wsrep_sst_auth', 'mode': 'global', 'requested': new, 'expect': dict(expect)}
+        expect['review_token'] = ui._review_tokens(self.workspace).issue(
+            'variable', expect['connection_identity'], details)
+        conn = ReplayConn([])
+        conn.run_write = mock.Mock(side_effect=ProfileReadError('Group consent changed: ' + new))
+        with mock.patch.object(V, 'read_variable', return_value=variable):
+            result, _factory = self.call('/api/live/variable/apply', dict(
+                connection=self.connection, name='wsrep_sst_auth', mode='global', value=new,
+                expect=expect, confirmed=True), conn)
+        self.assertEqual(result['status'], 'refused')
+        self.assertEqual(result['requested'], dbops.REDACTED)
+        records = dbops.audit_report(self.workspace.store)['records']
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['id'], result['audit_id'])
+        self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'changed'))
+        self.assertEqual(records[0]['statements'], [dbops.REDACTED])
+        for secret in (old, new, old.encode().hex(), new.encode().hex(), self.connection['password']):
+            self.assertNotIn(secret, json.dumps(result))
+            self.assertNotIn(secret, json.dumps(records))
 
     def test_sensitive_endpoint_without_review_token_refuses_before_connecting(self):
         from myflames import ui

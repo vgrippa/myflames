@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 from xml.sax.saxutils import escape, quoteattr
 
-from myflames import connector, dbops, topology_change, ui
+from myflames import connection_groups, connector, dbops, topology_change, ui, variables
 from _perf_replay import batch
 from _reviewed_replay import (acknowledged_error, answer_evidence, evidence_options,
                               guarded_packets, read_statements)
@@ -1351,6 +1351,8 @@ class TopologyChangeTests(GroupCase):
         records = self.records()
         self.assertEqual(len(records), 3)
         self.assertTrue(all(record['status'] == 'refused' for record in records), records)
+        first = next(row for row in records if row['id'] == result['members'][0]['audit_id'])
+        self.assertEqual(first['statements'], [variables.TAG + plan['members'][0]['statement']])
         self.assertNotIn('may have run', json.dumps([result, records]))
         self.assertEqual(ui.api_response(PROGRESS_PATH, {'progress_id': progress_id}, self.workspace)['states'],
                          ['not_sent', 'not_sent', 'not_sent'])
@@ -1373,6 +1375,7 @@ class TopologyChangeTests(GroupCase):
         records = self.records()
         self.assertEqual(len(records), 1, records)
         self.assertEqual(records[0]['status'], 'refused')
+        self.assertEqual(records[0]['statements'], [variables.TAG + plan['members'][0]['statement']])
         self.assertNotIn('may have run', json.dumps([result, records]))
 
     def test_identity_packet_refusal_is_unsent_in_progress_and_audit(self):
@@ -1490,6 +1493,9 @@ class TopologyChangeTests(GroupCase):
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0]['status'], 'refused', records)
                 self.assertEqual(records[0]['outcome'], 'connect_failed', records)
+                self.assertEqual(records[0]['statements'], topology_change._session_guard(
+                                 'mariadb' if code == 1698 else 'mysql', plan['members'][0]['identity']) +
+                                 [variables.TAG + plan['members'][0]['statement']])
                 self.assertNotIn('may have run', json.dumps([result, records]))
                 self.assertNotIn('server returned error', json.dumps([result, records]))
                 self.assertEqual(self.written_ids(), [])
@@ -1748,6 +1754,57 @@ class TopologyChangeTests(GroupCase):
         self.assertEqual(result['status'], 'refused', result)
         self.assertEqual(self.written_ids(), [])
         self.assertFalse(any(r['status'] == 'pending' for r in self.records()))
+        record = next(row for row in self.records() if row['id'] == result['members'][0]['audit_id'])
+        self.assertEqual(record['statements'], [variables.TAG + plan['members'][0]['statement']])
+
+    def test_profile_login_refusal_uses_changed_target_in_member_audit(self):
+        plan = self.plan(member_ids=['member-1'])
+        pending = []
+
+        def refuse_login(sql):
+            # The synthetic transport refuses before starting its write
+            # client, after the real variable checks made the row durable.
+            pending.extend(row for row in self.records() if row['status'] == 'pending')
+            raise connection_groups.ProfileReadError(
+                'This saved connection is outside the current connection group.')
+
+        self.client(0).before_write = refuse_login
+        result = self.apply(plan)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['members'][0]['status'], 'refused')
+        self.assertEqual(self.written_ids(), [])
+        record = self.records()[0]
+        self.assertEqual(record['id'], pending[0]['id'])
+        self.assertEqual(record['id'], result['members'][0]['audit_id'])
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed_target'))
+        self.assertEqual(record['statements'], [variables.TAG + plan['members'][0]['statement']])
+        self.assertEqual(record['message'], result['members'][0]['message'])
+        self.assertEqual(record['message'],
+                         'The saved member, group or endpoint changed. Review again.')
+
+    def test_member_unsent_completion_without_attempt_leaves_owner_state_alone(self):
+        plan = self.plan(member_ids=['member-1'])
+        trail = topology_change._MemberAudit(None, self.store, plan, plan['members'][0],
+                                              plan['effective_safety'])
+        self.assertIsNone(trail.complete_unsent('refused', ['never sent'], outcome='changed'))
+        self.assertEqual((trail.final_status, trail.final_outcome), (None, None))
+        self.assertFalse(trail.finished)
+        self.assertEqual(self.records(), [])
+
+    def test_member_unsent_completion_cannot_overwrite_finished_owner_state(self):
+        plan = self.plan(member_ids=['member-1'])
+        trail = topology_change._MemberAudit(None, self.store, plan, plan['members'][0],
+                                              plan['effective_safety'])
+        statement = variables.TAG + plan['members'][0]['statement']
+        guard = topology_change._session_guard('mysql', self.client(0).rolling_identity())
+        audit_id = trail.attempt(guard + [statement])
+        trail.complete('ok', outcome='changed')
+        before = self.records()
+        self.assertEqual(trail.complete_unsent('refused', ['replacement'], outcome='changed'), audit_id)
+        self.assertEqual((trail.final_status, trail.final_outcome), ('ok', 'changed'))
+        self.assertEqual(self.records(), before)
+        self.assertEqual(before[0]['statements'], guard + [statement])
 
     def test_variable_drift_after_review_refuses_and_stops(self):
         plan = self.plan()

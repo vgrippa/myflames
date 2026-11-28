@@ -235,6 +235,11 @@ async function setSetting(page, key, on) {
 
 async function editorChecks(page, expected, helpers) {
   const { setEditorText, selectEditor } = helpers;
+  const frames = (count = 4) => page.evaluate(n => new Promise(resolve => {
+    let left = n;
+    const tick = () => (--left ? requestAnimationFrame(tick) : resolve());
+    requestAnimationFrame(tick);
+  }), count);
   // Short first/second lines keep Option-click independent of long-line wraps.
   await setEditorText(page, 'SELECT 1;\nSELECT 2;\nSELECT ' + 'long_name, '.repeat(150) + '3;');
   await page.waitForFunction((selector, wraps) => !!document.querySelector(selector) === wraps, {}, WRAPPING, expected.soft_wrap);
@@ -242,17 +247,16 @@ async function editorChecks(page, expected, helpers) {
   pass(`${stage}: .cm-content ${expected.soft_wrap ? 'has' : 'does not have'} cm-lineWrapping`);
   await selectEditor(page, 2);
   // Paste leaves the viewport at the document end. The automation facade sets
-  // selection without scrollIntoView, so explicitly expose the two short lines.
-  await page.$eval(EDITOR, editor => editor.closest('.cm-editor').querySelector('.cm-scroller').scrollTo(0, 0));
-  // Name the wait in a failure: CI logs show only "Waiting failed" otherwise.
-  await page.waitForFunction(selector => {
-    const editor = document.querySelector(selector);
-    const second = editor?.querySelectorAll('.cm-line')[1];
-    const rect = second?.getBoundingClientRect();
-    const scroller = editor?.closest('.cm-editor').querySelector('.cm-scroller').getBoundingClientRect();
-    return second?.textContent === 'SELECT 2;' && rect.top >= Math.max(0, scroller.top)
-      && rect.bottom <= Math.min(innerHeight, scroller.bottom);
-  }, {}, EDITOR).catch(error => { throw new Error('line 2 never became visible: ' + error.message); });
+  // selection without scrollIntoView, and CodeMirror applies the paste's own
+  // scrollIntoView asynchronously, on its next measure. Let that pending
+  // measure finish before scrolling back to the top; otherwise a late measure
+  // can land after scrollTo (or between measuring and mouse.click) and park
+  // line 2 under the query tab strip.
+  await frames(2);
+  await page.$eval(EDITOR, editor => {
+    window.scrollTo(0, 0);
+    editor.closest('.cm-editor').querySelector('.cm-scroller').scrollTo(0, 0);
+  });
   // Each setting is saved on its own and reaches the editor a moment later; the
   // wrap class above proves only Wrap long lines. Wait for Multiple cursors too
   // (seen on CI: Option-click landed before the editor allowed a second cursor).
@@ -265,34 +269,71 @@ async function editorChecks(page, expected, helpers) {
   // The Option-click must land on line 2's text inside the editor. Measure and
   // verify in one wait (fresh coordinates each poll): a closing overlay or a
   // late layout change between measuring and clicking would otherwise swallow
-  // the click (seen on CI: the click never reached the editor after the
-  // second relaunch, leaving one cursor at its previous position).
-  const measured = await page.waitForFunction(selector => {
-    const editor = document.querySelector(selector);
-    const second = editor?.querySelectorAll('.cm-line')[1];
-    if (!second) return null;
-    const range = document.createRange();
-    range.selectNodeContents(second);
-    const rect = range.getClientRects()[0];
-    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
-    const point = { x: rect.left + Math.min(16, rect.width / 2), y: rect.top + rect.height / 2 };
-    const hit = document.elementFromPoint(point.x, point.y);
-    return hit && editor.contains(hit) ? point : null;
-  }, {}, EDITOR).catch(async error => {
-    const seen = await page.evaluate(selector => {
+  // the click. Confirm the page and scroller stay at the top with the strict
+  // hit test passing across two consecutive polls before taking the point; any
+  // poll that had to scroll back to the top resets the count.
+  const topStreakKey = '__myflamesSmokeTopStreak';
+  await page.evaluate(key => { delete window[key]; }, topStreakKey);
+  let measured;
+  try {
+    measured = await page.waitForFunction((selector, key) => {
       const editor = document.querySelector(selector);
+      const scroller = editor?.closest('.cm-editor')?.querySelector('.cm-scroller');
       const second = editor?.querySelectorAll('.cm-line')[1];
-      if (!second) return 'line 2 is not rendered';
+      if (!editor || !scroller || !second) {
+        window[key] = 0;
+        return null;
+      }
+      if (window.scrollX !== 0 || window.scrollY !== 0 || scroller.scrollTop !== 0 || scroller.scrollLeft !== 0) {
+        if (window.scrollX !== 0 || window.scrollY !== 0) window.scrollTo(0, 0);
+        if (scroller.scrollTop !== 0 || scroller.scrollLeft !== 0) scroller.scrollTo(0, 0);
+        window[key] = 0;
+        return null;
+      }
+      if (second.textContent !== 'SELECT 2;') {
+        window[key] = 0;
+        return null;
+      }
       const range = document.createRange();
       range.selectNodeContents(second);
       const rect = range.getClientRects()[0];
-      if (!rect || rect.width <= 0 || rect.height <= 0) return 'line 2 has no visible text';
-      const hit = document.elementFromPoint(rect.left + Math.min(16, rect.width / 2), rect.top + rect.height / 2);
-      const classes = node => String(node?.className?.baseVal ?? node?.className ?? '');
-      return `topmost at the point: ${hit ? `${hit.tagName} "${classes(hit)}"` : 'nothing'}`;
-    }, EDITOR).catch(() => 'diagnostic unavailable');
-    throw new Error(`the Option-click point never landed inside the editor (${seen}): ` + error.message);
-  });
+      if (!rect || rect.width <= 0 || rect.height <= 0) {
+        window[key] = 0;
+        return null;
+      }
+      const srect = scroller.getBoundingClientRect();
+      if (rect.top < Math.max(0, srect.top) || rect.bottom > Math.min(innerHeight, srect.bottom)) {
+        window[key] = 0;
+        return null;
+      }
+      const point = { x: rect.left + Math.min(16, rect.width / 2), y: rect.top + rect.height / 2 };
+      const hit = document.elementFromPoint(point.x, point.y);
+      if (!hit || !editor.contains(hit)) {
+        window[key] = 0;
+        return null;
+      }
+      window[key] = (window[key] || 0) + 1;
+      return window[key] >= 2 ? point : null;
+    }, {}, EDITOR, topStreakKey).catch(async error => {
+      const seen = await page.evaluate(selector => {
+        const editor = document.querySelector(selector);
+        const scroller = editor?.closest('.cm-editor')?.querySelector('.cm-scroller');
+        const classes = node => String(node?.className?.baseVal ?? node?.className ?? '');
+        const scroll = `scroller top ${scroller?.scrollTop ?? '?'}, page y ${window.scrollY}`;
+        const second = editor?.querySelectorAll('.cm-line')[1];
+        if (!second) return `line 2 is not rendered (${scroll})`;
+        const range = document.createRange();
+        range.selectNodeContents(second);
+        const rect = range.getClientRects()[0];
+        if (!rect || rect.width <= 0 || rect.height <= 0) return `line 2 has no visible text (${scroll})`;
+        const hit = document.elementFromPoint(rect.left + Math.min(16, rect.width / 2), rect.top + rect.height / 2);
+        return `topmost at the point: ${hit ? `${hit.tagName} "${classes(hit)}"` : 'nothing'} (${scroll})`;
+      }, EDITOR).catch(() => 'diagnostic unavailable');
+      throw new Error(`the Option-click point never landed inside the editor (${seen}): ` + error.message);
+    });
+  } finally {
+    await page.evaluate(key => { delete window[key]; }, topStreakKey).catch(() => {});
+  }
   const point = await measured.jsonValue();
   await measured.dispose();
   const want = expected.multi_cursor ? 2 : 1;
@@ -309,11 +350,6 @@ async function editorChecks(page, expected, helpers) {
     return !!editor && document.querySelectorAll(cursors).length === n
       && editor.selectionStart >= editor.value.indexOf('\n') + 1;
   }, { timeout: 5000 }, EDITOR, CURSORS, want).catch(() => false);
-  const frames = () => page.evaluate(() => new Promise(resolve => {
-    let left = 4;
-    const tick = () => (--left ? requestAnimationFrame(tick) : resolve());
-    requestAnimationFrame(tick);
-  }));
   // The selection before the Option-click: one collapsed cursor on line 1.
   const before = await selectionRanges(page);
   assert.ok(before && before.length === 1 && before[0].anchor < line2.start,

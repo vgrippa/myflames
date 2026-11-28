@@ -3193,9 +3193,14 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
         except Exception as exc:
             raise ValueError("Could not write the audit record (%s), so nothing was sent." % exc)
     from .dbops import WRITE_CLIENT_FLAGS, may_have_run
+    from .connection_groups import ProfileReadError
     try:
         # --binary-mode: the client runs no backslash command of its own.
         conn.run_write(script, extra_flags=list(WRITE_CLIENT_FLAGS))
+    except ProfileReadError as exc:
+        if audit is not None:
+            audit.complete_unsent("refused", [KILL_TAG + statement], outcome="changed", message=str(exc))
+        raise
     except KeyboardInterrupt as exc:
         if audit is not None:
             audit.fail(exc)

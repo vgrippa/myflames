@@ -101,6 +101,7 @@ class GroupConsentTests(groups.GroupCase):
         self.assertFalse(any('KILL CONNECTION' in sql for sql in self.invocations))
         record = self.store.audit_records()[0]
         self.assertEqual(record['status'], 'refused')
+        self.assertEqual(record['statements'], [lock_tests.KILL_TAG + 'KILL CONNECTION 41'])
 
     def test_consent_group_deleted_inside_persist_login_sends_nothing(self):
         replay, data = variable_tests.replay('mysql-8.4', 'persist')
@@ -117,6 +118,7 @@ class GroupConsentTests(groups.GroupCase):
         self.assertTrue(self.invocations)
         self.assertFalse(any('SET PERSIST ' in sql for sql in self.invocations))
         self.assertEqual(self.store.audit_records()[0]['status'], 'refused')
+        self.assertEqual(self.store.audit_records()[0]['statements'], [variable_tests.TAG + plan['statement']])
 
     def test_consent_group_deleted_inside_replication_skip_login_sends_nothing(self):
         report, _ = replication_tests.status('mysql-8.4-gtid-error')
@@ -133,6 +135,19 @@ class GroupConsentTests(groups.GroupCase):
         self.assertTrue(self.invocations)
         self.assertFalse(any('SET GTID_NEXT' in sql or 'START REPLICA SQL_THREAD' in sql for sql in self.invocations))
         self.assertEqual(self.store.audit_records()[0]['status'], 'refused')
+
+    def test_pending_group_refusal_keeps_sensitive_audit_redaction(self):
+        raw = dbops.AuditTrail(self.store, 'set_global', 'ui')
+        audit = variable_tests.V._SensitiveAudit(raw)
+        statement = "SET GLOBAL wsrep_sst_auth = 'account:private-value'"
+        audit_id = audit.attempt(['session guard', statement], target={'name': 'wsrep_sst_auth'})
+        result = ui._group_login_refusal(audit, [statement], ProfileReadError('private-value'), packet_unsent=True)
+        self.assertEqual(result, audit_id)
+        records = self.store.audit_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual((records[0]['status'], records[0]['outcome']), ('refused', 'changed'))
+        self.assertEqual(records[0]['statements'], [dbops.REDACTED])
+        self.assertNotIn('private-value', str(records))
 
     def discovery_race(self, change):
         self.store.assign_profile_group(['active'], 'G')
@@ -317,9 +332,65 @@ class RemainingWriteConsentTests(groups.GroupCase):
         completed = next(record for record in self.store.audit_records() if record['id'] == completed_id)
         self.assertEqual(completed['status'], 'ok')
 
+    def test_editor_cancel_helper_refusal_preserves_pending_run_audit(self):
+        payload = dict(connection=self.connection)
+        options, identity, safety, _label = editor._connection_facts(payload, self.store)
+        audit = dbops.AuditTrail(self.store, 'editor_run', 'ui', connection=self.connection, safety=safety)
+        statements = ['UPDATE app.t SET id = id + 1']
+        full = editor._group_options(options, payload, self.store, identity, safety, audit, statements)
+        session = editor.EditorSession('pending-helper', identity, options)
+        session.engine = 'mysql'
+        session.server_identity = {'server_uuid': '11111111-2222-3333-4444-555555555555'}
+        session._kill_identity = dict(session.server_identity)
+        session._conn = connector.MySQLConnection(**options)
+        session._conn._login_guard = full['_login_guard']
+        self.addCleanup(session._conn.close)
+        run_id = audit.attempt(statements)
+        pending = next(row for row in self.store.audit_records() if row['id'] == run_id)
+        self.revoke('read_only')
+        with mock.patch.object(connector.MySQLConnection, '_resolve_binary', return_value='/nonexistent/mysql'), \
+                mock.patch.object(connector, '_run_bounded') as spawn:
+            with self.assertRaises(ProfileReadError):
+                session._send_kill(options, 41)
+        spawn.assert_not_called()
+        records = self.store.audit_records()
+        self.assertEqual(next(row for row in records if row['id'] == run_id), pending)
+        self.assertTrue(audit.pending, 'only the run owner may classify its already-started write')
+        refusal = next(row for row in records if row['id'] != run_id)
+        self.assertEqual((refusal['status'], refusal['outcome'], refusal['statements']),
+                         ('refused', 'changed', []))
+        audit.complete('unknown', outcome='cancel_failed')
+        owner = next(row for row in self.store.audit_records() if row['id'] == run_id)
+        self.assertEqual((owner['status'], owner['outcome'], owner['statements']),
+                         ('unknown', 'cancel_failed', statements))
+
+    def test_clone_helper_refusal_never_restores_redacted_donor_secret(self):
+        safety = dbops.connection_safety(self.profile, self.connection, store=self.store)
+        audit = dbops.AuditTrail(self.store, 'clone', 'ui', connection=self.connection,
+                                 safety=safety, password='recipient-password')
+        # A second secret may occur in an identifier that generic SQL password
+        # redaction cannot recognize. The lifecycle owner redacts both secrets.
+        donor_password = 'donor-private-value'
+        statements = ["CLONE INSTANCE FROM 'operator'@'donor' IDENTIFIED BY '%s' "
+                      "DATA DIRECTORY = '/copy/%s'" % (donor_password, donor_password)]
+        options = ui._group_guarded_options(connection_options(self.connection), self.connection, self.store,
+            dbops.connection_identity(self.connection, safety), audit, statements)
+        clone_id = audit.attempt(lifecycle._safe(statements, [audit.password, donor_password]))
+        pending = self.store.audit_records()[0]
+        self.revoke('removed')
+        with self.assertRaises(ProfileReadError):
+            options['_login_guard']()
+        records = self.store.audit_records()
+        self.assertEqual(next(row for row in records if row['id'] == clone_id), pending)
+        self.assertTrue(audit.pending)
+        self.assertNotIn(donor_password, str(records))
+        refusal = next(row for row in records if row['id'] != clone_id)
+        self.assertEqual((refusal['status'], refusal['statements']), ('refused', []))
+
     def test_lifecycle_start_guards_each_control_login(self):
         for operation in ('dump', 'restore', 'clone'):
             with self.subTest(operation=operation):
+                previous_audits = {row['id'] for row in self.store.audit_records()}
                 self.store.assign_profile_group([self.profile['id']], 'G')
                 plan = lifecycle_tests.fake_plan(operation)
                 payload = dict(connection=self.connection, operation=operation, plan=plan,
@@ -349,7 +420,12 @@ class RemainingWriteConsentTests(groups.GroupCase):
                     result = ui.api_response('/api/lifecycle/start', payload, self.workspace)
                 self.assertEqual(result['state'], 'refused', result)
                 spawn.assert_not_called()
-                self.assert_refused()
+                owner_id = result['result']['audit_id']
+                refusals = [row for row in self.store.audit_records()
+                            if row['id'] not in previous_audits and row['id'] != owner_id]
+                self.assertEqual(len(refusals), 1)
+                self.assertEqual((refusals[0]['status'], refusals[0]['outcome'], refusals[0]['statements']),
+                                 ('refused', 'changed', []))
 
     def test_lifecycle_control_rechecks_after_credential_setup(self):
         safety = dbops.connection_safety(self.profile, self.connection, store=self.store)

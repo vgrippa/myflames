@@ -400,6 +400,7 @@ def _capture_chunk_script(bounded, chunk, engine, version, tls, partial):
 
 
 def capture(conn, server=None):
+    from .reviewed_writes import failed_read_login
     if isinstance(conn, dbops.TargetEvidenceConnection):
         # Group reads own the evidence scope. Never downgrade their identity
         # checks, including when an optional inventory read catches a failure.
@@ -419,14 +420,10 @@ def capture(conn, server=None):
             try:
                 return bounded.run(*args, **kwargs)
             except BaseException as exc:
-                from .connector import PartialReadError
-                diagnostic = dbops._target_error_match(str(exc)) if isinstance(exc, PartialReadError) else None
-                code = int(diagnostic.group(1)) if diagnostic is not None else None
                 # A statement error proves the login worked; a failed first
                 # login (including a proxy backend refusal reported with a
                 # line) must never be retried through the unchecked reader.
-                self.failed = (code is None or 2000 <= code <= 2999 or
-                               code in (1045, 1129, 1130, 1698, 3118, 3955))
+                self.failed = failed_read_login(exc)
                 raise
 
     transport = Transport()

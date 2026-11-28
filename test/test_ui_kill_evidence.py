@@ -152,12 +152,32 @@ class TestKillSheetEvidence(unittest.TestCase):
 
     def test_line_located_login_and_host_refusals_never_retry_first_login(self):
         messages = (
+            "ERROR 1040 (08004) at line 2: Too many connections",
+            "ERROR 1044 (42000) at line 2: Access denied for user 'app'@'10.0.0.1' to database 'appdb'",
             "ERROR 1045 (28000) at line 2: ProxySQL Error: Access denied for user 'app'@'10.0.0.1'",
+            "ERROR 1045 (28000) at line 1: ProxySQL Admin Error: Access denied",
+            "ERROR 1045 (28000)  at line 1: ProxySQL Admin Error: Access denied for user 'admin'@'127.0.0.1'",
+            "ERROR 1045 (28000) at line 2: ProxySQL Admin Error: ACCESS DENIED for user 'admin'@'127.0.0.1'",
+            "ERROR 1049 (42000) at line 2: Unknown database 'appdb'",
             "ERROR 1698 (28000) at line 2: Access denied for user 'root'@'localhost'",
             "ERROR 1129 (HY000) at line 2: Host '10.0.0.1' is blocked because of many connection errors",
             "ERROR 1130 (HY000) at line 2: Host '10.0.0.1' is not allowed to connect to this MySQL server",
+            "ERROR 1203 (42000) at line 2: User app already has more than 'max_user_connections' active connections",
+            "ERROR 1226 (42000) at line 2: User 'app' has exceeded the 'max_user_connections' resource (current value: 10)",
+            "ERROR 1251 (08004) at line 2: Client does not support authentication protocol requested by server; consider upgrading MySQL client",
+            "ERROR 1862 (HY000) at line 2: Your password has expired. To log in you must change it using a client that supports expired passwords.",
             "ERROR 3118 (HY000) at line 2: Access denied for user 'app'@'%'. Account is locked.",
+            "ERROR 3159 (HY000) at line 2: Connections using insecure transport are prohibited while --require_secure_transport=ON.",
             "ERROR 3955 (HY000) at line 2: Access denied for user 'app'@'%'. Account is blocked for 1 day(s).",
+            "ERROR 4150 (HY000) at line 2: User is blocked because of too many credential errors; unblock with 'FLUSH PRIVILEGES'",
+            "ERROR 4151 (HY000) at line 2: Access denied, this account is locked",
+            "ERROR 1045 (28000): Access denied for user 'app'@'10.0.0.1'\n"
+            "ERROR 1146 (42S02) at line 2: Table 'mysql.x' doesn't exist",
+            "mysql client exited 1: ERROR 1045 (28000): Access denied for user 'app'@'10.0.0.1'\n"
+            "ERROR 1064 (42000) at line 1: syntax error",
+            "mysql client exited 1: mysql client exited 1: ERROR 1064 (42000) at line 1: syntax error",
+            '--------------\nERROR 1045 (28000) at line 1: ProxySQL Admin Error: echoed SQL\n--------------\n'
+            "ERROR 1045 (28000) at line 2: Access denied for user 'app'@'10.0.0.1'",
         )
         for place in ('locks', 'sessions'):
             for message in messages:
@@ -169,6 +189,18 @@ class TestKillSheetEvidence(unittest.TestCase):
                         self.read(place, conn)
                     self.assertEqual(len(conn.logins), 1)
                     self.assertEqual(conn.writes, [])
+
+    def test_proxysql_admin_statement_error_still_falls_back_unbound(self):
+        for message in (
+            'ERROR 1045 (28000) at line 1: ProxySQL Admin Error: near "@version": syntax error',
+            'ERROR 1045 (28000)  at line 1: ProxySQL Admin Error: no such table: main.stats_mysql_global',
+            'mysql client exited 1: ERROR 1045 (28000) at line 1: ProxySQL Admin Error: near "@version": syntax error',
+            'mysql client exited 1:  ERROR 1045 (28000)  at line 1: ProxySQL Admin Error: near "@version": syntax error',
+        ):
+            with self.subTest(message=message):
+                conn = self.connection('locks', 'mariadb')
+                conn.failure = PartialReadError(message, '')
+                self.assert_unidentified_report('locks', self.read('locks', conn), conn)
 
     def test_unbound_reread_never_publishes_identity_even_if_next_node_has_one(self):
         for place in ('locks', 'sessions'):
@@ -206,6 +238,7 @@ class TestKillSheetEvidence(unittest.TestCase):
                 for error_type, message in (
                             (ConnectorError, 'ERROR 2013: Lost connection to MySQL server during query'),
                             (ConnectorError, 'ERROR 1045: Access denied for user'),
+                            (ConnectorError, 'ERROR 1045 (28000): ProxySQL Admin Error: Access denied'),
                             (ConnectorError, 'ERROR 1142: SELECT command denied'),
                             (ConnectorError, 'Query timed out after 15s.'),
                             (ValueError, 'Malformed client output'),

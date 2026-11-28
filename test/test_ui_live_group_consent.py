@@ -90,7 +90,7 @@ class LiveConsentTests(groups.GroupCase):
                 self.assertTrue(self.invocations, 'the fresh plan read happened before audit preparation')
                 record = next(r for r in self.store.audit_records() if r['id'] == result['audit_id'])
                 self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'), record)
-                self.assertEqual(record['statements'], list(plan.get('session_guard') or []) + plan['statements'])
+                self.assertEqual(record['statements'], plan['statements'])
 
     def test_reviewed_proxy_and_readyset_refuse_membership_change_during_secret_lookup(self):
         fill = self.store.connection_with_saved_password
@@ -112,6 +112,23 @@ class LiveConsentTests(groups.GroupCase):
                 self.assertEqual(server.writes, [])
                 record = next(r for r in self.store.audit_records() if r['id'] == result['audit_id'])
                 self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+
+    def test_proxy_server_guard_refusal_keeps_the_submitted_guard_in_audit(self):
+        server = self.servers()[0][1]
+        plan = self.plan('proxysql', server)
+        def swap():
+            server.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                              ('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',))
+        server.on_write = swap
+        self.invocations.clear()
+        result = self.apply('proxysql', server, plan)
+        self.assertEqual((result['status'], result['outcome'], result['sent']),
+                         ('refused', 'identity_mismatch', []))
+        self.assertEqual(len(server.writes), 1)
+        self.assertIn(server.writes[0], self.invocations)
+        record = next(row for row in self.store.audit_records() if row['id'] == result['audit_id'])
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_mismatch'))
+        self.assertEqual(record['statements'], plan['session_guard'] + plan['statements'])
 
     def test_proxy_and_readyset_plans_stop_before_second_login(self):
         for kind, server in self.servers():

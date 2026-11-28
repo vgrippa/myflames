@@ -1114,6 +1114,7 @@ class BatchedCaptureParityTest(unittest.TestCase):
 
     def test_compare_capture_never_retries_a_failed_first_login(self):
         for failure in (ConnectorError('ERROR 1045 (28000): Access denied for user'),
+                        PartialReadError('ERROR 1045 (28000): ProxySQL Admin Error: Access denied', ''),
                         ConnectorError('ERROR 2013 (HY000): Lost connection during query'),
                         ConnectorError('Query timed out after 30s.'),
                         PartialReadError('ERROR 2013 (HY000) at line 2: Lost connection during query', ''),
@@ -1138,12 +1139,32 @@ class BatchedCaptureParityTest(unittest.TestCase):
 
     def test_compare_capture_never_retries_line_located_login_and_host_refusals(self):
         messages = (
+            "ERROR 1040 (08004) at line 2: Too many connections",
+            "ERROR 1044 (42000) at line 2: Access denied for user 'app'@'10.0.0.1' to database 'appdb'",
             "ERROR 1045 (28000) at line 2: ProxySQL Error: Access denied for user 'app'@'10.0.0.1'",
+            "ERROR 1045 (28000) at line 1: ProxySQL Admin Error: Access denied",
+            "ERROR 1045 (28000)  at line 1: ProxySQL Admin Error: Access denied for user 'admin'@'127.0.0.1'",
+            "ERROR 1045 (28000) at line 1: ProxySQL Admin Error: access denied for user 'admin'@'127.0.0.1'",
+            "ERROR 1049 (42000) at line 2: Unknown database 'appdb'",
             "ERROR 1698 (28000) at line 2: Access denied for user 'root'@'localhost'",
             "ERROR 1129 (HY000) at line 2: Host '10.0.0.1' is blocked because of many connection errors",
             "ERROR 1130 (HY000) at line 2: Host '10.0.0.1' is not allowed to connect to this MySQL server",
+            "ERROR 1203 (42000) at line 2: User app already has more than 'max_user_connections' active connections",
+            "ERROR 1226 (42000) at line 2: User 'app' has exceeded the 'max_user_connections' resource (current value: 10)",
+            "ERROR 1251 (08004) at line 2: Client does not support authentication protocol requested by server; consider upgrading MySQL client",
+            "ERROR 1862 (HY000) at line 2: Your password has expired. To log in you must change it using a client that supports expired passwords.",
             "ERROR 3118 (HY000) at line 2: Access denied for user 'app'@'%'. Account is locked.",
+            "ERROR 3159 (HY000) at line 2: Connections using insecure transport are prohibited while --require_secure_transport=ON.",
             "ERROR 3955 (HY000) at line 2: Access denied for user 'app'@'%'. Account is blocked for 1 day(s).",
+            "ERROR 4150 (HY000) at line 2: User is blocked because of too many credential errors; unblock with 'FLUSH PRIVILEGES'",
+            "ERROR 4151 (HY000) at line 2: Access denied, this account is locked",
+            "ERROR 1045 (28000): Access denied for user 'app'@'10.0.0.1'\n"
+            "ERROR 1146 (42S02) at line 2: Table 'mysql.x' doesn't exist",
+            "mysql client exited 1: ERROR 1045 (28000): Access denied for user 'app'@'10.0.0.1'\n"
+            "ERROR 1064 (42000) at line 1: syntax error",
+            "mysql client exited 1: mysql client exited 1: ERROR 1064 (42000) at line 1: syntax error",
+            '--------------\nERROR 1045 (28000) at line 1: ProxySQL Admin Error: echoed SQL\n--------------\n'
+            "ERROR 1045 (28000) at line 2: Access denied for user 'app'@'10.0.0.1'",
         )
         for message in messages:
             with self.subTest(message=message):
@@ -1168,8 +1189,8 @@ class BatchedCaptureParityTest(unittest.TestCase):
         class ProxySideConn(object):
             query_timeout = 30
 
-            def __init__(self, version):
-                self.version = version
+            def __init__(self, version, identity_error):
+                self.version, self.identity_error = version, identity_error
                 self.calls = []
 
             def run(self, sql, extra_flags=None, timeout=None, **kwargs):
@@ -1179,25 +1200,28 @@ class BatchedCaptureParityTest(unittest.TestCase):
                     # identity prefix. Their ordinary reads remain usable.
                     # The opted-in connector retains even an empty prefix
                     # for a server statement error, unlike a failed login.
-                    raise PartialReadError('ERROR 1064 (42000) at line 2: Unsupported statement', '')
+                    raise PartialReadError(self.identity_error, '')
                 if sql == 'SELECT @@version':
                     return self.version + '\n'
                 if 'FROM mysql.user ORDER BY User, Host' in sql:
                     raise ConnectorError("ERROR 1146 (42S02) at line 1: Table 'mysql.user' does not exist")
                 raise AssertionError('Unexpected proxy-side SQL: ' + sql)
 
-        for product, version, error_type, message in (
-                ('ProxySQL Admin', '3.0.11-797-g7c91137', ValueError,
-                 'Users and roles needs MySQL 5.7.6 or later, or MariaDB 10.11 or later.'),
-                ('Readyset', '8.0.26', ConnectorError, 'Could not list accounts (error 1146).')):
+        for product, version, identity_error, error_type, message, unchecked_calls in (
+                ('ProxySQL Admin', '3.0.11-797-g7c91137',
+                 'ERROR 1045 (28000) at line 1: ProxySQL Admin Error: near "@version": syntax error', ValueError,
+                 'Users and roles needs MySQL 5.7.6 or later, or MariaDB 10.11 or later.', 1),
+                ('Readyset', '8.0.26', 'ERROR 1064 (42000) at line 2: Unsupported statement',
+                 ConnectorError, 'Could not list accounts (error 1146).', 2)):
             with self.subTest(product=product):
                 # Check the old reader's outcome as well as public capture:
                 # failed identity setup must not fabricate an empty inventory.
                 for reader in (_capture_unchecked, A.capture):
-                    transport = ProxySideConn(version)
+                    transport = ProxySideConn(version, identity_error)
                     with self.assertRaises(error_type) as caught:
                         reader(transport)
                     self.assertEqual(str(caught.exception), message)
+                    self.assertEqual(len(transport.calls), unchecked_calls + int(reader is A.capture))
                     self.assertFalse(any('SHOW GRANTS FOR ' in sql or 'SHOW CREATE USER ' in sql
                                          for sql in transport.calls))
 

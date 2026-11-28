@@ -1787,6 +1787,61 @@ class LifecycleTests(unittest.TestCase):
         restore_audit = next(row for row in records if row['operation'] == 'restore')
         self.assertIn(create, json.dumps(restore_audit))
 
+    def test_restore_later_login_refusal_preserves_owner_audit_after_create(self):
+        from myflames import ui
+
+        self.make_picked_dump()
+        tools = self.native_tools()
+        for revoke_after in (1, 2):
+            with self.subTest(refused_login='load' if revoke_after == 1 else 'verification'):
+                profile = self.store.save('profile', dict(
+                    name='recipient', host=CONNECTION['host'], port=CONNECTION['port'],
+                    user=CONNECTION['user'], group='G', type='development'), 'recipient')
+                connection = dict(CONNECTION, profile_id=profile['id'], group_name='G', type='development')
+                safety = dbops.connection_safety(profile, connection, store=self.store)
+                target = self.target()
+                target.schema_defaults = {}
+                plan = lc.prepare_restore(target, connection, self.output, tools=tools)
+                self.assertTrue(plan['ready'], plan)
+                self.assertIsNotNone(plan.get('create_database'))
+                audit = self.audit(connection=connection)
+                options = ui._group_guarded_options(connection, connection, self.store,
+                    dbops.connection_identity(connection, safety), audit, plan['commands'])
+                original_run, original_invoke = target.run, lc._invoke
+                executed, pending_rows = [], []
+
+                def guarded_read(*args, **kwargs):
+                    target._login_guard()
+                    return original_run(*args, **kwargs)
+
+                def invoke(*args, **kwargs):
+                    result = original_invoke(*args, **kwargs)
+                    executed.append(self.calls()[-1])
+                    if len(executed) == revoke_after:
+                        pending_rows.append(next(row for row in self.store.audit_records() if row['id'] == audit.id))
+                        self.store.delete_connection_group('G')
+                    return result
+
+                # Replay only server replies. The tools really spawn, and the
+                # production group guard runs before every later read/login.
+                with mock.patch.object(lc, 'detect_tools', return_value=tools), \
+                        mock.patch.object(lc, '_invoke', side_effect=invoke), \
+                        mock.patch.object(target, 'run', side_effect=guarded_read):
+                    job = lc.restore_job(options, plan, True, plan['target'], audit,
+                                         safety=safety, factory=lambda **kw: target, start=False)
+                    result = job.run()
+                self.assertEqual(len(executed), revoke_after)
+                self.assertEqual(executed[0]['create_database_sql'], lc.TAG + plan['create_database'] + ';\n')
+                records = self.store.audit_records()
+                owner = next(row for row in records if row['id'] == audit.id)
+                self.assertEqual((owner['status'], owner['outcome']), ('error', 'error'), owner)
+                self.assertEqual(owner['statements'], pending_rows[0]['statements'])
+                refusals = [row for row in records if row['id'] != audit.id and row['status'] == 'refused']
+                self.assertTrue(refusals)
+                self.assertTrue(all(row['statements'] == [] for row in refusals))
+                self.assertIn('partial_state', result['result'])
+                self.assertTrue(audit.finished)
+
     def test_picked_restore_old_manifest_warns_and_uses_server_defaults(self):
         self.make_picked_dump()
         manifest = self.update_dump()
