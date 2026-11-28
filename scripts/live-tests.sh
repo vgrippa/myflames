@@ -6,7 +6,7 @@
 # durations, non-zero on any failure.
 #
 # Usage:
-#   scripts/live-tests.sh [ic|galera|pxc|proxysql|shell|writes|topology|ga|all] [--record]
+#   scripts/live-tests.sh [ic|galera|pxc|proxysql|shell|writes|topology|ga|kill|all] [--record]
 #
 # Brings up only the labs the chosen suites need (idempotent
 # cluster-matrix.sh up, then check) and leaves them running for the next run.
@@ -31,7 +31,10 @@
 # --record saves the normalized JSON of the read-only Cluster, Replication and
 # ProxySQL reports per server version under test/live/expected/ (volatile
 # fields masked); a normal run compares against them when they exist
-# (mtr's .result idea, for JSON).
+# (mtr's .result idea, for JSON). The check covers the selected labs that have
+# recorded reports (ic, galera, proxysql); ga and pxc have none, and kill (which
+# needs galera only for live_kill) skips it, so kill --record writes nothing
+# under test/live/expected/.
 #
 # Labs and credentials come from CLUSTER_LAB (default local/cluster-matrix;
 # credentials.env there stays 0600 and is never printed). The ga lane's
@@ -49,13 +52,13 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$REPO"
 
-usage() { sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
 
 selection="all"
 record=0
 for arg in "$@"; do
   case "$arg" in
-    ic|galera|pxc|proxysql|shell|writes|topology|ga|all) selection="$arg" ;;
+    ic|galera|pxc|proxysql|shell|writes|topology|ga|kill|all) selection="$arg" ;;
     --record) record=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; exit 2 ;;
@@ -90,17 +93,22 @@ ga_up() {
 # never runs while another suite changes the same cluster's membership. The
 # ga lane (reviewed writes on the GA matrix servers) brings up nothing:
 # ga-matrix.sh manages those servers, so `all` includes it only when the
-# matrix is already up.
+# matrix is already up. The kill lane (Locks and Sessions Kill on the GA
+# matrix servers and the galera/pxc nodes) runs last of all: it flips
+# wsrep_on on one Galera node and holds locks on other servers, so it never
+# overlaps another suite; its GA tests skip when the matrix is down.
 labs=""
 ic_lane=""
 galera_lane=""
 pxc_lane=""
 writes_lane=""
 ga_lane=""
+kill_lane=""
 ic_labs=""
 galera_labs=""
 pxc_labs=""
 writes_labs=""
+kill_labs=""
 case "$selection" in
   ic)       labs="ic";                  ic_lane="live_ic_group_routing live_topology_ic"; ic_labs="ic" ;;
   galera)   labs="galera";              galera_lane="live_galera live_topology_galera"; galera_labs="galera" ;;
@@ -113,12 +121,14 @@ case "$selection" in
             galera_lane="live_topology_galera"; galera_labs="galera"
             pxc_lane="live_topology_pxc"; pxc_labs="pxc" ;;
   ga)       labs="";                    ga_lane="live_writes_ga" ;;
+  kill)     labs="galera pxc";          kill_lane="live_kill"; kill_labs="galera pxc" ;;
   all)      labs="ic galera pxc proxysql"
             ic_lane="live_ic_group_routing live_topology_ic live_shell live_editor_proxysql"
             ic_labs="ic proxysql"
             galera_lane="live_galera live_topology_galera"; galera_labs="galera"
             pxc_lane="live_pxc live_topology_pxc"; pxc_labs="pxc"
             writes_lane="live_writes"; writes_labs="ic galera"
+            kill_lane="live_kill"; kill_labs="galera pxc"
             ga_up && ga_lane="live_writes_ga" ;;
 esac
 
@@ -196,7 +206,11 @@ for pid in $pids; do wait "$pid" || rc=1; done
 # suites on both clusters are done.
 [ -n "$writes_lane" ] && run_lane writes "$writes_labs" $writes_lane
 
-for lane in ic galera pxc writes ga; do
+# The kill lane runs last of all: its galera test flips wsrep_on on one node
+# and its lock-wait tests hold locks, so it never overlaps another suite.
+[ -n "$kill_lane" ] && run_lane kill "$kill_labs" $kill_lane
+
+for lane in ic galera pxc writes kill ga; do
   [ -f "$tmp/$lane.log" ] || continue
   grep -E '^(PASS|FAIL|ERROR|SKIP) ' "$tmp/$lane.log" || true
   [ "$(cat "$tmp/$lane.rc" 2>/dev/null || echo 1)" = "0" ] || {
@@ -210,18 +224,20 @@ done
 # so the clusters are back at rest; compare likewise, once both lanes are done.
 # Only ic, galera and proxysql have recorded reports. A selection without any
 # of them (ga, pxc) never runs this lane: the recorded reports need those labs
-# (an empty record list would record the defaults). The lane gets its own
-# shadow state dir and only compares the reports of the selected labs
-# (MYFLAMES_LIVE_LABS_ONLY): a run that selected galera alone never checks the
-# ic or proxysql reports.
+# (an empty record list would record the defaults). The kill selection brings
+# up galera only as a dependency of live_kill, so it never runs this lane
+# either (kill --record writes nothing under test/live/expected/). The lane
+# gets its own shadow state dir and only compares the reports of the selected
+# labs (MYFLAMES_LIVE_LABS_ONLY): a run that selected galera alone never
+# checks the ic or proxysql reports.
 record_labs=""
-for lab in $labs; do
-  case "$lab" in ic|galera|proxysql) record_labs="$record_labs $lab" ;; esac
-done
+if [ "$selection" != kill ]; then
+  for lab in $labs; do
+    case "$lab" in ic|galera|proxysql) record_labs="$record_labs $lab" ;; esac
+  done
+fi
 record_labs="${record_labs# }"
-if [ -z "$record_labs" ]; then
-  :
-else
+if [ -n "$record_labs" ]; then
   make_shadow expected
   if [ "$record" = 1 ]; then
     CLUSTER_LAB="$tmp/cluster-lab-expected" MYFLAMES_LIVE_LABS_ONLY="$record_labs" \

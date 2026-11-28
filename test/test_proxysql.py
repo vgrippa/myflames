@@ -1389,6 +1389,24 @@ class Endpoints(Home):
         (record,) = self.audit()
         self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
 
+    def test_presend_refusals_audit_only_the_reviewed_statements(self):
+        for failure in ('changed_instance', 'typed_guard', 'confirmation'):
+            with self.subTest(failure=failure):
+                self.conn = self.admin()
+                plan = self.plan('server_offline_hard', {'config': [30, 'mf-ic-2', 3306]})
+                previous = len(self.audit())
+                if failure == 'changed_instance':
+                    self.conn.db.execute("UPDATE disk.global_settings SET variable_value = ? WHERE variable_name = 'uuid'",
+                                         (OTHER_ADMIN_UUID,))
+                typed = 'wrong-host' if failure == 'typed_guard' else plan['typed_guard']
+                result = self.send(plan, typed=typed, confirmed=failure != 'confirmation')
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(self.conn.writes, [])
+                records = self.audit()
+                self.assertEqual(len(records), previous + 1)
+                self.assertEqual(records[0]['status'], 'refused')
+                self.assertEqual(records[0]['statements'], plan['statements'])
+
     def test_a_mixed_instance_fresh_read_refuses_without_a_write_login(self):
         for query in ('SELECT * FROM main.mysql_servers', 'SELECT * FROM disk.mysql_query_rules',
                       'SELECT * FROM stats_mysql_query_rules', 'FROM runtime_mysql_users'):
@@ -1499,6 +1517,30 @@ class Endpoints(Home):
                 self.assertIn('refresh', result['message'].lower())
                 self.assertEqual(len(self.conn.writes), 1, 'a failed readback must never retry the write')
                 self.assertEqual(self.audit()[0]['message'], result['message'])
+
+    def test_after_state_rejects_coerced_identity_metadata(self):
+        # The UUID and its real Admin guard remain valid. Additional reviewed
+        # identity fields must preserve their JSON types on the readback too.
+        original_read = proxysql.read_status
+        for reviewed, current in ((True, 1), (True, 1.0), (1, 1.0)):
+            with self.subTest(reviewed=reviewed, current=current, kind=type(current).__name__):
+                self.conn = self.admin()
+
+                def read(*args, **kwargs):
+                    report = original_read(*args, **kwargs)
+                    report['server_identity']['evidence'] = [{'value': current if self.conn.writes else reviewed}]
+                    return report
+
+                with mock.patch.object(proxysql, 'read_status', side_effect=read):
+                    plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
+                    result = self.send(plan)
+                self.assertEqual((result['status'], result['sent']), ('done', plan['statements']))
+                self.assertEqual(len(self.conn.writes), 1)
+                self.assertIsNone(result['after'])
+                self.assertIsNone(result['effect'])
+                self.assertIsNone(result['next'])
+                self.assertIn('different ProxySQL instance', result['message'])
+                self.assertIsNone(self.audit()[0]['after'])
 
     def test_a_mixed_instance_after_read_cannot_claim_an_effect(self):
         plan = self.plan('server_weight', {'config': [30, 'mf-ic-2', 3306]}, 50)
@@ -2313,7 +2355,7 @@ class TestIdentityWrappers(unittest.TestCase):
         bound.attempt(statements, target={'uuid': ADMIN_UUID})
         audit.attempt.assert_called_once_with(guard + statements, target={'uuid': ADMIN_UUID})
         bound.outcome(statements, 'refused', outcome='changed')
-        audit.outcome.assert_called_once_with(guard + statements, 'refused', outcome='changed')
+        audit.outcome.assert_called_once_with(statements, 'refused', outcome='changed')
         bound.complete('ok', outcome='applied', after=None)
         audit.complete.assert_called_once_with('ok', outcome='applied', after=None)
         error = ConnectorError('interrupted')

@@ -175,6 +175,24 @@ try {
   await page.waitForFunction(() => !document.querySelector(".why-disabled:popover-open"));
   assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Kill: connection 100",
     "Escape returns focus to the disabled Kill button");
+
+  // Once WhyDisabledHost is mounted, a subsequent click commits synchronously
+  // inside the click event: popovertargetaction="show" prevents native toggle
+  // activation from closing the just-opened popover, a second click toggles it
+  // closed, and closing restores both popovertarget attributes.
+  await page.click(gatedKill);
+  await page.waitForSelector(".why-disabled:popover-open .why-disabled-close", { visible: true });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
+  assert.ok(await page.$(".why-disabled:popover-open .why-disabled-close"),
+    "mounted WhyDisabledHost keeps popover open after synchronous click render");
+  assert.equal(await page.$eval(gatedKill, (b) => b.getAttribute("popovertargetaction")), "show");
+  await page.click(gatedKill);
+  await page.waitForFunction(() => !document.querySelector(".why-disabled"));
+  assert.deepEqual(
+    await page.$eval(gatedKill, (b) => ({ pt: b.getAttribute("popovertarget"), pta: b.getAttribute("popovertargetaction") })),
+    { pt: null, pta: null },
+    "closing WhyDisabled restores popovertarget and popovertargetaction",
+  );
   assert.deepEqual(h.errors, [], "no uncaught page errors after retry recovery");
   console.log("why-disabled-chunk: ok");
 } finally {

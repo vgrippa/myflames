@@ -1481,14 +1481,119 @@ try {
   const replBeforeStart = replicationReads.length;
   await page.click(`${replicationView} button[data-action="refresh"]`);
   for (let i = 0; i < 100 && replicationReads.length === replBeforeStart; i++) await pause(25);
-  await page.evaluate(() => {
-    [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')]
-      .find((b) => b.offsetParent && b.textContent.startsWith("Channels"))?.click();
-  });
-  await page.waitForSelector(`${replicationView} [data-row-key="channel:"]`, { visible: true });
-  await page.click(`${replicationView} [data-row-key="channel:"]`);
-  await page.waitForFunction(() => [...document.querySelectorAll('.replication-place .view-inspector button')]
-    .some((b) => b.textContent.includes("Skip until stopped") && !b.disabled));
+  assert.ok(replicationReads.length > replBeforeStart, "Refresh started a /api/live/replication read for p-nav-2");
+  assert.equal(replicationReads.at(-1).connection.profile_id, "p-nav-2", "Refresh targeted p-nav-2");
+  const channelRow = `${replicationView} [data-row-key="channel:"]`;
+  const captureChannelDiag = () => page.evaluate((view, rowSel) => {
+    const describe = (el) => el
+      ? `${el.tagName.toLowerCase()}${el.id ? "#" + el.id : ""}${typeof el.className === "string" && el.className.trim() ? "." + el.className.trim().replace(/\s+/g, ".") : ""}[${(el.textContent || "").trim().slice(0, 50)}]`
+      : null;
+    const rv = document.querySelector(view);
+    const row = document.querySelector(rowSel);
+    const box = row?.getBoundingClientRect();
+    const hit = box && box.width > 0 && box.height > 0
+      ? document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+      : null;
+    const insp = document.querySelector('.replication-place .view-inspector');
+    const buttons = insp ? [...insp.querySelectorAll("button")].map((b) => ({
+      text: b.textContent.trim(),
+      disabled: b.disabled,
+      ariaDisabled: b.getAttribute("aria-disabled"),
+      ariaBusy: b.getAttribute("aria-busy"),
+      title: b.title || "",
+      why: b.getAttribute("data-why-reason") || "",
+      describedBy: (b.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean)
+        .map((id) => document.getElementById(id)?.textContent?.trim() || "").filter(Boolean).join(" | "),
+    })) : [];
+    const status = rv?.querySelector(".view-status");
+    const statusRect = status?.getBoundingClientRect();
+    return {
+      scrollY: window.scrollY,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      summary: (rv?.querySelector(".summary-text")?.textContent || "").trim(),
+      otherConnection: rv?.getAttribute("data-other-connection") || null,
+      viewStatusHeight: statusRect ? Math.round(statusRect.height) : null,
+      viewStatusIdle: status?.classList.contains("is-idle") ?? null,
+      viewStatusText: (status?.textContent || "").trim(),
+      rowExists: !!row,
+      rowSelected: !!row?.classList.contains("is-selected"),
+      rowAriaCurrent: row?.getAttribute("aria-current") || null,
+      rowRect: box ? { top: Math.round(box.top), bottom: Math.round(box.bottom), left: Math.round(box.left), right: Math.round(box.right) } : null,
+      elementUnderRowCenter: describe(hit),
+      rowCenterInRow: !!(row && hit && row.contains(hit)),
+      inspectorOpen: !!insp && insp.getClientRects().length > 0,
+      inspectorHeading: insp?.querySelector(".inspector-title")?.textContent?.trim() || null,
+      inspectorButtons: buttons,
+      loops: [...document.querySelectorAll('.replication-place .ops-loop')].map((e) => ({
+        state: e.getAttribute("data-loop"),
+        text: (e.textContent || "").trim().slice(0, 80),
+      })),
+    };
+  }, replicationView, channelRow);
+  let s4Step = "refresh-render";
+  let atClick = null;
+  try {
+    // Wait for the refreshed failure report to render and for .view-status
+    // ("Reading replication…") to collapse back to idle before interacting with
+    // the table: otherwise the status bar can collapse between clickablePoint()
+    // and mousePressed, shifting the 1-row table above the click point.
+    await page.waitForFunction((view) => {
+      const rv = document.querySelector(view);
+      if (!rv) return false;
+      const summary = rv.querySelector(".summary-text")?.textContent || "";
+      const status = rv.querySelector(".view-status");
+      return summary.includes("1 failed") && !rv.querySelector(".spinner") && !!status?.classList.contains("is-idle");
+    }, {}, replicationView);
+    s4Step = "channels-row";
+    await page.evaluate(() => {
+      const tab = [...document.querySelectorAll('[aria-label="Replication sub-tabs"] button')]
+        .find((b) => b.offsetParent && b.textContent.startsWith("Channels"));
+      if (tab && tab.getAttribute("aria-pressed") !== "true") tab.click();
+    });
+    await page.waitForFunction((view, rowSel) => {
+      const row = document.querySelector(rowSel);
+      return !!row && row.offsetParent !== null && (row.textContent || "").includes("1062") &&
+        document.querySelectorAll(`${view} tbody tr[data-row-key]`).length === 1;
+    }, {}, replicationView, channelRow);
+    // Ensure the channel row itself is what a real mouse click at its center
+    // reaches (not covered by a sticky bar or table header), scrolling as a
+    // user would before clicking.
+    s4Step = "row-hit-test";
+    await page.waitForFunction((rowSel) => {
+      const row = document.querySelector(rowSel);
+      if (!row) return false;
+      const box = row.getBoundingClientRect();
+      if (box.width <= 0 || box.height <= 0) return false;
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      if (hit && row.contains(hit)) return true;
+      row.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+      return false;
+    }, {}, channelRow);
+    atClick = await captureChannelDiag();
+    await page.click(channelRow);
+    s4Step = "row-selected-inspector";
+    await page.waitForFunction((rowSel) => {
+      const row = document.querySelector(rowSel);
+      const insp = document.querySelector('.replication-place .view-inspector');
+      const title = insp?.querySelector(".inspector-title");
+      return !!row?.classList.contains("is-selected") && row.getAttribute("aria-current") === "true" &&
+        !!title && title.getClientRects().length > 0;
+    }, {}, channelRow);
+    s4Step = "skip-until-stopped-button";
+    await page.waitForFunction(() => [...document.querySelectorAll('.replication-place .view-inspector button')]
+      .some((b) => b.textContent.includes("Skip until stopped") && !b.disabled && b.getAttribute("aria-disabled") !== "true"));
+  } catch (err) {
+    const atTimeout = await captureChannelDiag().catch((e) => ({ captureError: String(e) }));
+    err.message = `${err.message}\nS4 channel inspector diagnostics: ${JSON.stringify({
+      step: s4Step,
+      replReadsDelta: replicationReads.length - replBeforeStart,
+      lastReplProfile: replicationReads.at(-1)?.connection?.profile_id || null,
+      loopStatusReads: loopStatusReads.length,
+      atClick,
+      atTimeout,
+    })}`;
+    throw err;
+  }
   await page.evaluate(() => {
     [...document.querySelectorAll('.replication-place .view-inspector button')]
       .find((b) => b.textContent.includes("Skip until stopped"))?.click();

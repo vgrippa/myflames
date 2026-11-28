@@ -407,11 +407,35 @@ def capture(conn, server=None):
         conn.check()
         return result
     bounded = BoundedConnection(conn)
-    evidence = dbops.TargetEvidenceConnection(bounded)
+
+    class Transport(object):
+        failed = False
+
+        def __getattr__(self, name):
+            return getattr(bounded, name)
+
+        def run(self, *args, **kwargs):
+            self.failed = False
+            try:
+                return bounded.run(*args, **kwargs)
+            except BaseException as exc:
+                from .connector import PartialReadError
+                diagnostic = dbops._target_error_match(str(exc)) if isinstance(exc, PartialReadError) else None
+                code = int(diagnostic.group(1)) if diagnostic is not None else None
+                # A statement error proves the login worked; a failed first
+                # login (including a proxy backend refusal reported with a
+                # line) must never be retried through the unchecked reader.
+                self.failed = (code is None or 2000 <= code <= 2999 or
+                               code in (1045, 1129, 1130, 1698, 3118, 3955))
+                raise
+
+    transport = Transport()
+    evidence = dbops.TargetEvidenceConnection(transport)
     try:
         evidence.server_version()
     except ConnectorError as exc:
-        if getattr(exc, 'identity_outcome', None) != 'identity_unavailable':
+        if (getattr(exc, 'identity_outcome', None) != 'identity_unavailable' or
+                (transport.failed and evidence.variables is None)):
             raise
         # Some comparison sides cannot supply a supported server identity.
         # Preserve their existing read behavior within the SAME deadline,

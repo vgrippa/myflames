@@ -3354,7 +3354,32 @@ evidence remains unknown unless the subsequent read confirms it. Variables'
 MySQL, Percona Server and PXC use a UUID validated against the existing UUID
 grammar. MariaDB instead compares `@@global.server_id`, `@@global.hostname`
 and `@@global.port`, plus `@@global.wsrep_node_name` when the reviewed identity
-records it, joined with `OR`. Integers are validated and rendered as integers;
+records it, `NOT (BINARY @@global.version <=> BINARY X'<hex of the UTF-8 version>')` (a hex literal, so neither `NO_BACKSLASH_ESCAPES` nor a case-insensitive collation changes the comparison) when the reviewed identity
+records `version` (validated as a non-empty UTF-8 string of at most 64 bytes
+with no NUL, CR or LF), and `NOT (BINARY @@global.server_uid <=> BINARY <server_uid>)`
+when the reviewed identity carries `server_uid` (validated against
+`[A-Za-z0-9+/=_-]{1,64}` and never `"unknown"`), all joined with `OR`.
+`dbops._EVIDENCE_VARIABLES` (as well as `variables._read`,
+`replication.EXTRA_VARIABLES`, `editor_session.py` startup identity and
+`locks._identity_projection`) also reads `server_uid` (a read-only global added
+in MariaDB 10.6.19+, 10.11.9+ and 11.4.3+ per MDEV-34494, also 10.5.26+,
+holding a base64-encoded SHA-1 hash of the port and MAC address, or `"unknown"`
+when the MAC address cannot be read). Every packet of one
+`TargetEvidenceConnection` scope must agree on `server_uid`, and
+`dbops.target_galera_identity` verifies `server_uid` agreement across `out`,
+`variables` and `conn.variables` and carries `server_uid` on MariaDB only when
+present (stripped) and not `"unknown"`, dropping any stale value otherwise.
+`TargetEvidenceConnection`, Locks/Sessions Kill, Variables, Users and roles
+(`accounts._actor_server` takes `version` from the validated evidence packet),
+Replication skip, the Query editor and Topology rolling changes include both
+`version` and (when present) `server_uid` in their MariaDB identity passed to
+`target_session_guard` (`topology_change._session_guard` first refuses a member
+without a valid `server_uid` and version as `identity_unavailable`, then uses
+this guard unchanged). Cluster MariaDB Galera actions require `wsrep_gcomm_uuid`
+and check `server_version` on a fresh read rather than `server_uid` (known
+limit: binding Cluster planning to one evidence scope is part of the Galera
+integration). Integers
+are validated and rendered as integers;
 names accept only ASCII letters, digits, underscore, dot, colon and hyphen,
 then use the SQL string escaping helper. Missing or invalid identity data
 refuses before constructing a write script. The identity comes from review
@@ -3363,8 +3388,11 @@ port; replication copies `settings.server_identity` into the skip plan's
 `identity.server_identity`. Cluster SQL plans must include the required values
 in `expect.server`; older MariaDB plans without `server_id` refuse safely.
 Standalone MariaDB has no server UUID. Two standalone MariaDB servers with
-the same `server_id`, hostname and port cannot be distinguished by this
-guard; configure a different `server_id` for every standalone server.
+the same `server_id`, hostname and port are now distinguished by `version` and,
+where present (not `"unknown"`), by `server_uid`; servers running the same
+version without a readable `server_uid` (older releases or `"unknown"`) still
+cannot be distinguished by this guard, so still configure a different
+`server_id` for every standalone server.
 If a MariaDB host name is outside the comparable name grammar, both the
 review and write refusal explain that its characters cannot be compared
 safely and suggest a plain host name or a MySQL server with a UUID. The
@@ -3400,8 +3428,9 @@ only when `wsrep_gcomm_uuid` is absent and both `wsrep_connected` and
 `wsrep_cluster_size` read exactly `OFF` and `0` (with `wsrep_on` `OFF` or `0`) does
 `target_has_galera` return `False` so `target_galera_identity` clears any
 prior `wsrep_disconnected_provider` marker and binds the server by its
-ordinary identity (`server_id`, `hostname`, `port`, `version`, plus
-`wsrep_on: "OFF"` and `wsrep_disconnected_provider: True`, dropping
+ordinary identity (`server_id`, `hostname`, `port`, `version`, plus `server_uid`
+when present and not `"unknown"`, `wsrep_on: "OFF"` and
+`wsrep_disconnected_provider: True`, dropping
 `wsrep_provider` and `wsrep_gcomm_uuid`) without a node UUID (the Query editor
 still preserves only the observed session `wsrep_on`, popping any defaulted
 value when absent, for MariaDB executable-comment handling). Every write and
@@ -3418,6 +3447,59 @@ and refuse with nothing sent
 and 13.0, MySQL 5.7 to 9.7 and Percona Server 8.0 and 8.4 for reviewed writes
 and editor writes including Stop, and a MariaDB 11.8 Galera node after
 `SET GLOBAL wsrep_on = OFF` refused).
+
+Reviewed evidence sent back by the workspace is compared type-exactly by
+`reviewed_writes.same_reviewed_value`: `type(current) is type(reviewed)` must
+match using only exact built-in JSON types (`dict`, `list`, `str`, `int`,
+`float`, `bool`, `None` with no subclasses), `str` keys on both objects
+(`type(key) is str`), and finite floats (`math.isfinite`, rejecting `NaN` and
+infinities), with no `bool`, `int` or `float` coercion (so a client JSON copy
+cannot satisfy a boolean field such as `wsrep_disconnected_provider` or a
+version/flag field through Python's `1 == True` or `1 == 1.0`); object (`dict`)
+key order is ignored, list order and explicit nulls remain significant, and
+non-JSON values are refused. It covers Kill (`locks.kill_session` comparing
+`bound_expect.get("server_identity")` and `target.get("server_identity")`
+against the fresh server identity: before that initial comparison,
+`kill_session` checks only the `"wsrep_disconnected_provider"` marker's value,
+refusing as `identity_unavailable` if present and not `True`, and builds
+`dbops.target_session_guard` and `target_guarded_script` only after the
+comparison passes, so a valid MariaDB waiver review answered by a MySQL server
+refuses as a changed identity rather than `identity_unavailable`; every unsent
+Kill refusal, including post-guard refusals, audits only `[KILL_TAG + statement]`
+and never `session_guard`, while `audit.attempt` right before sending lists
+`session_guard + [KILL_TAG + statement]`; `locks._check_kill_args` enforces the
+scalar types on Kill `expect` fields `user`, `host`, `trx_started` and
+`ps_thread_id`), Variables (`variables._same` comparing `expect` in
+`apply_change`), reviewed actions (`reviewed_writes.execute` comparing
+`fresh.get("expect")` with `expect`), replication skip and skip-loop
+(`replication.verify_identity` comparing `plan["identity"]` and its nested
+dicts against `expect`, `replication.loop_target_problem` comparing live
+`server_identity` against `expect["server_identity"]`, and
+`ui._replication_review_details` comparing loop `expect["server_identity"]`
+against `first_failure["server_identity"]`), ProxySQL actions
+(`proxysql.execute_action` comparing `report.get("server_identity")` against
+`reviewed["expect"]["server_identity"]`), Cluster actions
+(`cluster.execute_action` comparing `_server_identity(report)` against
+`expect`'s `engine`, `server_version`, `server` and `kind`), and Topology
+rolling variable changes (`topology_change`: `_guard` for `group_generation`,
+endpoints, `effective_safety` and member `profile_id`; `_facts` for member
+`server_identity`; `plan` for `active_endpoint`, `group_generation` and
+`order_rule`; `apply` for connection group, profile, endpoint, full `expect`,
+`typed_name`, `order_rule`, `order_dependencies` group/generation/endpoint/`peer_identity`/`peer_facts`,
+member `identity`/`order_facts`, and variable identity/`expect`; and `stop` for
+`group_name` and `generation`). Elsewhere, `reviewed_writes.refused` and
+Variables `apply_change` (`variables._unsent`) refusals audit only the reviewed
+statements (for Variables, the reviewed `expect.statement`, falling back to
+`plan.statement` or `typed_statement` only on the deprecated CLI without a
+reviewed `expect`), never a `session_guard`; `audit.attempt` right before
+sending lists the guard and statements (`accounts.apply_change` still includes
+`session_guard` on refusals in `accounts.py`). Covered by
+`test_reviewed_writes_guard.py`, `test_review_expect_contract.py` (verifying
+no floats or integers outside `-(2^53-1)..2^53-1` in planner `expect` and
+`identity` subtrees), `test_backend_kill_review.py`, `test_locks.py`,
+`test_variables.py`, `test_replication.py`, `test_ui_replication_review.py`,
+`test_proxysql.py`, `test_cluster_actions.py` and `test_topology_change.py`.
+
 Accounts' review and apply reads, Variables' value, metadata and grants reads,
 and Replication's status, privilege and final status rechecks use one shared
 `dbops.TargetEvidenceConnection` per review or recheck. `read_privileges`
@@ -3425,10 +3507,10 @@ also binds its initial grants and optional role-flag reads when called alone;
 nested readers reuse the existing binder. A replication skip loop retains
 that scope across iterations and receiver-check callbacks. Kill CLI binds the lock report,
 privileges, target, transaction and XA reads before displaying confirmation.
-Every read packet starts with server identity variables (including provider
-detection), node status (`wsrep_gcomm_uuid`, `wsrep_connected`,
-`wsrep_cluster_size`) and a private marker, followed by the requested read
-bodies. A client `DELIMITER` absent from the payload keeps those statements
+Every read packet starts with server identity variables (`dbops._EVIDENCE_VARIABLES`,
+including `server_uid` and provider detection), node status (`wsrep_gcomm_uuid`,
+`wsrep_connected`, `wsrep_cluster_size`) and a private marker, followed by the
+requested read bodies. A client `DELIMITER` absent from the payload keeps those statements
 in one COM_QUERY (when server data contains every fixed `_TARGET_DELIMITERS`
 candidate, `TargetEvidenceConnection.run` generates a 15-byte random delimiter
 `__mf_<8 hex>__` via `secrets.token_hex(4)` absent from the packet body);
@@ -3464,11 +3546,21 @@ scope. Thus an expected 1141 from SHOW GRANTS for an absent account can reach
 the create/rename fallback. Client errors (2000–2999), missing or wrong error
 locations, missing markers and mismatched identities still fail closed, even
 if some prefix data arrived. The binder removes the prefix from successful
-batch/XML results and discards private stdout and MariaDB's SQL echo before
-passing a read error to its caller. Refusal details include only an
-`ERROR NNNN ...` diagnostic line, remove `near '...'` SQL echoes,
-redact a string connection password and hide
-private evidence markers. Missing or non-string passwords do not break error
+batch/XML results and discards private stdout and MariaDB's SQL echo
+(`dbops._without_echo` normalizes CRLF to LF and drops the echoed query through
+the last closing `--------------` separator even when no `ERROR NNNN ... at
+line N:` diagnostic follows; an unclosed echo (an odd number of separator
+lines, for example a client that died mid-echo) drops everything from its
+first separator on, so no partial SQL or diagnostic-looking line inside it
+survives; `dbops.redact` also matches the password's CRLF and LF forms; shared by `target_error_text`, `_target_error_match`
+and `shift_guard_error`) before passing a read error to its caller. Refusal
+details retain an `ERROR NNNN ...` diagnostic line with `near '...'` SQL echoes
+removed, app-built `TunnelError` explanations, or only the anchored numeric
+`Query timed out after Ns` clause of a timeout (never the SQL appended by the
+connector). Code-free client stderr remains hidden; `TunnelError` details
+containing private packet markers or a `--------------` echo separator (with LF
+or CRLF line endings) are discarded. Details redact a string connection password and
+hide private evidence markers. Missing or non-string passwords do not break error
 handling. Saved-group consent refusals preserve `ProfileReadError` so optional
 privilege readers cannot turn revoked login permission into unknown coverage.
 The scope retains the original consent exception and re-raises it from
@@ -3498,8 +3590,10 @@ session-scoped, so a proxy's reused session could otherwise override it.
 In Kill's per-target projection (`locks.py`), MySQL and PXC keep the `wsrep_on`
 identity slot requiring node identity for every loaded provider, including when
 replication is switched off; on MariaDB, the same `SELECT` also reads
-`wsrep_provider`, `wsrep_connected` and `wsrep_cluster_size` so `_identity_row`
-applies `dbops.target_galera_identity` and waives node identity only when that
+`wsrep_provider`, `wsrep_connected`, `wsrep_cluster_size` and `server_uid`
+(from `information_schema.GLOBAL_VARIABLES`) so `_identity_row`
+applies `dbops.target_galera_identity` (carrying `server_uid` when present and
+not `"unknown"`) and waives node identity only when that
 same `SELECT` proves a disconnected provider (`wsrep_on` `OFF`,
 `wsrep_connected` `OFF`, `wsrep_cluster_size` `0`, no node UUID, marking
 `wsrep_disconnected_provider: True`). A failed or incomplete
@@ -6573,7 +6667,7 @@ without an automatic retry; light and dark at 1440 and 720 px).
 
 ### Locks
 
-`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, KILL QUERY while already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`, `port`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. For Galera and configured-provider servers, `_identity_projection` and `_identity_row` project the provider and status fields in that same `SELECT` and apply the node-UUID rule and MariaDB disconnected-provider waiver in [Write safety and audit](#write-safety-and-audit). UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
+`python3 -m myflames locks [--waits-only | --deadlock] [--limit N] [--json]` (`locks-1.1`), in `myflames/locks.py`: DDL statements waiting for a metadata lock (`ddl_waits`: from process-list wait states plus PENDING metadata locks; blockers `exact` from `performance_schema.metadata_locks`, `granted_locks` from MariaDB's optional `METADATA_LOCK_INFO`, else `likely` open transactions with an honest note; sessions queued behind the DDL), blocking tree over row and metadata lock waits with root blockers, INNODB_TRX transactions, row locks (MySQL `performance_schema.data_locks`, all locks; MariaDB `INNODB_LOCKS`, waits only), metadata locks with myflames' own GRANTED/PENDING compatibility check (not `sys.schema_table_lock_waits`), `kill_privilege` from plain `SHOW GRANTS` (active roles included; a hint, the server decides), and the parsed latest deadlock. The report only reads: never touch `setup_instruments`/`setup_consumers`; owner of a lock comes from `ENGINE_TRANSACTION_ID` → INNODB_TRX, not `THREAD_ID`. Keep the data_locks latch caution (MySQL < 8.0.40, 8.1–8.4.2, 9.0.x) and no default auto-refresh. The one write is `kill_session` (`kill-1.0`): `myflames locks --kill ID [--query] [--yes]` and the UI's **Kill blocker** (`POST /api/live/kill` with `connection_id`, `mode`, `expect`), one session per explicit, confirmed request; the workspace also offers a separately reviewed batch of at most 200 targets. It re-reads the session (same source as the report) and refuses when it is gone, a different session (user/host/thread/`trx_started` changed), its own or a myflames-tagged session, a server thread, KILL QUERY while already rolling back (INNODB_TRX `ROLLING BACK`; a "Killed" command alone is not proof, MariaDB shows it after KILL QUERY on an idle session), a prepared XA transaction on MySQL (idle session whose last statement in `events_statements_current` is `XA PREPARE`; the xid is copied only when well formed: ending the session releases nothing, so show `XA COMMIT`/`XA ROLLBACK` instead of Kill; MariaDB needs no check, it releases a detached XA transaction's metadata locks), or KILL QUERY on an idle session; server errors 1094/1095 become `gone`/`denied` results. A MySQL ALTER that adds a foreign key or renames also locks parent tables: `ddl_waits[].table` is the object it waits on, `statement_table` the one it names. CLI exit codes: 0 ended, 1 a sent operation failed, 2 an unsent refusal, decline, or error; refuses on a non-TTY without `--yes`. Both paths run the write policy first ([Write safety and audit](#write-safety-and-audit)): KILL is risky, so a read-only connection refuses it before any connection opens (CLI: before the password prompt; result `status: "refused"`, `engine: null`), and Production and Development both confirm (the CLI prompt or `--yes`; the UI sheet's `expect`). Every attempt writes an audit record (`kill_session(..., audit=)`, `kill_cli(..., audit=, policy_text=)`): refusals and declines as such, otherwise `pending` before the KILL is sent and `ok` or `error` (with the server error code) after; kill-1.0 results gain `audit_id`. Kill confirms and executions are bound to `connection_identity` and `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`, `port`, and `server_uid` when present and not `"unknown"`); `locks.lock_report(identity=True)` includes the opt-in `server_identity` for the workspace Kill sheet (the CLI Kill re-reads it), and any mismatch or missing identity after confirmation refuses without sending. In `kill_session`, only `"wsrep_disconnected_provider"`'s value is checked before comparing `server_identity` with `same_reviewed_value` (present and not `True`: `identity_unavailable`); `dbops.target_session_guard` and `target_guarded_script` are built only after that comparison passes, so a valid MariaDB waiver review answered by a MySQL server refuses as a changed identity (`outcome: "identity"`) rather than `identity_unavailable`, every unsent refusal audits only `[KILL_TAG + statement]` (`audit.attempt` right before sending lists `session_guard + [KILL_TAG + statement]`), and `target_evidence` `identity_unavailable` reasons pass through without double-wrapping. For Galera and configured-provider servers, `_identity_projection` and `_identity_row` project `server_uid` (on MariaDB) and the provider and status fields in that same `SELECT` and apply the node-UUID rule and MariaDB disconnected-provider waiver in [Write safety and audit](#write-safety-and-audit). For `/api/live/locks`, `ui._kill_sheet_report` runs `locks.lock_report(..., identity=True)` inside `dbops.target_evidence` so the rows and `server_identity` used by Kill come from one confirmed server; when the server identity cannot be confirmed on one server (for example a rotating login or a Galera node whose `wsrep_on` was set `OFF` while still connected), it discards the failed scope, runs `lock_report(..., identity=False)` with `server_identity: {}`, appends `"Kill is unavailable because the server identity could not be confirmed on one server."` to `notes`, and Kill refuses. Before any packet has validated, only a `PartialReadError` carrying a server statement diagnostic (`at line N:`, code outside `2000–2999` and not a login or host refusal) proves the login worked so `identity_unavailable` still falls back to the unbound report with Kill disabled; login failures have no line number, and the login and host refusals 1045, 1129, 1130, 1698, 3118 and 3955 count as failed logins even when a proxy such as ProxySQL reports them with a line number; along with other transport or client errors before validation, fail without retrying (preserving app-built SSH explanations and the timeout duration, never echoed evidence SQL). After a packet has validated, a later `identity_unavailable` failure uses the same unbound fallback: optional reads keep the collector's existing notes or unavailable capabilities (including Locks' deadlock, Performance Schema setup and last-statement reads), while required-read errors still propagate from that collector. Authentication and privilege failures follow those same first-packet and collector rules; an unbound report never enables Kill. UI: `Locks.tsx` (Contention group in `Server.tsx`), `/api/live/locks` and `/api/live/kill` (saved-password helper, not in `_SERVER_VIEW_PATHS`); tests `test/test_locks.py`, `test/test_ui_kill_evidence.py`, `apps/workspace/test/locks.mjs` (fixtures captured from live servers in `apps/workspace/test/fixtures/`). The blocking tree's frame is a size container (`lock-tree` in `locks.css`): below 960 px of frame width (the 720 px window, or the inspector beside it) the Waits for cell wraps with no 38ch cap or ellipsis, the Session cell's pills wrap under the name (column 44%), Wait keeps a fixed column and Statement (shown in the inspector) is hidden, so the tree never scrolls sideways; at 1440 px nothing changes (Waits for capped at 38ch, Statement at least 200 px). The tree inspector's Transaction section labels the id ID and shows one age, Open for (`trx_age_s`, INNODB_TRX); the Idle in transaction pill carries the process list's idle time only when the transaction age is unknown. `locks.mjs` checks both widths and the single age.
 The deprecated Kill CLI also catches a `ConnectorError` from its final
 identity projection before prompting: it returns `refused` with
 `outcome: "identity_unavailable"`, `sent: []` and no KILL statement, and
@@ -6808,7 +6902,7 @@ Sessions uses the same helper for `thread_kind` and `kill_blocked_reason`.
 
 ### Sessions
 
-`python3 -m myflames sessions [--all] [--session-user U] [--session-host H] [--schema NAME] [--min-seconds N] [--limit N] [--explain ID] [--json] [-o PATH] [-q]` (`sessions-1.0`), in `myflames/sessions.py`: every connection (P_S `processlist` on MySQL 8.0.22+ with P_S on, else `information_schema.PROCESSLIST`; MariaDB adds TIME_MS, STAGE/MAX_STAGE/PROGRESS, MEMORY_USED, EXAMINED_ROWS) joined with `INNODB_TRX` on `trx_mysql_thread_id` (ages with `SET SESSION time_zone = 'SYSTEM'`, since `trx_started` is in the OS time zone; needs PROCESS; without it, own sessions only and `capabilities.process_privilege: false`). Flags `long_running` (10 s watch / 60 s problem), `idle_in_trx` (Sleep + trx, graded on trx age 10/60; guarded against the two-read skew), `lock_wait` (`innodb` from INNODB_TRX LOCK WAIT, a row or InnoDB table lock; `metadata` from the MDL wait states; `table` from thr_lock), `system_thread`, `own_connection` (`/*myflames:` tag; the reader itself is excluded by `ID <> CONNECTION_ID()`). The summary (connections vs `max_connections`, `by_command|state|user|host|db`, oldest transaction, history list length) always covers every session; `active_only`/`user`/`host`/`db`/`min_seconds` narrow only `sessions`. `--user`/`--host` are the connection flags, hence `--session-user`/`--session-host`. `sessions.sessions_report(identity=True)` includes opt-in `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`, `port`) so Kill session in the workspace is bound to connection and server identity. It uses Locks' shared `_identity_projection` and `_identity_row` helpers (see [Locks](#locks) and [Write safety and audit](#write-safety-and-audit)) so the Sessions Kill sheet captures the same node and disconnected-provider identity that `kill_session` rechecks. `myflames running` is a deprecated alias (warns unless `-q`, keeps `running-1.0`). UI endpoint `POST /api/live/sessions`; tests `test/test_sessions.py` (replays in `test/fixtures/perf/sessions-*.json`).
+`python3 -m myflames sessions [--all] [--session-user U] [--session-host H] [--schema NAME] [--min-seconds N] [--limit N] [--explain ID] [--json] [-o PATH] [-q]` (`sessions-1.0`), in `myflames/sessions.py`: every connection (P_S `processlist` on MySQL 8.0.22+ with P_S on, else `information_schema.PROCESSLIST`; MariaDB adds TIME_MS, STAGE/MAX_STAGE/PROGRESS, MEMORY_USED, EXAMINED_ROWS) joined with `INNODB_TRX` on `trx_mysql_thread_id` (ages with `SET SESSION time_zone = 'SYSTEM'`, since `trx_started` is in the OS time zone; needs PROCESS; without it, own sessions only and `capabilities.process_privilege: false`). Flags `long_running` (10 s watch / 60 s problem), `idle_in_trx` (Sleep + trx, graded on trx age 10/60; guarded against the two-read skew), `lock_wait` (`innodb` from INNODB_TRX LOCK WAIT, a row or InnoDB table lock; `metadata` from the MDL wait states; `table` from thr_lock), `system_thread`, `own_connection` (`/*myflames:` tag; the reader itself is excluded by `ID <> CONNECTION_ID()`). The summary (connections vs `max_connections`, `by_command|state|user|host|db`, oldest transaction, history list length) always covers every session; `active_only`/`user`/`host`/`db`/`min_seconds` narrow only `sessions`. `--user`/`--host` are the connection flags, hence `--session-user`/`--session-host`. `sessions.sessions_report(identity=True)` includes opt-in `server_identity` (MySQL `server_uuid`; MariaDB `server_id`, `hostname`, `version`, `port`, and `server_uid` when present and not `"unknown"`) so Kill session in the workspace is bound to connection and server identity. It uses Locks' shared `_identity_projection` and `_identity_row` helpers (see [Locks](#locks) and [Write safety and audit](#write-safety-and-audit)) so the Sessions Kill sheet captures the same node and disconnected-provider identity that `kill_session` rechecks. For `/api/live/sessions`, `ui._kill_sheet_report` runs `sessions.sessions_report(..., identity=True)` inside `dbops.target_evidence` so the rows and `server_identity` used by Kill come from one confirmed server; when the server identity cannot be confirmed on one server (for example a rotating login or a Galera node whose `wsrep_on` was set `OFF` while still connected), it discards the failed scope, runs `sessions_report(..., identity=False)` with `server_identity: {}`, appends `"Kill is unavailable because the server identity could not be confirmed on one server."` to `notes`, and Kill refuses. Before any packet has validated, only a `PartialReadError` carrying a server statement diagnostic (`at line N:`, code outside `2000–2999` and not a login or host refusal) proves the login worked so `identity_unavailable` still falls back to the unbound report with Kill disabled; login failures have no line number, and the login and host refusals 1045, 1129, 1130, 1698, 3118 and 3955 count as failed logins even when a proxy such as ProxySQL reports them with a line number; along with other transport or client errors before validation, fail without retrying (preserving app-built SSH explanations and the timeout duration, never echoed evidence SQL). After a packet has validated, a later `identity_unavailable` failure uses the same unbound fallback: optional reads keep the collector's existing notes or unavailable capabilities (for example history list length, DDL progress and idle-transaction last statements, plus `performance_schema_show_processlist` in `show_processlist` mode), while required-read and propagated transport errors still fail from that collector. Authentication and privilege failures follow those same first-packet and collector rules; an unbound report never enables Kill. `myflames running` is a deprecated alias (warns unless `-q`, keeps `running-1.0`). UI endpoint `POST /api/live/sessions`; tests `test/test_sessions.py`, `test/test_ui_kill_evidence.py` (replays in `test/fixtures/perf/sessions-*.json`).
 Report-level `trx_checked` is true only when `INNODB_TRX` was read without truncation; false
 means absence of a transaction cannot be asserted. Each sessions row carries
 the same additive `trx_scope` and `trx_scope_source` fields and uses the shared
@@ -7361,9 +7455,9 @@ Tests: `test/test_memory.py`, `apps/workspace/test/memory-unit.mjs` and
 
 Backend `myflames/variables.py` (contract: the db-operations skill; facts and source citations: the module docstring), CLI `_config_change` in `myflames/workspace_cli.py` (dispatched from `cmd_config`), endpoints `ui._variable_response` / `_variable_apply`, UI `Config.tsx` + `config.css`. Tests: `test/test_variables.py` with live replays `test/fixtures/perf/variable-<server>-<scenario>.json` (MySQL 8.4.11 and MariaDB 11.4.13, recorded 2026-10-15 on throwaway containers: SET GLOBAL; SET PERSIST, then a container restart, `restart` shows the value survived; SET PERSIST_ONLY of the read-only innodb_log_file_size, `restart-persist-only` shows it applied; RESET PERSIST; SET SESSION; the 1238 and 1227 refusals; a value changed between plan and apply; buffer pool and MariaDB block-size rounding), browser suite `apps/workspace/test/config.mjs` (`variable-*.json` written by `server-fixtures.py`).
 
-- `read_variable(conn, name)` (`variable-1.0`, tag `/*myflames:variable*/`, reads only): one client call with `SHOW GLOBAL VARIABLES` and `SHOW SESSION VARIABLES` separated by marker rows, then MySQL `performance_schema.variables_info`, `persisted_variables` and (9.0+) `variables_metadata`, or MariaDB `information_schema.SYSTEM_VARIABLES`. Fields: `sensitive` (boolean, from the shared secret inventory), `scope` (global, both, session, or null), `dynamic` (MariaDB `READ_ONLY`; MySQL from the authoritative 84-entry `MYSQL_VARIABLES` map in `variables.py` or the generated 812-variable `mysql_sysvars.py` catalog, null outside both), `type` (bytes, integer, double, boolean, enum, set, flagset, string), `values`, `min`, `max` (MariaDB catalog; MySQL variables_info or variables_metadata for integers, the map for doubles), `block_size` (MariaDB), `global_value`, `session_value`, `default`, `set_by`, `persisted {supported, value, present, load}`, `modes {global, persist, persist_only, session, reset_persist: {available, reason, recommended}}`, `notes`. A MySQL variable outside the map is offered by the CLI only; the server decides (1238 when read-only).
+- `read_variable(conn, name)` (`variable-1.0`, tag `/*myflames:variable*/`, reads only): one client call with `SHOW GLOBAL VARIABLES` (including `server_uid`) and `SHOW SESSION VARIABLES` separated by marker rows, then MySQL `performance_schema.variables_info`, `persisted_variables` and (9.0+) `variables_metadata`, or MariaDB `information_schema.SYSTEM_VARIABLES`. Fields: `sensitive` (boolean, from the shared secret inventory), `scope` (global, both, session, or null), `dynamic` (MariaDB `READ_ONLY`; MySQL from the authoritative 84-entry `MYSQL_VARIABLES` map in `variables.py` or the generated 812-variable `mysql_sysvars.py` catalog, null outside both), `type` (bytes, integer, double, boolean, enum, set, flagset, string), `values`, `min`, `max` (MariaDB catalog; MySQL variables_info or variables_metadata for integers, the map for doubles), `block_size` (MariaDB), `global_value`, `session_value`, `default`, `set_by`, `persisted {supported, value, present, load}`, `modes {global, persist, persist_only, session, reset_persist: {available, reason, recommended}}`, `notes`. A MySQL variable outside the map is offered by the CLI only; the server decides (1238 when read-only).
 - `plan_change(conn, name, value, mode)` and the pure `build_plan(v, value, mode, grants)` (`variable-plan-1.0`): the mode must be available (MariaDB has no PERSIST, PERSIST_ONLY or RESET PERSIST: refused with `alternative.config_line`, the `[mysqld]` line; a read-only MySQL variable offers only `persist_only`; wrong scope; NON_PERSIST; a session value that is read-only), and the value valid (`normalize_value`: integers within the range, K/M/G/T converted for byte sizes, doubles, ON/OFF, enum and set items matched without case, `DEFAULT`; string values preserve leading and trailing whitespace exactly, while numeric, boolean and enum input is trimmed; text as `'...'` when plain, else `CONVERT(X'..' USING utf8mb4)` so no escaping rule or sql_mode matters). Returns `statement` (untagged), `display`, `before {global, session, persisted}`, `undo`, `effect {now, after_restart, needs_restart, text}`, `caveats` (the server does not check a PERSIST_ONLY value, persisted_globals_load OFF, mysqld-auto.cnf applied after the option files, buffer pool rounding to chunk size x instances and the 1 GiB rule with several instances, MariaDB block size, memory per connection, durability, MariaDB's log_slow_query copied per connection, replication-sensitive session variables), `privileges` (`privileges(v, mode, grants)` over plain `SHOW GRANTS`: dbops' operations, MariaDB's per-variable SET GLOBAL privileges `MARIADB_GLOBAL_PRIVILEGE`, restricted SET SESSION per engine with MySQL's `_no_super` ones, both privileges to reset a PERSIST_AS_READONLY entry), `classification`, `config_line` and `expect {name, mode, statement, global_value, session_value, persisted_value, persisted_state, source_metadata, engine, server_version, server_identity}`; sensitive variables also carry `value_bindings`. The plan endpoint adds `connection_identity` and, for a ready plan, `review_token` inside `expect`. Status `refused` with `problems [{code, message}]` sends nothing.
-- `apply_change(conn, plan, expect, decision, confirmed, audit)` (`variable-change-1.0`): `dbops.gate` first (SET GLOBAL, PERSIST, PERSIST_ONLY and RESET PERSIST are risky, so Production and Development confirm; SET SESSION follows dbops' variable lists; read-only refuses), then a fresh read and plan used to check the reviewed statement and expected state. Nothing is sent when the plan is refused, its statement differs from `expect.statement`, or the reviewed server identity, source metadata, global, session (session mode) or persisted state changed. The endpoint also requires the matching review token, consumed by `before_send` after rechecking the connection and policy, immediately before sending the reviewed statement. The audit record is written before sending; one statement tagged `/*myflames:variable*/` with `dbops.WRITE_CLIENT_FLAGS`; SET SESSION and its `SHOW SESSION VARIABLES` go in one client call (one session). Server errors: `denied` (1227, 1095, 3630, 1142, 1044, 1045), `refused_by_server` (1228, 1229, 1238, 1231, 1232, 1193, 1621, 3615, 3976, 1210, 1290), `interrupted` (1317, 1205, 1213), else `failed`; client errors (2000 and up) raise, and an interrupt, time limit or 2013 leaves the record `unknown`. Then the variable is read again (`after {global, session, persisted, resize_status}`): `changed` (`adjusted` when the server rounded or clamped it), `unchanged` (already set, or the server kept the old value), or `applied_unverified` (the statement was sent but its complete effect could not be verified, including missing readback, changed identity or incomplete persisted verification). Verification compares exact private readback values with the requested value before any public redaction and exposes only `value_matched: true|false|null`; `[redacted]` placeholders never establish equality. A lost reply or time limit after a write may have run is `unknown` in the audit; the sensitive-variable API returns `status: unknown` rather than a known refusal. Read the variable and persisted state again before retrying either uncertain outcome. Audit operations `set_global`, `set_persist`, `set_persist_only`, `set_session`, `reset_persist`.
+- `apply_change(conn, plan, expect, decision, confirmed, audit)` (`variable-change-1.0`): `dbops.gate` first (SET GLOBAL, PERSIST, PERSIST_ONLY and RESET PERSIST are risky, so Production and Development confirm; SET SESSION follows dbops' variable lists; read-only refuses), then a fresh read and plan used to check the reviewed statement and expected state. Nothing is sent when the plan is refused, its statement differs from `expect.statement`, or the reviewed server identity, source metadata, global, session (session mode) or persisted state changed. The endpoint also requires the matching review token, consumed by `before_send` after rechecking the connection and policy, immediately before sending the reviewed statement. Comparisons of reviewed values use `variables._same`, which wraps `reviewed_writes.same_reviewed_value`. Unsent refusals (`_unsent`) audit only the reviewed `expect.statement` (falling back to the planned or typed statement only for the deprecated CLI without a reviewed `expect`), never a `session_guard`, through `_SensitiveAudit` for secret variables; `audit.attempt` right before sending lists the guard and the tagged statement. The audit record is written before sending; one statement tagged `/*myflames:variable*/` with `dbops.WRITE_CLIENT_FLAGS`; SET SESSION and its `SHOW SESSION VARIABLES` go in one client call (one session). Server errors: `denied` (1227, 1095, 3630, 1142, 1044, 1045), `refused_by_server` (1228, 1229, 1238, 1231, 1232, 1193, 1621, 3615, 3976, 1210, 1290), `interrupted` (1317, 1205, 1213), else `failed`; client errors (2000 and up) raise, and an interrupt, time limit or 2013 leaves the record `unknown`. Then the variable is read again (`after {global, session, persisted, resize_status}`): `changed` (`adjusted` when the server rounded or clamped it), `unchanged` (already set, or the server kept the old value), or `applied_unverified` (the statement was sent but its complete effect could not be verified, including missing readback, changed identity or incomplete persisted verification). Verification compares exact private readback values with the requested value before any public redaction and exposes only `value_matched: true|false|null`; `[redacted]` placeholders never establish equality. A lost reply or time limit after a write may have run is `unknown` in the audit; the sensitive-variable API returns `status: unknown` rather than a known refusal. Read the variable and persisted state again before retrying either uncertain outcome. Audit operations `set_global`, `set_persist`, `set_persist_only`, `set_session`, `reset_persist`.
 - `python3 -m myflames config set NAME VALUE [--persist | --persist-only | --session] [--yes] [--json] [-o PATH] [-q]` and `config reset-persist NAME [--yes] [--json] [-o PATH] [-q]` (`change_cli`): the policy from `--profile` runs before any prompt or connection (read-only refuses, exit 2); the plan (statement, values, effect, privileges, caveats, undo) on stderr; `[y/N]` when the policy confirms (a harmless SET SESSION on Development runs without); non-TTY needs `--yes`. Exit 0 changed or already set to the requested value, 1 a sent change was denied, refused by the server or not applied, 2 an unsent refusal, decline, bad input or connection failure. `myflames config` alone stays the read-only review. `config set --session` prints a stderr note that it applies only to the one-off connection myflames opens, useful to test a value; `--yes -q` suppresses this note with the plan.
 - `variable-1.0.sensitive` and each `parameters-1.0.items[].sensitive` identify secret variables independently of their displayed value. Every inventory secret is redacted in `read_variable` and Parameters, including defaults and persisted values where present. Both inline and single-variable editors start hidden values empty and require an explicit new value before planning a replacement; reset-persist needs no replacement. A sensitive input containing `[redacted]` anywhere is refused with `redacted_value`, so a display marker cannot become a credential. Secret reviews carry `value_bindings`: HMAC-SHA256 digests over the variable, reviewed server identity, scope field and exact private state, keyed per backend process. Apply compares a fresh binding before sending; a backend restart requires a fresh review. Returned variable-change values, nested plans, messages and audits are redacted in every mode, including failures and unsent attempts. Tests: `test/test_redact_villagesql.py` (inventory and read surfaces), `test/test_vsql_fix1_fx1.py` (review bindings, results and audits).
 - Secret-variable CLI attempts use `variables._SensitiveAudit` from audit creation,
@@ -8135,7 +8229,7 @@ anchored to the button with the reason and fix, Cluster's `Edit group…` button
 connect to a member matching a saved profile, `<Commands>` with `grant_sql` and
 `"Run it as an administrator, then Refresh."`, and the `privileges_unreadable`
 hint; Escape, a click outside or Close dismisses it and focus returns to the
-button). After execution, `_effect(plan, before, after)` builds `[what, before, now]` rows and replaces any missing `None` or `""` value with a specific reason (`"No member reported the PRIMARY role in the view read here"`, `"No primary cluster in the view read here"`, `"No channel in the view read here"`, `"Not in the view read before the action"`, `"Not in the view read after the action"`, `"The read after the action failed"`, `"No value reported before the action"`, `"No value reported after the action"`, `"Component status not reported"`, `"Mode not reported by the server"`), never `"Not readable"`. Sources and line references are in the "reviewed
+button; a second click on the same button closes it too. The opening click never closes it: every `openWhyDisabled` caller calls `preventDefault()` and `stopPropagation()`, and while a message may open the button carries `popovertarget` with `popovertargetaction="show"`, restored on close, so native popover activation can only show the message). After execution, `_effect(plan, before, after)` builds `[what, before, now]` rows and replaces any missing `None` or `""` value with a specific reason (`"No member reported the PRIMARY role in the view read here"`, `"No primary cluster in the view read here"`, `"No channel in the view read here"`, `"Not in the view read before the action"`, `"Not in the view read after the action"`, `"The read after the action failed"`, `"No value reported before the action"`, `"No value reported after the action"`, `"Component status not reported"`, `"Mode not reported by the server"`), never `"Not readable"`. Sources and line references are in the "reviewed
 actions" comment in `cluster.py`:
 
 | Action | Statement (tagged `/*myflames:cluster_op*/`) | Enabled when | Typed name |
@@ -8146,7 +8240,7 @@ actions" comment in `cluster.py`:
 | `switch_to_multi_primary`, `switch_to_single_primary` | `SELECT group_replication_switch_to_multi_primary_mode();` / `..._single_primary_mode();` | plain Group Replication (InnoDB Cluster uses MySQL Shell below), from the connected member, group ready as for switchover; the other mode is active; multi-primary is disabled while `group_replication_preemptive_garbage_collection` is ON (read in preflight when present, absent variables tolerated) | the connected member's name |
 | `desync_node` Desync this node… | `SET GLOBAL wsrep_desync = ON;` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_on` ON, `wsrep_desync` OFF and Synced | no |
 | `resync_node` Resync this node… | `SET GLOBAL wsrep_desync = OFF;` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_desync` ON | no |
-| `bootstrap_pc` Bootstrap a Primary component… | `SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_on` ON, component `non-Primary`, `wsrep_connected` ON, not joining; `expect` also binds the component view (cluster UUID, `wsrep_cluster_conf_id`, size, members), so a node joining or leaving needs another review | the node's name (`target.profile_name` on a routed Group member plan) |
+| `bootstrap_pc` Bootstrap a Primary component… | `SET GLOBAL wsrep_provider_options = 'pc.bootstrap=YES';` | MariaDB Galera, the connected node (or in a Group connection a node with a confirmed saved connection in the group), `wsrep_on` ON, component `non-Primary`, `wsrep_connected` ON, not joining; `expect` also binds `last_committed` and `component_view` (`cluster_uuid`, `conf_id` from `wsrep_cluster_conf_id`, `size`, `members`), carrying `last_committed` and `conf_id` as exact decimal text (or `null` when absent), so a node joining or leaving needs another review | the node's name (`target.profile_name` on a routed Group member plan) |
 
 MySQL Shell actions stay in the catalog when `mysqlsh` is missing, too old,
 or the connection uses SSH; each condition has its own reason and fix.
@@ -8571,8 +8665,22 @@ but disabled on an ERROR member because the plugin still runs.
 `expect` binds the server identity (engine, version, `server`), kind, member
 and connected member (key, UUID, name, role, state), component, quorum,
 topology, group members and states, `wsrep_desync`, `wsrep_on`, local state,
-`wsrep_last_committed` for bootstrap, and `bootstrap_group` for start. State
-drift refuses the reviewed operation before sending. MariaDB Galera also
+`expect.last_committed` and `expect.component_view` (`cluster_uuid`, `conf_id`,
+`size`, `members`) for `bootstrap_pc`, and `bootstrap_group` for start.
+For `bootstrap_pc`, `expect.last_committed` and `expect.component_view.conf_id`
+(from `wsrep_cluster_conf_id`) are carried as exact decimal text (`str`, or
+`None` when absent): `apps/workspace`'s JavaScript JSON round-trip would
+change integers above `2^53 - 1`, and MariaDB 10.11 and 11.4 print
+`wsrep_cluster_conf_id` unsigned (declared `SHOW_LONGLONG`, which
+`include/mysql/plugin.h` defines as `SHOW_ULONGLONG`, so non-Primary `-1` reads
+`18446744073709551615`, recorded in `test/fixtures/perf/report-mariadb-11.4.json`),
+while current releases declare it `SHOW_LONGLONG_NOFLUSH` and print it signed
+(`mariadb-server` `sql/mysqld.cc:8073`, `sql/sql_show.cc:3900–3902`; recorded
+`-1` on 11.8.9 in `test/fixtures/cluster/cluster-galera-11.8-non-primary.json`;
+the block in `sql/wsrep_var.cc` declaring `cluster_conf_id` `SHOW_LONGLONG` is
+under `#if UNUSED`). State
+drift refuses the reviewed operation before sending (`cluster.execute_action`
+compares `_server_identity(report)` with `reviewed_writes.same_reviewed_value`). MariaDB Galera also
 binds the freshly read `server_id`, `hostname`, `port` and `wsrep_node_name`:
 the preflight retains the extra identity on `_ActionReport`, outside the
 public `cluster-1.0` server object. Before a Galera write, a same-session
@@ -8598,7 +8706,10 @@ Tests: `test/test_cluster.py` (complete catalogs, eligibility, versions,
 optional variables and identical refusals), `test/test_cluster_actions.py`
 and `test/test_cluster_shell.py` (plans, statements, typed names, review-token
 and audit guards, fresh grants on the sending connection, runtime-only Shell
-actions without grant reads, drift before sending, unknown outcomes),
+actions without grant reads, drift before sending, JS round-trip and exact
+decimal text for `bootstrap_pc` counters, type-exact `server_identity` checks,
+unknown outcomes),
+`test/test_review_expect_contract.py` (verifying planner `expect` subtrees),
 `test/test_cluster_privileges.py` (versioned requirements, GRANT text, scope,
 grant option, unreadable grants and the Galera identity guard), and
 `test/test_ui_http.py` (exact disabled-action HTTP 400 text, no review token,
@@ -9475,9 +9586,14 @@ side opens a fresh `MySQLConnection` with the isolated client environment and
 saved-password endpoint checks wrapped in `BoundedConnection` (at most 30 s per
 query and 120 s per side, role expansion included) inside
 `dbops.TargetEvidenceConnection` (or reuses an existing `TargetEvidenceConnection`
-from Group reads, never downgrading its identity guarantees): if `server_version()`
-raises `identity_unavailable` on Compare servers, it preserves the previous read
-within the same budget and appends `'Accounts were read without the
+from Group reads, never downgrading its identity guarantees): `account_compare.capture`
+never retries a failed first login (before any packet has validated, only a
+`PartialReadError` carrying a server statement diagnostic at `at line N:` with
+a code outside `2000–2999` that is not a login or host refusal (1045, 1129,
+1130, 1698, 3118, 3955) proves the login worked; an `identity_unavailable`
+after a packet has already validated also allows fallback); when that fallback
+is allowed on Compare servers, it reuses the same `BoundedConnection` to keep
+the original deadline and appends `'Accounts were read without the
 single-server check.'` to `notes`. Group evidence packets use the member's
 remaining budget (`per_query=False`); script mode uses the per-query timeout and
 retries smaller chunks after client timeouts within the deadline. When account
@@ -11556,9 +11672,9 @@ KNN plans are identified separately in `test/fixtures/villagesql/SYNTHETIC.md`.
 
 **Live lab suites** (`test/live/`, run by `scripts/live-tests.sh`). The
 cluster lab checks are repeatable unittest suites in the spirit of mtr:
-`scripts/live-tests.sh [ic|galera|pxc|proxysql|shell|writes|topology|ga|all] [--record]` brings up
+`scripts/live-tests.sh [ic|galera|pxc|proxysql|shell|writes|topology|ga|kill|all] [--record]` brings up
 only the labs the chosen suites need (idempotent `cluster-matrix.sh up`, then
-`check`; `topology` and `all` include `pxc`), leaves them running for the next run, runs different clusters in
+`check`; `topology`, `kill` and `all` include `pxc`), leaves them running for the next run, runs different clusters in
 parallel lanes with the scenarios on one cluster in order, prints one line per
 test plus a summary with durations, and exits non-zero on any failure. Labs
 and credentials come from `CLUSTER_LAB` (default `local/cluster-matrix`):
@@ -11671,12 +11787,37 @@ The `ga` selection brings up nothing itself: it checks `ga-matrix.sh status`
 and runs the lane against the servers already up, with the matrix's saved
 profiles in its own throwaway home (`ga-matrix.sh profiles` with
 `MYFLAMES_HOME` set, credentials from the matrix's 0600 file only); `all`
-includes the ga lane only when the GA matrix is up. A
+includes the ga lane only when the GA matrix is up. The `kill` selection (and
+`all`, running last of all so `wsrep_on` changes and held locks never overlap
+other suites; bringing up `galera` and `pxc`, with its GA classes skipped when
+the GA matrix is down) runs `live_kill` (`test/live/live_kill.py`): Locks and
+Sessions Kill on GA `mariadb-12.3` and `mariadb-13.0` (shared
+`wsrep_disconnected_provider` waiver identity, ending a session and an InnoDB
+lock waiter, and checking the three waiver clauses in the audit guard),
+`cluster-galera-2` after `SET GLOBAL wsrep_on = OFF` while still connected
+(Sessions still returns rows with an empty `server_identity`, Kill is refused
+with nothing sent and the victim keeps running; class setup first puts a node
+left `OFF` by an interrupted run back to `ON`, and a registered cleanup restores
+the recorded value and reads it back, so a failed restore is a test error), and
+Sessions Kill on `cluster-galera-1` and `cluster-pxc-1` binding
+`wsrep_gcomm_uuid` in the audit guard. On peer `cluster-galera-2` /
+`cluster-pxc-2`, a request reviewed on the peer's own connection but carrying
+the first node's server identity (what a rotating endpoint produces) is refused
+on the server identity mismatch after the peer was read (the refusal audit
+names the peer connection and its server), and the original review sent to the
+peer is refused by the connection identity check. Every victim and lock holder
+is ended on every path (through the Sessions Kill, else a direct admin `KILL`
+found by the test's unique marker), and the throwaway schema is dropped by a
+registered cleanup after them. A
 full `all` run
 takes a few minutes against warm labs (the labs stay up between runs; a cold
 `up` dominates a first run). Only `ic`, `galera` and `proxysql` have recorded
-expected reports under `test/live/expected/`; selections without any of them
-(`ga`, `pxc`) skip the expected-report lane (`--record` and `live_expected`).
+expected reports under `test/live/expected/`; `kill` runs only `live_kill`
+(bringing up `galera` and `pxc` for it) and skips the expected-report lane
+(`kill --record` writes nothing under `test/live/expected/`), and selections
+without any of those labs (`ga`, `pxc`) also skip the expected-report lane
+(`--record` and `live_expected`), while every other selection still checks
+the recorded reports of the `ic`, `galera` and `proxysql` labs it selects.
 `--record` saves the normalized JSON of the read-only Cluster, Replication
 and ProxySQL reports for those selected labs per server version with volatile
 fields (UUIDs, timestamps, ports, durations, connection ids, log positions

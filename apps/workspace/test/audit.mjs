@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { applyCpuThrottle } from "./perf-harness.mjs";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "myflames-audit-"));
@@ -56,13 +57,49 @@ try {
   page.on("pageerror", (e) => errors.push(String(e)));
   // Requests are watched, not changed: every audit call reaches the real server.
   const calls = [];
+  const inFlight = new Map();
+  const waiters = new Set();
+  const notifyWaiters = () => {
+    for (const check of [...waiters]) check();
+  };
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (pathname.startsWith("/api/audit/")) calls.push({ path: pathname, body: JSON.parse(request.postData() || "{}") });
+    if (!pathname.startsWith("/api/audit/")) return;
+    const entry = {
+      path: pathname,
+      body: JSON.parse(request.postData() || "{}"),
+      finished: false,
+      failed: false,
+      status: null,
+      report: null,
+    };
+    calls.push(entry);
+    inFlight.set(request, entry);
+  });
+  page.on("requestfinished", async (request) => {
+    const entry = inFlight.get(request);
+    if (!entry) return;
+    inFlight.delete(request);
+    const response = request.response();
+    entry.status = response?.status() ?? null;
+    if (entry.path === "/api/audit/list" && response?.ok()) {
+      entry.report = await response.json().catch(() => null);
+    }
+    entry.finished = true;
+    notifyWaiters();
+  });
+  page.on("requestfailed", (request) => {
+    const entry = inFlight.get(request);
+    if (!entry) return;
+    inFlight.delete(request);
+    entry.failed = true;
+    entry.finished = true;
+    notifyWaiters();
   });
   const client = await page.createCDPSession();
   await client.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads });
   await page.setViewport({ width: 1440, height: 1000 });
+  await applyCpuThrottle(page);
   await page.goto(url, { waitUntil: "networkidle0" });
   await page.waitForFunction(() => document.querySelector(".session-status")?.dataset.state !== "loading");
 
@@ -73,16 +110,107 @@ try {
   const rows = () => page.$$eval(`${table} tbody tr[data-row-key]`, (els) => els.map((e) => e.dataset.status));
   const idle = () => page.waitForFunction((v) => !document.querySelector(`${v} .toolbar-refresh .spinner`), {}, view);
   const last = (pathname) => calls.filter((c) => c.path === pathname).at(-1);
-  const filter = async (name, value) => {
-    await page.select(`${view} .audit-filter-${name} select`, value);
-    await idle();
+  const waitForCall = (pathname, afterIndex, match = () => true, timeoutMs = 15000) => {
+    const find = () => calls.slice(afterIndex).find((c) => c.path === pathname && c.finished && match(c.body));
+    const ready = find();
+    if (ready) return Promise.resolve(ready);
+    return new Promise((resolve, reject) => {
+      const check = () => {
+        const hit = find();
+        if (!hit) return;
+        clearTimeout(timer);
+        waiters.delete(check);
+        resolve(hit);
+      };
+      const timer = setTimeout(() => {
+        waiters.delete(check);
+        reject(new Error(`Timed out waiting for ${pathname} after call ${afterIndex}`));
+      }, timeoutMs);
+      waiters.add(check);
+    });
+  };
+  const waitForListRendered = async (entry, { append = false } = {}) => {
+    assert.equal(entry.failed, false, "/api/audit/list request should not fail");
+    assert.equal(entry.status, 200, "/api/audit/list should return 200");
+    const report = entry.report;
+    assert.ok(report, "/api/audit/list should return JSON");
+    if (append) {
+      await page.waitForFunction(
+        (v) => !document.querySelector(`${v} .toolbar-refresh .spinner`) && !document.querySelector(`${v} .audit-more .spinner`),
+        {},
+        view,
+      );
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await idle();
+      return entry;
+    }
+    const filtered = Boolean(entry.body.server || entry.body.since_days || entry.body.status);
+    if (report.records.length === 0 && !filtered) {
+      await page.waitForFunction(
+        (v) => !document.querySelector(`${v} .toolbar-refresh .spinner`) && !!document.querySelector(`${v} .view-empty`),
+        {},
+        view,
+      );
+      return entry;
+    }
+    const retention = report.retention_days ?? 90;
+    const countWord = report.records.length === 1 ? "record" : "records";
+    const expectedSummary =
+      `${report.records.length} ${countWord}${report.has_more ? ", more are older" : ""} ` +
+      `· newest first · Kept ${retention} ${retention === 1 ? "day" : "days"}`;
+    const expectedIds = report.records.length <= 300 ? report.records.map((r) => r.id) : null;
+    await page.waitForFunction(
+      (v, t, expectedCount, summaryText, ids) => {
+        if (document.querySelector(`${v} .toolbar-refresh .spinner`)) return false;
+        const summary = document.querySelector(`${v} .summary-line .summary-text`)?.textContent?.trim() || "";
+        if (summary !== summaryText) return false;
+        if (expectedCount === 0) {
+          return !!document.querySelector(`${v} .table-empty`) && !document.querySelector(`${t} tbody tr[data-row-key]`);
+        }
+        const tbl = document.querySelector(`${t} table`);
+        if (!tbl) return false;
+        if (ids) {
+          const domKeys = new Set([...document.querySelectorAll(`${t} tbody tr[data-row-key]`)].map((e) => e.dataset.rowKey));
+          if (domKeys.size !== ids.length || !ids.every((id) => domKeys.has(id))) return false;
+        } else if (tbl.getAttribute("aria-rowcount") !== String(expectedCount + 1)) {
+          return false;
+        }
+        return true;
+      },
+      {},
+      view,
+      table,
+      report.records.length,
+      expectedSummary,
+      expectedIds,
+    );
+    if (!expectedIds) {
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await idle();
+    }
+    return entry;
+  };
+  const readAfter = async (action, match = () => true, options = {}) => {
+    const before = calls.length;
+    await action();
+    const entry = await waitForCall("/api/audit/list", before, match);
+    return waitForListRendered(entry, options);
+  };
+  const filter = async (name, value, scope = view) => {
+    const field = { connection: "server", status: "status", since: "since_days" }[name];
+    const expected = name === "since" ? (value ? Number(value) : undefined) : value || undefined;
+    await readAfter(
+      () => page.select(`${scope} .audit-filter-${name} select`, value),
+      (body) => body[field] === expected,
+    );
   };
   async function openAudit() {
     await page.click('button[aria-label="Settings"]');
     await page.waitForSelector(".settings-page");
-    await page.locator(".settings-page .source-item ::-p-text(Audit log)").click();
-    await page.waitForSelector(view);
-    await idle();
+    await readAfter(async () => {
+      await page.locator(".settings-page .source-item ::-p-text(Audit log)").click();
+      await page.waitForSelector(view);
+    });
   }
   async function download(format) {
     const before = new Set(await fs.readdir(downloads));
@@ -116,14 +244,18 @@ try {
   // Retention stays reachable with nothing listed (review gate): in the toolbar.
   assert.equal(await text(`${view} .view-toolbar .audit-retention button`), "Retention");
   await page.click(`${view} .audit-retention button`);
+  await page.waitForSelector('[role=dialog][aria-label="Keep audit records"]', { visible: true });
   assert.match(await text('[role=dialog][aria-label="Keep audit records"]'), /Kept 90 days/);
   await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Keep audit records"]'));
   // The ⓘ names every status, unknown with its meaning.
   await page.click(`button[aria-label="About Audit log"]`);
+  await page.waitForSelector('[role=dialog][aria-label="About Audit log"]', { visible: true });
   const about = await text('[role=dialog][aria-label="About Audit log"]');
   assert.match(about, /Outcome unknown\s*Interrupted, timed out or disconnected after the statement may have reached the server/);
   assert.match(about, /Declined\s*Cancelled in the confirmation\. Nothing was sent\./);
   await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="About Audit log"]'));
 
   // 2. Records written by the audit code: newest first, one row per record.
   const seeded = execFileSync(process.env.PYTHON || "python3", [path.join(root, "apps/workspace/test/audit-seed.py"), store], {
@@ -142,9 +274,8 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.execute("UPDATE audit SET target = ?, verified = ? WHERE id = ?",
                (json.dumps(target), json.dumps(["future_check_name"]), sys.argv[2]))
 `, store, ids.pending], { cwd: root, env });
-  await page.click(`${view} [data-action=refresh]`);
+  await readAfter(() => page.click(`${view} [data-action=refresh]`));
   await page.waitForSelector(`${table} tbody tr[data-row-key]`);
-  await idle();
   assert.deepEqual(await rows(), ["ok", "error", "unknown", "pending", "refused", "declined", "declined"]);
   assert.deepEqual(await texts(`${table} thead th[data-col] .th-label`), [
     "Time", "Status", "Operation", "Connection", "Type", "Statements", "Error", "Duration",
@@ -315,23 +446,25 @@ with sqlite3.connect(sys.argv[1]) as db:
   const days = '[role=dialog][aria-label="Keep audit records"] input';
   await page.click(days, { count: 3 });
   await page.keyboard.type("30");
-  await page.click('[role=dialog][aria-label="Keep audit records"] button[type=submit]');
-  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Keep audit records"]'));
+  await readAfter(async () => {
+    await page.click('[role=dialog][aria-label="Keep audit records"] button[type=submit]');
+    await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Keep audit records"]'));
+  });
   assert.equal(last("/api/audit/settings").body.retention_days, 30);
-  await idle();
   assert.equal((await rows()).length, 6, "the 40-day-old record is gone");
   assert.match(await text(`${view} .summary-line`), /^6 records · newest first · Kept 30 days$/);
   await page.click(`${view} .audit-retention button`);
+  await page.waitForSelector('[role=dialog][aria-label="Keep audit records"]', { visible: true });
   assert.match(await text('[role=dialog][aria-label="Keep audit records"]'), /Kept 30 days/);
   await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Keep audit records"]'));
 
   // 7b. More than a page: 520 newer records push the others beyond the first
   // 500. A status filter still finds an older record (the server filters
   // before the page), Load older brings the rest, and an older row opens.
   execFileSync(process.env.PYTHON || "python3", [path.join(root, "apps/workspace/test/audit-seed.py"), store, "--bulk", "520"], { cwd: root, env });
-  await page.click(`${view} [data-action=refresh]`);
+  await readAfter(() => page.click(`${view} [data-action=refresh]`));
   await page.waitForFunction((t) => document.querySelector(`${t}`)?.getAttribute("aria-rowcount") === "501", {}, table + " table");
-  await idle();
   assert.match(await text(`${view} .summary-line`), /^500 records, more are older · newest first · Kept 30 days$/);
   assert.equal(await page.$(row(ids.unknown)), null, "beyond the first page");
   await filter("status", "unknown");
@@ -348,7 +481,11 @@ with sqlite3.connect(sys.argv[1]) as db:
   assert.deepEqual(pill, { inside: true, clipped: false, text: "Outcome unknown" });
   await page.keyboard.press("Escape");
   await filter("status", "");
-  await page.locator(`${view} .audit-more button`).click();
+  await readAfter(
+    () => page.locator(`${view} .audit-more button`).click(),
+    (body) => Boolean(body.before),
+    { append: true },
+  );
   await page.waitForFunction((t) => document.querySelector(`${t}`)?.getAttribute("aria-rowcount") === "527", {}, table + " table");
   assert.equal(last("/api/audit/list").body.before.length, 32, "the next page starts after the last record listed");
   assert.equal(await page.$(`${view} .audit-more`), null, "nothing older");
@@ -369,8 +506,10 @@ with sqlite3.connect(sys.argv[1]) as db:
   assert.ok(await page.$(`${view} [role=group][aria-label="Audit actions"] .audit-retention`));
   assert.ok(await page.$(`${view} [role=group][aria-label="Audit actions"] .audit-export`));
   await page.click(`${view} .audit-filters > button`);
+  await page.waitForSelector('[role=dialog][aria-label="Filter audit records"] select', { visible: true });
   assert.equal(await page.$$eval('[role=dialog][aria-label="Filter audit records"] select', (els) => els.length), 3);
   await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector('[role=dialog][aria-label="Filter audit records"]'));
 
   // 8. 390 px: no horizontal page scroll; details use the full work area.
   await page.setViewport({ width: 390, height: 844 });
@@ -381,16 +520,18 @@ with sqlite3.connect(sys.argv[1]) as db:
   assert.ok(await page.$eval(`${view} .view-toolbar`, (e) => e.getBoundingClientRect().height <= 56), "the mobile toolbar is one row");
   await page.click(`${view} .audit-filters > button`);
   const filters = '[role=dialog][aria-label="Filter audit records"]';
+  await page.waitForSelector(`${filters} .audit-filter-status select`, { visible: true });
   assert.equal(await page.$$eval(`${filters} select`, (els) => els.length), 3);
-  await page.select(`${filters} .audit-filter-status select`, "ok");
-  await idle();
+  await filter("status", "ok", filters);
   assert.equal(last("/api/audit/list").body.status, "ok");
   await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => !document.querySelector(s), {}, filters);
   assert.match(await text(`${view} .audit-filters button`), /^Filter \(1\)$/);
   await page.click(`${view} .audit-filters > button`);
-  await page.select(`${filters} .audit-filter-status select`, "");
-  await idle();
+  await page.waitForSelector(`${filters} .audit-filter-status select`, { visible: true });
+  await filter("status", "", filters);
   await page.keyboard.press("Escape");
+  await page.waitForFunction((s) => !document.querySelector(s), {}, filters);
   await page.click(`${table} tbody tr[data-row-key]`);
   await page.waitForSelector(".view-inspector.is-detail");
   await page.screenshot({ path: path.join(directory, "audit-mobile.png") });
@@ -400,10 +541,14 @@ with sqlite3.connect(sys.argv[1]) as db:
   // A reviewed change's result opens the Audit log at its record
   // (ActionReview.tsx sends myflames-open-audit with the audit id).
   await page.setViewport({ width: 1440, height: 900 });
+  await page.waitForFunction((v) => !document.querySelector(`${v}.is-compact-controls`), {}, view);
   await idle();
   await page.waitForSelector(`${table} tbody tr[data-row-key]`);
   const focusId = await page.$$eval(`${table} tbody tr[data-row-key]`, (els) => els.at(-1).dataset.rowKey);
-  await page.evaluate((id) => window.dispatchEvent(new CustomEvent("myflames-open-audit", { detail: id })), focusId);
+  await readAfter(
+    () => page.evaluate((id) => window.dispatchEvent(new CustomEvent("myflames-open-audit", { detail: id })), focusId),
+    (body) => body.id === focusId,
+  );
   await page.waitForFunction((t, id) => document.querySelector(`${t} tr.is-selected[data-row-key]`)?.dataset.rowKey === id, {}, table, focusId);
   await page.waitForSelector(".view-inspector .inspector-title");
 
@@ -416,7 +561,10 @@ with sqlite3.connect(sys.argv[1]) as db:
   await page.waitForFunction(v => !document.querySelector(`${v} .toolbar-controls`)?.hidden, {}, view);
   const focusedExport = JSON.parse(await download("json"));
   assert.deepEqual(focusedExport.records.map(r => r.id), [focusId], "export keeps the record filter");
-  await page.locator(`${view} .audit-actions button ::-p-text(Show all records)`).click();
+  await readAfter(
+    () => page.locator(`${view} .audit-actions button ::-p-text(Show all records)`).click(),
+    (body) => body.id === undefined,
+  );
   await page.waitForFunction(t => document.querySelectorAll(`${t} tbody tr[data-row-key]`).length > 1, {}, table);
   assert.equal(last("/api/audit/list").body.id, undefined);
 

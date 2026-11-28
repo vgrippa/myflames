@@ -1326,7 +1326,7 @@ class EditorSession(EditorInsights):
                 "@@version_comment AS version_comment, @@hostname AS hostname, @@port AS port, "
                 "@@server_id AS server_id, @@autocommit AS autocommit, @@sql_mode AS sql_mode, "
                 "@@sql_safe_updates AS sql_safe_updates; " + TAG +
-                "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'wsrep_on', 'wsrep_provider'); " +
+                "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'server_uid', 'wsrep_on', 'wsrep_provider'); " +
                 TAG + "SHOW GLOBAL STATUS WHERE Variable_name IN "
                 "('wsrep_gcomm_uuid', 'wsrep_connected', 'wsrep_cluster_size')", results=3)
             sets = [entry for entry in identity_step.entries if entry["type"] == "rows"]

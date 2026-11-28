@@ -5946,11 +5946,18 @@ def _plan_galera(report, plan, action, member, expect, server_name=None):
         plan["undo"] = "SET GLOBAL wsrep_desync = ON; (Desync this node)"
     else:
         cluster = report.get("cluster") or {}
-        expect["last_committed"] = metrics.get("last_committed")
+        last_committed = metrics.get("last_committed")
+        conf_id = metrics.get("cluster_conf_id")
+        expect["last_committed"] = None if last_committed is None else str(last_committed)
         # The component as this node sees it: another node joining or leaving
-        # (even while it stays non-Primary) needs another review.
+        # (even while it stays non-Primary) needs another review. Keep 64-bit
+        # Galera counters as exact decimal text so JavaScript JSON round-trips
+        # (for example unsigned -1 = 18446744073709551615 on MariaDB 10.11/11.4)
+        # never lose precision.
         expect["component_view"] = {
-            "cluster_uuid": cluster.get("uuid"), "conf_id": metrics.get("cluster_conf_id"), "size": cluster.get("size"),
+            "cluster_uuid": cluster.get("uuid"),
+            "conf_id": None if conf_id is None else str(conf_id),
+            "size": cluster.get("size"),
             "members": sorted([m.get("key"), m.get("address")] for m in _members(report)),
         }
         plan.update(eyebrow="SET GLOBAL", title="Bootstrap a Primary component on %s?" % name,
@@ -6036,7 +6043,7 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
     *progress* follows the steps for the sheet (reviewed_writes.Progress)."""
     from . import reviewed_writes
     reviewed = reviewed_writes.check_reviewed(reviewed)
-    expect = reviewed.get("expect") or {}
+    expect = reviewed.get("expect") if isinstance(reviewed.get("expect"), dict) else {}
     if audit is not None:
         audit.server(expect.get("engine"), expect.get("server_version"))
     clusterset = _action_name(reviewed["action"])[0] in CLUSTERSET_ACTIONS
@@ -6048,7 +6055,9 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
     def fresh():
         report, checks = prepare_action(conn, reviewed["action"], group_checks=group_checks,
                                         check_grants=False)
-        if _server_identity(report) != {k: expect.get(k) for k in ("engine", "server_version", "server", "kind")}:
+        if not reviewed_writes.same_reviewed_value(
+                _server_identity(report),
+                {k: expect.get(k) for k in ("engine", "server_version", "server", "kind")}):
             raise ValueError("This connection now reaches another server or cluster.")
         if "routing_configuration" in expect:
             current = _clusterset_routing_configuration(report.get("clusterset") or {})

@@ -55,6 +55,56 @@ def _operators(root):
     return result
 
 
+def _kill_sheet_report(conn, read_report, *args, **kwargs):
+    """Keep an unidentified server readable, without authorizing any Kill."""
+    from . import dbops
+
+    class Transport(object):
+        failed = False
+
+        def __getattr__(self, name):
+            return getattr(conn, name)
+
+        def run(self, *read_args, **read_kwargs):
+            self.failed = False
+            try:
+                return conn.run(*read_args, **read_kwargs)
+            except BaseException as exc:
+                from .connector import PartialReadError
+                diagnostic = dbops._target_error_match(str(exc)) if isinstance(exc, PartialReadError) else None
+                code = int(diagnostic.group(1)) if diagnostic is not None else None
+                # Keep this even when an optional reader swallows the error:
+                # the poisoned evidence scope cannot make another client call.
+                # A server statement diagnostic proves the login worked even
+                # if the packet's identity cannot authorize a Kill, except for
+                # login and host refusals (which a proxy can report with a line).
+                self.failed = (code is None or 2000 <= code <= 2999 or
+                               code in (1045, 1129, 1130, 1698, 3118, 3955))
+                raise
+
+    transport = Transport()
+    evidence = dbops.TargetEvidenceConnection(transport)
+    try:
+        return dbops.target_evidence(read_report)(evidence, *args, identity=True, **kwargs)
+    except ConnectorError as exc:
+        # A validated packet proves this request reached and authenticated
+        # to a server. Only then may a later transport failure fall back to
+        # the collector's normal optional-read behavior. Never retry a failed
+        # first login, and never reuse this poisoned scope's identity.
+        if (getattr(exc, "identity_outcome", None) != "identity_unavailable" or
+                (transport.failed and evidence.variables is None)):
+            raise
+    # Discard the failed scope entirely. Never attach an identity obtained
+    # from another login, even if the fallback now reaches an identifiable node.
+    # Mandatory read failures still propagate from the unbound collector;
+    # optional failures keep its usual notes and unavailable capabilities.
+    report = read_report(conn, *args, identity=False, **kwargs)
+    report["server_identity"] = {}
+    report.setdefault("notes", []).append(
+        "Kill is unavailable because the server identity could not be confirmed on one server.")
+    return report
+
+
 def _discover_response(path, payload, workspace=None):
     """Read-only server views over the saved connection (see discover.py,
     sessions.py, innodb_status.py, error_log.py, cluster.py, proxysql.py, readyset.py, locks.py, health.py, waits.py, indexes.py, schema_health.py, io_stats.py,
@@ -131,12 +181,15 @@ def _discover_response(path, payload, workspace=None):
                 return sessions_history(conn, payload.get("id"))
             if path == "/api/live/sessions":
                 from .sessions import DEFAULT_LIMIT, sessions_report
-                return sessions_report(conn, active_only=payload.get("active_only", True),
-                                       user=payload.get("user") or None, host=payload.get("host") or None,
-                                       db=payload.get("db") or None, min_seconds=payload.get("min_seconds", 0),
-                                       limit=payload.get("limit", DEFAULT_LIMIT), identity=True,
-                                       source_mode=payload.get("source_mode", "auto"),
-                                       locked_only=payload.get("locked_only", False))
+                # Kill sheet rows and identity share one evidence scope. Its
+                # final check also catches identity failures in optional reads.
+                return _kill_sheet_report(
+                    conn, sessions_report, active_only=payload.get("active_only", True),
+                    user=payload.get("user") or None, host=payload.get("host") or None,
+                    db=payload.get("db") or None, min_seconds=payload.get("min_seconds", 0),
+                    limit=payload.get("limit", DEFAULT_LIMIT),
+                    source_mode=payload.get("source_mode", "auto"),
+                    locked_only=payload.get("locked_only", False))
             if path == "/api/live/innodb":
                 from .innodb_status import innodb_report
                 return innodb_report(conn, raw=payload.get("raw", False))
@@ -207,8 +260,8 @@ def _discover_response(path, payload, workspace=None):
                                     digest=payload.get("digest"), rule_id=payload.get("rule_id"))
             if path == "/api/live/locks":
                 from .locks import lock_report
-                return lock_report(conn, payload.get("limit", 500),
-                                   waits_only=payload.get("waits_only") is True, identity=True)
+                return _kill_sheet_report(conn, lock_report, payload.get("limit", 500),
+                                          waits_only=payload.get("waits_only") is True)
             if path == "/api/live/health":
                 from .health import DEFAULT_INTERVAL, health_report
                 return health_report(conn, payload.get("interval", DEFAULT_INTERVAL),
@@ -1413,6 +1466,7 @@ def _replication_loop_options(payload):
 def _replication_review_details(payload, loop=False):
     """Validate exactly what the confirmation showed, never client SQL alone."""
     from . import replication as rp
+    from .reviewed_writes import same_reviewed_value
     channel, statements = payload.get("channel"), payload.get("statements")
     if not isinstance(channel, str) or len(channel) > 256:
         raise ValueError("Name the channel to watch.")
@@ -1428,7 +1482,7 @@ def _replication_review_details(payload, loop=False):
         if details["receiver_guard"] not in ("on", "off"):
             raise ValueError("Send receiver_guard from the loop confirmation.")
         details.update(expect=rp.check_loop_expect(payload.get("expect")), first_failure=failure)
-        if details["expect"]["server_identity"] != failure["server_identity"]:
+        if not same_reviewed_value(details["expect"]["server_identity"], failure["server_identity"]):
             raise ValueError("The reviewed failure belongs to another server. Nothing was sent.")
     else:
         details["expect"] = failure

@@ -48,11 +48,35 @@ from the plan, ``checks`` (what to look at when the outcome is unknown) and
 ``timeout_s``.
 """
 import collections
+import math
 import re
 import threading
 import time
 
 from .connector import ConnectorError
+
+
+def same_reviewed_value(current, reviewed):
+    """Compare JSON review evidence without Python's bool/int/float coercion.
+
+    Object order is irrelevant; array order, scalar types and explicit nulls
+    are significant. Reject non-JSON values rather than letting an object's
+    equality implementation authorize a reviewed write.
+    """
+    if type(current) is not type(reviewed):
+        return False
+    if type(current) is dict:
+        return len(current) == len(reviewed) and all(type(key) is str for key in current) and \
+            all(type(key) is str for key in reviewed) and all(
+            key in reviewed and same_reviewed_value(value, reviewed[key])
+            for key, value in current.items())
+    if type(current) is list:
+        return len(current) == len(reviewed) and all(
+            same_reviewed_value(now, then) for now, then in zip(current, reviewed))
+    if type(current) is float:
+        return math.isfinite(current) and math.isfinite(reviewed) and current == reviewed
+    return type(current) in (str, int, bool, type(None)) and current == reviewed
+
 
 #: "ERROR 1045 (28000) at line 2: ..." from the mysql client in batch mode:
 #: the packet's input start line; SQL packet maps translate it to a statement
@@ -299,7 +323,9 @@ def refused(out, message, outcome, audit=None, target=None, progress=None):
     out["states"] = ["not_sent"] * len(out["statements"])
     _set(progress, "finished", out["states"], "refused")
     if audit is not None:
-        out["audit_id"] = audit.outcome(list(out.get("session_guard") or []) + out["statements"], "refused", outcome=outcome, message=message,
+        # No packet was sent. Only audit the statements the user reviewed;
+        # attempt() records the guard once all pre-send checks have passed.
+        out["audit_id"] = audit.outcome(out["statements"], "refused", outcome=outcome, message=message,
                                         target=target)
     return out
 
@@ -331,7 +357,7 @@ def execute(conn, reviewed, plan_fresh, schema_version, audit=None, typed=None, 
         fresh = plan_fresh()
     except ValueError as exc:
         return refused(out, "%s Nothing was sent." % str(exc).rstrip(), "changed", audit, expect, progress)
-    if fresh.get("statements") != reviewed.get("statements") or fresh.get("expect") != expect \
+    if fresh.get("statements") != reviewed.get("statements") or not same_reviewed_value(fresh.get("expect"), expect) \
             or fresh.get("via") != reviewed.get("via"):
         return refused(out, "The target changed after you reviewed it, so nothing was sent. Review the action "
                             "again.", "changed", audit, expect, progress)

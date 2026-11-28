@@ -1644,7 +1644,13 @@ def _actor_server(conn, engine, actor):
     keys = ('server_uuid', 'server_id', 'hostname', 'port')
     if engine == 'mariadb' and variables.get('wsrep_node_name'):
         keys += ('wsrep_node_name',)
-    return dbops.target_galera_identity(conn, engine, {k: variables.get(k, '') for k in keys}, variables, TAG)
+    identity = dbops.target_galera_identity(conn, engine, {k: variables.get(k, '') for k in keys}, variables, TAG)
+    if engine == 'mariadb':
+        # Plan and apply use the same validated packet evidence, including
+        # the version that must remain bound when a write takes another route.
+        evidence = conn.variables if isinstance(conn, dbops.TargetEvidenceConnection) else variables
+        identity['version'] = (evidence or {}).get('version', '')
+    return identity
 
 
 def _run_stdin(conn, sql, passwords=()):
@@ -1840,7 +1846,7 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
                    statements=[{'index': i, 'statement': s, 'status': 'not_sent'}
                                for i, s in enumerate(plan['statements'])])
         audit = trail()
-        out['audit_ids'].append(audit.outcome(out['session_guard'] + list(plan['statements']), 'declined' if status in (
+        out['audit_ids'].append(audit.outcome(list(plan['statements']), 'declined' if status in (
             'declined', 'needs_confirmation', 'needs_typed_name') else 'refused',
             outcome=out.get('outcome') or status, message=message,
             target=target))
@@ -1925,7 +1931,21 @@ def apply(conn, plan, expect, confirmed=False, typed_name='', store=None, surfac
             except ProfileReadError as exc:
                 # Group consent or the write policy ended after the review.
                 message = str(exc)
-                audit.complete('refused', outcome='changed', message=message)
+                # The login guard refused before transport. Finish the same
+                # pending row atomically with only the reviewed statement;
+                # earlier accepted statements retain their guarded attempts.
+                audit.finished = True
+                duration = (time.monotonic() - audit.started) * 1000.0 if audit.started is not None else None
+                try:
+                    fields = dbops._finish_fields('refused', outcome='changed', message=message,
+                                                 duration_ms=duration, password=audit.password)
+                    fields['statements'] = dbops._row(audit.operation, [display], audit.surface,
+                                                      'pending', password=audit.password)['statements']
+                    audit.store.audit_complete(audit.id, fields)
+                except Exception:
+                    # Match AuditTrail.complete when storage cannot finish:
+                    # retain its pending row and return the consent refusal.
+                    pass
                 out['statements'].append({'index': i, 'statement': display, 'status': 'not_sent'})
                 out.update(status='refused' if i == 0 else 'partial', outcome='changed',
                            message=message if i == 0 else

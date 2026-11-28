@@ -240,6 +240,43 @@ class TestBulkKillReview(unittest.TestCase):
         self.assertIn("WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0')", packet[0])
         self.assertEqual(packet[1], locks.KILL_TAG + 'KILL CONNECTION 41')
 
+    def test_single_json_numeric_disconnected_marker_refuses_after_review(self):
+        self.assert_numeric_marker_refused(bulk=False)
+
+    def test_bulk_json_numeric_disconnected_marker_refuses_after_review(self):
+        self.assert_numeric_marker_refused(bulk=True)
+
+    def assert_numeric_marker_refused(self, bulk):
+        for marker in (1, 1.0):
+            with self.subTest(marker=marker, kind=type(marker).__name__):
+                scenario = mariadb_provider_scenario()
+                identity = disconnected_provider_identity()
+                identity['wsrep_disconnected_provider'] = marker
+                expected = dict(bound_kill_expect(scenario.conn, connection=self.connection),
+                                server_identity=identity)
+                body = {'connection': self.connection, 'confirmed': True}
+                target = {'connection_id': 41, 'expect': expected}
+                if bulk:
+                    body['targets'] = [target]
+                else:
+                    body.update(target)
+                body = json.loads(json.dumps(body))
+                prepare = ui._bulk_kill_prepare if bulk else ui._kill_prepare
+                respond = ui._bulk_kill_response if bulk else ui._kill_response
+                body['review_token'] = prepare(body, self.workspace)['review_token']
+                with mock.patch('myflames.connector.MySQLConnection', return_value=scenario.conn):
+                    result = respond(json.loads(json.dumps(body)), self.workspace)
+                if bulk:
+                    self.assertEqual((result['killed'], result['refused']), (0, 1))
+                    result = result['results'][0]
+                else:
+                    self.assertEqual((result.get('outcome'), result.get('sent')), ('identity_unavailable', []))
+                self.assertEqual(result['status'], 'refused')
+                record = next(row for row in self.records() if row['id'] == result['audit_id'])
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_unavailable'))
+                self.assertEqual(scenario.kills(), [])
+                self.assertFalse(scenario.killed)
+
     def test_bulk_plain_mariadb_review_cannot_authorize_disconnected_provider_waiver(self):
         scenario = mariadb_provider_scenario()
         # An old report, including Sessions' plain identity, did not review

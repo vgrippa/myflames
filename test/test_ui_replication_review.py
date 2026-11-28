@@ -118,6 +118,26 @@ class TestReplicationReviewAudit(fixtures.ReplicationCase):
         conn.run_write.assert_not_called()
         self.assert_refused_audit(body, True, 'Receiver counters unavailable')
 
+    def test_loop_review_requires_identically_typed_failure_server_identity(self):
+        report, _ = fixtures.status('mariadb-11.4-error')
+        plan = rp.plan_skip(report, 'src1')
+        identity = dict(plan['identity']['server_identity'], wsrep_on='OFF',
+                        wsrep_disconnected_provider=True)
+        for field, reviewed, current in (('wsrep_disconnected_provider', True, 1),
+                                         ('wsrep_disconnected_provider', True, 1.0),
+                                         ('evidence', [{'value': 1}], [{'value': 1.0}])):
+            with self.subTest(field=field, kind=type(current).__name__):
+                reviewed_identity = dict(identity, **{field: reviewed})
+                body = {'channel': 'src1', 'statements': list(plan['statements']),
+                        'expect': {'engine': 'mariadb', 'server_identity': reviewed_identity},
+                        'first_failure': dict(plan['identity'], server_identity=copy.deepcopy(reviewed_identity)),
+                        'codes': [1062], 'max_skips': 2, 'max_minutes': 10, 'poll_s': 2,
+                        'receiver_guard': 'off'}
+                self.assertEqual(ui._replication_review_details(body, loop=True)['expect'], body['expect'])
+                body['first_failure']['server_identity'][field] = current
+                with self.assertRaisesRegex(ValueError, 'another server. Nothing was sent'):
+                    ui._replication_review_details(json.loads(json.dumps(body)), loop=True)
+
     def test_review_errors_redact_password_in_exception_and_refused_audit(self):
         for loop in (False, True):
             for error_type in (ValueError, ConnectorError):

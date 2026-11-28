@@ -5,6 +5,7 @@ test_cluster.py (test/_cluster_fixtures.py). Writes go to a recorder; every
 test runs with a temporary HOME and the vault backend.
 """
 import copy
+from decimal import Decimal
 import json
 import os
 import tempfile
@@ -19,6 +20,18 @@ from test_cluster import install_clusterset_batch_replay
 install_clusterset_batch_replay()
 
 UUID = '8f1a3b2c-0d4e-11ef-9a3b-0242ac120002'
+MAX_SAFE_JS_INT = 2 ** 53 - 1
+
+
+def js_json_roundtrip(value):
+    """Round-trip *value* through JSON the way JavaScript does: integers above
+    2^53-1 are rounded to the nearest IEEE 754 binary64 double."""
+    def parse_js_int(text):
+        number = int(text)
+        if -MAX_SAFE_JS_INT <= number <= MAX_SAFE_JS_INT:
+            return number
+        return int(Decimal(repr(float(number))))
+    return json.loads(json.dumps(value), parse_int=parse_js_int)
 
 
 def member(report, name):
@@ -1092,6 +1105,72 @@ class Endpoints(Home):
         result = self.send(conn, self.plan(conn, 'switchover', target['key']))
         self.assertEqual(result['status'], 'failed')
         self.assertIn('replica channel', result['message'])
+
+    def test_bootstrap_unsigned_conf_id_and_large_last_committed_survive_js_roundtrip(self):
+        for fixture, expected_conf_id, expected_last in (
+                ('galera-11.8-non-primary-unsigned', '18446744073709551615', '25'),
+                ('galera-11.8-non-primary', '-1', '25')):
+            with self.subTest(fixture=fixture):
+                report = F.report(fixture)
+                name, key = local(report)['name'], local(report)['key']
+                plan = m.plan_action(report, 'bootstrap_pc', key)
+                self.assertIs(type(plan['expect']['component_view']['conf_id']), str)
+                self.assertIs(type(plan['expect']['last_committed']), str)
+                self.assertEqual(plan['expect']['component_view']['conf_id'], expected_conf_id)
+                self.assertEqual(plan['expect']['last_committed'], expected_last)
+                conn = Writes(F.conn(fixture))
+                result = m.execute_action(conn, js_json_roundtrip(plan), typed=name)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertEqual(len(conn.writes), 1)
+                # Full API round-trip (review token + JS JSON parse/stringify).
+                api_conn = Writes(F.conn(fixture))
+                api_plan = js_json_roundtrip(self.plan(api_conn, 'bootstrap_pc', key))
+                api_result = self.send(api_conn, api_plan, typed=name)
+                self.assertEqual(api_result['status'], 'done', api_result)
+                self.assertEqual(len(api_conn.writes), 1)
+
+        # Also verify wsrep_last_committed above 2^53-1 and missing (None) values.
+        large_seqno = '9007199254740993'
+        large_edit = F.editor((F.WSREP, F.pairs(
+            wsrep_cluster_conf_id='18446744073709551615', wsrep_last_committed=large_seqno)))
+        large_conn = Writes(F.recorded('galera-11.8-non-primary', edit=large_edit)[0])
+        large_report = m.read_status(large_conn)
+        name, key = local(large_report)['name'], local(large_report)['key']
+        large_plan = m.plan_action(large_report, 'bootstrap_pc', key)
+        self.assertEqual(large_plan['expect']['last_committed'], large_seqno)
+        self.assertEqual(large_plan['expect']['component_view']['conf_id'], '18446744073709551615')
+        large_res = m.execute_action(large_conn, js_json_roundtrip(large_plan), typed=name)
+        self.assertEqual(large_res['status'], 'done', large_res)
+        self.assertEqual(len(large_conn.writes), 1)
+
+        missing_edit = F.editor((F.WSREP, F.pairs(wsrep_cluster_conf_id=None, wsrep_last_committed=None)))
+        missing_conn = Writes(F.recorded('galera-11.8-non-primary', edit=missing_edit)[0])
+        missing_report = m.read_status(missing_conn)
+        missing_plan = m.plan_action(missing_report, 'bootstrap_pc', local(missing_report)['key'])
+        self.assertIsNone(missing_plan['expect']['last_committed'])
+        self.assertIsNone(missing_plan['expect']['component_view']['conf_id'])
+        missing_res = m.execute_action(missing_conn, js_json_roundtrip(missing_plan),
+                                       typed=local(missing_report)['name'])
+        self.assertEqual(missing_res['status'], 'done', missing_res)
+        self.assertEqual(len(missing_conn.writes), 1)
+
+    def test_execute_action_rejects_coerced_server_identity_types(self):
+        report = F.report('galera-11.8-healthy')
+        key = local(report)['key']
+        base_plan = m.plan_action(report, 'desync_node', key)
+        self.assertEqual(base_plan['expect']['server']['server_id'], 1)
+        self.assertEqual(base_plan['expect']['server']['port'], 3306)
+        for field, bad_value in (('server_id', True), ('server_id', 1.0), ('port', 3306.0)):
+            with self.subTest(field=field, bad_value=bad_value):
+                tampered = copy.deepcopy(base_plan)
+                tampered['expect']['server'][field] = bad_value
+                conn = Writes(F.conn('galera-11.8-healthy'))
+                with mock.patch.object(m, 'action_checks', wraps=m.action_checks) as checks_spy:
+                    result = m.execute_action(conn, tampered)
+                self.assertEqual((result['status'], result.get('outcome')), ('refused', 'changed'))
+                self.assertIn('reaches another server or cluster', result['message'])
+                self.assertEqual(conn.writes, [])
+                checks_spy.assert_not_called()
 
 
 if __name__ == '__main__':

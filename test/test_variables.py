@@ -14,6 +14,7 @@ Server identity and platform rows, and the IS NULL/HEX persisted-value
 projection, are synthetic extensions documented in each replay fixture.
 """
 import copy
+from contextlib import ExitStack
 import json
 import os
 import sys
@@ -694,17 +695,17 @@ class TestApply(unittest.TestCase):
         plan = V.plan_change(conn, args['name'], args['value'], args['mode'])
         self.assertEqual(plan['status'], 'ready')
         self.assertIs(plan['expect']['server_identity']['wsrep_disconnected_provider'], True)
-        # JSON numbers compare equal to booleans during the fresh-plan check,
-        # but must never drop the disconnected-provider checks in the packet.
+        # The fresh-plan comparison rejects JSON numbers in boolean fields
+        # before they can drop the disconnected-provider checks in the packet.
         expect = json.loads(json.dumps(plan['expect']))
         expect['server_identity']['wsrep_disconnected_provider'] = 1
         result = V.apply_change(conn, plan, expect, confirmed=True, audit=self.audit('global'))
         self.assertEqual(result['status'], 'refused')
         self.assertEqual((result['status'], result['outcome'], result['sent']),
-                         ('refused', 'identity_unavailable', []))
-        self.assertIn('Nothing was sent', result['message'])
+                         ('refused', 'identity_mismatch', []))
+        self.assertIn('nothing was sent', result['message'])
         self.assertEqual(self.sent(conn), [])
-        self.assertEqual(self.records()[0]['outcome'], 'identity_unavailable')
+        self.assertEqual(self.records()[0]['outcome'], 'identity_mismatch')
 
     def test_loaded_provider_connecting_after_review_refuses_before_write(self):
         conn, data = replay('mariadb-11.4', 'global')
@@ -823,6 +824,65 @@ class TestApply(unittest.TestCase):
         self.assertIn('differs from the one you confirmed', result['message'])
         self.assertEqual(self.sent(conn), [])
 
+    def test_pre_send_refusals_audit_only_the_reviewed_statement(self):
+        from myflames.connector import ConnectorError
+        cases = (('confirmation', 'needs_confirmation'), ('read_only', 'read_only'),
+                 ('read_identity', 'identity_unavailable'), ('invalid', 'invalid'),
+                 ('statement', 'changed_variable'), ('empty_statement', 'changed_variable'),
+                 ('identity', 'identity_mismatch'),
+                 ('value', 'changed_variable'), ('source', 'changed_variable'),
+                 ('packet', 'identity_unavailable'))
+        for refusal, outcome in cases:
+            with self.subTest(refusal=refusal):
+                mode = 'global'
+                fresh = mysql_variable('max_connections')
+                plan = V.build_plan(fresh, '300', mode)
+                self.assertEqual(plan['status'], 'ready')
+                if refusal == 'packet':
+                    # A malformed rebuilt statement exercises the final
+                    # packet validator without replacing dbops safety checks.
+                    plan['statement'] = 'SET GLOBAL max_connections = 300; SET @other = 1'
+                    plan['expect']['statement'] = plan['statement']
+                expect = copy.deepcopy(plan['expect'])
+                fresh = copy.deepcopy(fresh)
+                kwargs = {'confirmed': refusal != 'confirmation'}
+                error = None
+                if refusal == 'read_only':
+                    kwargs['decision'] = dbops.decide(dbops.classify(plan['statement']),
+                                                      'development', read_only=True)
+                elif refusal == 'read_identity':
+                    error = ConnectorError('The server identity could not be confirmed.')
+                    error.identity_outcome = 'identity_unavailable'
+                elif refusal == 'invalid':
+                    fresh['modes'][mode] = {'available': False, 'reason': 'The mode is no longer available.'}
+                elif refusal == 'statement':
+                    plan['requested'] = '301'
+                elif refusal == 'empty_statement':
+                    expect['statement'] = ''
+                elif refusal == 'identity':
+                    fresh['server_identity']['server_uuid'] = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+                elif refusal == 'value':
+                    fresh['global_value'] = '152'
+                elif refusal == 'source':
+                    fresh['source'] = 'DYNAMIC'
+                conn = mock.Mock()
+                with ExitStack() as patches:
+                    read = patches.enter_context(mock.patch.object(
+                        V, 'read_variable', return_value=fresh, side_effect=error))
+                    if refusal == 'packet':
+                        patches.enter_context(mock.patch.object(V, 'build_plan', return_value=plan))
+                    result = V.apply_change(conn, plan, expect, audit=self.audit(mode), **kwargs)
+                self.assertEqual((result['outcome'], result['sent']), (outcome, []))
+                conn.run_write.assert_not_called()
+                if refusal in ('confirmation', 'read_only'):
+                    read.assert_not_called()
+                else:
+                    read.assert_called_once_with(conn, plan['name'])
+                record = next(row for row in self.records() if row['id'] == result['audit_id'])
+                self.assertEqual((record['status'], record['outcome']), ('refused', outcome))
+                self.assertEqual(record['statements'], [TAG + expect['statement']] if expect['statement'] else [])
+                self.assertEqual(record['target'], expect)
+
     def test_same_endpoint_with_a_different_server_refuses_before_sending(self):
         cases = (
             ('mysql-8.4', 'server_uuid', '11111111-2222-3333-4444-555555555555', 'different-uuid'),
@@ -848,6 +908,33 @@ class TestApply(unittest.TestCase):
                 result = V.apply_change(conn, plan, plan['expect'], confirmed=True, audit=self.audit('global'))
                 self.assertEqual(result['status'], 'refused')
                 self.assertEqual(self.sent(conn), [])
+
+    def test_reviewed_server_identity_preserves_json_types(self):
+        for current, reviewed in ((True, 1), (1, '1'), (1, 1.0)):
+            with self.subTest(current=current, reviewed=reviewed, kind=type(reviewed).__name__):
+                conn, plan, data = plan_from('mysql-8.4', 'global')
+                fresh = copy.deepcopy(plan['variable'])
+                # This metadata is deliberately ignored by the SQL guard:
+                # comparison must bind all reviewed fields independently.
+                fresh['server_identity']['version'] = current
+                args = data['args']
+                plan = V.build_plan(fresh, args['value'], args['mode'])
+                expect = json.loads(json.dumps(plan['expect']))
+                expect['server_identity']['version'] = reviewed
+                with mock.patch.object(V, 'read_variable', return_value=fresh):
+                    result = V.apply_change(conn, plan, expect, confirmed=True, audit=self.audit('global'))
+                self.assertEqual((result['status'], result.get('outcome')), ('refused', 'identity_mismatch'))
+                self.assertEqual(self.sent(conn), [])
+                record = next(row for row in self.records() if row['id'] == result['audit_id'])
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_mismatch'))
+
+    def test_same_preserves_nested_json_types(self):
+        for current, reviewed in ((True, 1), (1, '1'), (1, 1.0)):
+            with self.subTest(current=current, reviewed=reviewed, kind=type(reviewed).__name__):
+                self.assertFalse(V._same({'evidence': [{'value': current}]},
+                                         {'evidence': [{'value': reviewed}]}))
+        value = {'present': True, 'read': False, 'value': None, 'position': [1, 1.0, '1']}
+        self.assertTrue(V._same(value, json.loads(json.dumps(value))))
 
     def test_mariadb_server_id_change_updates_only_the_confirmed_server_identity(self):
         v = mariadb_variable('server_id', global_value='1', session_value='1', scope='SESSION',

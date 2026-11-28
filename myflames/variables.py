@@ -110,6 +110,7 @@ from decimal import Decimal, DecimalException, localcontext
 from . import dbops, mysql_sysvars
 from .connector import ConnectorError, MySQLConnection, unescape_mysql
 from .perf_common import _bytes_text, _number, _version_tuple, connection_codebase, literal, reason
+from .reviewed_writes import same_reviewed_value
 from .server_info import percona_variable, product_identity, server_label, villagesql_variable
 
 _unescape = unescape_mysql
@@ -470,7 +471,7 @@ def _read(conn, name):
     """Everything known about *name* on this server (not yet the public shape)."""
     name = check_name(name)
     extra = ("version", "version_comment", "persisted_globals_load", "version_compile_os",
-             "server_uuid", "server_id", "hostname", "port", "wsrep_node_name", "wsrep_on")
+             "server_uuid", "server_id", "hostname", "port", "server_uid", "wsrep_node_name", "wsrep_on")
     if name == "innodb_buffer_pool_size":
         extra += ("innodb_buffer_pool_chunk_size", "innodb_buffer_pool_instances", "innodb_buffer_pool_size_max")
     names = ", ".join(_quote_name(n) for n in sorted(set(extra + (name,))))
@@ -1501,7 +1502,7 @@ def unsent_result(name, mode, value, status, message):
 
 
 def _same(a, b):
-    return a == b
+    return same_reviewed_value(a, b)
 
 
 def _after(conn, name, mode, session_text=None):
@@ -1687,10 +1688,16 @@ def _unsent(plan, audit, status, outcome, message, expect, verified=None):
     if audit is not None:
         if dbops.sensitive(plan.get("name") or "") and not isinstance(audit, _SensitiveAudit):
             audit = _SensitiveAudit(audit)
-        statement = plan.get("statement") or (expect or {}).get("statement")
-        if not statement and plan.get("name") and plan.get("mode") in MODES:
-            statement = typed_statement(plan["name"], plan["mode"], plan.get("requested"))
-        result["audit_id"] = audit.outcome(list(plan.get("session_guard") or []) + ([TAG + statement] if statement else []),
+        # A fresh plan can name a different target or statement. An unsent
+        # refusal records the reviewed SQL, never that plan's session guard.
+        if "statement" in (expect or {}):
+            statement = expect["statement"]
+        else:
+            # The deprecated CLI can refuse before there is a reviewed plan.
+            statement = plan.get("statement")
+            if not statement and plan.get("name") and plan.get("mode") in MODES:
+                statement = typed_statement(plan["name"], plan["mode"], plan.get("requested"))
+        result["audit_id"] = audit.outcome([TAG + statement] if statement else [],
                                            status if status in ("declined", "refused") else "refused",
                                            outcome=outcome, message=message, target=expect, verified=verified)
     return result

@@ -175,6 +175,22 @@ async function recorded(n) {
 }
 const section = async (label) => {
   if (await page.$(".detail-back")) await page.click(".detail-back");
+  // A job card focused by Start scrolls the window (showJob's smooth
+  // scrollIntoView, kept below the top bar by .ops-job's scroll margin), so
+  // the view toolbar can sit under the sticky top bar, where a mouse click at
+  // its center lands on the top bar. Scroll back to the top as a user would
+  // until the button itself is what a click at its center reaches (a smooth
+  // scroll still in flight can carry the page back down after one scroll),
+  // then click with the mouse so hit-testing stays real. The pressed-state
+  // check stays strict.
+  await page.waitForFunction((v, wanted) => {
+    const button = [...document.querySelectorAll(`${v} .segmented button`)].find(b => b.textContent.trim() === wanted);
+    if (!button) return false;
+    const box = button.getBoundingClientRect();
+    if (button.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2))) return true;
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    return false;
+  }, {}, view, label);
   await page.locator(`${view} .segmented button ::-p-text(${label})`).click();
   await page.waitForFunction((v, l) => document.querySelector(`${v} .segmented [aria-pressed=true]`)?.textContent === l, {}, view, label);
 };
