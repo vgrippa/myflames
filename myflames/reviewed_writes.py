@@ -94,7 +94,7 @@ _PROGRESS_ID = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 class Progress(object):
     """What one send is doing now (see the module docstring)."""
 
-    def __init__(self, count, timeout=None):
+    def __init__(self, count, timeout=None, idle_timeout=None):
         self._lock = threading.Lock()
         self.phase = "received"
         self.states = ["waiting"] * count
@@ -103,7 +103,16 @@ class Progress(object):
         self.sent_at = None
         self.answered_at = None
         self.timeout = timeout
+        self.idle_timeout = idle_timeout
         self.touched = time.monotonic()
+        self.output = []
+
+    def emit(self, text, stream="stdout"):
+        """Bounded, already-redacted Shell progress for the existing poller."""
+        with self._lock:
+            self.output.append({"stream": stream, "text": text[:2048]})
+            self.output = self.output[-100:]
+            self.touched = time.monotonic()
 
     def set(self, phase, states=None, status=None):
         with self._lock:
@@ -130,10 +139,13 @@ class Progress(object):
 
     def snapshot(self):
         with self._lock:
-            return {"schema_version": PROGRESS_SCHEMA_VERSION, "phase": self.phase, "states": list(self.states),
-                    "status": self.status, "elapsed_s": round(time.time() - self.started, 1),
-                    "waiting_s": round(time.time() - self.sent_at, 1) if self.sent_at and not self.answered_at
-                    else None, "timeout_s": self.timeout}
+            snapshot = {"schema_version": PROGRESS_SCHEMA_VERSION, "phase": self.phase, "states": list(self.states),
+                        "status": self.status, "elapsed_s": round(time.time() - self.started, 1),
+                        "waiting_s": round(time.time() - self.sent_at, 1) if self.sent_at and not self.answered_at
+                        else None, "timeout_s": self.timeout, "output": list(self.output)}
+            if self.idle_timeout is not None:
+                snapshot["idle_timeout_s"] = self.idle_timeout
+            return snapshot
 
 
 class ProgressRegistry(object):
@@ -154,7 +166,7 @@ class ProgressRegistry(object):
         while len(self._items) >= self.LIMIT:
             self._items.popitem(last=False)
 
-    def start(self, progress_id, count, timeout=None):
+    def start(self, progress_id, count, timeout=None, idle_timeout=None):
         """A new Progress, or None for a missing, invalid or reused id (the
         send goes on; only its progress is not shown)."""
         if not isinstance(progress_id, str) or not _PROGRESS_ID.match(progress_id):
@@ -163,7 +175,7 @@ class ProgressRegistry(object):
             if progress_id in self._items:
                 return None
             self._prune()
-            progress = self._items[progress_id] = Progress(count, timeout)
+            progress = self._items[progress_id] = Progress(count, timeout, idle_timeout)
             return progress
 
     def get(self, progress_id):

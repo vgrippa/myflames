@@ -29,14 +29,79 @@ import {
   ageText, blindMember, checkInText, failureText, flowPercent, identityText, isGalera, isReadReplica, kindLabel,
   memberNoun, readCluster, stateWord, utcText, planClusterAction, sendClusterAction,
   type ClusterAction, type ClusterFailure, type ClusterFinding, type ClusterMember, type ClusterReport, type ClusterRouter,
+  type ClusterSetCluster, type ClusterSetMember,
 } from "./clusterApi";
 import {
-  ClusterMark, ClusterTopology, GLOSSARY, matchingProfile, namedGroupProfile, memberAddress, memberEngine, memberEngineFull, memberFlow,
-  memberKey, routerKey, type LocalMarker,
+  ClusterMark, ClusterTopology, GLOSSARY, instanceProfile, matchingProfile, namedGroupProfile, memberAddress, memberEngine,
+  memberEngineFull, memberFlow, memberKey, routerKey, type LocalMarker,
 } from "./ClusterTopology";
+import { ClusterSetMap } from "./ClusterSetMap";
+import { ClusterSetActionForm, type ClusterSetFormRequest } from "./ClusterSetActionForm";
+import { shortcut } from "./platform";
 import "./cluster.css";
 
 export type ClusterTab = "topology" | "members" | "routers";
+
+/** A routed zoom keeps its source map until the requested connection reports
+ * the named cluster. The request id also distinguishes retries on one route. */
+type ClusterZoom = { id: number; name: string; profileId: string | null; before: Bound<ClusterReport> | null };
+type ClusterNavigation = { key: string; source: Bound<ClusterReport>; zoom: ClusterZoom | null };
+
+/** The metadata-only zoom's members table selects nothing: there is no live
+ * member to inspect. */
+const metadataSelection: Selection = { key: "", select: () => {} };
+
+/** Without an active Group connection the workspace never opens another
+ * saved connection (the group is the consent), so planClusterAction omits
+ * target_profile_id and the backend plans without the route. A catalog entry
+ * can still arrive enabled after discovering same-group peers for an
+ * individually opened profile. target.self describes where Shell executes;
+ * ClusterSet changes can also need peer reads for review and reachability.
+ * Both cases keep their reason instead of failing during planning. */
+function gateUngroupedRoutes(actions: ClusterAction[] | undefined, groupName: string | null | undefined,
+    profiles?: Profile[]): ClusterAction[] {
+  const list = actions || [];
+  if (groupName) return list;
+  return list.map((a) => {
+    if (!a.enabled) return a;
+    const peerReads = a.scope === "clusterset" &&
+      /^(set_primary_cluster|force_primary_cluster|rejoin_cluster|repair_cluster|remove_cluster|remove_cluster_keep|create_replica_cluster):/.test(a.id);
+    const savedRoute = !a.target?.self && !!a.target?.profile_id;
+    if (!peerReads && !savedRoute) return a;
+    const group = (profiles?.find((p) => p.id === a.target?.profile_id)?.group || "").trim();
+    return { ...a, enabled: false,
+      why_not: peerReads
+        ? "This change needs reads from other ClusterSet members through their saved connections, which only an open Group connection may use."
+        : `This change runs on ${a.target.member_name || "another server"} through its saved connection, which only an open Group connection may use.`,
+      fix: group ? `Open the ${group} connection group, then try again.` : "Open the server's connection group, then try again." };
+  });
+}
+
+/** A cluster's two removal variants (removeCluster with dissolve true or
+ * false) collapse into one entry per replica cluster; it opens the choice
+ * sheet (ClusterSetActionForm). */
+export function mergeRemoveChoices(actions: ClusterAction[]): ClusterAction[] {
+  const out: ClusterAction[] = [];
+  const seen = new Set<string>();
+  for (const a of actions) {
+    const m = /^remove_cluster(?:_keep)?:(.+)$/.exec(a.id);
+    if (!m) { out.push(a); continue; }
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    const pair = [actions.find((x) => x.id === `remove_cluster:${m[1]}`), actions.find((x) => x.id === `remove_cluster_keep:${m[1]}`)];
+    const base = pair.find((x) => x?.enabled) || pair[0] || pair[1];
+    if (!base) continue;
+    const offered = pair.some((x) => x?.enabled);
+    out.push({ ...base, id: `remove_cluster_choice:${m[1]}`, label: `Remove ${m[1]} from the ClusterSet…`,
+      enabled: offered, why_not: offered ? null : base.why_not, fix: offered ? null : base.fix });
+  }
+  return out;
+}
+const metadataMemberColumns: Column<ClusterSetMember>[] = [
+  { key: "name", label: "Member", primary: true, flex: true, sort: (m) => m.label || m.address || "", render: (m) => m.label || m.address || "?" },
+  { key: "state", label: "State", minWidth: 100, sort: (m) => m.state || "", render: (m) => m.state || "Not read" },
+  { key: "role", label: "Role", minWidth: 100, sort: (m) => m.role || "", render: (m) => m.role || "—" },
+];
 const ROLE_WORD: Record<string, string> = { PRIMARY: "Primary", SECONDARY: "Secondary", READ_REPLICA: "Read replica" };
 const SOURCE_TEXT: Record<string, string> = {
   wsrep_local_state_comment: "wsrep_local_state_comment on this node",
@@ -114,7 +179,7 @@ export function summaryText(report: ClusterReport, stale = false): string {
   return parts.join(" · ");
 }
 
-export function ClusterPlace({ connection, disabled = false, report, onReport, failure = null, onFailure, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection, onEditGroup, groupRevision = 0 }: {
+export function ClusterPlace({ connection, disabled = false, report, onReport, failure = null, onFailure, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection, onEditGroup, groupRevision = 0, onZoomCluster }: {
   connection: Connection;
   disabled?: boolean;
   /** Owned by the shell so Server's Refresh all feeds this place and the sidebar. */
@@ -130,6 +195,10 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
   onEditGroup?: (name: string) => void;
   /** A successful edit of the active group invalidates its action catalog. */
   groupRevision?: number;
+  /** A ClusterSet card with a saved route asks to zoom into that cluster
+   * through the route's saved connection (the coordinator wires the report
+   * swap in main.tsx). */
+  onZoomCluster?: (profileId: string) => void;
 }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -158,7 +227,7 @@ export function ClusterPlace({ connection, disabled = false, report, onReport, f
         <ClusterView connection={connection} disabled={disabled} report={report} onReport={onReport}
           failure={failure} onFailure={onFailure} selection={selection} tab={tab} onTab={setTab}
           onOpenProxySql={onOpenProxySql} onOpenReadyset={onOpenReadyset} profiles={profiles} onSwitchConnection={onSwitchConnection}
-          onEditGroup={onEditGroup} groupRevision={groupRevision} />
+          onEditGroup={onEditGroup} groupRevision={groupRevision} onZoomCluster={onZoomCluster} />
       </div>
     </InspectorContext.Provider>
   );
@@ -226,11 +295,13 @@ function Findings({ report, selection }: { report: ClusterReport; selection: Sel
  * to a member this workspace already knows. A Group member without a saved
  * route offers the shared group editor. Clicking a disabled action never
  * plans or sends. */
-function ActionGroup({ list, label, blocked, planning, busy, onStart, report, profiles, onSwitchConnection, groupName, onEditGroup }: {
+function ActionGroup({ list, label, blocked, readBlocked = blocked, planning, busy, onStart, report, profiles, onSwitchConnection, groupName, onEditGroup }: {
   list: ClusterAction[];
   label: string;
   /** Why every change is blocked regardless of eligibility (a stale report, a read-only connection). */
   blocked: string;
+  /** The fixed Shell check is a read; every other catalog entry stays a change. */
+  readBlocked?: string;
   planning: string;
   busy: boolean;
   onStart: (a: ClusterAction) => void;
@@ -243,8 +314,12 @@ function ActionGroup({ list, label, blocked, planning, busy, onStart, report, pr
   // The shared ActionGroup does the rendering; the slot adds the
   // Cluster-only extras (Edit group, Use <connection>, GRANT Commands,
   // privileges_unreadable) inside the message a disabled action opens.
+  const hasCheck = list.some((a) => a.id === "check_clusterset");
+  const shown = hasCheck && blocked !== readBlocked ? list.map((a) => a.id === "check_clusterset" ? a : {
+    ...a, enabled: false, why_not: [blocked, !a.enabled && a.why_not].filter(Boolean).join(" "), fix: a.enabled ? null : a.fix,
+  }) : list;
   return (
-    <CatalogActionGroup list={list} label={label} blocked={blocked} planning={planning} busy={busy} onStart={onStart}
+    <CatalogActionGroup list={shown} label={label} blocked={hasCheck ? readBlocked : blocked} planning={planning} busy={busy} onStart={onStart}
       slot={(a) => {
         const note = a.enabled ? a.target?.note : undefined;
         const editGroup = !a.enabled && a.scope === "member" && a.target?.profile_id === null && groupName && onEditGroup
@@ -286,29 +361,175 @@ function ActionGroup({ list, label, blocked, planning, busy, onStart, report, pr
   );
 }
 
-function ClusterView({ connection, disabled, report: bound, onReport, failure, onFailure, selection, tab, onTab, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection, onEditGroup, groupRevision }: {
+function ClusterView({ connection, disabled, report: incomingBound, onReport, failure, onFailure, selection, tab, onTab, onOpenProxySql, onOpenReadyset, profiles, onSwitchConnection, onEditGroup, groupRevision, onZoomCluster }: {
   connection: Connection; disabled: boolean; report: Bound<ClusterReport> | null;
   onReport: (report: Bound<ClusterReport>) => void; failure: ClusterFailure | null; onFailure?: (key: string, message: string) => void;
   selection: Selection; tab: ClusterTab; onTab: (tab: ClusterTab) => void;
   onOpenProxySql?: () => void; onOpenReadyset?: () => void; profiles?: Profile[]; onSwitchConnection?: (id: string) => void;
   onEditGroup?: (name: string) => void; groupRevision: number;
+  onZoomCluster?: (profileId: string) => void;
 }) {
   const reads = useConnectionReads(connection);
+  const onScreen = useViewOnScreen();
+  const [navigation, setNavigation] = useState<ClusterNavigation | null>(null);
+  const zoomSequence = useRef(0);
+  // Only the connection switch explicitly requested by this zoom can keep
+  // its navigation. After adoption, the full connection key owns it.
+  const routedZoom = useRef<{ id: number; profileId: string; group: string } | null>(null);
+  const requested = routedZoom.current;
+  const adoptingRoute = !!requested && requested.id === navigation?.zoom?.id
+    && requested.profileId === connection.profile_id && requested.group === (connection.group_name || "");
+  const navigationHere = navigation && (navigation.key === reads.key || adoptingRoute) ? navigation : null;
+  const zoom = navigationHere?.zoom || null;
+  const waitingForConnection = !!zoom?.profileId && zoom.profileId !== connection.profile_id;
+  const incomingSet = incomingBound?.report.available && incomingBound.report.kind === "innodb_cluster"
+    ? incomingBound.report.clusterset : null;
+  const zoomReportMatches = !!zoom && !waitingForConnection && incomingBound?.key === reads.key
+    && (!zoom.profileId || incomingBound !== zoom.before)
+    && incomingBound.report.cluster.name === zoom.name && incomingSet?.local_cluster === zoom.name
+    && incomingSet.name === navigationHere?.source.report.clusterset?.name;
+  // A failed or mismatched route must never replace the map with an empty
+  // report or put another cluster's members/actions under this breadcrumb.
+  const bound = navigationHere && ((zoom && !zoomReportMatches)
+    || incomingBound?.key !== reads.key || !incomingSet || incomingBound.report.cluster.name !== incomingSet.local_cluster)
+    ? navigationHere.source : incomingBound;
   const report = bound?.report || null;
   const other = bound && bound.key !== reads.key ? bound.label : null;
   // A failed read of the connection in use (this place's Refresh or Refresh
   // all) that left the report on screen as it was: shown as the last report
   // until a read succeeds through either path (a new report).
-  const current = failure && failure.key === reads.key && failure.over === bound ? failure : null;
+  const current = failure && failure.key === reads.key && failure.over === incomingBound ? failure : null;
   const failedOver = !other && !!report && !!current;
-  const stale = !!other || failedOver;
+  const zoomPending = !!zoom?.profileId && !zoomReportMatches;
+  const stale = !!other || failedOver || zoomPending || bound !== incomingBound;
   const marker: LocalMarker = stale
     ? { word: "Read here", title: `This report was read on ${bound?.label || "another connection"}${report ? `, ${readAt(report)}` : ""}` }
     : { word: "This connection" };
+  // The zoomable ClusterSet level (ClusterSetMap): null is the set map. A
+  // zoom survives a refresh of the same report; a connection change ends it,
+  // except the one a routed zoom itself causes (routedZoom below).
+  const cs = report && report.available && report.kind === "innodb_cluster" ? report.clusterset || null : null;
+  const zoomRef = useRef<ClusterZoom | null>(null);
+  zoomRef.current = zoom;
+  const scrollKept = useRef(0);
+  useEffect(() => {
+    const routed = routedZoom.current;
+    routedZoom.current = null;
+    if (routed && routed.id === navigation?.zoom?.id && connection.profile_id === routed.profileId
+      && (connection.group_name || "") === routed.group) {
+      setNavigation((n) => n?.zoom?.id === routed.id ? { ...n, key: reads.key } : null);
+    } else setNavigation((n) => n?.key === reads.key ? n : null);
+  }, [reads.key]);
+  // A report that no longer records the zoomed cluster ends the zoom.
+  useEffect(() => {
+    const next = incomingBound?.key === reads.key ? incomingBound.report.clusterset : null;
+    if (zoom && next && !next.clusters.some((c) => (c.name || "") === zoom.name)) {
+      setNavigation(null);
+      onTab("topology");
+    }
+  }, [incomingBound, reads.key, zoom]);
+  // A fresh report of the connection in use that no longer records the
+  // ClusterSet this navigation came from (the set was dissolved, or this
+  // cluster was removed from it) ends the navigation itself: the view leaves
+  // the zoom and shows the fresh report, never the stale snapshot. Only a
+  // successful read proves that: a report that could not read the server
+  // keeps the zoom's "was not read" state.
+  useEffect(() => {
+    if (!navigationHere || incomingBound?.key !== reads.key || !incomingBound.report.available) return;
+    const source = navigationHere.source.report.clusterset;
+    const fresh = incomingBound.report.kind === "innodb_cluster" ? incomingBound.report.clusterset : null;
+    if (fresh && source && (fresh.name || null) === (source.name || null)) return;
+    routedZoom.current = null;
+    setNavigation(null);
+    onTab("topology");
+  }, [incomingBound, reads.key, navigationHere]);
+  const zoomCluster = zoom && cs ? cs.clusters.find((c) => (c.name || "") === zoom.name) || null : null;
+  const zoomKind: "local" | "routed" | "metadata" | null = !zoomCluster ? null
+    : zoomReportMatches || cs?.local_cluster === zoom?.name ? "local"
+      : zoom?.profileId ? "routed" : "metadata";
+  // At the ClusterSet level the place leads with the ClusterSet (set status
+  // line, set changes, map): the local cluster's own summary (status line,
+  // the Quorum/Members/This member/Mode cards, the group line) renders only
+  // when zoomed into that cluster. A metadata-only zoom, or a routed one
+  // still waiting for its member's report, shows none of the report on
+  // screen either: it belongs to another cluster.
+  const showClusterSummary = !cs || (!!zoom && zoomKind !== "metadata" && !zoomPending);
+  function openCluster(c: ClusterSetCluster) {
+    if (!bound || !cs || (zoomRef.current && zoomRef.current.name === (c.name || ""))) return;
+    scrollKept.current = document.querySelector(".cluster-view .view-main")?.scrollTop || 0;
+    const useRoute = c.route && (!c.route.self || (!!connection.group_name && !!navigationHere && c.route.profile_id !== connection.profile_id));
+    // A routed zoom asks the shell to move this place to the route's saved
+    // connection (the per-place member routing, main.tsx chooseMember), which
+    // only an active Group connection can do. On an individual connection the
+    // requested member never becomes current and the view would wait forever,
+    // so the zoom stays on the metadata: its fix names the saved connection
+    // to switch to.
+    const profileId = (!stale || !!navigationHere) && useRoute && onZoomCluster && connection.group_name
+      ? c.route?.profile_id || null : null;
+    const target = { id: ++zoomSequence.current, name: c.name || "", profileId, before: incomingBound };
+    setNavigation({ key: reads.key, source: bound, zoom: target });
+    onTab("topology");
+    // A saved route asks the shell to move this place to that member (the
+    // per-place member routing the Topology map's cards use); that member's
+    // report is then the zoomed view.
+    if (profileId && onZoomCluster) {
+      if (profileId !== connection.profile_id) routedZoom.current = { id: target.id, profileId, group: connection.group_name || "" };
+      onZoomCluster(profileId);
+    }
+  }
+  function zoomOut() {
+    const current = zoomRef.current;
+    if (!current) return;
+    routedZoom.current = null;
+    setNavigation((n) => n ? { ...n, zoom: null } : null);
+    onTab("topology");
+    requestAnimationFrame(() => {
+      const main = document.querySelector(".cluster-view .view-main");
+      if (main) main.scrollTop = scrollKept.current;
+      const card = document.querySelector(`.clusterset-cluster[data-cluster="${CSS.escape(current.name)}"]`);
+      if (card instanceof HTMLElement) card.focus();
+    });
+  }
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!onScreen || !zoomRef.current || !(e.metaKey || e.ctrlKey) || e.key !== "ArrowUp") return;
+      if ([...document.querySelectorAll('dialog[open], [aria-modal="true"], [role="dialog"], [role="alertdialog"]')]
+        .some((dialog) => dialog.getClientRects().length > 0)) return;
+      // Not while typing: a text field keeps its keys.
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) return;
+      e.preventDefault();
+      zoomOut();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onScreen]);
+  const zoomMismatch = zoomPending && !waitingForConnection && !reads.loading && incomingBound?.key === reads.key
+    && incomingBound !== navigationHere?.source ? `The saved connection did not report ${zoom?.name}. Refresh to try again.` : "";
+  const pendingStatus = zoom && (
+    <p className="clusterset-pending" role="status">
+      {current || reads.error || zoomMismatch ? `${zoom.name} was not read. Refresh to try again.`
+        : `Reading ${zoom.name} through ${zoomCluster?.route?.profile_name || "the saved connection"}…`}
+    </p>
+  );
   async function load(force = false) {
     if (disabled) return;
     await reads.run("cluster", "Reading the cluster…", readCluster, onReport, { force, onError: (message) => onFailure?.(reads.key, message) });
   }
+  // A routed zoom moved the place to the route's member (the shell's
+  // per-place member routing): read that member once its connection is in
+  // use. Until its report arrives the pending status shows; the report it
+  // replaces is another connection's (other), greyed. One read per zoom and
+  // connection key: a failed read keeps the map and the reason, and Refresh
+  // or reopening the same route retries.
+  const routedRead = useRef<{ id: number; key: string } | null>(null);
+  useEffect(() => {
+    if (!zoom || !zoomPending || waitingForConnection || disabled) return;
+    if (routedRead.current?.id === zoom.id && routedRead.current.key === reads.key) return;
+    routedRead.current = { id: zoom.id, key: reads.key };
+    void load(true);
+  }, [zoom?.id, zoomPending, waitingForConnection, disabled, reads.key]);
   const policy = useWritePolicy();
   // ActionReview strips the token into a separate send argument. Keep the
   // clicked catalog route with that token, outside the signed plan, so a
@@ -320,7 +541,6 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
       reviewedTarget.current?.token === token ? reviewedTarget.current.profileId : null),
     onSent: () => { void load(true); },
   });
-  const onScreen = useViewOnScreen();
   const seenGroupRevision = useRef(0);
   const groupChanged = seenGroupRevision.current !== groupRevision;
   useEffect(() => {
@@ -336,28 +556,145 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
   const shownTab: ClusterTab = !routersTab && tab === "routers" ? "topology" : tab;
   const members = report?.members || [];
   const routers = report?.routers || [];
-  const chosenMember = isCluster ? members.find((m) => m.key === selection.key) : undefined;
-  const routerIndex = isCluster ? routers.findIndex((r, i) => routerKey(r, i) === selection.key) : -1;
+  const chosenMember = isCluster && !zoomPending && zoomKind !== "metadata" ? members.find((m) => m.key === selection.key) : undefined;
+  const routerIndex = isCluster && !zoomPending && zoomKind !== "metadata" ? routers.findIndex((r, i) => routerKey(r, i) === selection.key) : -1;
   const chosenRouter = routerIndex >= 0 ? routers[routerIndex] : undefined;
   const galera = !!report && isGalera(report);
   const noun = report ? memberNoun(report) : "Member";
 
   // Changes only on the current report of the connection in use, with its
   // write policy known and not read-only.
-  const changeBlock = stale ? (other ? `This report was read on ${other}. Refresh to read the connection in use.` : "The last read failed. Refresh first.")
+  const readBlock = stale ? (other ? `This report was read on ${other}. Refresh to read the connection in use.` : "The last read failed. Refresh first.")
     : disabled ? "Reads are paused." : policy?.blocked ? policy.blocked
-      : connection.read_only ? "This connection is read-only in myflames, so changes are refused." : "";
-  function start(a: ClusterAction) {
-    if (changeBlock || actions.busy || !a.enabled) return;
+      : "";
+  const changeBlock = readBlock || (connection.read_only ? "This connection is read-only in myflames, so changes are refused." : "");
+  // An individual (non-group) connection never advertises an action whose
+  // route the plan would omit (gateUngroupedRoutes).
+  const allActions = useMemo(
+    () => gateUngroupedRoutes(report?.actions, connection.group_name, stale ? undefined : profiles),
+    [report, connection.group_name, stale, profiles]);
+  const [setForm, setSetForm] = useState<{
+    request: ClusterSetFormRequest; key: string; catalog: ClusterAction[]; groupRevision: number;
+  } | null>(null);
+  const activeSetForm = setForm && setForm.key === reads.key && setForm.catalog === allActions
+    && setForm.groupRevision === groupRevision && !changeBlock && !actions.busy ? setForm.request : null;
+  useEffect(() => {
+    if (setForm && !activeSetForm) setSetForm(null);
+  }, [setForm, activeSetForm]);
+  function openSetForm(request: ClusterSetFormRequest) {
+    setSetForm({ request, key: reads.key, catalog: allActions, groupRevision });
+  }
+  function reviewPlan(a: ClusterAction, parameters?: Record<string, unknown>) {
     void actions.review(a.id, async (c) => {
       const profileId = a.target?.profile_id ?? null;
-      const plan = await planClusterAction(c, a.id, a.member_key ?? null, profileId);
+      const plan = await planClusterAction(c, a.id, a.member_key ?? null, profileId, parameters);
       reviewedTarget.current = { token: plan.review_token || "", profileId };
+      // The server still classifies and authorizes the exact reviewed call.
+      // Its generic production policy's danger tone does not fit this read.
+      if (a.id === "check_clusterset" && plan.action === "check_clusterset") {
+        plan.policy = { ...(plan.policy || { action: "confirm", title: plan.title, text: "" }), tone: "primary" };
+      }
       return plan;
     });
   }
+  function start(a: ClusterAction, parameters?: Record<string, unknown>) {
+    // Form choices are resolved against this render's catalog, then pass
+    // through the same guards as their original action button.
+    if (parameters !== undefined) {
+      const latest = activeSetForm && allActions.find((entry) => entry.id === a.id);
+      if (!latest) return;
+      a = latest;
+    }
+    if ((a.id === "check_clusterset" ? readBlock : changeBlock) || actions.busy || !a.enabled) return;
+    if (cs && parameters === undefined) {
+      // Set-level actions with choices fill them before the review.
+      const remove = /^remove_cluster_choice:(.+)$/.exec(a.id);
+      if (remove) { openSetForm({ kind: "remove", name: remove[1] }); return; }
+      if (/^create_replica_cluster:/.test(a.id)) { openSetForm({ kind: "create", action: a }); return; }
+      if (/^set_routing_option(:|$)/.test(a.id)) { openSetForm({ kind: "routing", action: a }); return; }
+      // Promotion and dissolve open their forms only when this read shows
+      // the condition their choice answers: unreachable replica clusters to
+      // invalidate (the PromoteForm candidates), or a cluster the dissolve
+      // cannot reach (force). Without it they go straight to review.
+      const promote = /^(?:set_primary_cluster|force_primary_cluster):(.+)$/.exec(a.id);
+      if (promote && cs.clusters.some((c) =>
+        c.role === "REPLICA" && !c.invalidated && !!c.name && c.name !== promote[1] && c.read === "failed")) {
+        openSetForm({ kind: "promote", action: a });
+        return;
+      }
+      if (/^dissolve_clusterset(:|$)/.test(a.id) && cs.clusters.some((c) => c.read === "failed")) {
+        openSetForm({ kind: "dissolve", action: a });
+        return;
+      }
+    }
+    reviewPlan(a, parameters);
+  }
+  // Set-level changes: scope "clusterset" once the backend lane tags it;
+  // today the three ClusterSet families arrive as overview actions.
+  const isSetAction = (a: ClusterAction) =>
+    (a.scope as string) === "clusterset" || /^(set_primary_cluster|force_primary_cluster|rejoin_cluster)(:|$)/.test(a.id);
+  const setActions = cs ? allActions.filter(isSetAction) : [];
+  const setDisplay = mergeRemoveChoices(setActions);
+  const clusterActions = cs ? allActions.filter((a) => !isSetAction(a)) : allActions;
+  const metadataActions = zoom ? mergeRemoveChoices(setActions.filter((a) => a.cluster_name === zoom.name)) : [];
+  // A cluster without a route: its members from the metadata, every action
+  // disabled, and the way to read it (never a new connection).
+  const metadataBlock = "This cluster was not read, so no change is offered: only the ClusterSet metadata is shown.";
+  const metadataMembers = zoomKind === "metadata" && zoomCluster ? zoomCluster.members || [] : [];
+  const groupProfiles = connection.group_name ? profiles?.filter((p) => (p.group || "").trim() === connection.group_name) : profiles;
+  const metadataUse = zoomKind === "metadata" && !stale && onSwitchConnection
+    ? metadataMembers.map((m) => instanceProfile(m, groupProfiles)).find((p): p is Profile => !!p)
+    : undefined;
+  const metadataFix = zoomKind === "metadata" && zoom ? (
+    metadataUse && onSwitchConnection ? (
+      <button type="button" className="text-button cluster-use-node" onClick={() => onSwitchConnection(metadataUse.id)}>
+        Use {metadataUse.name}
+      </button>
+    ) : connection.group_name ? (
+      <p className="hint">
+        Add a saved connection for a {zoom.name} member to this group.
+        {onEditGroup && !stale && (
+          <> <button type="button" className="text-button cluster-edit-group" onClick={() => onEditGroup(connection.group_name!)}>Edit group…</button></>
+        )}
+      </p>
+    ) : (
+      <p className="hint">No saved connection is a {zoom.name} member.</p>
+    )
+  ) : null;
+  const metadataView = zoomKind === "metadata" && zoomCluster && zoom ? (
+    <div className="clusterset-metadata-only">
+      <p className="cluster-flow">
+        {zoomCluster.read === "failed" && zoomCluster.read_error ? zoomCluster.read_error : "Metadata only: the members as the ClusterSet metadata records them; their state is read on them."}
+      </p>
+      {metadataFix}
+      {metadataMembers.length ? (
+        <ul className="clusterset-instances" aria-label={`${zoom.name} members`}>
+          {metadataMembers.map((m) => (
+            <li key={m.server_uuid || m.address || m.label || ""}>
+              <span className="clusterset-instance-name" title={m.address || ""}>{m.label || m.address || "?"}</span>
+              {m.instance_type === "read-replica" && <span className="clusterset-tag">Read replica</span>}
+              {m.state && <span className="clusterset-tag">{m.state}</span>}
+              {m.role && <span className="clusterset-tag">{m.role}</span>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="cluster-flow">No members in the metadata read here.</p>
+      )}
+      {metadataActions.length > 0 && (
+        <section className="cluster-actions" aria-label={`Changes for ${zoom.name}`}>
+          <span className="cluster-row-label">Changes · {zoom.name}</span>
+          <ActionGroup list={metadataActions} label={`Changes for ${zoom.name}`} blocked={metadataBlock}
+            planning={actions.planning} busy={actions.busy} onStart={start} report={report!}
+            profiles={stale ? undefined : profiles} onSwitchConnection={stale ? undefined : onSwitchConnection}
+            groupName={connection.group_name} onEditGroup={stale ? undefined : onEditGroup} />
+        </section>
+      )}
+    </div>
+  ) : null;
+  const setRouters = zoomKind === "metadata" && zoom ? (cs?.routers || []).filter((r) => !r.cluster_name || r.cluster_name === zoom.name) : [];
   const memberActions = (m: ClusterMember): ReactNode => (m.actions || []).length && report ? (
-    <ActionGroup list={m.actions || []} label={`Changes for ${m.name}`} blocked={changeBlock} planning={actions.planning}
+    <ActionGroup list={gateUngroupedRoutes(m.actions, connection.group_name, stale ? undefined : profiles)} label={`Changes for ${m.name}`} blocked={changeBlock} planning={actions.planning}
       busy={actions.busy} onStart={start} report={report} profiles={stale ? undefined : profiles}
       onSwitchConnection={stale ? undefined : onSwitchConnection} groupName={connection.group_name}
       onEditGroup={stale ? undefined : onEditGroup} />
@@ -406,7 +743,7 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
 
   const tiles = report && isCluster ? clusterTiles(report, stale) : null;
   const tone: Tone | undefined = !report || !isCluster ? (report && !report.available ? "unknown" : undefined) : report.status;
-  const failed = current ? failureText(current.message) : reads.error && !onFailure ? failureText(reads.error) : "";
+  const failed = current ? failureText(current.message) : reads.error && !onFailure ? failureText(reads.error) : zoomMismatch;
   const findings = isCluster && report!.findings.length > 0 && shownTab !== "routers" ? <Findings key={bound?.key} report={report!} selection={selection} /> : null;
   const summaryNotes = useMemo(() => {
     if (!report) return undefined;
@@ -458,12 +795,14 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
             <p>Last read {readAt(report)}; the read since failed. Refresh to try again.</p>
           </div>
         )}
-        <SummaryLine tone={tone} toneLabel={!report.available ? "Not available" : report.status === "unknown" ? "Not judged" : undefined}
-          notes={summaryNotes}
-          notesTitle="Notes: where the values come from, what this server cannot see, and engine differences">
-          {summaryText(report, stale)}
-        </SummaryLine>
-        {isCluster && !stale && !!identityText(report, connection.group_name) && <p className="cluster-identity">{identityText(report, connection.group_name)}</p>}
+        {showClusterSummary && (
+          <SummaryLine tone={tone} toneLabel={!report.available ? "Not available" : report.status === "unknown" ? "Not judged" : undefined}
+            notes={summaryNotes}
+            notesTitle="Notes: where the values come from, what this server cannot see, and engine differences">
+            {summaryText(report, stale)}
+          </SummaryLine>
+        )}
+        {showClusterSummary && isCluster && !stale && !!identityText(report, connection.group_name) && <p className="cluster-identity">{identityText(report, connection.group_name)}</p>}
         {!report.available ? (
           <>
             <PrerequisiteGate>{deniedText(report.message)}</PrerequisiteGate>
@@ -508,39 +847,113 @@ function ClusterView({ connection, disabled, report: bound, onReport, failure, o
             )}
           </>
         ) : <>
+          {/* Zoomed into a ClusterSet cluster: the way back to the set map. */}
+          {cs && zoom && (
+            <div className="clusterset-breadcrumb">
+              <span className="clusterset-crumb">ClusterSet {cs.name || "(unnamed)"} › {zoom.name}</span>
+              <button type="button" className="text-button clusterset-zoom-out" onClick={zoomOut}
+                title={`Back to the ClusterSet map (${shortcut("↑")})`}>
+                Zoom out <kbd>{shortcut("↑")}</kbd>
+              </button>
+            </div>
+          )}
           {/* Not OK: what is wrong comes first, above the tiles. */}
-          {report.status !== "ok" && findings}
-          {tiles}
-          {report.status === "ok" && findings}
+          {showClusterSummary && report.status !== "ok" && findings}
+          {showClusterSummary && tiles}
+          {showClusterSummary && report.status === "ok" && findings}
           {shownTab === "topology" ? (
-            <>
-              <ConnectionGroupBar
-                group={report.connection_group}
-                connection={connection}
-                profiles={profiles}
-                disabled={disabled || stale}
-                onReload={() => load(true)}
-              />
-              <ClusterTopology report={report} selection={selection} marker={marker}
-                profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined}
-                onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined}
-                groupName={!stale ? connection.group_name : undefined} />
-            </>
+            cs && !zoom ? (
+              <div className="clusterset-zoom" key="set-map">
+                <ConnectionGroupBar
+                  group={report.connection_group}
+                  connection={connection}
+                  profiles={profiles}
+                  disabled={disabled || stale}
+                  onReload={() => load(true)}
+                />
+                {setDisplay.length > 0 && (
+                  <section className="cluster-actions" aria-label="ClusterSet changes">
+                    <span className="cluster-row-label">Changes · the ClusterSet</span>
+                    <ActionGroup list={setDisplay} label="Changes for the ClusterSet" blocked={changeBlock} readBlocked={readBlock}
+                      planning={actions.planning} busy={actions.busy} onStart={start} report={report}
+                      profiles={stale ? undefined : profiles} onSwitchConnection={stale ? undefined : onSwitchConnection}
+                      groupName={connection.group_name}
+                      onEditGroup={stale ? undefined : onEditGroup} />
+                  </section>
+                )}
+                {activeSetForm && (
+                  <ClusterSetActionForm request={activeSetForm} catalog={setActions} cs={cs}
+                    onCancel={() => setSetForm(null)}
+                    onReview={(action, parameters) => { setSetForm(null); start(action, parameters); }} />
+                )}
+                <ClusterSetMap cs={cs} onOpen={openCluster} current={!stale} />
+              </div>
+            ) : cs && zoom ? (
+              <div className="clusterset-zoom" key={`zoom-${zoom.name}`}>
+                {zoomPending ? pendingStatus : metadataView || (
+                  <>
+                    <ConnectionGroupBar
+                      group={report.connection_group}
+                      connection={connection}
+                      profiles={profiles}
+                      disabled={disabled || stale}
+                      onReload={() => load(true)}
+                    />
+                    <ClusterTopology report={report} selection={selection} marker={marker}
+                      profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined}
+                      onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined}
+                      groupName={!stale ? connection.group_name : undefined} />
+                  </>
+                )}
+              </div>
+            ) : (
+              <>
+                <ConnectionGroupBar
+                  group={report.connection_group}
+                  connection={connection}
+                  profiles={profiles}
+                  disabled={disabled || stale}
+                  onReload={() => load(true)}
+                />
+                <ClusterTopology report={report} selection={selection} marker={marker}
+                  profiles={!stale ? profiles : undefined} onSwitchConnection={!stale ? onSwitchConnection : undefined}
+                  onOpenReadyset={!stale ? onOpenReadyset : undefined} onOpenProxySql={!stale ? onOpenProxySql : undefined}
+                  groupName={!stale ? connection.group_name : undefined} />
+              </>
+            )
           ) : shownTab === "members" ? (
-            <DataTable key={membersTable} id={membersTable} label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
+            zoomPending ? pendingStatus : zoomKind === "metadata" && zoomCluster ? (
+              <DataTable key="clusterset.members" id="clusterset.members" label={`${zoom?.name || "Cluster"} members`}
+                columns={metadataMemberColumns} rows={metadataMembers}
+                rowKey={(m) => m.server_uuid || m.address || m.label || ""} selection={metadataSelection} />
+            ) : (
+              <DataTable key={membersTable} id={membersTable} label={`Cluster ${noun.toLowerCase()}s`} columns={memberColumns} rows={members} rowKey={memberKey} selection={selection} />
+            )
           ) : (
-            routers.length ? (
+            zoomPending ? pendingStatus : zoomKind === "metadata" && zoom ? (
+              setRouters.length ? (
+                <ul className="clusterset-plain" aria-label="Routers, stored configuration">
+                  {setRouters.map((r, i) => (
+                    <li key={r.id ?? i}>
+                      {r.name || r.address || "Router"}
+                      {typeof r.options?.target_cluster === "string" && r.options.target_cluster ? ` → ${r.options.target_cluster}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              ) : <EmptyState icon="cluster" title="No routers recorded">No MySQL Router is recorded for {zoom.name} in the ClusterSet metadata.</EmptyState>
+            ) : routers.length ? (
               <DataTable key="cluster.routers" id="cluster.routers" label="Routers" columns={routerColumns} rows={routers} rowKey={(r) => routerKey(r, routers.indexOf(r))} selection={selection} />
             ) : <EmptyState icon="cluster" title="No routers registered">No MySQL Router is registered for this cluster in the InnoDB Cluster metadata.</EmptyState>
           )}
           {/* Every cluster-wide change, always: the mode switches and, in a
-              ClusterSet, the ClusterSet changes, each enabled or with its
-              reason and fix. Below the tab content so the first screen stays
-              the cluster's state. */}
-          {(report.actions || []).length > 0 && (
+              ClusterSet zoomed into a cluster, this cluster's changes (the
+              ClusterSet changes stay on the set map), each enabled or with
+              its reason and fix. Below the tab content so the first screen
+              stays the cluster's state. */}
+          {clusterActions.length > 0 && (!cs || (!!zoom && zoomKind !== "metadata" && !zoomPending)) && (
             <section className="cluster-actions" aria-label="Cluster changes">
               <span className="cluster-row-label">Changes · the whole cluster</span>
-              <ActionGroup list={report.actions || []} label="Changes for the cluster" blocked={changeBlock}
+              <ActionGroup list={clusterActions} label="Changes for the cluster" blocked={changeBlock} readBlocked={readBlock}
                 planning={actions.planning} busy={actions.busy} onStart={start} report={report}
                 profiles={stale ? undefined : profiles} onSwitchConnection={stale ? undefined : onSwitchConnection}
                 groupName={connection.group_name}

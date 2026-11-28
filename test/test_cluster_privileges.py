@@ -15,6 +15,9 @@ from _grants_fixtures import grants_batch
 from _reviewed_replay import guarded_packets
 from myflames import cluster as m, cluster_shell, dbops, privileges, reviewed_writes
 from myflames.connector import ConnectorError
+from test_cluster import install_clusterset_batch_replay
+
+install_clusterset_batch_replay()
 
 
 SHELL = {'path': '/opt/mysqlsh/bin/mysqlsh', 'version': '8.4.6', 'version_tuple': [8, 4, 6]}
@@ -130,7 +133,9 @@ class _ClusterPrivilegeCase(unittest.TestCase):
 
     def action(self, report, aid, checks, target=None):
         if aid.startswith('switch_to_') or aid.split(':')[0] in (
-                'set_primary_cluster', 'force_primary_cluster', 'rejoin_cluster'):
+                'set_primary_cluster', 'force_primary_cluster', 'rejoin_cluster', 'repair_cluster',
+                'remove_cluster', 'remove_cluster_keep', 'set_routing_option', 'create_replica_cluster',
+                'dissolve_clusterset', 'check_clusterset'):
             actions = m.overview_actions(report, checks)
         else:
             target = target or next(x for x in report['members'] if x['local'])
@@ -263,17 +268,67 @@ class TestClusterPrivileges(_ClusterPrivilegeCase):
     def test_shell_rejoin_and_clusterset_have_no_guessed_requirement_list(self):
         cases = [('ic-8.4-member-offline', 'rejoin_instance'),
                  ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster'),
-                 ('ic-8.4-clusterset-replica', 'force_primary_cluster'),
+                 ('ic-8.4-clusterset-replica', 'force_primary_cluster:mfcluster'),
                  ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster')]
         for scenario, aid in cases:
             with self.subTest(action=aid):
                 report = F.report(scenario)
                 target = next((x for x in report['members'] if x['state'] == 'MISSING'), None)
                 action = self.action(report, aid, self.checks([statement(['USAGE'])]), target)
-                self.assertTrue(action['enabled'], action)
                 self.assertEqual(action['missing_privileges'], [])
                 self.assertIsNone(action['grant_sql'])
-                self.assertEqual(action['why_not'], RUNTIME)
+                if aid == 'rejoin_instance':
+                    self.assertTrue(action['enabled'], action)
+                    self.assertEqual(action['why_not'], RUNTIME)
+                else:
+                    # Historical single-connection fixtures contain metadata
+                    # for the peer, but no current-pass route into it.
+                    self.assertFalse(action['enabled'], action)
+                    self.assertTrue(action['why_not'])
+                    self.assertTrue(action['fix'])
+
+    def test_every_new_clusterset_method_defers_privileges_without_guessing_admin_grants(self):
+        from test_cluster_actions import clusterset_checks, clusterset_report, clusterset_unreachable
+        report = clusterset_report()
+        checks = clusterset_checks(report)
+        checks['grants'] = self.checks([statement(['USAGE'])])['grants']
+        replica = next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')
+        replica['status'] = 'NOT_REPLICATING'
+        replica['channel']['receiver_state'] = 'OFF'
+        for aid in ('rejoin_cluster:oldcluster', 'repair_cluster:drcluster',
+                    'remove_cluster:drcluster', 'remove_cluster_keep:drcluster',
+                    'set_routing_option', 'set_routing_option:router-host::rw',
+                    'create_replica_cluster:spare', 'dissolve_clusterset', 'check_clusterset'):
+            with self.subTest(action=aid):
+                entry = self.action(report, aid, checks)
+                self.assertEqual(entry['missing_privileges'], [])
+                self.assertIsNone(entry['grant_sql'])
+                self.assertFalse(entry['privileges_unreadable'])
+                self.assertEqual(m._privilege_requirements(report, entry), ([], True))
+        replica['status'] = 'OK'
+        replica['channel']['receiver_state'] = 'ON'
+        switchover = self.action(report, 'set_primary_cluster:drcluster', checks)
+        self.assertTrue(switchover['enabled'], switchover)
+        self.assertEqual(m._privilege_requirements(report, switchover), ([], True))
+        clusterset_unreachable(report, checks, 'maincluster')
+        failover = self.action(report, 'force_primary_cluster:drcluster', checks)
+        self.assertTrue(failover['enabled'], failover)
+        self.assertEqual(m._privilege_requirements(report, failover), ([], True))
+
+    def test_clusterset_option_version_failures_preserve_the_reason_and_fix(self):
+        from test_cluster_actions import clusterset_checks, clusterset_report
+        report = clusterset_report()
+        checks = clusterset_checks(report, (8, 4, 11))
+        checks['grants'] = self.checks([statement(['USAGE'])])['grants']
+        for aid in ('remove_cluster_keep:drcluster', 'dissolve_clusterset'):
+            with self.subTest(action=aid):
+                entry = self.action(report, aid, checks)
+                self.assertFalse(entry['enabled'])
+                self.assertIn('9.0.0', entry['why_not'])
+                self.assertIn('9.0.0', entry['fix'])
+                self.assertEqual(entry['missing_privileges'], [])
+                self.assertIsNone(entry['grant_sql'])
+                self.assertNotIn('GRANT ', entry['fix'])
 
     def test_privileges_are_evaluated_even_when_another_check_disables_action(self):
         report = F.report('gr-8.4-two-members')

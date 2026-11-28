@@ -31,16 +31,81 @@ NAMES = ("galera-11.8-healthy", "galera-11.8-donor", "galera-11.8-two-of-three",
 #: InnoDB ClusterSet servers (synthetic), with the actions MySQL Shell runs as
 #: they are offered when it is installed (SHELL stands for it).
 CLUSTERSET = ("ic-8.4-clusterset-primary", "ic-8.4-clusterset-replica", "ic-8.4-clusterset-replica-channel-off",
-              "ic-8.4-clusterset-invalidated", "ic-8.4-read-replica-clusterset")
+              "ic-8.4-clusterset-invalidated", "ic-8.4-read-replica-clusterset",
+              "ic-8.4-clusterset-primary-fenced", "ic-8.4-clusterset-primary-no-quorum")
+CLUSTERSET_VARIANTS = {"ic-8.4-clusterset-primary-fenced": "ic-8.4-clusterset-primary",
+                       "ic-8.4-clusterset-primary-no-quorum": "ic-8.4-clusterset-primary"}
 SHELL = {"path": "/usr/bin/mysqlsh", "realpath": "/usr/bin/mysqlsh", "version": "8.4.6", "version_tuple": [8, 4, 6]}
 OUT = os.path.join(ROOT, "apps", "workspace", "test", "fixtures")
+
+#: The group the ClusterSet fixtures are read with: the connection in use and
+#: one saved route into the other cluster, so every fixture carries the new
+#: per-cluster route, read, members, quorum, channel and status fields
+#: (cluster.py _read_clusterset_routes). The peer is the other cluster of
+#: each scenario (cluster-fixtures' synthetic servers).
+GROUP = ({"id": "local", "name": "Local member", "group": "production", "host": "mf-ic-1", "port": 3306},
+         {"id": "remote", "name": "DR member", "group": "production", "host": "mf-dr-1", "port": 3306})
+CLUSTERSET_PEER = {
+    "ic-8.4-clusterset-primary": (("cid-2", "mf-dr", 30), "ic-8.4-clusterset-primary"),
+    "ic-8.4-clusterset-replica": (("cid-0", "mf-main", 20), "ic-8.4-clusterset-replica"),
+    "ic-8.4-clusterset-replica-channel-off": (("cid-0", "mf-main", 20), "ic-8.4-clusterset-replica"),
+    "ic-8.4-clusterset-invalidated": (("cid-2", "mf-dr", 30), "ic-8.4-clusterset-primary"),
+    "ic-8.4-read-replica-clusterset": (("cid-2", "mf-dr", 30), "ic-8.4-clusterset-primary"),
+}
+
+
+def clusterset_source(name):
+    """Derive live SQL answers, never the computed status words."""
+    source = F.conn(CLUSTERSET_VARIANTS.get(name, name))
+    # The synthetic normal primary keeps automatic SRO management enabled;
+    # replica primaries have it disabled, as configured by MySQL Shell.
+    source.scenario["tables"]["performance_schema.replication_group_member_actions"] = [
+        [1 if source.scenario["variables"].get("super_read_only") == "OFF" else 0]]
+    if name == "ic-8.4-clusterset-primary-fenced":
+        # Shell fenceWrites disables automatic SRO management, then enables
+        # SRO (modules/adminapi/cluster/cluster_impl.cc:1899-1910). Its fence
+        # check requires both (2043-2067), and ClusterSet maps FENCED_WRITES
+        # to OK_FENCED_WRITES (cluster_set/cluster_set_impl.cc:549-554).
+        source.scenario["variables"]["super_read_only"] = "ON"
+        # SELECT enabled ... WHERE name = 'mysql_disable_super_read_only_if_primary'
+        # (mysqlshdk/libs/mysql/group_replication.cc:1268-1287).
+        source.scenario["tables"]["performance_schema.replication_group_member_actions"] = [[0]]
+        source.scenario["tables"]["performance_schema.replication_connection_status"] = []
+    elif name == "ic-8.4-clusterset-primary-no-quorum":
+        # One reachable member out of three: Shell returns NOT_OK for
+        # NO_QUORUM (modules/adminapi/cluster_set/cluster_set_impl.cc:520-522).
+        for row in source.scenario["tables"]["performance_schema.replication_group_members"][1:]:
+            row[4] = "UNREACHABLE"
+    return source
+
+
+def clusterset_report(name):
+    """The ClusterSet scenario read as the workspace reads a Group connection:
+    the other cluster through its saved route."""
+    from myflames.cluster import read_status
+    peer_args, scenario = CLUSTERSET_PEER[CLUSTERSET_VARIANTS.get(name, name)]
+
+    def opener(profile):
+        peer = F.clusterset_peer(*peer_args, scenario_name=scenario)
+        peer.scenario["tables"]["performance_schema.replication_group_member_actions"] = [
+            [1 if peer.scenario["variables"]["super_read_only"] == "OFF" else 0]]
+        return peer
+
+    # Route discovery only contacts classified members or exact metadata
+    # endpoints. Replica scenarios use mf-main, not the normal mf-dr peer.
+    profiles = [dict(profile) for profile in GROUP]
+    profiles[1]["host"] = peer_args[1] + "-1"
+    source = clusterset_source(name)
+    profiles[0]["host"] = source.scenario["variables"]["hostname"]
+    return read_status(source, profiles=profiles, open_profile=opener, current_profile_id="local")
 
 
 def main():
     for name in NAMES + CLUSTERSET:
         # Whether MySQL Shell is installed where the fixtures are written must
         # not change them: without it, none of the Shell actions is offered.
-        report = with_actions(F.report(name), shell=SHELL if name in CLUSTERSET else False)
+        raw = clusterset_report(name) if name in CLUSTERSET else F.report(name)
+        report = with_actions(raw, shell=SHELL if name in CLUSTERSET else False)
         report["captured_at"] = "2026-10-20T14:40:00+00:00"
         path = os.path.join(OUT, "cluster-%s.json" % name)
         with open(path, "w", encoding="utf-8") as handle:

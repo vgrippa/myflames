@@ -13,6 +13,7 @@ test/_cluster_fixtures.py for where each comes from.
 import ast
 import contextlib
 import copy
+import importlib.util
 import inspect
 import io
 import json
@@ -24,12 +25,89 @@ from pathlib import Path
 from unittest import mock
 
 import _cluster_fixtures as F
-from _perf_replay import FakeFactory, assert_read_only, no_nan, run_cli, run_main
+from _perf_replay import FakeFactory, assert_read_only as _assert_read_only, no_nan, run_cli, run_main
 from myflames import cluster as m, server_info, ui
 from myflames.connector import ConnectorError
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = json.loads((ROOT / 'docs' / 'schemas' / 'cluster-1.0.json').read_text(encoding='utf-8'))
+
+
+def install_clusterset_batch_replay():
+    """Replay multiple result sets from a single synthetic mysql login.
+
+    Archived cluster fixtures predate the same-login ClusterSet identity and
+    fencing reads. Keep those recordings unchanged, while making the synthetic
+    connection honor the statements in the batch and fail as the client does
+    when any of those statements fails.
+    """
+    original = F.ScenarioConn._answer
+    if getattr(original, '_clusterset_batch_replay', False):
+        return
+
+    def answer(conn, body):
+        markers = ('__myflames_clusterset_version__', '__myflames_clusterset_membership__',
+                   '__myflames_clusterset_instances__', '__myflames_clusterset_groups__',
+                   '__myflames_clusterset_routers__')
+        for marker in markers:
+            if body.strip() == "SELECT '%s'" % marker:
+                return F.batch([[marker]])
+        if body.strip().lower() == 'select @@server_uuid':
+            return F.batch([[conn.scenario['variables'].get('server_uuid')]])
+        identity, sep, rest = body.partition(';')
+        if sep and identity.strip().lower() == 'select @@global.server_uuid':
+            uuid = conn.scenario['variables'].get('server_uuid')
+            return F.batch([[uuid]]) + answer(conn, rest.strip())
+        statements = [statement.strip() for statement in body.split(';')]
+        if (statements[0].upper() == 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'
+                and statements[1].upper() == 'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY'
+                and statements[-1].upper() == 'COMMIT'):
+            # START and COMMIT produce no result rows. Each SELECT still uses
+            # the individual fixture answer, in statement order.
+            output = []
+            for index, statement in enumerate(statements[2:-1], start=2):
+                try:
+                    output.append(answer(conn, statement))
+                except ConnectorError as exc:
+                    if statement == m._CS_ROUTERS_SQL and 'ERROR 1142' in str(exc) and 'at line' not in str(exc):
+                        raise ConnectorError('%s at line %d' % (exc, index + 1))
+                    raise
+            return ''.join(output)
+        if statements == [m._MD_VERSION_SQL, m._MD_CLUSTERSET_SQL, m._MD_INSTANCES_SQL, m._MD_CLUSTERS_SQL]:
+            return ''.join(original(conn, statement) for statement in statements)
+        variables, sep, action = body.partition(';')
+        if (sep and variables.strip() == "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('super_read_only')"
+                and action.strip() == "SELECT enabled FROM performance_schema.replication_group_member_actions "
+                                      "WHERE name = 'mysql_disable_super_read_only_if_primary'"):
+            return original(conn, variables.strip()) + original(conn, action.strip())
+        return original(conn, body)
+
+    answer._clusterset_batch_replay = True
+    F.ScenarioConn._answer = answer
+
+
+install_clusterset_batch_replay()
+
+
+def assert_cluster_read_only(case, conn, tag):
+    """Permit the bound identity and read-only snapshot while checking facts."""
+    prefix = tag + 'SELECT @@GLOBAL.server_uuid; '
+    checked = copy.copy(conn)
+    checked.calls = []
+    for sql, flags in conn.calls:
+        case.assertTrue(sql.startswith(tag), sql)
+        body = sql[len(prefix):] if sql.startswith(prefix) else sql[len(tag):]
+        statements = [statement.strip() for statement in body.split(';')]
+        if statements[0].upper() == 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ':
+            case.assertEqual(statements[1].upper(), 'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY', sql)
+            case.assertEqual(statements[-1].upper(), 'COMMIT', sql)
+            statements = statements[2:-1]
+        checked.calls.extend((statement if statement.startswith(tag) else tag + statement, flags)
+                             for statement in statements if statement)
+    _assert_read_only(case, checked, tag)
+
+
+assert_read_only = assert_cluster_read_only
 
 
 def member(report, name):
@@ -87,6 +165,8 @@ class TestEveryScenario(unittest.TestCase):
                 conn, data = F.recorded(name)
                 report = m.read_status(conn)
                 expected = data['report']
+                # Historical recordings retain their original envelope version.
+                expected['schema_version'] = m.SCHEMA_VERSION
                 expected['connection_group'] = {'name': '', 'read': [], 'suggestions': [], 'join': [],
                     'suggested_name': expected['cluster']['name'] if expected['kind'] in ('innodb_cluster', 'galera', 'pxc') else ''}
                 for key in volatile:
@@ -111,6 +191,2386 @@ class TestEveryScenario(unittest.TestCase):
                         self.assertIn(f['text'], report['status_why'])
 
 
+class TestClusterSetBrowserFixtures(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = ROOT / 'apps' / 'workspace' / 'test' / 'cluster-fixtures.py'
+        spec = importlib.util.spec_from_file_location('cluster_browser_fixtures', str(path))
+        cls.fixtures = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.fixtures)
+
+    def test_fenced_primary_fixture_reads_fenced_writes(self):
+        name = 'ic-8.4-clusterset-primary-fenced'
+        source = self.fixtures.clusterset_source(name)
+        self.assertEqual(source.scenario['variables']['super_read_only'], 'ON')
+        self.assertEqual(source.scenario['tables'][
+            'performance_schema.replication_group_member_actions'], [[0]])
+        self.assertEqual(source.scenario['tables'][
+            'performance_schema.replication_connection_status'], [])
+        report = self.fixtures.clusterset_report(name)
+        primary, replica = report['clusterset']['clusters']
+        self.assertEqual(primary['role'], 'PRIMARY')
+        self.assertEqual(primary['status'], 'FENCED_WRITES')
+        self.assertTrue(primary['fenced_writes'])
+        self.assertTrue(primary['quorum'])
+        self.assertIn('super_read_only ON', primary['status_reason'])
+        self.assertEqual(replica['status'], 'OK')
+        self.assertEqual(report['clusterset']['status'], 'UNAVAILABLE')
+        self.assertEqual(report['clusterset']['status_reason'], 'Primary Cluster is fenced from write traffic.')
+
+    def test_no_quorum_primary_fixture_reads_not_ok(self):
+        name = 'ic-8.4-clusterset-primary-no-quorum'
+        source = self.fixtures.clusterset_source(name)
+        rows = source.scenario['tables']['performance_schema.replication_group_members']
+        self.assertEqual([row[4] for row in rows], ['ONLINE', 'UNREACHABLE', 'UNREACHABLE'])
+        report = self.fixtures.clusterset_report(name)
+        primary, replica = report['clusterset']['clusters']
+        self.assertEqual(primary['role'], 'PRIMARY')
+        self.assertEqual(primary['status'], 'NOT_OK')
+        self.assertFalse(primary['quorum'])
+        self.assertIn('reachable majority', primary['status_reason'])
+        self.assertEqual(replica['status'], 'OK')
+        self.assertEqual(report['clusterset']['status'], 'UNAVAILABLE')
+
+
+class TestClusterSetReadModel(unittest.TestCase):
+    CURRENT = {'id': 'local', 'name': 'Local member', 'group': 'production'}
+    REMOTE = {'id': 'remote', 'name': 'DR member', 'group': 'production'}
+    MEMBER_ACTIONS = 'performance_schema.replication_group_member_actions'
+
+    def with_member_action(self, conn):
+        """Supply the new SQL answer without rewriting archived fixtures."""
+        if isinstance(conn, F.ScenarioConn):
+            conn.scenario['tables'].setdefault(self.MEMBER_ACTIONS, [[0]])
+            uuid = conn.scenario.get('variables', {}).get('server_uuid')
+            cs_rows = conn.scenario.get('tables', {}).get('mysql_innodb_cluster_metadata.v2_cs_members')
+            instances = conn.scenario.get('tables', {}).get('mysql_innodb_cluster_metadata.v2_instances')
+            if isinstance(cs_rows, list) and isinstance(instances, list):
+                primary_cids = {row[1] for row in cs_rows if len(row) > 4 and row[3] == 'PRIMARY' and row[4] == '0'}
+                if any(len(inst) > 3 and inst[1] in primary_cids and inst[3] == uuid for inst in instances):
+                    extra = conn.scenario.get('extra')
+                    if isinstance(extra, dict) and extra.get('performance_schema.replication_connection_status') == [
+                            ['ON', '0', '']]:
+                        extra['performance_schema.replication_connection_status'] = []
+                    elif extra is None:
+                        conn.scenario['tables'].setdefault('performance_schema.replication_connection_status', [])
+        return conn
+
+    def read_group(self, peer, profiles=None, source=None):
+        opened = []
+        self.with_member_action(peer)
+        source = self.with_member_action(source or F.conn('ic-8.4-clusterset-primary'))
+        if profiles is None:
+            # Ordinary routing is intentionally limited to preclassified
+            # group profiles. Most route tests exercise what happens after a
+            # route is selected, so give this fixture a prior UUID hint for
+            # the intended peer. Explicit-profile tests control their own
+            # classification and test the boundary separately.
+            instances = source.scenario['tables']['mysql_innodb_cluster_metadata.v2_instances']
+            cs_rows = source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']
+            local_uuid = source.scenario['variables'].get('server_uuid')
+            local_cid = next((row[1] for row in instances if row[3] == local_uuid), None)
+            remote_cids = {row[1] for row in cs_rows if row[1] != local_cid}
+            remote_instances = [row for row in instances if row[1] in remote_cids]
+            peer_uuid = (peer.scenario['variables'].get('server_uuid')
+                         if isinstance(peer, F.ScenarioConn) else None)
+            hint = next((row for row in remote_instances if row[3] == peer_uuid), None)
+            hint = hint or (remote_instances[0] if remote_instances else None)
+            remote = dict(self.REMOTE)
+            if hint:
+                remote['topology_identity'] = {'server_uuid': hint[3]}
+                remote['host'], remote['port'] = m._split_address(hint[5])
+            profiles = [self.CURRENT, remote]
+
+        def opener(profile):
+            opened.append(profile['id'])
+            if isinstance(peer, Exception):
+                raise peer
+            return peer
+
+        report = m.read_status(source,
+                               profiles=profiles, open_profile=opener,
+                               current_profile_id='local')
+        return report, opened
+
+    def read_peers(self, peers, profiles, source=None):
+        """Give each saved connection its own identity and query answers."""
+        opened = []
+        source = self.with_member_action(source or F.conn('ic-8.4-clusterset-primary'))
+        for peer in peers.values():
+            self.with_member_action(peer)
+
+        def opener(profile):
+            opened.append(profile['id'])
+            peer = peers[profile['id']]
+            if isinstance(peer, Exception):
+                raise peer
+            return peer
+
+        report = m.read_status(source, profiles=profiles,
+                               open_profile=opener, current_profile_id='local')
+        return report, opened
+
+    def dr_profile(self, profile_id, member_index=None, **kwargs):
+        profile = dict(self.REMOTE, id=profile_id, name='DR ' + profile_id, **kwargs)
+        if member_index is not None:
+            profile['topology_identity'] = {
+                'server_uuid': F._cs_instances('cid-2', 'mf-dr', 30)[member_index][3]}
+        return profile
+
+    def test_routes_require_uuid_read_now_and_close_the_connection(self):
+        peer = F.clusterset_peer()
+        report, opened = self.read_group(peer)
+        clusters = {c['name']: c for c in report['clusterset']['clusters']}
+        self.assertEqual(clusters['mfcluster']['route'],
+                         {'profile_id': 'local', 'profile_name': 'Local member', 'self': True,
+                          'server_uuid': F.SERVER_UUIDS[0]})
+        self.assertEqual(clusters['drcluster']['route'],
+                         {'profile_id': 'remote', 'profile_name': 'DR member', 'self': False,
+                          'server_uuid': F._cs_instances('cid-2', 'mf-dr', 30)[0][3]})
+        self.assertEqual(opened, ['remote'])
+        self.assertTrue(peer.closed)
+        self.assertEqual(sum("Variable_name IN ('server_uuid')" in sql for sql, _ in peer.calls), 1)
+        self.assertTrue(all(t is not None and 0 < t <= m.CLUSTERSET_ROUTE_TIMEOUT for t in peer.timeouts))
+        assert_read_only(self, peer, m.CLUSTER_TAG)
+
+    def test_initial_metadata_shares_one_uuid_guarded_client_login(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        report = m.read_status(source)
+        self.assertTrue(report.get('clusterset'))
+        prefix = m.CLUSTER_TAG + 'SELECT @@GLOBAL.server_uuid; '
+        metadata_calls = [sql for sql, _ in source.calls
+                          if sql.startswith(prefix) and m._MD_VERSION_SQL in sql]
+        self.assertEqual(len(metadata_calls), 1)
+        statements = [statement.strip() for statement in metadata_calls[0][len(prefix):].split(';')]
+        self.assertEqual(statements[:2], [
+            'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
+            'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY'])
+        self.assertEqual(statements[-1], 'COMMIT')
+        for _, projection, _ in m._CLUSTERSET_SNAPSHOT_QUERIES:
+            self.assertEqual(statements.count(projection), 1, projection)
+
+    def test_discovery_does_not_depend_on_an_earlier_unguarded_empty_view(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        run_original = source.run
+        early_reads = []
+
+        def run(sql, **kwargs):
+            if m._MD_CLUSTERSET_SQL in sql and '@@GLOBAL.server_uuid' not in sql:
+                # An earlier session can see an older metadata view.
+                early_reads.append(sql)
+                source.calls.append((sql, list(kwargs.get('extra_flags') or ())))
+                return ''
+            return run_original(sql, **kwargs)
+
+        source.run = run
+        report = m.read_status(source)
+        self.assertEqual(report['clusterset']['name'], 'mfcs')
+        guarded = [sql for sql, _ in source.calls
+                   if '@@GLOBAL.server_uuid' in sql and m._MD_CLUSTERSET_SQL in sql]
+        self.assertEqual(len(guarded), 1)
+
+    def test_discovery_recovers_when_an_earlier_read_misses_local_metadata(self):
+        cases = (('ic-8.4-clusterset-primary', m._MD_CLUSTERS_SQL),
+                 ('ic-8.4-read-replica-clusterset', m._MD_INSTANCES_SQL),
+                 ('ic-8.4-read-replica-clusterset', m._MD_CLUSTERS_SQL))
+        for scenario, missing_sql in cases:
+            with self.subTest(scenario=scenario, missing=missing_sql):
+                source = F.conn(scenario)
+                run_original = source.run
+
+                def run(sql, **kwargs):
+                    if sql == m.CLUSTER_TAG + missing_sql:
+                        source.calls.append((sql, list(kwargs.get('extra_flags') or ())))
+                        return ''
+                    return run_original(sql, **kwargs)
+
+                source.run = run
+                report = m.read_status(source)
+                self.assertEqual(report['kind'], 'innodb_cluster')
+                self.assertEqual(report['clusterset']['name'], 'mfcs')
+                guarded = [sql for sql, _ in source.calls
+                           if '@@GLOBAL.server_uuid' in sql and m._MD_CLUSTERSET_SQL in sql]
+                self.assertEqual(len(guarded), 1)
+                if scenario == 'ic-8.4-read-replica-clusterset':
+                    local_member = next(member for member in report['members'] if member['local'])
+                    self.assertEqual(local_member['uuid'], F.RR_UUID)
+                    self.assertEqual(local_member['instance_type'], 'read-replica')
+
+    def test_discovery_with_performance_schema_off_does_not_invent_no_quorum(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['variables']['performance_schema'] = 'OFF'
+        source.scenario['tables']['performance_schema.replication_group_members'] = []
+        report = m.read_status(source)
+        self.assertEqual(report['kind'], 'innodb_cluster')
+        self.assertEqual(report['clusterset']['name'], 'mfcs')
+        self.assertIsNone(report['cluster']['quorum'])
+        self.assertNotIn('no_quorum', [finding['id'] for finding in report['findings']])
+        local = next(item for item in report['clusterset']['clusters'] if item['local'])
+        self.assertIsNone(local['quorum'])
+
+    def test_discovery_recovers_a_schema_hidden_from_information_schema(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['tables']['information_schema.SCHEMATA'] = []
+        report = m.read_status(source)
+        self.assertEqual(report['kind'], 'innodb_cluster')
+        self.assertEqual(report['clusterset']['name'], 'mfcs')
+        version_reads = [sql for sql, _ in source.calls if '@@GLOBAL.server_uuid' in sql and m._MD_VERSION_SQL in sql]
+        self.assertTrue(version_reads)
+
+    def test_earlier_local_inventory_must_agree_with_guarded_snapshot(self):
+        for corruption in ('missing', 'extra', 'label', 'endpoint', 'instance_type'):
+            with self.subTest(corruption=corruption):
+                source = F.conn('ic-8.4-clusterset-primary')
+                run_original = source.run
+                changed = []
+
+                def run(sql, **kwargs):
+                    result = run_original(sql, **kwargs)
+                    if sql == m.CLUSTER_TAG + m._MD_INSTANCES_SQL:
+                        rows = F.parse(result)
+                        index = next(i for i, row in enumerate(rows) if row[3] == F.SERVER_UUIDS[1])
+                        if corruption == 'missing':
+                            del rows[index]
+                        elif corruption == 'extra':
+                            row = list(rows[index])
+                            row[0] = '999'
+                            row[3] = 'aaaaaaaa-0000-4000-8000-000000000099'
+                            rows.append(row)
+                        elif corruption == 'label':
+                            rows[index][2] = 'untrusted-label:3306'
+                        elif corruption == 'endpoint':
+                            rows[index][5] = 'untrusted-host:3306'
+                        else:
+                            rows[index][6] = 'read-replica'
+                        changed.append(True)
+                        return F.batch(rows)
+                    return result
+
+                source.run = run
+                with self.assertRaisesRegex(ValueError, 'ClusterSet metadata.*verified'):
+                    m.read_status(source)
+                self.assertEqual(changed, [True])
+
+    def test_unreadable_clusterset_membership_disables_cluster_changes(self):
+        for denied in ('membership', 'hidden_schema_version'):
+            with self.subTest(denied=denied):
+                source = F.conn('ic-8.4-clusterset-primary')
+                if denied == 'membership':
+                    source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'] = ConnectorError(
+                        'ERROR 1142 (42000): SELECT denied for v2_cs_members')
+                else:
+                    source.scenario['tables']['information_schema.SCHEMATA'] = []
+                    source.scenario['tables']['mysql_innodb_cluster_metadata.schema_version'] = ConnectorError(
+                        'ERROR 1142 (42000): SELECT denied for schema_version')
+                report = m.read_status(source)
+                self.assertFalse(report.get('clusterset'))
+                self.assertTrue(getattr(report, '_clusterset_discovery_error', False))
+                own = next(member for member in report['members'] if member['local'])
+                actions = {action['id']: action for action in m.available_actions(report, own['key'])}
+                self.assertFalse(actions['stop_member']['enabled'])
+                self.assertIn('ClusterSet membership could not be verified', actions['stop_member']['why_not'])
+                with self.assertRaisesRegex(ValueError, 'ClusterSet membership could not be verified'):
+                    m.plan_action(report, 'stop_member', own['key'])
+
+    def test_primary_refresh_reads_related_metadata_in_one_read_only_snapshot(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        profile = dict(self.REMOTE, topology_identity={
+            'server_uuid': primary.scenario['variables']['server_uuid']})
+        report, opened = self.read_group(primary, [self.CURRENT, profile], source=source)
+        self.assertEqual(opened, ['remote'])
+        self.assertFalse(report['clusterset']['from_local_copy'])
+        metadata_calls = [sql for sql, _ in primary.calls if m._MD_CLUSTERSET_SQL in sql]
+        self.assertEqual(len(metadata_calls), 1)
+        sql = metadata_calls[0]
+        self.assertTrue(sql.startswith(m.CLUSTER_TAG + 'SELECT @@GLOBAL.server_uuid; '), sql)
+        statements = [statement.strip() for statement in sql.split(';')]
+        self.assertEqual(statements[1], 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ')
+        self.assertEqual(statements[2], 'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY')
+        self.assertEqual(statements[-1], 'COMMIT')
+        for _, projection, _ in m._CLUSTERSET_SNAPSHOT_QUERIES[1:]:
+            self.assertEqual(statements[3:-1].count(projection), 1, projection)
+
+    def test_cluster_group_uuids_map_router_targets_without_guessing(self):
+        table = 'mysql_innodb_cluster_metadata.v2_gr_clusters'
+        membership = 'mysql_innodb_cluster_metadata.v2_cs_members'
+        source = F.conn('ic-8.4-clusterset-primary')
+        rows = source.scenario['tables'][table]
+        expected = {row[1]: next(group[3] for group in rows if group[0] == row[1])
+                    for row in source.scenario['tables'][membership]}
+        report = m.read_status(source)
+        for item in report['clusterset']['clusters']:
+            self.assertEqual(item['uuid'], expected[report._clusterset_ids[item['name']]])
+
+        for problem in ('missing', 'duplicate', 'malformed'):
+            with self.subTest(problem=problem):
+                source = F.conn('ic-8.4-clusterset-primary')
+                rows = source.scenario['tables'][table]
+                remote = next(row for row in rows if row[0] == 'cid-2')
+                if problem == 'missing':
+                    rows.remove(remote)
+                elif problem == 'duplicate':
+                    remote[3] = next(row[3] for row in rows if row[0] == 'cid-1')
+                else:
+                    remote[3] = 'not-a-uuid'
+                clusters = m.read_status(source)['clusterset']['clusters']
+                self.assertIsNone(next(item for item in clusters if item['name'] == 'drcluster')['uuid'])
+                if problem == 'duplicate':
+                    self.assertIsNone(next(item for item in clusters if item['local'])['uuid'])
+
+    def test_primary_refresh_publishes_the_new_group_uuid(self):
+        source = F.conn('ic-8.4-clusterset-three')
+        primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-three')
+        groups = primary.scenario['tables']['mysql_innodb_cluster_metadata.v2_gr_clusters']
+        group = next(row for row in groups if row[0] == 'cid-2')
+        group[3] = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        report, opened = self.read_group(primary, source=source)
+        self.assertEqual(opened, ['remote'])
+        self.assertFalse(report['clusterset']['from_local_copy'])
+        self.assertEqual(next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')['uuid'],
+                         group[3])
+
+    def test_primary_refresh_reconciles_member_inventory_and_live_evidence(self):
+        table = 'mysql_innodb_cluster_metadata.v2_instances'
+        group_table = 'performance_schema.replication_group_members'
+        for removed_live in (False, True):
+            with self.subTest(removed_live=removed_live):
+                source = F.conn('ic-8.4-clusterset-replica')
+                primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+                if not removed_live:
+                    primary.scenario['tables'][group_table] = primary.scenario['tables'][group_table][:1]
+                rows = primary.scenario['tables'][table]
+                removed = F._cs_instances('cid-0', 'mf-main', 20)[2]
+                rows[:] = [row for row in rows if row[3] != removed[3]]
+                added = F._cs_instances('cid-0', 'mf-new', 23)[0]
+                rows.append(added)
+                current = next(row for row in rows if row[3] == primary.scenario['variables']['server_uuid'])
+                current[2] = 'new-label'
+                current[4] = current[5] = 'new-primary.example:3311'
+                report, opened = self.read_group(primary, source=source)
+                self.assertEqual(opened, ['remote'])
+                item = next(c for c in report['clusterset']['clusters'] if c['role'] == 'PRIMARY')
+                by_uuid = {member['server_uuid']: member for member in item['members']}
+                self.assertNotIn(removed[3], by_uuid)
+                self.assertIn(added[3], by_uuid)
+                self.assertIsNone(by_uuid[added[3]]['state'])
+                self.assertEqual(by_uuid[current[3]]['label'], 'new-label')
+                self.assertEqual(by_uuid[current[3]]['address'], 'new-primary.example:3311')
+                if removed_live:
+                    self.assertEqual(item['read'], 'failed')
+                    self.assertIsNone(item['primary'])
+                    self.assertIsNone(item['quorum'])
+                    self.assertIn('inventory changed', item['read_error'])
+                else:
+                    self.assertEqual(item['primary']['server_uuid'], current[3])
+                    self.assertEqual(item['primary']['address'], 'new-primary.example:3311')
+                    self.assertTrue(item['quorum'])
+
+    def test_primary_refresh_clears_a_previously_read_removed_primary(self):
+        source = self.with_member_action(F.conn('ic-8.4-clusterset-primary'))
+        identity = {}
+        report = m.read_status(source, _identity=identity)
+        cs = report['clusterset']
+        # Exercise the internal refresh before grouped_read strips this ID.
+        cs['id'] = identity['clusterset_id']
+        primary = next(item for item in cs['clusters'] if item['local'])
+        replica = next(item for item in cs['clusters'] if not item['local'])
+        members = replica['members']
+        members[0].update(state='ONLINE', role='PRIMARY')
+        members[1].update(state='ONLINE', role='SECONDARY')
+        replica.update(route={'self': False, 'profile_id': 'dr', 'server_uuid': members[1]['server_uuid']},
+                       read='route', quorum=True, primary=members[0], super_read_only=True,
+                       fenced_writes=True, channel={'present': True})
+        old_primary = members[0]['server_uuid']
+        route_uuid = members[1]['server_uuid']
+        rows = source.scenario['tables']['mysql_innodb_cluster_metadata.v2_instances']
+        rows[:] = [row for row in rows if row[3] != old_primary]
+        reader = m._ClusterSetReader(source, server_uuid=report['server']['server_uuid'])
+        m._refresh_clusterset_metadata(reader, report, primary, report['server']['server_uuid'],
+                                       observed={'cid-2': route_uuid})
+        refreshed = next(item for item in report['clusterset']['clusters'] if not item['local'])
+        self.assertNotIn(old_primary, {member['server_uuid'] for member in refreshed['members']})
+        self.assertEqual(refreshed['read'], 'failed')
+        self.assertIsNone(refreshed['primary'])
+        self.assertIsNone(refreshed['quorum'])
+        self.assertIsNone(refreshed['fenced_writes'])
+        self.assertIsNone(refreshed['channel'])
+
+    def test_primary_refresh_retains_unknown_and_positive_reachability(self):
+        source = self.with_member_action(F.conn('ic-8.4-clusterset-primary'))
+        identity = {}
+        report = m.read_status(source, _identity=identity)
+        cs = report['clusterset']
+        cs['id'] = identity['clusterset_id']
+        primary = next(item for item in cs['clusters'] if item['local'])
+        uuids = [row[3] for row in F._cs_instances('cid-2', 'mf-dr', 30)]
+        report._clusterset_reachability = {'drcluster': [
+            {'server_uuid': uuids[0], 'reachable': False},
+            {'server_uuid': uuids[1], 'reachable': None},
+            {'server_uuid': uuids[2], 'reachable': True}]}
+        # Metadata UUID spelling can change case without changing identity.
+        for row in source.scenario['tables']['mysql_innodb_cluster_metadata.v2_instances']:
+            if row[3] in (uuids[1], uuids[2]):
+                row[3] = row[3].upper()
+        reader = m._ClusterSetReader(source, server_uuid=report['server']['server_uuid'])
+        m._refresh_clusterset_metadata(reader, report, primary, report['server']['server_uuid'])
+        self.assertCountEqual(report._clusterset_reachability['drcluster'], [
+            {'server_uuid': uuids[1].upper(), 'reachable': None},
+            {'server_uuid': uuids[2].upper(), 'reachable': True}])
+
+    def test_primary_refresh_cannot_mix_membership_and_instance_versions(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        memberships = primary.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']
+        for row in memberships:
+            row[6] = '4294967298'
+        primary_uuid = primary.scenario['variables']['server_uuid']
+        instance = next(row for row in primary.scenario['tables'][
+            'mysql_innodb_cluster_metadata.v2_instances'] if row[3] == primary_uuid)
+        profile = dict(self.REMOTE, topology_identity={'server_uuid': primary_uuid})
+        run_original = primary.run
+        updates = []
+
+        def run(sql, **kwargs):
+            result = run_original(sql, **kwargs)
+            if m._MD_CLUSTERSET_SQL in sql and not updates:
+                # Simulate a metadata transaction committing after this client
+                # invocation. A single snapshot keeps the entire old view;
+                # separate invocations would combine old roles and new hosts.
+                for row in memberships:
+                    row[6] = '4294967299'
+                instance[4] = instance[5] = 'new-main.example:3311'
+                updates.append(True)
+            return result
+
+        primary.run = run
+        report, opened = self.read_group(primary, [self.CURRENT, profile], source=source)
+        self.assertEqual(opened, ['remote'])
+        self.assertEqual(updates, [True])
+        self.assertEqual(report['clusterset']['view_id'], '4294967298')
+        selected = next(item for item in report._clusterset_instances['cid-0']
+                        if item['server_uuid'] == primary_uuid)
+        self.assertEqual(selected['endpoint'], 'mf-main-1:3306')
+
+    def test_primary_refresh_rejects_a_conflicting_local_inventory_or_group(self):
+        cases = ('missing', 'extra', 'label', 'endpoint', 'instance_type', 'local_group', 'route_group')
+        for corruption in cases:
+            with self.subTest(corruption=corruption):
+                source = F.conn('ic-8.4-clusterset-replica')
+                primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+                tables = primary.scenario['tables']
+                for row in tables['mysql_innodb_cluster_metadata.v2_cs_members']:
+                    row[6] = '4294967298'
+                instances = tables['mysql_innodb_cluster_metadata.v2_instances']
+                index = next(i for i, row in enumerate(instances) if row[3] == F.SERVER_UUIDS[1])
+                if corruption == 'missing':
+                    del instances[index]
+                elif corruption == 'extra':
+                    row = list(instances[index])
+                    row[0] = 999
+                    row[3] = 'aaaaaaaa-0000-4000-8000-000000000099'
+                    instances.append(row)
+                elif corruption == 'label':
+                    instances[index][2] = 'untrusted-label:3306'
+                elif corruption == 'endpoint':
+                    instances[index][5] = 'untrusted-host:3306'
+                elif corruption == 'instance_type':
+                    instances[index][6] = 'read-replica'
+                else:
+                    cid = 'cid-1' if corruption == 'local_group' else 'cid-0'
+                    group = next(row for row in tables['mysql_innodb_cluster_metadata.v2_gr_clusters']
+                                 if row[0] == cid)
+                    group[3] = 'ffffffff-ffff-4fff-afff-ffffffffffff'
+                profile = dict(self.REMOTE, topology_identity={
+                    'server_uuid': primary.scenario['variables']['server_uuid']})
+                report, opened = self.read_group(primary, [self.CURRENT, profile], source=source)
+                self.assertEqual(opened, ['remote'])
+                self.assertTrue(any(m._MD_CLUSTERSET_SQL in sql for sql, _ in primary.calls))
+                self.assertEqual(report['clusterset']['view_id'], '4294967297')
+                self.assertTrue(report['clusterset']['from_local_copy'])
+                self.assertTrue(report['clusterset']['metadata_read_on']['self'])
+                self.assertTrue(any('replicated copy' in note for note in report['notes']))
+
+    def test_unreadable_routers_retry_the_required_snapshot_without_another_open(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        primary.scenario['clusterset_routers'] = ConnectorError('ERROR 1142: denied')
+        for row in primary.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']:
+            row[6] = '4294967298'
+        profile = dict(self.REMOTE, topology_identity={
+            'server_uuid': primary.scenario['variables']['server_uuid']})
+        report, opened = self.read_group(primary, [self.CURRENT, profile], source=source)
+        self.assertEqual(opened, ['remote'])
+        self.assertEqual(report['clusterset']['view_id'], '4294967298')
+        self.assertFalse(report['clusterset']['from_local_copy'])
+        self.assertIsNone(report['clusterset']['routers'])
+        reads = [sql for sql, _ in primary.calls if m._MD_CLUSTERSET_SQL in sql]
+        self.assertEqual(len(reads), 2)
+        for sql in reads:
+            self.assertIn('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', sql)
+            self.assertIn('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY', sql)
+            self.assertIn(m._MD_INSTANCES_SQL, sql)
+            self.assertIn(m._MD_CLUSTERS_SQL, sql)
+            self.assertTrue(sql.endswith('COMMIT'), sql)
+        self.assertIn(m._CS_ROUTERS_SQL, reads[0])
+        self.assertNotIn(m._CS_ROUTERS_SQL, reads[1])
+
+    def test_other_snapshot_errors_do_not_retry_as_if_routers_were_denied(self):
+        tables = (('mysql_innodb_cluster_metadata.schema_version', 4),
+                  ('mysql_innodb_cluster_metadata.v2_cs_members', 6),
+                  ('mysql_innodb_cluster_metadata.v2_instances', 8),
+                  ('mysql_innodb_cluster_metadata.v2_gr_clusters', 10))
+        for table, line in tables:
+            with self.subTest(table=table):
+                source = F.conn('ic-8.4-clusterset-replica')
+                primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+                primary.scenario['tables'][table] = ConnectorError(
+                    'ERROR 1142 (42000) at line %d: SELECT denied' % line)
+                profile = dict(self.REMOTE, topology_identity={
+                    'server_uuid': primary.scenario['variables']['server_uuid']})
+                report, opened = self.read_group(primary, [self.CURRENT, profile], source=source)
+                self.assertEqual(opened, ['remote'])
+                self.assertTrue(report['clusterset']['from_local_copy'])
+                self.assertEqual(report['clusterset']['view_id'], '4294967297')
+                snapshots = [sql for sql, _ in primary.calls
+                             if 'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY' in sql]
+                self.assertEqual(len(snapshots), 1)
+                self.assertIn(m._CS_ROUTERS_SQL, snapshots[0])
+
+    def test_incomplete_or_out_of_order_snapshot_markers_are_refused(self):
+        for corruption in ('omitted', 'out_of_order'):
+            with self.subTest(corruption=corruption):
+                source = F.conn('ic-8.4-clusterset-primary')
+                run_original = source.run
+                changed = []
+
+                def run(sql, **kwargs):
+                    result = run_original(sql, **kwargs)
+                    if m._MD_CLUSTERSET_SQL in sql and '@@GLOBAL.server_uuid' in sql:
+                        marker = '__myflames_clusterset_instances__\n'
+                        self.assertIn(marker, result)
+                        if corruption == 'omitted':
+                            result = result.replace(marker, '', 1)
+                        else:
+                            result = result.replace(marker, '__myflames_clusterset_groups__\n', 1)
+                        changed.append(True)
+                    return result
+
+                source.run = run
+                with self.assertRaisesRegex(ValueError, 'ClusterSet metadata.*verified'):
+                    m.read_status(source)
+                self.assertEqual(changed, [True])
+
+    def test_ambiguous_membership_is_refused_at_bootstrap_and_primary_refresh(self):
+        cases = ('invalidation_2', 'invalidation_garbage', 'invalidation_null', 'two_primaries')
+        for stage in ('bootstrap', 'refresh'):
+            for case in cases:
+                with self.subTest(stage=stage, case=case):
+                    source = F.conn('ic-8.4-clusterset-primary' if stage == 'bootstrap'
+                                    else 'ic-8.4-clusterset-replica')
+                    selected = (source if stage == 'bootstrap' else
+                                F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica'))
+                    rows = selected.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']
+                    if stage == 'refresh':
+                        for row in rows:
+                            row[6] = '4294967298'
+                    replica = next(row for row in rows if row[3] == 'REPLICA')
+                    if case == 'two_primaries':
+                        replica[3] = 'PRIMARY'
+                    else:
+                        replica[4] = {'invalidation_2': '2', 'invalidation_garbage': 'garbage',
+                                      'invalidation_null': None}[case]
+                    if stage == 'bootstrap':
+                        with self.assertRaisesRegex(ValueError, 'ClusterSet metadata.*verified'):
+                            m.read_status(source)
+                    else:
+                        profile = dict(self.REMOTE, topology_identity={
+                            'server_uuid': selected.scenario['variables']['server_uuid']})
+                        report, opened = self.read_group(selected, [self.CURRENT, profile], source=source)
+                        self.assertEqual(opened, ['remote'])
+                        self.assertEqual(report['clusterset']['view_id'], '4294967297')
+                        self.assertTrue(report['clusterset']['from_local_copy'])
+                        self.assertTrue(report['clusterset']['metadata_read_on']['self'])
+
+    def test_clusterset_route_logins_disable_automatic_reconnect(self):
+        source, peer = F.conn('ic-8.4-clusterset-primary'), F.clusterset_peer()
+        report, opened = self.read_group(peer, source=source)
+        self.assertEqual(opened, ['remote'])
+        self.assertEqual(report['clusterset']['clusters'][1]['read'], 'route')
+        prefix = m.CLUSTER_TAG + 'SELECT @@GLOBAL.server_uuid; '
+        identity_sql = m.CLUSTER_TAG + "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid')"
+        identity = [(sql, flags) for sql, flags in peer.calls if sql == identity_sql]
+        self.assertEqual(len(identity), 1, 'A route must start with its own identity-only login.')
+        peer_facts = [(sql, flags) for sql, flags in peer.calls if sql.startswith(prefix)]
+        source_facts = [(sql, flags) for sql, flags in source.calls if sql.startswith(prefix)]
+        self.assertTrue(any('replication_group_members' in sql for sql, _ in peer_facts))
+        self.assertTrue(any('replication_connection_status' in sql for sql, _ in peer_facts))
+        self.assertTrue(any(m._MD_VERSION_SQL in sql and m._MD_CLUSTERSET_SQL in sql
+                            for sql, _ in source_facts))
+        for sql, flags in identity + peer_facts + source_facts:
+            self.assertIn('--comments', flags, sql)
+            self.assertIn('--skip-reconnect', flags, sql)
+
+    def test_cleanup_reader_binds_uuid_and_stays_failed_after_server_switch(self):
+        peer = F.clusterset_peer()
+        reader = m._ClusterSetReader(peer)
+        original_uuid = peer.scenario['variables']['server_uuid']
+        self.assertEqual(reader.rows('SELECT @@server_uuid'), [[original_uuid]])
+        peer.scenario['variables']['server_uuid'] = F._cs_instances('cid-2', 'mf-dr', 30)[1][3]
+        sql = 'SELECT MEMBER_ID FROM performance_schema.replication_group_members'
+        with self.assertRaises(ValueError):
+            reader.rows(sql)
+        peer.scenario['variables']['server_uuid'] = original_uuid
+        with self.assertRaises(ValueError):
+            reader.rows(sql)
+        self.assertEqual(len(peer.calls), 2, 'A mixed reader must reject subsequent facts without another login.')
+        for sql, flags in peer.calls:
+            self.assertIn('--comments', flags, sql)
+            self.assertIn('--skip-reconnect', flags, sql)
+
+    def test_load_balanced_route_refuses_facts_from_another_server(self):
+        # Every mysql client invocation is a new login. The identity probe and
+        # group, fencing, and channel queries can therefore hit different
+        # backends even when they use the same saved connection object.
+        cases = (
+            ('performance_schema.replication_group_members', 'group'),
+            (self.MEMBER_ACTIONS, 'fencing'),
+            ('performance_schema.replication_connection_status', 'channel'),
+            ('performance_schema.replication_applier_status_by_worker', 'workers'),
+        )
+        for fragment, fact in cases:
+            with self.subTest(fact=fact):
+                peer = F.clusterset_peer()
+                original = peer.run
+                switched = []
+
+                def run(sql, **kwargs):
+                    if fragment in sql:
+                        saved = peer.scenario['variables']['server_uuid']
+                        peer.scenario['variables']['server_uuid'] = F._cs_instances('cid-2', 'mf-dr', 30)[1][3]
+                        switched.append(sql)
+                        try:
+                            return original(sql, **kwargs)
+                        finally:
+                            peer.scenario['variables']['server_uuid'] = saved
+                    return original(sql, **kwargs)
+
+                peer.run = run
+                report, opened = self.read_group(peer)
+                dr = next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')
+                self.assertEqual(opened, ['remote'])
+                self.assertTrue(switched, 'The targeted fact query must actually execute.')
+                self.assertTrue(all('@@GLOBAL.server_uuid' in sql for sql in switched))
+                if fact == 'group':
+                    self.assertIsNone(dr['quorum'])
+                    self.assertIsNone(dr['primary'])
+                elif fact == 'fencing':
+                    self.assertIsNone(dr['super_read_only'])
+                    self.assertIsNone(dr['fenced_writes'])
+                elif fact == 'channel':
+                    self.assertNotEqual((dr.get('channel') or {}).get('receiver_state'), 'ON')
+                else:
+                    self.assertNotIn('ON', [w.get('state') for w in (dr.get('channel') or {}).get('workers', [])])
+                self.assertTrue(any('identity' in n.lower() or 'server_uuid' in n.lower()
+                                    for n in report['notes']), report['notes'])
+
+    def test_changed_identity_during_initial_clusterset_metadata_refuses_set_read(self):
+        for table in ('schema_version', 'v2_cs_members', 'v2_instances', 'v2_gr_clusters'):
+            with self.subTest(table=table):
+                source = F.conn('ic-8.4-clusterset-primary')
+                original = source.run
+                switched = []
+
+                def run(sql, **kwargs):
+                    if '@@GLOBAL.server_uuid' in sql and 'mysql_innodb_cluster_metadata.' + table in sql:
+                        saved = source.scenario['variables']['server_uuid']
+                        source.scenario['variables']['server_uuid'] = F.SERVER_UUIDS[1]
+                        switched.append(sql)
+                        try:
+                            return original(sql, **kwargs)
+                        finally:
+                            source.scenario['variables']['server_uuid'] = saved
+                    return original(sql, **kwargs)
+
+                source.run = run
+                with self.assertRaisesRegex(ValueError, 'ClusterSet metadata.*verified'):
+                    m.read_status(source)
+                self.assertTrue(switched, 'The initial metadata must be checked in a UUID-bound login.')
+
+    def test_bootstrap_rejects_invalid_schema_or_group_identity(self):
+        for field in ('schema_version', 'group_uuid'):
+            with self.subTest(field=field):
+                source = F.conn('ic-8.4-clusterset-primary')
+                original = source.run
+                changed = []
+                table = ('mysql_innodb_cluster_metadata.schema_version' if field == 'schema_version'
+                         else 'mysql_innodb_cluster_metadata.v2_gr_clusters')
+
+                def run(sql, **kwargs):
+                    if '@@GLOBAL.server_uuid' in sql and table in sql:
+                        saved = source.scenario['tables'][table]
+                        rows = copy.deepcopy(saved)
+                        if field == 'schema_version':
+                            rows[0] = [0, 0, 0]
+                        else:
+                            local = next(row for row in rows if row[0] == 'cid-1')
+                            local[3] = 'ffffffff-ffff-4fff-afff-ffffffffffff'
+                        source.scenario['tables'][table] = rows
+                        changed.append(sql)
+                        try:
+                            return original(sql, **kwargs)
+                        finally:
+                            source.scenario['tables'][table] = saved
+                    return original(sql, **kwargs)
+
+                source.run = run
+                with self.assertRaisesRegex(ValueError, 'ClusterSet metadata.*verified'):
+                    m.read_status(source)
+                self.assertTrue(changed, 'The changed bootstrap fact must be read in a UUID-bound login.')
+
+    def test_changed_identity_during_local_group_read_never_attributes_membership(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        original = source.run
+        switched = []
+
+        def run(sql, **kwargs):
+            if '@@GLOBAL.server_uuid' in sql and 'performance_schema.replication_group_members' in sql:
+                saved = source.scenario['variables']['server_uuid']
+                source.scenario['variables']['server_uuid'] = F.SERVER_UUIDS[1]
+                switched.append(sql)
+                try:
+                    return original(sql, **kwargs)
+                finally:
+                    source.scenario['variables']['server_uuid'] = saved
+            return original(sql, **kwargs)
+
+        source.run = run
+        report = m.read_status(source)
+        self.assertTrue(switched, 'Local group membership must be read in a UUID-bound login.')
+        cs = report.get('clusterset')
+        if cs:
+            local = next(c for c in cs['clusters'] if c['local'])
+            self.assertIsNone(local['quorum'])
+            self.assertIsNone(local['primary'])
+            self.assertIsNone(local['super_read_only'])
+            self.assertTrue(cs['from_local_copy'])
+
+    def test_wrong_uuid_with_an_empty_channel_result_is_not_a_missing_channel(self):
+        peer = F.clusterset_peer()
+        peer.scenario['extra']['performance_schema.replication_connection_status'] = []
+        original = peer.run
+        switched = []
+
+        def run(sql, **kwargs):
+            if 'performance_schema.replication_connection_status' in sql:
+                saved = peer.scenario['variables']['server_uuid']
+                peer.scenario['variables']['server_uuid'] = F._cs_instances('cid-2', 'mf-dr', 30)[1][3]
+                switched.append(sql)
+                try:
+                    return original(sql, **kwargs)
+                finally:
+                    peer.scenario['variables']['server_uuid'] = saved
+            return original(sql, **kwargs)
+
+        peer.run = run
+        report, _ = self.read_group(peer)
+        self.assertTrue(switched)
+        dr = next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')
+        self.assertIsNot((dr.get('channel') or {}).get('present'), False)
+
+    def test_changed_identity_during_primary_refresh_or_router_read_is_refused(self):
+        for stage in ('metadata', 'routers'):
+            with self.subTest(stage=stage):
+                source = F.conn('ic-8.4-clusterset-replica')
+                primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+                for row in primary.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']:
+                    row[6] = '4294967298'
+                primary.scenario['clusterset_routers'] = [
+                    [1, 'cs-1', None, 'wrong-backend', 'untrusted-router', '8.4.11', '{}']]
+                original = primary.run
+                switched = []
+                fragment = ('mysql_innodb_cluster_metadata.v2_cs_members' if stage == 'metadata'
+                            else 'SELECT r.router_id, r.clusterset_id')
+
+                def run(sql, **kwargs):
+                    if fragment in sql:
+                        saved = primary.scenario['variables']['server_uuid']
+                        primary.scenario['variables']['server_uuid'] = F._cs_instances('cid-0', 'mf-main', 20)[1][3]
+                        switched.append(sql)
+                        try:
+                            return original(sql, **kwargs)
+                        finally:
+                            primary.scenario['variables']['server_uuid'] = saved
+                    return original(sql, **kwargs)
+
+                primary.run = run
+                report, opened = self.read_group(primary, source=source)
+                self.assertEqual(opened, ['remote'])
+                self.assertTrue(switched)
+                cs = report['clusterset']
+                if stage == 'metadata':
+                    self.assertEqual(cs['view_id'], '4294967297')
+                    self.assertTrue(cs['from_local_copy'])
+                    self.assertTrue(cs['metadata_read_on']['self'])
+                else:
+                    # The remote snapshot, including Routers, is staged
+                    # before publication. Keep the prior local snapshot when
+                    # its Router result comes from a different server.
+                    self.assertEqual(cs['routers'], [])
+                    self.assertEqual(cs['view_id'], '4294967297')
+                    self.assertTrue(cs['from_local_copy'])
+                    self.assertTrue(cs['metadata_read_on']['self'])
+
+    def test_uuid_mismatch_does_not_trust_saved_identity_or_address(self):
+        peer = F.clusterset_peer()
+        peer.scenario['variables']['server_uuid'] = 'not-a-metadata-instance'
+        remote = dict(self.REMOTE, host='mf-dr-1', topology_identity={
+            'server_uuid': F._cs_instances('cid-2', 'mf-dr', 30)[0][3]})
+        report, opened = self.read_group(peer, [self.CURRENT, remote])
+        self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+        self.assertEqual(opened, ['remote'])
+
+    def test_unreachable_group_member_is_not_a_route(self):
+        report, opened = self.read_group(ConnectorError('ERROR 2003: connection refused'))
+        self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+        self.assertEqual(opened, ['remote'])
+        self.assertIn('could not be read', ' '.join(report['notes']))
+
+    def test_spare_group_member_note_names_its_absence_from_clusterset(self):
+        peer = F.clusterset_peer()
+        peer.scenario['variables']['server_uuid'] = '00000099-2222-11f0-8a00-0242ac130002'
+        # A stale prior identity can classify the route; the fresh read still
+        # detects that it now points to a standalone server.
+        spare = dict(self.REMOTE, name='cs-c1', topology_identity={
+            'server_uuid': F._cs_instances('cid-2', 'mf-dr', 30)[0][3]})
+        report, opened = self.read_group(peer, [self.CURRENT, spare])
+        self.assertEqual(opened, ['remote'])
+        self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+        self.assertIn('cs-c1 is not a member of any cluster in this ClusterSet (mfcs), '
+                      'according to the metadata read here.', report['notes'])
+        self.assertFalse(any('cs-c1 could not verify a route' in note for note in report['notes']))
+        self.assertEqual(len(peer.calls), 1, 'A spare needs only the fresh identity read.')
+        self.assertIn("Variable_name IN ('server_uuid')", peer.calls[0][0])
+        self.assertTrue(peer.closed)
+        assert_read_only(self, peer, m.CLUSTER_TAG)
+
+    def test_missing_route_uuid_does_not_claim_non_membership(self):
+        peer = F.clusterset_peer()
+        peer.scenario['variables'].pop('server_uuid')
+        report, opened = self.read_group(peer)
+        self.assertEqual(opened, ['remote'])
+        self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+        self.assertTrue(any('DR member could not verify a route' in note for note in report['notes']))
+        self.assertFalse(any('is not a member of any cluster' in note for note in report['notes']))
+        self.assertTrue(peer.closed)
+
+    def test_ambiguous_metadata_uuid_does_not_claim_non_membership(self):
+        source, peer = F.conn('ic-8.4-clusterset-primary'), F.clusterset_peer()
+        duplicate = list(F._cs_instances('cid-2', 'mf-dr', 30)[0])
+        duplicate[0], duplicate[1] = 99, 'cid-1'
+        source.scenario['tables']['mysql_innodb_cluster_metadata.v2_instances'].append(duplicate)
+        report, opened = self.read_group(peer, source=source)
+        self.assertEqual(opened, ['remote'])
+        self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+        self.assertTrue(any('a unique eligible metadata member' in note for note in report['notes']))
+        self.assertFalse(any('is not a member of any cluster' in note for note in report['notes']))
+        self.assertTrue(peer.closed)
+
+    def test_uuid_duplicated_outside_the_set_cannot_authorize_a_route(self):
+        for alternate_case in (False, True):
+            with self.subTest(alternate_case=alternate_case):
+                source, peer = F.conn('ic-8.4-clusterset-primary'), F.clusterset_peer()
+                duplicate = list(F._cs_instances('cid-2', 'mf-dr', 30)[0])
+                duplicate[0], duplicate[1] = 99, 'cid-outside-set'
+                if alternate_case:
+                    duplicate[3] = duplicate[3].upper()
+                source.scenario['tables']['mysql_innodb_cluster_metadata.v2_instances'].append(duplicate)
+                report, opened = self.read_group(peer, source=source)
+                dr = next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')
+                self.assertEqual(opened, ['remote'])
+                self.assertIsNone(dr['route'])
+                self.assertTrue(any('a unique eligible metadata member' in note for note in report['notes']))
+                self.assertFalse(any('is not a member of any cluster' in note for note in report['notes']))
+                self.assertTrue(peer.closed)
+
+    def test_non_member_is_never_opened_and_single_connection_has_only_self(self):
+        outsider = dict(self.REMOTE, group='another group')
+        report, opened = self.read_group(F.clusterset_peer(), [self.CURRENT, outsider])
+        self.assertEqual(opened, [])
+        self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+        single = m.read_status(F.conn('ic-8.4-clusterset-primary'))['clusterset']['clusters']
+        self.assertTrue(single[0]['route']['self'])
+        self.assertIsNone(single[1]['route'])
+
+    def test_ordinary_routes_skip_unclassified_profiles_on_every_pass(self):
+        profiles = [self.CURRENT,
+                    {'id': 'unknown', 'name': 'Unknown server', 'group': 'production',
+                     'host': 'unrelated.example', 'port': 3306},
+                    {'id': 'spare', 'name': 'Standalone spare', 'group': 'production',
+                     'topology_identity': {'server_uuid': 'aaaaaaaa-0000-4000-8000-000000000009'}}]
+        for _ in range(2):
+            opened = []
+
+            def opener(profile):
+                opened.append(profile['id'])
+                raise AssertionError('An unclassified profile must never be opened.')
+
+            report = m.read_status(F.conn('ic-8.4-clusterset-primary'), profiles=profiles,
+                                   open_profile=opener, current_profile_id='local')
+            self.assertEqual(opened, [])
+            self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+
+    def test_route_classification_requires_a_full_metadata_endpoint_or_known_uuid(self):
+        for classification in ('exact_endpoint', 'known_uuid', 'known_uuid_uppercase',
+                               'host_only', 'different_port'):
+            with self.subTest(classification=classification):
+                source = F.conn('ic-8.4-clusterset-primary')
+                peer = F.clusterset_peer()
+                profile = {'id': 'remote', 'name': 'Remote', 'group': 'production',
+                           'host': 'mf-dr-1', 'port': 3306}
+                if classification in ('known_uuid', 'known_uuid_uppercase'):
+                    profile['host'] = 'forwarded.example'
+                    uuid = peer.scenario['variables']['server_uuid']
+                    profile['topology_identity'] = {'server_uuid': uuid.upper() if classification.endswith('uppercase') else uuid}
+                elif classification == 'host_only':
+                    instance = next(row for row in source.scenario['tables'][
+                        'mysql_innodb_cluster_metadata.v2_instances'] if row[3] == peer.scenario['variables']['server_uuid'])
+                    instance[4] = instance[5] = 'mf-dr-1'
+                elif classification == 'different_port':
+                    profile['port'] = 3307
+                report, opened = self.read_group(peer, [self.CURRENT, profile], source)
+                valid = classification in ('exact_endpoint', 'known_uuid', 'known_uuid_uppercase')
+                self.assertEqual(opened, ['remote'] if valid else [])
+                self.assertEqual(report['clusterset']['clusters'][1]['route'] is not None, valid)
+
+    def test_cached_identity_then_endpoint_skips_remaining_unclassified_candidates(self):
+        uuid = F._cs_instances('cid-2', 'mf-dr', 30)[0][3]
+        profiles = [self.CURRENT, dict(self.REMOTE, id='remaining'),
+                    dict(self.REMOTE, id='endpoint', host='mf-dr-1', port=3306),
+                    dict(self.REMOTE, id='cached', topology_identity={'server_uuid': uuid})]
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            peer = F.clusterset_peer()
+            if profile['id'] == 'cached':
+                peer.scenario['variables']['server_uuid'] = 'changed-uuid'
+            elif profile['id'] == 'endpoint':
+                raise ConnectorError('ERROR 2003: unreachable')
+            return peer
+
+        report = m.read_status(F.conn('ic-8.4-clusterset-primary'), profiles=profiles,
+                               open_profile=opener, current_profile_id='local')
+        self.assertEqual(opened, ['cached', 'endpoint'])
+        self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+
+    def test_first_verified_route_stops_and_local_cluster_is_never_opened(self):
+        uuid = F._cs_instances('cid-2', 'mf-dr', 30)[0][3]
+        profiles = [self.CURRENT, dict(self.REMOTE, id='same-cluster',
+                    topology_identity={'server_uuid': F.SERVER_UUIDS[1]}),
+                    dict(self.REMOTE, id='endpoint', host='mf-dr-1'),
+                    dict(self.REMOTE, id='cached', topology_identity={'server_uuid': uuid})]
+        report, opened = self.read_group(F.clusterset_peer(), profiles)
+        self.assertEqual(opened, ['cached'])
+        self.assertEqual(report['clusterset']['clusters'][1]['route']['profile_id'], 'cached')
+
+    def test_three_open_cap(self):
+        profiles = [self.CURRENT] + [self.dr_profile('peer-%d' % i, 0) for i in range(5)]
+        report, opened = self.read_group(ConnectorError('ERROR 2003: unreachable'), profiles)
+        self.assertEqual(opened, ['peer-0', 'peer-1', 'peer-2'])
+        self.assertIsNone(report['clusterset']['clusters'][1]['route'])
+
+    def test_group_read_observations_take_precedence_over_saved_identity(self):
+        from myflames.connection_groups import GroupScope
+        profiles = [self.CURRENT, dict(self.REMOTE, id='local-peer'), self.REMOTE]
+        scope = GroupScope(profiles, self.CURRENT)
+        scope.record(profiles[1], 'read', identity={'server_uuid': F.SERVER_UUIDS[1]})
+        scope.record(self.REMOTE, 'read', identity={
+            'server_uuid': F._cs_instances('cid-2', 'mf-dr', 30)[0][3]})
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return F.clusterset_peer()
+
+        m.read_status(F.conn('ic-8.4-clusterset-primary'), profiles=profiles,
+                      open_profile=scope.opener(opener), current_profile_id='local')
+        self.assertEqual(opened, ['remote'])
+
+    def test_live_read_keeps_clusters_separate_and_primary_facts_on_primary(self):
+        peer = F.clusterset_peer()
+        report, opened = self.read_group(peer)
+        main, dr = report['clusterset']['clusters']
+        self.assertEqual((main['read'], dr['read']), ('this_connection', 'route'))
+        self.assertEqual((main['quorum'], dr['quorum']), (True, True))
+        self.assertEqual((main['super_read_only'], dr['super_read_only']), (False, True))
+        self.assertEqual((main['fenced_writes'], dr['fenced_writes']), (False, True))
+        serialized = json.loads(json.dumps(report))['clusterset']['clusters']
+        self.assertIs(serialized[0]['super_read_only'], False)
+        self.assertIs(serialized[1]['super_read_only'], True)
+        self.assertEqual(dr['primary']['server_uuid'], peer.scenario['variables']['server_uuid'])
+        self.assertTrue(all(member['state'] == 'ONLINE' for member in dr['members']))
+        self.assertEqual(dr['channel']['receiver_state'], 'ON')
+        self.assertEqual(dr['channel']['workers'][0]['state'], 'ON')
+        self.assertEqual(opened, ['remote'])
+        self.assertFalse(any(m['uuid'] == dr['primary']['server_uuid'] for m in report['members']))
+
+    def test_secondary_route_does_not_read_primary_fencing_or_channel(self):
+        peer = F.clusterset_peer()
+        peer.scenario['variables']['server_uuid'] = F._cs_instances('cid-2', 'mf-dr', 30)[1][3]
+        report, _ = self.read_group(peer)
+        dr = report['clusterset']['clusters'][1]
+        self.assertTrue(dr['quorum'])
+        self.assertIsNotNone(dr['primary'])
+        self.assertIsNone(dr['super_read_only'])
+        self.assertIsNone(dr['fenced_writes'])
+        self.assertIsNone(dr['channel'])
+        self.assertIn('secondary', dr['read_error'])
+        self.assertFalse(any(self.MEMBER_ACTIONS in sql or 'clusterset_replication' in sql for sql, _ in peer.calls))
+
+    def test_secondary_route_follows_primary_cached_identity_before_endpoint(self):
+        secondary, primary = F.clusterset_peer(member_index=1), F.clusterset_peer()
+        profiles = [self.CURRENT, self.dr_profile('secondary', 1),
+                    self.dr_profile('endpoint', host='mf-dr-1', port=3306), self.dr_profile('primary', 0)]
+        report, opened = self.read_peers({'secondary': secondary, 'primary': primary}, profiles)
+        dr = report['clusterset']['clusters'][1]
+        self.assertEqual(opened, ['secondary', 'primary'])
+        self.assertEqual(dr['route']['profile_id'], 'primary')
+        self.assertEqual(dr['status'], 'OK')
+        self.assertTrue(dr['fenced_writes'])
+        self.assertEqual(dr['channel']['receiver_state'], 'ON')
+        self.assertIsNone(dr['read_error'])
+        self.assertFalse(any(self.MEMBER_ACTIONS in sql or 'clusterset_replication' in sql
+                             for sql, _ in secondary.calls))
+        self.assertEqual(sum("Variable_name IN ('server_uuid')" in sql for sql, _ in primary.calls), 1)
+        self.assertTrue(secondary.closed and primary.closed)
+        assert_read_only(self, secondary, m.CLUSTER_TAG)
+        assert_read_only(self, primary, m.CLUSTER_TAG)
+
+    def test_secondary_route_uses_primary_metadata_endpoint_without_cached_identity(self):
+        for stale_uuid in (None, F.SERVER_UUIDS[0]):
+            with self.subTest(stale_uuid=stale_uuid):
+                secondary, primary = F.clusterset_peer(member_index=1), F.clusterset_peer()
+                saved = self.dr_profile('primary', host='MF-DR-1', port='3306')
+                if stale_uuid:
+                    saved['topology_identity'] = {'server_uuid': stale_uuid}
+                profiles = [self.CURRENT, self.dr_profile('secondary', 1), saved]
+                report, opened = self.read_peers({'secondary': secondary, 'primary': primary}, profiles)
+                self.assertEqual(opened, ['secondary', 'primary'])
+                self.assertEqual(report['clusterset']['clusters'][1]['route']['profile_id'], 'primary')
+                self.assertEqual(report['clusterset']['clusters'][1]['status'], 'OK')
+
+    def test_failed_cached_primary_can_fall_back_to_its_saved_endpoint(self):
+        secondary, stale, primary = F.clusterset_peer(member_index=1), F.clusterset_peer(), F.clusterset_peer()
+        stale.scenario['variables']['server_uuid'] = 'different-server'
+        profiles = [self.CURRENT, self.dr_profile('secondary', 1),
+                    self.dr_profile('endpoint', host='mf-dr-1'), self.dr_profile('stale', 0)]
+        report, opened = self.read_peers({'secondary': secondary, 'stale': stale, 'endpoint': primary}, profiles)
+        self.assertEqual(opened, ['secondary', 'stale', 'endpoint'])
+        self.assertEqual(report['clusterset']['clusters'][1]['route']['profile_id'], 'endpoint')
+        self.assertEqual(report['clusterset']['clusters'][1]['status'], 'OK')
+        self.assertEqual(len(stale.calls), 1, 'An identity mismatch cannot authorize primary fact reads.')
+
+    def test_unavailable_or_wrong_primary_keeps_secondary_evidence(self):
+        for failure in ('open', 'identity', 'members', 'offline', 'not_in_group', 'now_secondary'):
+            with self.subTest(failure=failure):
+                secondary, primary = F.clusterset_peer(member_index=1), F.clusterset_peer()
+                if failure == 'open':
+                    primary = ConnectorError('ERROR 2003: connection refused')
+                elif failure == 'identity':
+                    primary.scenario['variables']['server_uuid'] = 'different-server'
+                elif failure == 'members':
+                    primary.scenario['tables']['performance_schema.replication_group_members'] = (
+                        ConnectorError('ERROR 1142: denied'))
+                else:
+                    rows = primary.scenario['tables']['performance_schema.replication_group_members']
+                    if failure == 'offline':
+                        rows[0][4], rows[0][5] = 'OFFLINE', ''
+                    elif failure == 'not_in_group':
+                        del rows[0]
+                    else:
+                        rows[0][5], rows[1][5] = 'SECONDARY', 'PRIMARY'
+                profiles = [self.CURRENT, self.dr_profile('secondary', 1), self.dr_profile('primary', 0)]
+                report, opened = self.read_peers({'secondary': secondary, 'primary': primary}, profiles)
+                dr = report['clusterset']['clusters'][1]
+                self.assertEqual(opened, ['secondary', 'primary'])
+                self.assertEqual(dr['route']['profile_id'], 'secondary')
+                self.assertEqual(dr['read'], 'route')
+                self.assertTrue(dr['quorum'])
+                self.assertTrue(all(member['state'] == 'ONLINE' for member in dr['members']))
+                self.assertIsNotNone(dr['primary'])
+                self.assertIsNone(dr['fenced_writes'])
+                self.assertIsNone(dr['channel'])
+                self.assertEqual(dr['status'], 'NOT_READ')
+                self.assertIn('fencing', dr['status_reason'])
+                self.assertIn('channel', dr['status_reason'])
+                self.assertTrue(secondary.closed)
+                if failure != 'open':
+                    self.assertTrue(primary.closed)
+                    self.assertFalse(any(self.MEMBER_ACTIONS in sql or 'clusterset_replication' in sql
+                                         for sql, _ in primary.calls))
+
+    def _mfcs_lab(self):
+        """Lab ClusterSet mfcs: container metadata names, localhost forwarded ports."""
+        cs_rows = F._cs(('cid-a', 'csa', 'PRIMARY', False), ('cid-b', 'csb', 'REPLICA', False),
+                        ('cid-c', 'csc', 'REPLICA', False))
+        all_instances = (F._cs_instances('cid-a', 'mf-cs-a', 10) +
+                         F._cs_instances('cid-b', 'mf-cs-b', 20) +
+                         F._cs_instances('cid-c', 'mf-cs-c', 30))
+
+        def node(cid, prefix, start, role, member_index=0):
+            instances = F._cs_instances(cid, prefix, start)
+            scenario = F._ic([], [], version=(2, 2, 0), instances=all_instances,
+                             variables=F._mysql_vars(
+                                 server_uuid=instances[member_index][3],
+                                 hostname='%s-%d' % (prefix, member_index + 1),
+                                 report_host='%s-%d' % (prefix, member_index + 1),
+                                 group_replication_group_name='11111111-3333-4444-5555-%012d' % start,
+                                 super_read_only='OFF' if role == 'PRIMARY' and member_index == 0 else 'ON'))
+            scenario['tables']['performance_schema.replication_group_members'] = [
+                ['group_replication_applier', inst[3], '%s-%d' % (prefix, idx + 1), '3306', 'ONLINE',
+                 'PRIMARY' if idx == 0 else 'SECONDARY', '8.4.11', 'MySQL']
+                for idx, inst in enumerate(instances)]
+            scenario['tables']['mysql_innodb_cluster_metadata.v2_gr_clusters'] = [
+                ['cid-a', 'csa', 'pm', '11111111-3333-4444-5555-%012d' % 10],
+                ['cid-b', 'csb', 'pm', '11111111-3333-4444-5555-%012d' % 20],
+                ['cid-c', 'csc', 'pm', '11111111-3333-4444-5555-%012d' % 30]]
+            scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'] = copy.deepcopy(cs_rows)
+            scenario['tables']['performance_schema.replication_applier_status_by_worker'] = [[1, 'ON', 0, '']]
+            scenario['tables'][self.MEMBER_ACTIONS] = [[0]]
+            if role == 'REPLICA':
+                scenario['extra'] = {
+                    'performance_schema.replication_connection_status': [['ON', '0', '']],
+                    'performance_schema.replication_applier_status': [['ON']],
+                    'performance_schema.replication_connection_configuration': [['mf-cs-a-1', '3306']]}
+            return F.ScenarioConn(scenario)
+
+        peers = {
+            'cs-a1': node('cid-a', 'mf-cs-a', 10, 'PRIMARY', 0),
+            'cs-a2': node('cid-a', 'mf-cs-a', 10, 'PRIMARY', 1),
+            'cs-b1': node('cid-b', 'mf-cs-b', 20, 'REPLICA', 0),
+            'cs-b2': node('cid-b', 'mf-cs-b', 20, 'REPLICA', 1),
+            'cs-b3': node('cid-b', 'mf-cs-b', 20, 'REPLICA', 2),
+            'cs-c1': node('cid-c', 'mf-cs-c', 30, 'REPLICA', 0),
+        }
+        profiles = {
+            pid: {'id': pid, 'name': pid, 'group': 'production', 'host': '127.0.0.1', 'port': port,
+                  'topology_identity': {'server_uuid': peers[pid].scenario['variables']['server_uuid']}}
+            for pid, port in (('cs-a1', 34601), ('cs-a2', 34602), ('cs-b1', 34603),
+                              ('cs-b2', 34604), ('cs-c1', 34605), ('cs-b3', 34606))
+        }
+        return peers, profiles
+
+    def test_tier_attachment_does_not_reopen_routes_or_probe_a_spare(self):
+        from myflames import topology_links
+        topology_links._reset_cache_for_tests()
+        peers, by_id = self._mfcs_lab()
+        profiles = [dict(by_id[pid], remember_password=True) for pid in ('cs-a1', 'cs-b1', 'cs-c1')]
+        profiles.append({'id': 'spare', 'name': 'Standalone spare', 'group': 'production',
+                         'host': '127.0.0.1', 'port': 34607, 'remember_password': True,
+                         'topology_identity': {'server_uuid': 'aaaaaaaa-0000-4000-8000-000000000009'}})
+        profiles.append({'id': 'outsider', 'name': 'Outside group', 'group': 'another',
+                         'host': '127.0.0.1', 'port': 34608, 'remember_password': True})
+        peers['spare'] = F.ScenarioConn(F._ic([], []))
+        peers['outsider'] = F.ScenarioConn(F._ic([], []))
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return peers[profile['id']]
+
+        report = m.read_status(peers['cs-a1'], profiles=profiles, open_profile=opener,
+                               current_profile_id='cs-a1')
+        self.assertEqual(opened, ['cs-b1', 'cs-c1'])
+        m.attach_topology_tiers(peers['cs-a1'], report, profiles=profiles, open_profile=opener,
+                                current_profile_id='cs-a1')
+        self.assertEqual(opened, ['cs-b1', 'cs-c1'], 'A topology pass must not add saved logins.')
+        self.assertEqual(len(opened), len(set(opened)))
+
+    def test_secondary_route_falls_back_to_remaining_group_members_for_primary(self):
+        from myflames.connection_groups import GroupScope
+        for order in (('cs-a1', 'cs-b2', 'cs-b1', 'cs-a2', 'cs-c1'),
+                      ('cs-a1', 'cs-b2', 'cs-c1', 'cs-b1', 'cs-a2')):
+            with self.subTest(order=order):
+                peers, by_id = self._mfcs_lab()
+                profiles = [dict(by_id[pid]) for pid in order]
+                scope = GroupScope(profiles, profiles[0])
+                opened = []
+
+                def opener(profile):
+                    opened.append(profile['id'])
+                    return peers[profile['id']]
+
+                report = m.read_status(peers['cs-a1'], profiles=profiles,
+                                       open_profile=scope.opener(opener), current_profile_id='cs-a1')
+                clusters = {c['name']: c for c in report['clusterset']['clusters']}
+                csb = clusters['csb']
+                self.assertEqual(csb['route']['profile_id'], 'cs-b1')
+                self.assertEqual(csb['status'], 'OK')
+                self.assertTrue(csb['fenced_writes'])
+                self.assertEqual(csb['channel']['receiver_state'], 'ON')
+                self.assertEqual(csb['channel']['applier_state'], 'ON')
+                self.assertIsNone(csb['read_error'])
+                self.assertEqual(clusters['csc']['status'], 'OK')
+                self.assertEqual(report['clusterset']['status'], 'HEALTHY')
+                self.assertIn('cs-b1', opened)
+                for pid in opened:
+                    self.assertTrue(peers[pid].closed)
+                    assert_read_only(self, peers[pid], m.CLUSTER_TAG)
+                recorded = {r['id']: r.identity.get('server_uuid') for r in scope.read}
+                self.assertEqual(recorded['cs-b1'], F._cs_instances('cid-b', 'mf-cs-b', 20)[0][3])
+
+    def test_secondary_route_followup_stops_at_three_open_cap(self):
+        peers, by_id = self._mfcs_lab()
+        profiles = [by_id['cs-a1'], by_id['cs-b2'],
+                    dict(by_id['cs-b1'], id='missing-1'), dict(by_id['cs-b1'], id='missing-2'),
+                    by_id['cs-b1'], by_id['cs-c1']]
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            if profile['id'].startswith('missing-'):
+                raise ConnectorError('ERROR 2003: unreachable')
+            return peers[profile['id']]
+
+        report = m.read_status(peers['cs-a1'], profiles=profiles,
+                               open_profile=opener, current_profile_id='cs-a1')
+        csb = next(c for c in report['clusterset']['clusters'] if c['name'] == 'csb')
+        self.assertNotIn('cs-b1', opened)
+        self.assertEqual(opened, ['cs-b2', 'missing-1', 'missing-2', 'cs-c1'])
+        self.assertEqual(csb['route']['profile_id'], 'cs-b2')
+        self.assertEqual(csb['read'], 'route')
+        self.assertTrue(csb['quorum'])
+        self.assertIsNone(csb['fenced_writes'])
+        self.assertIsNone(csb['channel'])
+        self.assertEqual(csb['status'], 'NOT_READ')
+        self.assertEqual(csb['read_error'],
+                         "The route is a secondary member; the primary's fencing and channel were not read.")
+        self.assertEqual(csb['status_reason'], csb['read_error'])
+
+    def test_primary_followup_skips_local_and_proven_and_prefers_identified_primary(self):
+        from myflames.connection_groups import GroupScope
+        peers, by_id = self._mfcs_lab()
+        b_instances = F._cs_instances('cid-b', 'mf-cs-b', 20)
+        a_instances = F._cs_instances('cid-a', 'mf-cs-a', 10)
+        c_instances = F._cs_instances('cid-c', 'mf-cs-c', 30)
+        profiles = [
+            dict(by_id['cs-a1']),
+            dict(by_id['cs-a2'], topology_identity={'server_uuid': a_instances[1][3]}),
+            dict(by_id['cs-c1']),
+            dict(by_id['cs-b2'], topology_identity={'server_uuid': b_instances[1][3]}),
+            dict(by_id['cs-b3'], topology_identity={'server_uuid': b_instances[2][3]}),
+            dict(by_id['cs-b1']),
+        ]
+        # cs-c1 was already proven in this pass by an earlier grouped read.
+        scope = GroupScope(profiles, profiles[0])
+        scope.record(profiles[2], 'read', identity={'server_uuid': c_instances[0][3]})
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return peers[profile['id']]
+
+        report = m.read_status(peers['cs-a1'], profiles=profiles,
+                               open_profile=scope.opener(opener), current_profile_id='cs-a1')
+        csb = next(c for c in report['clusterset']['clusters'] if c['name'] == 'csb')
+        self.assertEqual(opened, ['cs-b2', 'cs-b1', 'cs-c1'])
+        self.assertEqual(csb['route']['profile_id'], 'cs-b1')
+        self.assertEqual(csb['status'], 'OK')
+        self.assertTrue(csb['fenced_writes'])
+        self.assertEqual(csb['channel']['receiver_state'], 'ON')
+
+    def test_secondary_route_remaining_fallback_stops_at_time_budget(self):
+        peers, by_id = self._mfcs_lab()
+        c_instances = F._cs_instances('cid-c', 'mf-cs-c', 30)
+        profiles = [
+            dict(by_id['cs-a1']),
+            dict(by_id['cs-b2']),
+            dict(by_id['cs-b1']),
+            dict(by_id['cs-c1'], topology_identity={'server_uuid': c_instances[0][3]}),
+        ]
+        clock, opened = [0.0], []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            peer = peers[profile['id']]
+            original = peer.run
+
+            def run(sql, **kwargs):
+                result = original(sql, **kwargs)
+                clock[0] += 3.0
+                return result
+
+            peer.run = run
+            return peer
+
+        with mock.patch.object(m.time, 'monotonic', side_effect=lambda: clock[0]):
+            report = m.read_status(peers['cs-a1'], profiles=profiles,
+                                   open_profile=opener, current_profile_id='cs-a1')
+        csb = next(c for c in report['clusterset']['clusters'] if c['name'] == 'csb')
+        self.assertEqual(opened, ['cs-b2', 'cs-c1'])
+        self.assertNotIn('cs-b1', opened)
+        self.assertEqual(csb['route']['profile_id'], 'cs-b2')
+        self.assertEqual(csb['status'], 'NOT_READ')
+        self.assertEqual(csb['read_error'],
+                         "The route is a secondary member; the primary's fencing and channel were not read.")
+
+    def test_primary_followup_counts_toward_the_three_open_cap(self):
+        secondary = F.clusterset_peer(member_index=1)
+        profiles = [self.CURRENT, self.dr_profile('secondary', 1), self.dr_profile('old-one', 0),
+                    self.dr_profile('old-two', 0), self.dr_profile('endpoint', host='mf-dr-1')]
+        peers = {'secondary': secondary, 'old-one': ConnectorError('ERROR 2003: unreachable'),
+                 'old-two': ConnectorError('ERROR 2003: unreachable')}
+        report, opened = self.read_peers(peers, profiles)
+        self.assertEqual(opened, ['secondary', 'old-one', 'old-two'])
+        dr = report['clusterset']['clusters'][1]
+        self.assertEqual(dr['route']['profile_id'], 'secondary')
+        self.assertTrue(dr['quorum'])
+        self.assertIsNone(dr['fenced_writes'])
+        self.assertIsNone(dr['channel'])
+
+    def test_primary_followup_shares_the_cluster_read_deadline(self):
+        secondary, primary = F.clusterset_peer(member_index=1), F.clusterset_peer()
+        clock = [0.0]
+
+        def timed_run(peer):
+            original = peer.run
+
+            def run(sql, **kwargs):
+                result = original(sql, **kwargs)
+                clock[0] += 2.0
+                return result
+
+            return run
+
+        secondary.run, primary.run = timed_run(secondary), timed_run(primary)
+        profiles = [self.CURRENT, self.dr_profile('secondary', 1), self.dr_profile('primary', 0)]
+        with mock.patch.object(m.time, 'monotonic', side_effect=lambda: clock[0]):
+            report, opened = self.read_peers({'secondary': secondary, 'primary': primary}, profiles)
+        self.assertEqual(opened, ['secondary', 'primary'])
+        self.assertEqual(len(primary.calls), 1, 'Only the identity fits the remaining cluster budget.')
+        self.assertLess(primary.timeouts[0], secondary.timeouts[0])
+        dr = report['clusterset']['clusters'][1]
+        self.assertEqual(dr['route']['profile_id'], 'secondary')
+        self.assertTrue(dr['quorum'])
+        self.assertIsNone(dr['fenced_writes'])
+        self.assertTrue(any('timed out' in note for note in report['notes']))
+        self.assertTrue(secondary.closed and primary.closed)
+
+    def test_primary_followup_never_opens_a_saved_connection_outside_the_group(self):
+        secondary = F.clusterset_peer(member_index=1)
+        outsider = self.dr_profile('primary', 0)
+        outsider['group'] = 'different group'
+        profiles = [self.CURRENT, self.dr_profile('secondary', 1), outsider]
+        report, opened = self.read_peers({'secondary': secondary}, profiles)
+        self.assertEqual(opened, ['secondary'])
+        self.assertIsNone(report['clusterset']['clusters'][1]['fenced_writes'])
+
+    def test_primary_cluster_seen_through_secondary_keeps_writability_unknown(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        secondary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica', member_index=1)
+        report, opened = self.read_group(secondary, source=source)
+        primary = report['clusterset']['clusters'][0]
+        self.assertEqual(opened, ['remote'])
+        self.assertEqual(primary['status'], 'NOT_READ')
+        self.assertEqual(report['clusterset']['status'], 'UNKNOWN')
+        self.assertIsNone(primary['super_read_only'])
+        self.assertTrue(primary['quorum'])
+        self.assertIsNone(primary['fenced_writes'])
+        self.assertIn('fencing', primary['status_reason'])
+        self.assertIn('not read', primary['status_reason'])
+
+    def test_local_primary_cluster_secondary_does_not_claim_fencing_was_read(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['variables'].update(server_uuid=F.SERVER_UUIDS[1], super_read_only='ON')
+        cs = m.read_status(source)['clusterset']
+        primary = cs['clusters'][0]
+        self.assertEqual(primary['status'], 'NOT_READ')
+        self.assertEqual(cs['status'], 'UNKNOWN')
+        self.assertIsNone(primary['super_read_only'])
+        self.assertIsNone(primary['fenced_writes'])
+        self.assertIn('fencing', primary['status_reason'])
+        self.assertIn('not read', primary['status_reason'])
+
+    def test_current_secondary_can_read_its_primary_through_a_saved_group_member(self):
+        for scenario in ('ic-8.4-clusterset-primary', 'ic-8.4-clusterset-replica'):
+            with self.subTest(scenario=scenario):
+                source, primary = F.conn(scenario), F.conn(scenario)
+                source.scenario['variables'].update(server_uuid=F.SERVER_UUIDS[1], super_read_only='ON')
+                profiles = [self.CURRENT, dict(self.REMOTE, id='primary', name='Local primary',
+                            topology_identity={'server_uuid': F.SERVER_UUIDS[0]})]
+                report, opened = self.read_peers({'primary': primary}, profiles, source)
+                local = next(c for c in report['clusterset']['clusters'] if c['local'])
+                self.assertEqual(opened, ['primary'])
+                self.assertEqual(local['route'], {'profile_id': 'primary', 'profile_name': 'Local primary',
+                                                 'self': False, 'server_uuid': F.SERVER_UUIDS[0]})
+                self.assertEqual(local['primary']['server_uuid'], F.SERVER_UUIDS[0])
+                self.assertEqual(local['status'], 'OK')
+                self.assertEqual(local['fenced_writes'], local['role'] == 'REPLICA')
+                self.assertEqual(report['server']['server_uuid'], F.SERVER_UUIDS[1])
+                if local['role'] == 'REPLICA':
+                    self.assertEqual(local['channel']['receiver_state'], 'ON')
+                else:
+                    self.assertEqual(report['clusterset']['metadata_read_on'], local['route'])
+                self.assertEqual(sum("Variable_name IN ('server_uuid')" in sql for sql, _ in primary.calls), 1)
+                self.assertTrue(primary.closed)
+                assert_read_only(self, primary, m.CLUSTER_TAG)
+
+    def test_identified_local_primary_is_read_once_after_remote_cluster_search(self):
+        source, primary, dr = (F.conn('ic-8.4-clusterset-primary'),
+                               F.conn('ic-8.4-clusterset-primary'), F.clusterset_peer())
+        source.scenario['variables']['server_uuid'] = F.SERVER_UUIDS[1]
+        profiles = [self.CURRENT,
+                    dict(self.REMOTE, id='local-primary', topology_identity={'server_uuid': F.SERVER_UUIDS[0]}),
+                    self.dr_profile('dr', 0)]
+        report, opened = self.read_peers({'local-primary': primary, 'dr': dr}, profiles, source)
+        local = next(c for c in report['clusterset']['clusters'] if c['local'])
+        self.assertEqual(local['route']['profile_id'], 'local-primary')
+        self.assertEqual(local['route']['server_uuid'], F.SERVER_UUIDS[0])
+        self.assertEqual(local['primary']['server_uuid'], F.SERVER_UUIDS[0])
+        self.assertIs(local['fenced_writes'], False)
+        self.assertEqual(opened.count('local-primary'), 1)
+        self.assertEqual(opened.count('dr'), 1)
+        self.assertEqual(len(opened), len(set(opened)))
+
+    def test_read_replica_or_offline_local_member_can_read_an_online_peer(self):
+        for state in ('read_replica', 'offline'):
+            with self.subTest(state=state):
+                if state == 'read_replica':
+                    source = F.conn('ic-8.4-read-replica-clusterset')
+                    source_uuid = F.RR_UUID
+                else:
+                    source = F.conn('ic-8.4-clusterset-primary')
+                    source_uuid = F.SERVER_UUIDS[1]
+                    source.scenario['variables']['server_uuid'] = source_uuid
+                    row = list(source.scenario['tables']['performance_schema.replication_group_members'][1])
+                    row[4], row[5] = 'OFFLINE', None
+                    source.scenario['tables']['performance_schema.replication_group_members'] = [row]
+                primary = F.conn('ic-8.4-clusterset-primary')
+                profile = dict(self.REMOTE, id='online-primary',
+                               topology_identity={'server_uuid': F.SERVER_UUIDS[0]})
+                report, opened = self.read_peers({'online-primary': primary}, [self.CURRENT, profile], source)
+                local = next(c for c in report['clusterset']['clusters'] if c['local'])
+                self.assertEqual(report['server']['server_uuid'], source_uuid)
+                self.assertEqual(opened, ['online-primary'])
+                self.assertEqual(local['route']['profile_id'], 'online-primary')
+                self.assertEqual(local['route']['server_uuid'], F.SERVER_UUIDS[0])
+                self.assertEqual(local['primary']['server_uuid'], F.SERVER_UUIDS[0])
+                self.assertIs(local['quorum'], True)
+                self.assertIs(local['fenced_writes'], False)
+
+    def test_no_route_uses_metadata_members_with_unknown_states(self):
+        dr = F.report('ic-8.4-clusterset-primary')['clusterset']['clusters'][1]
+        self.assertEqual(dr['read'], 'metadata_only')
+        self.assertEqual(len(dr['members']), 3)
+        self.assertTrue(all(m['state'] is None for m in dr['members']))
+
+    def test_member_read_failure_keeps_route_and_metadata_members(self):
+        peer = F.clusterset_peer()
+        peer.scenario['tables']['performance_schema.replication_group_members'] = ConnectorError('ERROR 1142: denied')
+        report, _ = self.read_group(peer)
+        dr = report['clusterset']['clusters'][1]
+        self.assertEqual(dr['read'], 'failed')
+        self.assertIn('denied', dr['read_error'])
+        self.assertEqual(dr['route']['profile_id'], 'remote')
+        self.assertTrue(all(m['state'] is None for m in dr['members']))
+        self.assertTrue(peer.closed)
+
+    def test_route_budget_is_shared_by_identity_members_and_primary_reads(self):
+        peer = F.clusterset_peer()
+        clock = [0.0]
+        original = peer.run
+
+        def run(sql, **kwargs):
+            result = original(sql, **kwargs)
+            clock[0] += 2.6
+            return result
+
+        peer.run = run
+        with mock.patch.object(m.time, 'monotonic', side_effect=lambda: clock[0]):
+            report, opened = self.read_group(peer)
+        dr = report['clusterset']['clusters'][1]
+        self.assertEqual(opened, ['remote'])
+        self.assertEqual(dr['read'], 'failed')
+        self.assertIn('timed out', dr['read_error'])
+        self.assertEqual(len(peer.calls), 2)
+        self.assertLess(peer.timeouts[1], peer.timeouts[0])
+        self.assertTrue(peer.closed)
+
+    def test_status_words_name_the_evidence_and_gtids_are_not_checked(self):
+        cases = [('ok', 'OK', 'receiver and applier ON'),
+                 ('missing', 'NOT_REPLICATING', 'no clusterset_replication'),
+                 ('stopped', 'NOT_REPLICATING', 'receiver OFF'),
+                 ('worker_error', 'NOT_REPLICATING', 'applier ERROR'),
+                 ('connecting', 'NOT_REPLICATING', 'receiver CONNECTING'),
+                 ('no_quorum', 'NOT_OK', 'majority'),
+                 ('no_primary', 'NOT_OK', 'no unique ONLINE primary'),
+                 ('denied', 'NOT_READ', 'could not be read in full')]
+        for case, status, evidence in cases:
+            with self.subTest(case=case):
+                peer = F.clusterset_peer()
+                tables, extra = peer.scenario['tables'], peer.scenario['extra']
+                if case == 'missing':
+                    extra['performance_schema.replication_connection_status'] = []
+                if case in ('stopped', 'connecting'):
+                    extra['performance_schema.replication_connection_status'][0][0] = (
+                        'OFF' if case == 'stopped' else 'CONNECTING')
+                if case == 'worker_error':
+                    tables['performance_schema.replication_applier_status_by_worker'] = [[1, 'OFF', 1062, 'duplicate']]
+                if case == 'denied':
+                    tables['performance_schema.replication_applier_status_by_worker'] = ConnectorError('ERROR 1142: denied')
+                if case == 'no_quorum':
+                    for row in tables['performance_schema.replication_group_members'][1:]:
+                        row[4] = 'UNREACHABLE'
+                if case == 'no_primary':
+                    tables['performance_schema.replication_group_members'][0][5] = 'SECONDARY'
+                report, _ = self.read_group(peer)
+                cluster = report['clusterset']['clusters'][1]
+                self.assertEqual(cluster['status'], status)
+                self.assertIn(evidence, cluster['status_reason'])
+                self.assertIsNone(cluster['gtid_consistency'])
+                self.assertIsNone(report['clusterset']['gtid_consistency'])
+
+    def test_fencing_is_judged_on_primary_cluster_only(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['variables']['super_read_only'] = 'ON'
+        report, _ = self.read_group(F.clusterset_peer(), source=source)
+        primary, replica = report['clusterset']['clusters']
+        self.assertEqual(primary['status'], 'FENCED_WRITES')
+        self.assertIn('super_read_only ON', primary['status_reason'])
+        self.assertTrue(replica['fenced_writes'])
+        self.assertEqual(replica['status'], 'OK')
+        self.assertEqual(report['clusterset']['status'], 'UNAVAILABLE')
+        self.assertEqual(report['clusterset']['status_reason'], 'Primary Cluster is fenced from write traffic.')
+
+    def test_primary_fencing_requires_sro_and_disabled_member_action(self):
+        for sro, enabled, fenced in (('ON', 0, True), ('ON', 1, False),
+                                     ('OFF', 0, False), ('OFF', 1, False)):
+            with self.subTest(super_read_only=sro, action_enabled=enabled):
+                source = F.conn('ic-8.4-clusterset-primary')
+                source.scenario['variables']['super_read_only'] = sro
+                source.scenario['tables'][self.MEMBER_ACTIONS] = [[enabled]]
+                source.scenario['tables']['performance_schema.replication_connection_status'] = []
+                report = m.read_status(source)
+                primary = report['clusterset']['clusters'][0]
+                self.assertIs(primary['super_read_only'], sro == 'ON')
+                self.assertIs(primary['disable_super_read_only_if_primary'], bool(enabled))
+                self.assertIs(primary['fenced_writes'], fenced)
+                expected_status = 'FENCED_WRITES' if fenced else ('NOT_OK' if sro == 'ON' else 'OK')
+                self.assertEqual(primary['status'], expected_status)
+                if sro == 'ON':
+                    self.assertEqual(report['clusterset']['status'], 'UNAVAILABLE')
+                    self.assertIn('super_read_only ON', primary['status_reason'])
+                queries = [sql for sql, _ in source.calls if self.MEMBER_ACTIONS in sql]
+                self.assertEqual(len(queries), 1)
+                self.assertIn("SELECT enabled FROM " + self.MEMBER_ACTIONS, queries[0])
+                self.assertIn("WHERE name = 'mysql_disable_super_read_only_if_primary'", queries[0])
+                sro_query = next(sql for sql, _ in source.calls
+                                 if "Variable_name IN ('super_read_only')" in sql)
+                self.assertIn('performance_schema.replication_group_members', sro_query)
+                if fenced:
+                    self.assertIn('mysql_disable_super_read_only_if_primary', primary['status_reason'])
+                    self.assertIn('disabled', primary['status_reason'])
+                    self.assertEqual(report['clusterset']['status_reason'],
+                                     'Primary Cluster is fenced from write traffic.')
+                elif sro == 'ON':
+                    self.assertIn('writes are currently blocked', primary['status_reason'])
+                    self.assertIn('not write-fenced', primary['status_reason'])
+                    self.assertIn('super_read_only ON', report['clusterset']['status_reason'])
+                assert_read_only(self, source, m.CLUSTER_TAG)
+
+    def test_unreadable_member_action_keeps_fencing_unknown_with_reason(self):
+        cases = (('denied', ConnectorError('ERROR 1142: denied; password=private-test-value'), True),
+                 ('missing_table', ConnectorError('ERROR 1146: table does not exist'), True),
+                 ('missing_row', [], True), ('null_value', [[None]], True), ('not_in_fixture', None, True))
+        for name, answer, expected_sro in cases:
+            with self.subTest(case=name):
+                source = F.conn('ic-8.4-clusterset-primary')
+                source.scenario['variables']['super_read_only'] = 'ON'
+                if answer is not None:
+                    source.scenario['tables'][self.MEMBER_ACTIONS] = answer
+                report = m.read_status(source)
+                primary = report['clusterset']['clusters'][0]
+                self.assertIs(primary['super_read_only'], expected_sro)
+                self.assertIsNone(primary['disable_super_read_only_if_primary'])
+                self.assertIsNone(primary['fenced_writes'])
+                self.assertIn('fencing', primary['status_reason'])
+                self.assertIn('replication_group_member_actions', primary['status_reason'])
+                self.assertNotIn('private-test-value', primary['status_reason'])
+                if expected_sro is True:
+                    self.assertEqual(primary['status'], 'NOT_OK')
+                    self.assertEqual(report['clusterset']['status'], 'UNAVAILABLE')
+                    self.assertIn('super_read_only ON', primary['status_reason'])
+
+    def test_unreadable_sro_is_not_inferred_from_the_member_action(self):
+        for sro in (None, 'missing'):
+            for enabled in (0, 1):
+                with self.subTest(super_read_only=sro, action_enabled=enabled):
+                    source = F.conn('ic-8.4-clusterset-primary')
+                    if sro == 'missing':
+                        source.scenario['variables'].pop('super_read_only')
+                    else:
+                        source.scenario['variables']['super_read_only'] = sro
+                    source.scenario['tables'][self.MEMBER_ACTIONS] = [[enabled]]
+                    cs = m.read_status(source)['clusterset']
+                    primary = cs['clusters'][0]
+                    self.assertIsNone(primary['super_read_only'])
+                    self.assertIs(primary['disable_super_read_only_if_primary'], bool(enabled))
+                    self.assertIsNone(primary['fenced_writes'])
+                    self.assertEqual(primary['status'], 'NOT_READ')
+                    self.assertEqual(cs['status'], 'UNKNOWN')
+                    self.assertIn('super_read_only', primary['status_reason'])
+
+    def test_remote_primary_reads_member_action_in_its_existing_login(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        peer = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        peer.scenario['variables']['super_read_only'] = 'ON'
+        peer.scenario['tables'][self.MEMBER_ACTIONS] = [[1]]
+        report, opened = self.read_group(peer, source=source)
+        primary = report['clusterset']['clusters'][0]
+        self.assertIs(primary['super_read_only'], True)
+        self.assertIs(primary['disable_super_read_only_if_primary'], True)
+        self.assertIs(primary['fenced_writes'], False)
+        self.assertEqual(primary['status'], 'NOT_OK')
+        self.assertEqual(report['clusterset']['status'], 'UNAVAILABLE')
+        self.assertIn('super_read_only ON', primary['status_reason'])
+        self.assertEqual(opened, ['remote'])
+        self.assertTrue(peer.closed)
+        queries = [sql for sql, _ in peer.calls]
+        self.assertEqual(sum(self.MEMBER_ACTIONS in sql for sql in queries), 1)
+        sro_reads = [sql for sql in queries if "Variable_name IN ('super_read_only')" in sql]
+        self.assertEqual(len(sro_reads), 1)
+        self.assertIn('performance_schema.replication_group_members', sro_reads[0])
+        self.assertNotIn(self.MEMBER_ACTIONS, sro_reads[0])
+        assert_read_only(self, peer, m.CLUSTER_TAG)
+
+    def test_replica_sro_is_expected_even_with_disabled_member_action(self):
+        for enabled in (0, 1):
+            with self.subTest(action_enabled=enabled):
+                peer = F.clusterset_peer()
+                peer.scenario['tables'][self.MEMBER_ACTIONS] = [[enabled]]
+                report, opened = self.read_group(peer)
+                replica = report['clusterset']['clusters'][1]
+                self.assertEqual(replica['role'], 'REPLICA')
+                self.assertEqual(replica['status'], 'OK')
+                self.assertIs(replica['super_read_only'], True)
+                self.assertEqual(replica['fenced_writes'], not bool(enabled))
+                self.assertEqual(opened, ['remote'])
+                self.assertEqual(report['clusterset']['status'], 'HEALTHY')
+                # Action-enabled plus SRO ON is not proof of a stale role.
+                self.assertFalse(any('v2_cs_members' in sql for sql, _ in peer.calls))
+
+    def test_primary_sro_blocks_removal_and_switchover_with_or_without_fencing(self):
+        from test_cluster_actions import clusterset_checks
+        for enabled in (0, 1):
+            with self.subTest(action_enabled=enabled):
+                source = F.conn('ic-8.4-clusterset-primary')
+                source.scenario['variables']['super_read_only'] = 'ON'
+                source.scenario['tables'][self.MEMBER_ACTIONS] = [[enabled]]
+                report, _ = self.read_group(F.clusterset_peer(), source=source)
+                checks = clusterset_checks(report)
+                for aid in ('set_primary_cluster:drcluster', 'remove_cluster:drcluster'):
+                    reason = 'super_read_only ON' if enabled else 'writes are fenced'
+                    with self.assertRaisesRegex(ValueError, reason):
+                        m.plan_action(report, aid, checks=checks)
+
+    def test_set_status_requires_evidence_from_this_pass(self):
+        report, _ = self.read_group(F.clusterset_peer())
+        self.assertEqual(report['clusterset']['status'], 'HEALTHY')
+        cs = F.report('ic-8.4-clusterset-primary')['clusterset']
+        self.assertEqual(cs['status'], 'AVAILABLE')
+        self.assertEqual(cs['clusters'][1]['status'], 'NOT_READ')
+        source = F.conn('ic-8.4-clusterset-primary')
+        for row in source.scenario['tables']['performance_schema.replication_group_members'][1:]:
+            row[4] = 'UNREACHABLE'
+        self.assertEqual(m.read_status(source)['clusterset']['status'], 'UNAVAILABLE')
+        self.assertEqual(F.report('ic-8.4-clusterset-replica')['clusterset']['status'], 'UNKNOWN')
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'][0][3] = 'REPLICA'
+        self.assertEqual(m.read_status(source)['clusterset']['status'], 'UNAVAILABLE')
+
+    def test_invalidated_status_overrides_unread_live_state(self):
+        cs = F.report('ic-8.4-clusterset-invalidated')['clusterset']
+        cluster = cs['clusters'][1]
+        self.assertEqual(cluster['status'], 'INVALIDATED')
+        self.assertIn('metadata', cluster['status_reason'])
+        self.assertEqual(cs['status'], 'AVAILABLE')
+
+    def test_primary_route_replaces_replicated_metadata_and_keeps_route(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        peer = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        for row in peer.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']:
+            row[6] = '9007199254740993'
+            if row[1] == 'cid-0':
+                row[2] = 'renamed-primary'
+        report, opened = self.read_group(peer, source=source)
+        cs = report['clusterset']
+        self.assertEqual(opened, ['remote'])
+        self.assertEqual(cs['view_id'], '9007199254740993')
+        self.assertEqual(cs['primary_cluster'], 'renamed-primary')
+        self.assertFalse(cs['from_local_copy'])
+        self.assertEqual(cs['metadata_read_on'], cs['clusters'][0]['route'])
+        self.assertFalse(cs['metadata_read_on']['self'])
+        self.assertTrue(cs['clusters'][0]['quorum'])
+        self.assertEqual(cs['clusters'][1]['read'], 'this_connection')
+        self.assertFalse(any('replicated copy' in n and 'ClusterSet' in n for n in report['notes']))
+        self.assertEqual(sum('v2_cs_members' in sql for sql, _ in peer.calls), 1)
+        self.assertTrue(peer.closed)
+
+    def test_failed_primary_metadata_keeps_local_view_and_copy_warning(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        peer = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        peer.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'] = ConnectorError('ERROR 1142: denied')
+        report, _ = self.read_group(peer, source=source)
+        cs = report['clusterset']
+        self.assertEqual(cs['view_id'], '4294967297')
+        self.assertTrue(cs['metadata_read_on']['self'])
+        self.assertTrue(cs['from_local_copy'])
+        self.assertTrue(any('replicated copy' in n and 'ClusterSet' in n for n in report['notes']))
+        self.assertEqual(cs['clusters'][0]['route']['profile_id'], 'remote')
+
+    def test_primary_cluster_without_quorum_keeps_replicated_copy_warning(self):
+        for route in ('local', 'remote'):
+            with self.subTest(route=route):
+                source = F.conn('ic-8.4-clusterset-primary' if route == 'local'
+                                else 'ic-8.4-clusterset-replica')
+                primary = (source if route == 'local' else
+                           F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica'))
+                for row in primary.scenario['tables']['performance_schema.replication_group_members'][1:]:
+                    row[4] = 'UNREACHABLE'
+                report = m.read_status(source) if route == 'local' else self.read_group(primary, source=source)[0]
+                cs = report['clusterset']
+                self.assertFalse(cs['clusters'][0]['quorum'])
+                self.assertTrue(cs['from_local_copy'])
+                self.assertTrue(any('replicated copy' in n and 'may be behind' in n for n in report['notes']))
+
+    def test_offline_primary_cluster_member_keeps_replicated_copy_warning(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['tables']['performance_schema.replication_group_members'] = [F._gr_member(0, 'OFFLINE')]
+        report = m.read_status(source)
+        self.assertTrue(report['clusterset']['from_local_copy'])
+        self.assertTrue(any('replicated copy' in n and 'may be behind' in n for n in report['notes']))
+
+    def test_primary_cluster_online_secondary_with_quorum_keeps_stale_copy_note(self):
+        # Group Replication defaults to EVENTUAL consistency: an ONLINE secondary
+        # can still lag behind unapplied metadata transactions, so only the
+        # primary cluster's ONLINE primary clears from_local_copy.
+        source = F.conn('ic-8.4-clusterset-replica')
+        secondary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica', member_index=1)
+        report, _ = self.read_group(secondary, source=source)
+        self.assertTrue(report['clusterset']['from_local_copy'])
+        self.assertTrue(report['clusterset']['metadata_read_on']['self'])
+        self.assertTrue(any('replicated copy' in n and 'ClusterSet' in n for n in report['notes']))
+        # Connected directly to a primary-cluster secondary without a saved primary route.
+        local_sec = F.conn('ic-8.4-clusterset-primary')
+        local_sec.scenario['variables'].update(server_uuid=F.SERVER_UUIDS[1], super_read_only='ON')
+        local_report = m.read_status(local_sec)
+        self.assertTrue(local_report['clusterset']['from_local_copy'])
+        self.assertTrue(any('ONLINE primary' in n and 'replicated copy' in n for n in local_report['notes']))
+        # Reaching the primary cluster's ONLINE primary clears from_local_copy.
+        primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica', member_index=0)
+        fresh_report, _ = self.read_group(primary, source=F.conn('ic-8.4-clusterset-replica'))
+        self.assertFalse(fresh_report['clusterset']['from_local_copy'])
+        self.assertFalse(any('replicated copy' in n and 'ClusterSet' in n for n in fresh_report['notes']))
+
+    def test_primary_cluster_online_secondary_keeps_metadata_copy_caveat(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        secondary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica', member_index=1)
+        report, opened = self.read_group(secondary, source=source)
+        primary_cluster = next(c for c in report['clusterset']['clusters'] if c['role'] == 'PRIMARY')
+        route_uuid = secondary.scenario['variables']['server_uuid']
+        route_member = next(member for member in primary_cluster['members'] if member['server_uuid'] == route_uuid)
+        self.assertEqual(opened, ['remote'])
+        self.assertEqual((route_member['state'], route_member['role']), ('ONLINE', 'SECONDARY'))
+        self.assertTrue(primary_cluster['quorum'])
+        self.assertNotEqual(primary_cluster['primary']['server_uuid'], route_uuid)
+        self.assertTrue(report['clusterset']['from_local_copy'])
+        self.assertTrue(any('replicated copy' in n and 'may be behind' in n for n in report['notes']))
+
+    def test_candidate_for_another_cluster_is_reused_without_a_second_login(self):
+        for primary_reachable in (False, True):
+            with self.subTest(primary_reachable=primary_reachable):
+                source = F.conn('ic-8.4-clusterset-three')
+                unexpected = F.clusterset_peer(scenario_name='ic-8.4-clusterset-three')
+                main_uuid = F._cs_instances('cid-0', 'mf-main', 20)[0][3]
+                profiles = [self.CURRENT,
+                            dict(self.REMOTE, id='unexpected', name='Unexpected DR',
+                                 topology_identity={'server_uuid': main_uuid}),
+                            dict(self.REMOTE, id='primary', name='Main primary',
+                                 topology_identity={'server_uuid': main_uuid})]
+                primary = (F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-three')
+                           if primary_reachable else ConnectorError('ERROR 2003: unreachable'))
+                report, opened = self.read_peers({'unexpected': unexpected, 'primary': primary}, profiles, source)
+                clusters = {c['name']: c for c in report['clusterset']['clusters']}
+                self.assertEqual(opened, ['unexpected', 'primary'])
+                self.assertEqual(clusters['drcluster']['route']['profile_id'], 'unexpected')
+                self.assertEqual(clusters['drcluster']['status'], 'OK')
+                self.assertEqual(clusters['drcluster']['channel']['receiver_state'], 'ON')
+                self.assertEqual(sum("Variable_name IN ('server_uuid')" in sql for sql, _ in unexpected.calls), 1)
+                self.assertTrue(unexpected.closed)
+                if primary_reachable:
+                    self.assertEqual(clusters['maincluster']['route']['profile_id'], 'primary')
+                    self.assertFalse(report['clusterset']['from_local_copy'])
+                else:
+                    self.assertIsNone(clusters['maincluster']['route'])
+
+    def test_other_cluster_search_skips_known_aliases_of_already_read_cluster(self):
+        source = F.conn('ic-8.4-clusterset-three')
+        main = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-three')
+        dr = F.clusterset_peer(scenario_name='ic-8.4-clusterset-three')
+        main_uuid = F._cs_instances('cid-0', 'mf-main', 20)[0][3]
+        profiles = [self.CURRENT,
+                    dict(self.REMOTE, id='primary', topology_identity={'server_uuid': main_uuid}),
+                    dict(self.REMOTE, id='primary-alias', topology_identity={'server_uuid': main_uuid}),
+                    self.dr_profile('dr', 0)]
+        report, opened = self.read_peers({'primary': main, 'dr': dr}, profiles, source)
+        self.assertEqual(opened, ['primary', 'dr'])
+        self.assertTrue(all(c['status'] == 'OK' for c in report['clusterset']['clusters']))
+
+    def test_other_cluster_search_skips_known_aliases_after_three_failed_opens(self):
+        source = F.conn('ic-8.4-clusterset-three')
+        main_uuid = F._cs_instances('cid-0', 'mf-main', 20)[0][3]
+        profiles = [self.CURRENT] + [dict(self.REMOTE, id='main-%d' % i,
+                    topology_identity={'server_uuid': main_uuid}) for i in range(4)] + [self.dr_profile('dr', 0)]
+        peers = {'main-%d' % i: ConnectorError('ERROR 2003: unreachable') for i in range(3)}
+        peers['dr'] = F.clusterset_peer(scenario_name='ic-8.4-clusterset-three')
+        report, opened = self.read_peers(peers, profiles, source)
+        self.assertEqual(opened, ['main-0', 'main-1', 'main-2', 'dr'])
+        dr = next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')
+        self.assertEqual(dr['status'], 'OK')
+
+    def test_exhausted_cluster_never_probes_an_unclassified_profile(self):
+        source = F.conn('ic-8.4-clusterset-three')
+        main_uuid = F._cs_instances('cid-0', 'mf-main', 20)[0][3]
+        profiles = [self.CURRENT] + [dict(self.REMOTE, id='main-%d' % i,
+                    topology_identity={'server_uuid': main_uuid}) for i in range(3)]
+        profiles += [self.dr_profile('unknown'), self.dr_profile('dr', 0)]
+        main = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-three')
+        peers = {'main-%d' % i: ConnectorError('ERROR 2003: unreachable') for i in range(3)}
+        peers.update(unknown=main, dr=F.clusterset_peer(scenario_name='ic-8.4-clusterset-three'))
+        report, opened = self.read_peers(peers, profiles, source)
+        self.assertEqual(opened, ['main-0', 'main-1', 'main-2', 'dr'])
+        primary = next(c for c in report['clusterset']['clusters'] if c['role'] == 'PRIMARY')
+        self.assertIsNone(primary['route'])
+        self.assertEqual(primary['read'], 'failed')
+        self.assertEqual(primary['status'], 'NOT_READ')
+        self.assertEqual(len(main.calls), 0)
+        self.assertFalse(main.closed)
+
+    def test_expired_cluster_budget_does_not_probe_unclassified_profiles(self):
+        source = F.conn('ic-8.4-clusterset-three')
+        main_uuid = F._cs_instances('cid-0', 'mf-main', 20)[0][3]
+        profiles = [self.CURRENT,
+                    dict(self.REMOTE, id='down', topology_identity={'server_uuid': main_uuid}),
+                    self.dr_profile('unknown'), self.dr_profile('dr', 0)]
+        main = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-three')
+        dr = F.clusterset_peer(scenario_name='ic-8.4-clusterset-three')
+        clock, opened = [0.0], []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            if profile['id'] == 'down':
+                clock[0] = m.CLUSTERSET_ROUTE_TIMEOUT + 1.0
+                raise ConnectorError('ERROR 2003: unreachable')
+            return main if profile['id'] == 'unknown' else dr
+
+        with mock.patch.object(m.time, 'monotonic', side_effect=lambda: clock[0]):
+            report = m.read_status(source, profiles=profiles, open_profile=opener, current_profile_id='local')
+        self.assertEqual(opened, ['down', 'dr'])
+        primary = next(c for c in report['clusterset']['clusters'] if c['role'] == 'PRIMARY')
+        self.assertIsNone(primary['route'])
+        self.assertEqual(primary['read'], 'failed')
+        self.assertEqual(len(main.calls), 0)
+        self.assertFalse(main.closed)
+        self.assertTrue(dr.closed)
+
+    def test_primary_metadata_refresh_can_remove_cluster_during_its_primary_hop(self):
+        source = F.conn('ic-8.4-clusterset-three')
+        secondary = F.clusterset_peer(scenario_name='ic-8.4-clusterset-three', member_index=1)
+        primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-three')
+        rows = primary.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']
+        rows[:] = [row for row in rows if row[1] != 'cid-2']
+        profiles = [self.CURRENT,
+                    dict(self.REMOTE, id='down', topology_identity={
+                        'server_uuid': F._cs_instances('cid-0', 'mf-main', 20)[0][3]}),
+                    self.dr_profile('secondary', 1), self.dr_profile('rerouted', 0)]
+        peers = {'down': ConnectorError('ERROR 2003: unreachable'), 'secondary': secondary, 'rerouted': primary}
+        report, opened = self.read_peers(peers, profiles, source)
+        self.assertEqual(opened, ['down', 'secondary', 'rerouted'])
+        self.assertEqual({c['name'] for c in report['clusterset']['clusters']}, {'maincluster', 'mfcluster'})
+        main = next(c for c in report['clusterset']['clusters'] if c['role'] == 'PRIMARY')
+        self.assertEqual(main['route']['profile_id'], 'rerouted')
+        self.assertEqual(main['status'], 'OK')
+        self.assertFalse(report['clusterset']['from_local_copy'])
+        self.assertTrue(secondary.closed and primary.closed)
+
+    def test_failed_route_notes_identify_saved_member_and_failed_step(self):
+        cases = [('opening', None, ('open', 'connection')),
+                 ('identity', "Variable_name IN ('server_uuid')", ('server_uuid', 'identity')),
+                 ('members', 'FROM performance_schema.replication_group_members',
+                  ('members', 'replication_group_members')),
+                 ('fencing', "Variable_name IN ('super_read_only')", ('fencing', 'super_read_only')),
+                 ('channel', 'FROM performance_schema.replication_connection_status',
+                  ('channel', 'replication_connection_status'))]
+        for step, fragment, words in cases:
+            with self.subTest(step=step):
+                error = ConnectorError('ERROR 2003: connection refused; password=private-test-value')
+                peer = F.clusterset_peer()
+                if fragment is None:
+                    peer = error
+                else:
+                    peer.scenario['query_errors'] = {fragment: error}
+                report, _ = self.read_group(peer)
+                notes = report['notes']
+                self.assertTrue(any('DR member' in n and any(word in n.lower() for word in words)
+                                    for n in notes), notes)
+                self.assertNotIn('private-test-value', '\n'.join(notes))
+
+    def test_failed_metadata_note_identifies_saved_member_and_step(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        primary.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'] = (
+            ConnectorError('ERROR 1142: denied; password=private-test-value'))
+        report, _ = self.read_group(primary, source=source)
+        self.assertTrue(any('DR member' in n and 'metadata' in n.lower() for n in report['notes']))
+        self.assertNotIn('private-test-value', '\n'.join(report['notes']))
+
+    def test_failed_optional_channel_read_note_identifies_saved_member(self):
+        primary = F.clusterset_peer()
+        primary.scenario['tables']['performance_schema.replication_applier_status_by_worker'] = (
+            ConnectorError('ERROR 1142: denied; password=private-test-value'))
+        report, _ = self.read_group(primary)
+        self.assertTrue(any('DR member' in n and ('channel' in n.lower() or 'applier' in n.lower())
+                            for n in report['notes']))
+        self.assertNotIn('private-test-value', '\n'.join(report['notes']))
+
+    def test_primary_metadata_can_add_a_cluster_in_the_same_pass(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        primary = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        primary.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'] += F._cs(
+            ('cid-2', 'new-replica', 'REPLICA', False))
+        profiles = [self.CURRENT, dict(self.REMOTE, id='primary', host='mf-main-1'),
+                    dict(self.REMOTE, id='new-replica', host='mf-dr-1')]
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return primary if profile['id'] == 'primary' else F.clusterset_peer()
+
+        report = m.read_status(source, profiles=profiles, open_profile=opener, current_profile_id='local')
+        self.assertEqual(opened, ['primary', 'new-replica'])
+        new = next(c for c in report['clusterset']['clusters'] if c['name'] == 'new-replica')
+        self.assertEqual(new['route']['profile_id'], 'new-replica')
+        self.assertEqual(new['status'], 'OK')
+
+    def test_invalidated_null_role_does_not_claim_replication_or_writes_stopped(self):
+        for scenario in ('ic-8.4-clusterset-invalidated', 'ic-8.4-clusterset-local-invalidated'):
+            with self.subTest(scenario=scenario):
+                report = F.report(scenario)
+                cluster = next(c for c in report['clusterset']['clusters'] if c['invalidated'])
+                self.assertIsNone(cluster['role'])
+                self.assertEqual(cluster['status'], 'INVALIDATED')
+                finding = next(f for f in report['findings'] if f['id'] == 'clusterset_invalidated')
+                self.assertIn('does not prove that replication or writes stopped', finding['text'])
+                self.assertNotIn('no longer replicates', finding['text'])
+
+    def test_routers_and_routing_options_are_stored_configuration(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'][0][7] = (
+            '{"target_cluster":"primary","invalidated_cluster_policy":"drop_all"}')
+        source.scenario['clusterset_routers'] = [
+            [1, 'cs-1', None, 'router-main', 'router-host', '8.4.10', '{"target_cluster":"group-id"}'],
+            [2, None, 'cid-2', 'router-dr', 'dr-host', '8.4.10', '{}'],
+            [3, 'another-set', 'cid-2', 'not-ours', 'other', '8.4.10', '{}']]
+        cs = m.read_status(source)['clusterset']
+        self.assertEqual(cs['routing_options'], {'stored_configuration': True,
+            'options': {'target_cluster': 'primary', 'invalidated_cluster_policy': 'drop_all'}})
+        self.assertEqual([r['name'] for r in cs['routers']], ['dr-host::router-dr', 'router-host::router-main'])
+        self.assertEqual(cs['routers'][1]['options'], {'target_cluster': 'group-id'})
+        self.assertTrue(all(r['stored_configuration'] for r in cs['routers']))
+        self.assertFalse(any('r.attributes' in sql for sql, _ in source.calls if 'r.options' in sql))
+        assert_read_only(self, source, m.CLUSTER_TAG)
+
+    def test_router_configuration_uses_the_selected_primary_metadata_source(self):
+        source = F.conn('ic-8.4-clusterset-replica')
+        source.scenario['clusterset_routers'] = [[1, 'cs-1', None, 'stale-router', 'old', '8.4', '{}']]
+        peer = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        peer.scenario['clusterset_routers'] = [[2, 'cs-1', None, 'current-router', 'new', '9.7', '{}']]
+        for row in peer.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']:
+            row[7] = '{"target_cluster":"primary"}'
+        report, _ = self.read_group(peer, source=source)
+        cs = report['clusterset']
+        self.assertEqual([r['name'] for r in cs['routers']], ['new::current-router'])
+        self.assertEqual(cs['routing_options']['options'], {'target_cluster': 'primary'})
+        self.assertFalse(any(sql.startswith(m.CLUSTER_TAG + 'SELECT r.router_id, r.clusterset_id')
+                             for sql, _ in source.calls))
+
+    def test_unread_routers_are_distinct_from_an_empty_registration_list(self):
+        self.assertEqual(F.report('ic-8.4-clusterset-primary')['clusterset']['routers'], [])
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['clusterset_routers'] = ConnectorError('ERROR 1142: denied')
+        report = m.read_status(source)
+        self.assertIsNone(report['clusterset']['routers'])
+        self.assertTrue(any('Stored Router configuration' in note for note in report['notes']))
+
+    def test_invalid_router_json_is_unknown_with_a_note(self):
+        for value in ('not-json', 'null', '[]', '{"number": NaN}', '{"number": 1e309}'):
+            with self.subTest(value=value):
+                source = F.conn('ic-8.4-clusterset-primary')
+                source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'][0][7] = value
+                report = m.read_status(source)
+                self.assertIsNone(report['clusterset']['routing_options']['options'])
+                self.assertTrue(any('JSON object' in note for note in report['notes']))
+                no_nan(self, report)
+
+    def test_sql_null_router_options_are_empty_overrides_at_both_levels(self):
+        # The metadata view uses COALESCE(options, '{}'); SQL NULL is no
+        # override, unlike unreadable or malformed JSON (including JSON null).
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'][0][7] = None
+        source.scenario['clusterset_routers'] = [[1, 'cs-1', None, '', 'mf-cs-router', '9.7.0', None]]
+        report = m.read_status(source)
+        cs = report['clusterset']
+        self.assertEqual(cs['routing_options']['options'], {})
+        self.assertEqual(cs['routers'][0]['options'], {})
+        self.assertFalse(any('JSON object' in note for note in report['notes']))
+
+    def test_router_name_uses_shell_label_even_when_registered_name_is_empty(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['clusterset_routers'] = [
+            [1, 'cs-1', None, '', 'mf-cs-router', '8.4.10', '{}'],
+            [2, 'cs-1', None, 'reporting', 'mf-cs-router', '8.4.10', '{}']]
+        routers = m.read_status(source)['clusterset']['routers']
+        self.assertEqual([r['name'] for r in routers], ['mf-cs-router::', 'mf-cs-router::reporting'])
+        self.assertTrue(all(r['address'] == 'mf-cs-router' for r in routers))
+        self.assertTrue(all(r['version'] == '8.4.10' for r in routers))
+
+    def test_router_options_project_only_routing_keys_at_both_levels(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        routing = {'target_cluster': 'primary', 'invalidated_cluster_policy': 'accept_ro',
+                   'stats_updates_frequency': 0, 'use_replica_primary_as_rw': False,
+                   'read_only_targets': 'secondaries', 'tags': {'region': 'west'}, 'guideline': None}
+        stored = dict(routing, Configuration={'routing:bootstrap_rw': {'bind_port': 6446}},
+                      bootstrapTargetType='clusterset', router_require_enforce=True)
+        source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'][0][7] = json.dumps(stored)
+        source.scenario['clusterset_routers'] = [
+            [1, 'cs-1', None, '', 'mf-cs-router', '8.4.10', json.dumps(stored)]]
+        cs = m.read_status(source)['clusterset']
+        self.assertEqual(cs['routing_options']['options'], routing)
+        self.assertEqual(cs['routers'][0]['options'], routing)
+        self.assertNotIn('Configuration', json.dumps(cs))
+        self.assertNotIn('bootstrapTargetType', json.dumps(cs))
+        self.assertNotIn('router_require_enforce', json.dumps(cs))
+
+    def test_router_options_do_not_invent_absent_routing_defaults(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        stored = '{"Configuration":{"DEFAULT":{"name":"stored-config-only"}}}'
+        source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members'][0][7] = stored
+        source.scenario['clusterset_routers'] = [[1, 'cs-1', None, '', 'mf-cs-router', '8.4.10', stored]]
+        cs = m.read_status(source)['clusterset']
+        self.assertEqual(cs['routing_options']['options'], {})
+        self.assertEqual(cs['routers'][0]['options'], {})
+
+    def test_unknown_host_is_unreachable_but_auth_and_timeout_are_unknown(self):
+        main_instances = F._cs_instances('cid-0', 'mf-main', 20)
+        profiles = [self.CURRENT] + [
+            dict(self.REMOTE, id='main-%d' % idx, name='Main %d' % idx,
+                 host='mf-main-%d' % (idx + 1), port=3306)
+            for idx in range(len(main_instances))]
+        shell = {'path': '/usr/bin/mysqlsh', 'version': '9.7.1', 'version_tuple': [9, 7, 1]}
+        for error, expected in (
+            (ConnectorError("mysql client exited 1: ERROR 2005 (HY000): Unknown MySQL server host 'mf-main-1' (-2)"), True),
+            (ConnectorError("mysql client exited 1: ERROR 1045 (28000): Access denied for user 'mf_admin'"), False),
+            (ConnectorError("mysql client exited 1: ERROR 2026 (HY000): TLS/SSL error"), False),
+            (ConnectorError("Query timed out after 5.0s: SHOW GLOBAL VARIABLES"), False),
+        ):
+            with self.subTest(error=str(error)):
+                source = F.conn('ic-8.4-clusterset-replica')
+                peers = {'main-%d' % idx: error for idx in range(len(main_instances))}
+                report, _ = self.read_peers(peers, profiles, source)
+                actions = {a['id']: a for a in m.overview_actions(report, {'shell': shell})}
+                self.assertEqual(actions['force_primary_cluster:mfcluster']['enabled'], expected)
+        # A 2005 error on a saved endpoint that does not match metadata never marks a member unreachable.
+        wrong_host = [self.CURRENT] + [
+            dict(self.REMOTE, id='wrong-%d' % idx, host='other-host-%d' % idx, port=3306)
+            for idx in range(len(main_instances))]
+        peers = {'wrong-%d' % idx: ConnectorError("ERROR 2005 (HY000): Unknown MySQL server host 'other-host'")
+                 for idx in range(len(main_instances))}
+        report, _ = self.read_peers(peers, wrong_host, F.conn('ic-8.4-clusterset-replica'))
+        actions = {a['id']: a for a in m.overview_actions(report, {'shell': shell})}
+        self.assertFalse(actions['force_primary_cluster:mfcluster']['enabled'])
+
+    def test_connection_failure_requires_one_fully_qualified_metadata_endpoint(self):
+        for metadata_address in ('shared-db', 'shared-db:3306'):
+            for cached in (False, True):
+                with self.subTest(address=metadata_address, cached=cached):
+                    source = F.conn('ic-8.4-clusterset-replica')
+                    instances = [row for row in source.scenario['tables'][
+                        'mysql_innodb_cluster_metadata.v2_instances'] if row[1] == 'cid-0']
+                    for row in instances[:2]:
+                        row[4] = row[5] = metadata_address
+                    profile = dict(self.REMOTE, id='failed', host='shared-db', port=3306)
+                    if cached:
+                        profile['topology_identity'] = {'server_uuid': instances[0][3]}
+                    report, opened = self.read_peers({'failed': ConnectorError('ERROR 2003: connection refused')},
+                                                     [self.CURRENT, profile], source)
+                    self.assertEqual(opened, [] if metadata_address == 'shared-db' and not cached else ['failed'])
+                    observations = getattr(report, '_clusterset_reachability', {}).get('maincluster', [])
+                    for row in instances[:2]:
+                        self.assertNotIn({'server_uuid': row[3], 'reachable': False}, observations)
+
+        # One full, unique IPv6 endpoint may establish a connection refusal.
+        source = F.conn('ic-8.4-clusterset-replica')
+        instance = next(row for row in source.scenario['tables'][
+            'mysql_innodb_cluster_metadata.v2_instances'] if row[1] == 'cid-0')
+        instance[4] = instance[5] = '[2001:db8::7]:3307'
+        profile = dict(self.REMOTE, id='v6', host='2001:db8::7', port=3307)
+        report, opened = self.read_peers({'v6': ConnectorError('ERROR 2003: connection refused')},
+                                         [self.CURRENT, profile], source)
+        self.assertEqual(opened, ['v6'])
+        observations = getattr(report, '_clusterset_reachability', {}).get('maincluster', [])
+        self.assertIn({'server_uuid': instance[3], 'reachable': False}, observations)
+
+    def test_tunnel_refusal_and_invalid_saved_port_do_not_prove_member_unreachable(self):
+        for extra in ({'ssh_host': 'bastion.example'}, {'port': 0}):
+            with self.subTest(profile=extra):
+                source = F.conn('ic-8.4-clusterset-replica')
+                instance = next(row for row in source.scenario['tables'][
+                    'mysql_innodb_cluster_metadata.v2_instances'] if row[1] == 'cid-0')
+                profile = dict(self.REMOTE, id='failed', host='mf-main-1', port=3306)
+                profile.update(extra)
+                profile['topology_identity'] = {'server_uuid': instance[3]}
+                report, opened = self.read_peers({'failed': ConnectorError('ERROR 2003: connection refused')},
+                                                 [self.CURRENT, profile], source)
+                self.assertEqual(opened, ['failed'])
+                observations = getattr(report, '_clusterset_reachability', {}).get('maincluster', [])
+                self.assertNotIn({'server_uuid': instance[3], 'reachable': False}, observations)
+
+    def test_malformed_endpoint_or_ambiguous_uuid_does_not_prove_unreachable(self):
+        for case in ('bad_host', 'bad_ipv6', 'bad_uuid', 'case_duplicate_uuid'):
+            with self.subTest(case=case):
+                source = F.conn('ic-8.4-clusterset-replica')
+                instances = [row for row in source.scenario['tables'][
+                    'mysql_innodb_cluster_metadata.v2_instances'] if row[1] == 'cid-0']
+                host = 'mf-main-1'
+                if case == 'bad_host':
+                    host = 'bad@host'
+                    instances[0][4] = instances[0][5] = 'bad@host:3306'
+                elif case == 'bad_ipv6':
+                    host = '2001:db8::zz'
+                    instances[0][4] = instances[0][5] = '[2001:db8::zz]:3306'
+                elif case == 'bad_uuid':
+                    instances[0][3] = 'not-a-uuid'
+                else:
+                    # UUIDs compare case-insensitively; a metadata duplicate
+                    # must not become unique merely through letter casing.
+                    instances[1][3] = instances[0][3].upper()
+                profile = dict(self.REMOTE, id='failed', host=host, port=3306)
+                if case in ('bad_host', 'bad_ipv6'):
+                    profile['topology_identity'] = {'server_uuid': instances[0][3]}
+                report, opened = self.read_peers({'failed': ConnectorError('ERROR 2003: connection refused')},
+                                                 [self.CURRENT, profile], source)
+                self.assertEqual(opened, ['failed'])
+                observations = getattr(report, '_clusterset_reachability', {}).get('maincluster', [])
+                self.assertFalse(any(row['reachable'] is False for row in observations), observations)
+
+    def test_primary_metadata_refresh_invalidates_earlier_failure_evidence(self):
+        for change in ('endpoint', 'view'):
+            with self.subTest(change=change):
+                source = F.conn('ic-8.4-clusterset-three')
+                current = F.clusterset_peer('cid-0', 'mf-main', 20,
+                                            'ic-8.4-clusterset-three', member_index=1)
+                main_uuid = F._cs_instances('cid-0', 'mf-main', 20)[0][3]
+                rows = current.scenario['tables']['performance_schema.replication_group_members']
+                rows[0][5], rows[1][5] = 'SECONDARY', 'PRIMARY'
+                current.scenario['variables']['super_read_only'] = 'OFF'
+                for row in current.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']:
+                    row[6] = '4294967298'
+                if change == 'endpoint':
+                    instance = next(row for row in current.scenario['tables'][
+                        'mysql_innodb_cluster_metadata.v2_instances'] if row[3] == main_uuid)
+                    instance[4] = instance[5] = 'new-main-address:3306'
+                profiles = [self.CURRENT, dict(self.REMOTE, id='old', host='mf-main-1', port=3306,
+                                              topology_identity={'server_uuid': main_uuid}),
+                            dict(self.REMOTE, id='current', host='primary-alias', port=3306,
+                                 topology_identity={'server_uuid': current.scenario['variables']['server_uuid']})]
+                peers = {'old': ConnectorError('ERROR 2003: connection refused'), 'current': current}
+                report, opened = self.read_peers(peers, profiles, source)
+                self.assertEqual(opened[:2], ['old', 'current'])
+                self.assertEqual(report['clusterset']['view_id'], '4294967298')
+                observations = getattr(report, '_clusterset_reachability', {}).get('maincluster', [])
+                self.assertNotIn({'server_uuid': main_uuid, 'reachable': False}, observations)
+
+    def test_offline_route_probe_continues_to_online_member(self):
+        offline = F.clusterset_peer(member_index=1)
+        off_uuid = F._cs_instances('cid-2', 'mf-dr', 30)[1][3]
+        offline.scenario['tables']['performance_schema.replication_group_members'] = [
+            ['group-dr', off_uuid, 'mf-dr-2', '3306', 'OFFLINE', '', '8.4.13', 'MySQL']]
+        online = F.clusterset_peer(member_index=0)
+        profiles = [self.CURRENT, self.dr_profile('dr-offline', 1), self.dr_profile('dr-online', 0)]
+        report, opened = self.read_peers({'dr-offline': offline, 'dr-online': online}, profiles)
+        self.assertEqual(opened, ['dr-offline', 'dr-online'])
+        dr = next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')
+        self.assertEqual(dr['route']['profile_id'], 'dr-online')
+        self.assertTrue(dr['quorum'])
+        self.assertEqual(dr['status'], 'OK')
+
+    def test_stale_old_primary_refreshes_metadata_from_higher_view_promoted_primary(self):
+        source = F.conn('ic-8.4-clusterset-primary')
+        for row in source.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']:
+            row[6] = '3'
+        source.scenario['variables']['super_read_only'] = 'ON'
+        promoted = F.clusterset_peer()
+        promoted.scenario['variables']['super_read_only'] = 'OFF'
+        promoted.scenario['extra']['performance_schema.replication_connection_status'] = []
+        for row in promoted.scenario['tables']['mysql_innodb_cluster_metadata.v2_cs_members']:
+            row[6] = '4294967299'
+            if row[1] == 'cid-2':
+                row[3], row[4] = 'PRIMARY', '0'
+            elif row[1] == 'cid-1':
+                row[3], row[4] = None, '1'
+        report, opened = self.read_group(promoted, source=source)
+        self.assertEqual(opened, ['remote'])
+        cs = report['clusterset']
+        self.assertEqual(cs['view_id'], '4294967299')
+        self.assertEqual(cs['primary_cluster'], 'drcluster')
+        self.assertFalse(cs['from_local_copy'])
+        clusters = {c['name']: c for c in cs['clusters']}
+        self.assertEqual(clusters['drcluster']['role'], 'PRIMARY')
+        self.assertIs(clusters['drcluster']['channel']['present'], False)
+        self.assertEqual(clusters['drcluster']['status'], 'OK')
+        self.assertTrue(clusters['mfcluster']['invalidated'])
+        self.assertEqual(clusters['mfcluster']['status'], 'INVALIDATED')
+        self.assertTrue(any(f['id'] == 'clusterset_invalidated' for f in report['findings']))
+
+    def test_raw_primary_sro_on_prevents_healthy_even_with_healthy_replicas(self):
+        from test_chart_data import validate
+        source = F.conn('ic-8.4-clusterset-primary')
+        source.scenario['variables']['super_read_only'] = 'ON'
+        source.scenario['tables'][self.MEMBER_ACTIONS] = [[1]]
+        peer = F.clusterset_peer()
+        peer.scenario['extra']['performance_schema.replication_connection_status'] = [
+            ['ON', '0', '', F.SERVER_UUIDS[0]]]
+        report, opened = self.read_group(peer, source=source)
+        primary, replica = report['clusterset']['clusters']
+        self.assertEqual(opened, ['remote'])
+        self.assertIs(primary['super_read_only'], True)
+        self.assertIs(primary['disable_super_read_only_if_primary'], True)
+        self.assertIs(primary['fenced_writes'], False)
+        self.assertEqual(primary['status'], 'NOT_OK')
+        self.assertIn('super_read_only ON', primary['status_reason'])
+        self.assertIn('writes are currently blocked', primary['status_reason'])
+        self.assertEqual(replica['status'], 'OK')
+        self.assertEqual(report['clusterset']['status'], 'UNAVAILABLE')
+        self.assertIn('super_read_only ON', report['clusterset']['status_reason'])
+        validate(report, SCHEMA)
+
+    def test_replica_source_uuid_mismatch_is_misconfigured_and_repair_eligible(self):
+        from test_chart_data import validate
+        from test_cluster_actions import clusterset_checks
+        primary_uuid = F.SERVER_UUIDS[0]
+        wrong_uuid = F.SERVER_UUIDS[1]
+        for case, source_uuid, expected_status, repair_enabled in (
+            ('matching', primary_uuid, 'OK', False),
+            ('matching_upper', primary_uuid.upper(), 'OK', False),
+            ('wrong_uuid', wrong_uuid, 'OK_MISCONFIGURED', True),
+            ('empty_uuid', '', 'OK_MISCONFIGURED', True),
+        ):
+            with self.subTest(case=case):
+                source = F.conn('ic-8.4-clusterset-primary')
+                source.scenario['tables'][self.MEMBER_ACTIONS] = [[1]]
+                peer = F.clusterset_peer()
+                # Configured host:port matches the primary, so only SOURCE_UUID exposes the mismatch.
+                peer.scenario['extra']['performance_schema.replication_connection_configuration'] = [['mf-ic-1', '3306']]
+                peer.scenario['extra']['performance_schema.replication_connection_status'] = [
+                    ['ON', '0', '', source_uuid]]
+                report, opened = self.read_group(peer, source=source)
+                self.assertEqual(opened, ['remote'])
+                replica = report['clusterset']['clusters'][1]
+                self.assertEqual(replica['status'], expected_status)
+                self.assertEqual(replica['channel']['source_uuid'], source_uuid)
+                self.assertEqual(replica['channel']['status'], 'OK' if expected_status == 'OK' else 'MISCONFIGURED')
+                self.assertEqual(report['clusterset']['status'], 'HEALTHY' if expected_status == 'OK' else 'AVAILABLE')
+                self.assertTrue(any('SOURCE_UUID' in sql for sql, _ in peer.calls))
+                checks = clusterset_checks(report)
+                actions = {a['id']: a for a in m.overview_actions(report, checks)}
+                self.assertEqual(actions['repair_cluster:drcluster']['enabled'], repair_enabled)
+                self.assertEqual(actions['set_primary_cluster:drcluster']['enabled'], not repair_enabled)
+                if repair_enabled:
+                    self.assertIn('source UUID', replica['status_reason'])
+                    self.assertIn(primary_uuid, replica['status_reason'])
+                    plan = m.plan_action(report, 'repair_cluster:drcluster', checks=checks)
+                    self.assertIn('.rejoinCluster("drcluster")', plan['statements'][0])
+                validate(report, SCHEMA)
+                assert_read_only(self, peer, m.CLUSTER_TAG)
+
+    def test_primary_clusterset_replication_channel_must_be_absent_or_stopped(self):
+        from test_chart_data import validate
+        cases = (
+            ('absent', [], [], [], 'OK', 'HEALTHY', 'MISSING'),
+            ('stopped', [['OFF', '0', '', F.SERVER_UUIDS[1]]], [['OFF']], [[1, 'OFF', 0, '']],
+             'OK', 'HEALTHY', 'STOPPED'),
+            ('running', [['ON', '0', '', F.SERVER_UUIDS[1]]], [['ON']], [[1, 'ON', 0, '']],
+             'OK_MISCONFIGURED', 'AVAILABLE', 'MISCONFIGURED'),
+            ('connecting', [['CONNECTING', '0', '', F.SERVER_UUIDS[1]]], [['ON']], [[1, 'ON', 0, '']],
+             'OK_MISCONFIGURED', 'AVAILABLE', 'MISCONFIGURED'),
+            ('applier_running', [['OFF', '0', '', F.SERVER_UUIDS[1]]], [['ON']], [[1, 'ON', 0, '']],
+             'OK_MISCONFIGURED', 'AVAILABLE', 'MISCONFIGURED'),
+            ('receiver_error', [['OFF', '2003', 'connect failed', F.SERVER_UUIDS[1]]], [['OFF']], [[1, 'OFF', 0, '']],
+             'OK_MISCONFIGURED', 'AVAILABLE', 'MISCONFIGURED'),
+            ('worker_error', [['OFF', '0', '', F.SERVER_UUIDS[1]]], [['OFF']], [[1, 'OFF', 1062, 'dup']],
+             'OK_MISCONFIGURED', 'AVAILABLE', 'MISCONFIGURED'),
+        )
+        for name, conn_rows, applier_rows, worker_rows, p_status, set_status, ch_status in cases:
+            with self.subTest(case=name):
+                source = F.conn('ic-8.4-clusterset-primary')
+                source.scenario['tables'][self.MEMBER_ACTIONS] = [[1]]
+                source.scenario['tables']['performance_schema.replication_connection_status'] = conn_rows
+                source.scenario['tables']['performance_schema.replication_applier_status'] = applier_rows
+                source.scenario['tables']['performance_schema.replication_connection_configuration'] = [
+                    ['old-primary', '3306']] if conn_rows else []
+                source.scenario['tables']['performance_schema.replication_applier_status_by_worker'] = worker_rows
+                peer = F.clusterset_peer()
+                peer.scenario['extra']['performance_schema.replication_connection_status'] = [
+                    ['ON', '0', '', F.SERVER_UUIDS[0]]]
+                report, opened = self.read_group(peer, source=source)
+                self.assertEqual(opened, ['remote'])
+                primary = report['clusterset']['clusters'][0]
+                self.assertEqual(primary['status'], p_status)
+                self.assertEqual(primary['channel']['status'], ch_status)
+                self.assertIs(primary['channel']['present'], bool(conn_rows))
+                self.assertIsNone(report['clusterset']['channel'])
+                self.assertEqual(report['clusterset']['status'], set_status)
+                if p_status == 'OK_MISCONFIGURED':
+                    self.assertIn('Unexpected clusterset_replication channel', primary['status_reason'])
+                    self.assertEqual(report['clusterset']['status_reason'],
+                                     'Primary Cluster available but requires attention.')
+                validate(report, SCHEMA)
+                assert_read_only(self, source, m.CLUSTER_TAG)
+
+    def test_remote_primary_unexpected_channel_survives_metadata_refresh(self):
+        from test_chart_data import validate
+        source = F.conn('ic-8.4-clusterset-replica')
+        main_uuid = F._cs_instances('cid-0', 'mf-main', 20)[0][3]
+        source.scenario['extra']['performance_schema.replication_connection_status'] = [['ON', '0', '', main_uuid]]
+        peer = F.clusterset_peer('cid-0', 'mf-main', 20, 'ic-8.4-clusterset-replica')
+        peer.scenario['tables'][self.MEMBER_ACTIONS] = [[1]]
+        peer.scenario['extra']['performance_schema.replication_connection_status'] = [
+            ['ON', '0', '', '99999999-2222-11f0-8a00-0242ac130002']]
+        report, opened = self.read_group(peer, source=source)
+        self.assertEqual(opened, ['remote'])
+        primary = report['clusterset']['clusters'][0]
+        self.assertFalse(report['clusterset']['from_local_copy'])
+        self.assertIs(primary['channel']['present'], True)
+        self.assertEqual(primary['channel']['status'], 'MISCONFIGURED')
+        self.assertEqual(primary['status'], 'OK_MISCONFIGURED')
+        self.assertEqual(report['clusterset']['status'], 'AVAILABLE')
+        self.assertEqual(report['clusterset']['status_reason'],
+                         'Primary Cluster available but requires attention.')
+        validate(report, SCHEMA)
+
+
 class TestActionCatalog(unittest.TestCase):
     """Catalog identities never disappear when state, tools or connection change."""
     SHELL = {'path': '/opt/mysqlsh/bin/mysqlsh', 'version': '8.4.6', 'version_tuple': [8, 4, 6]}
@@ -120,7 +2580,9 @@ class TestActionCatalog(unittest.TestCase):
         'galera': {'desync_node', 'resync_node', 'bootstrap_pc'},
     }
     MODES = {'switch_to_single_primary', 'switch_to_multi_primary'}
-    CLUSTERSET = {'set_primary_cluster', 'force_primary_cluster', 'rejoin_cluster'}
+    CLUSTERSET = {'set_primary_cluster', 'force_primary_cluster', 'rejoin_cluster', 'repair_cluster',
+                  'remove_cluster', 'remove_cluster_keep', 'set_routing_option', 'create_replica_cluster',
+                  'dissolve_clusterset', 'check_clusterset'}
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -167,23 +2629,40 @@ class TestActionCatalog(unittest.TestCase):
                                          (target['key'], target['name'], target['uuid']))
                     all_actions.extend(target['actions'])
                 for action in report['actions']:
-                    self.assertEqual(action['scope'], 'overview')
+                    base = action['id'].split(':', 1)[0]
+                    self.assertEqual(action['scope'], 'clusterset' if base in self.CLUSTERSET else 'overview')
                     self.assertIsNone(action['member_key'])
                     self.assertIsNone(action['member_name'])
                     self.assertIsNone(action['member_uuid'])
                 for action in all_actions:
-                    self.assertEqual(set(action), set(SCHEMA['$defs']['action']['required']))
+                    base = action['id'].split(':', 1)[0]
+                    extra = {'options'} if base == 'set_routing_option' else set()
+                    self.assertEqual(set(action), set(SCHEMA['$defs']['action']['required']) | extra)
                     self.assertEqual(action['schema_version'], 'cluster-action-1.1')
                     self.assertIn(action['kind'], dbops.KINDS)
                     self.assertIn(action['via'], ('sql', 'udf', 'mysqlsh'))
-                    self.assertEqual(set(action['target']), {'self', 'member_name'})
+                    target_keys = {'self', 'member_name'}
+                    if action['scope'] == 'clusterset':
+                        target_keys |= {'profile_id', 'server_uuid'}
+                    self.assertEqual(set(action['target']), target_keys)
                     self.assertEqual((action['missing_privileges'], action['grant_sql'],
                                       action['privileges_unreadable']), ([], None, False))
                     if action['enabled']:
                         self.assertIn(action['why_not'], (None, m._SHELL_RUNTIME_PRIVILEGES))
                         self.assertIsNone(action['fix'])
-                        plan = m.plan_action(report, action['id'], action['member_key'], {'shell': self.SHELL})
-                        self.assertEqual(action['kind'], reviewed_writes.worst_kind(plan['statements'])['kind'])
+                        parameters = ({'option': 'target_cluster', 'value': 'primary'}
+                                      if base == 'set_routing_option' else None)
+                        plan = m.plan_action(report, action['id'], action['member_key'], {'shell': self.SHELL},
+                                             parameters=parameters)
+                        if base == 'check_clusterset':
+                            # The read-only Shell lane consumes this explicit
+                            # plan kind; the SQL classifier does not parse JS.
+                            self.assertEqual((action['kind'], plan['kind']), ('read', 'read'))
+                            self.assertTrue(plan['read_only'])
+                            self.assertIsNone(plan['typed_guard'])
+                            self.assertNotIn(m.CLUSTER_ACTION_TAG, plan['statements'][0])
+                        else:
+                            self.assertEqual(action['kind'], reviewed_writes.worst_kind(plan['statements'])['kind'])
                     else:
                         self.assertTrue(action['why_not'])
                         self.assertTrue(action['fix'])
@@ -306,14 +2785,16 @@ class TestActionCatalog(unittest.TestCase):
         self.assertTrue(self.actions(report, secondary)['switchover']['enabled'], 'MISSING does not block switchover')
         self.assertFalse(self.actions(report)['switch_to_multi_primary']['enabled'], 'MISSING blocks mode switches')
 
-    def test_no_clusterset_and_no_candidate_each_keep_three_families(self):
+    def test_no_clusterset_and_no_candidate_each_keep_all_families(self):
         report = F.report('ic-8.4-healthy')
-        actions = self.actions(report)
+        # Admit every method here so the membership refusal is observed;
+        # separate boundary tests preserve tool-before-state precedence.
+        checks = {'shell': dict(self.SHELL, version='9.7.0', version_tuple=[9, 7, 0])}
+        actions = self.actions(report, checks=checks)
         for aid in self.CLUSTERSET:
             self.assertIn(aid, actions)
-            self.assertEqual(actions[aid]['why_not'], 'This cluster is not part of an InnoDB ClusterSet. ' +
-                             m._SHELL_RUNTIME_PRIVILEGES)
-            self.assert_refused(report, actions[aid])
+            self.assertEqual(actions[aid]['why_not'], 'This cluster is not part of an InnoDB ClusterSet.')
+            self.assert_refused(report, actions[aid], checks=checks)
         report = F.report('ic-8.4-clusterset-primary')
         report['clusterset']['clusters'] = [c for c in report['clusterset']['clusters'] if c['local']]
         actions = self.actions(report)
@@ -326,15 +2807,17 @@ class TestActionCatalog(unittest.TestCase):
             report['cluster']['topology'] = 'multi_primary'
             self.assertFalse(self.actions(report)['switch_to_single_primary']['enabled'])
 
-    def test_read_replica_keeps_all_buttons_disabled_including_clusterset(self):
+    def test_read_replica_keeps_changes_disabled_but_can_check_its_clusterset(self):
         report = F.report('ic-8.4-read-replica-local')
-        report['clusterset'] = copy.deepcopy(F.report('ic-8.4-clusterset-primary')['clusterset'])
-        report['clusterset']['from_local_copy'] = True
         self.assertEqual({a.split(':')[0] for a in self.actions(report)}, self.MODES | self.CLUSTERSET)
         self.assertFalse(any(a['enabled'] for a in self.actions(report).values()))
-        for target in report['members']:
-            self.assertEqual(set(self.actions(report, target)), self.MEMBER_IDS['innodb_cluster'])
-            self.assertFalse(any(a['enabled'] for a in self.actions(report, target).values()))
+        with_set = F.report('ic-8.4-read-replica-clusterset')
+        self.assertTrue(with_set['clusterset']['from_local_copy'])
+        self.assertEqual({aid for aid, a in self.actions(with_set).items() if a['enabled']}, {'check_clusterset'})
+        for source in (report, with_set):
+            for target in source['members']:
+                self.assertEqual(set(self.actions(source, target)), self.MEMBER_IDS['innodb_cluster'])
+                self.assertFalse(any(a['enabled'] for a in self.actions(source, target).values()))
 
     def test_rejoin_accepts_missing_offline_error_with_an_online_primary(self):
         for state in ('MISSING', 'OFFLINE', 'ERROR'):
@@ -1273,7 +3756,7 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(factory.options['query_timeout'], 30)
         code, out, err, _ = run_cli('cluster', ['--json', '-q'], F.conn('galera-11.8-healthy'))
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out)['schema_version'], 'cluster-1.0')
+        self.assertEqual(json.loads(out)['schema_version'], 'cluster-1.1')
         self.assertEqual(err, '')
         path = os.path.join(self.home.name, 'cluster.json')
         code, out, err, _ = run_cli('cluster', ['--json', '-o', path], F.conn('pxc-8.4-healthy'))
@@ -1344,7 +3827,7 @@ class TestAPI(unittest.TestCase):
 
     def test_allowlist_dispatch_saved_password_and_timeout(self):
         report = self.call(F.conn('ic-8.4-healthy'))
-        self.assertEqual(report['schema_version'], 'cluster-1.0')
+        self.assertEqual(report['schema_version'], 'cluster-1.1')
         self.assertEqual(self.factory.options['password'], 'saved-secret')
         self.assertEqual(self.factory.options['query_timeout'], 30)
         self.assertIn('/api/live/cluster', ui._SERVER_VIEW_PATHS)
@@ -1389,7 +3872,7 @@ class TestMCP(unittest.TestCase):
                 core = self.run_tool(name)
                 full = self.run_tool(name, 'full')
                 self.assertIsInstance(core, str)
-                self.assertEqual((full['schema_version'], full['kind']), ('cluster-1.0', kind))
+                self.assertEqual((full['schema_version'], full['kind']), ('cluster-1.1', kind))
                 self.assertLess(len(core), len(json.dumps(full)))
                 self.assertNotIn('SAVED-SECRET', core + json.dumps(full))
                 for f in full['findings']:
@@ -1429,6 +3912,56 @@ class TestAttachTopologyTiers(unittest.TestCase):
             },
             'members': [{'host': '127.0.0.1', 'port': port, 'uuid': 'aaaaaaaa-0000-4000-8000-000000000001'}],
         }
+
+    def test_clusterset_tiers_use_only_matching_cached_probes_without_opening(self):
+        from myflames import topology_links
+        from test_topology_links import FakeProbeConn
+        self.addCleanup(topology_links._reset_cache_for_tests)
+        current = {'id': 'p-cur', 'name': 'Database', 'host': '127.0.0.1', 'port': 13306, 'group': 'lab'}
+        rs = {'id': 'p-rs', 'name': 'Readyset', 'host': '127.0.0.1', 'port': 13307,
+              'remember_password': True, 'group': 'lab'}
+        px = {'id': 'p-px', 'name': 'ProxySQL', 'host': '127.0.0.1', 'port': 16032,
+              'remember_password': True, 'group': 'lab'}
+        stale = {'id': 'p-stale', 'name': 'Stale tier', 'host': '127.0.0.1', 'port': 13308,
+                 'updated_at': 'before', 'remember_password': True, 'group': 'lab'}
+        spare = {'id': 'p-spare', 'name': 'Spare', 'host': '127.0.0.1', 'port': 13309,
+                 'remember_password': True, 'group': 'lab'}
+        upstream = [{'host': 'mysql-primary', 'port': '3306', 'database': 'shop', 'user': 'rs',
+                     'weight': '100', 'purpose': 'cdc', 'active_cdc': 'true', 'health': 'up', 'connections': '1'}]
+        conns = {
+            'p-rs': FakeProbeConn('readyset', upstreams=upstream, cdc_server='mysql-primary:3306'),
+            'p-stale': FakeProbeConn('readyset', upstreams=upstream, cdc_server='mysql-primary:3306'),
+            'p-spare': FakeProbeConn('database', hostname='spare'),
+            'p-px': FakeProbeConn('proxysql', servers=[
+                {'hostgroup_id': '10', 'hostname': 'mysql-primary', 'port': '3306', 'status': 'ONLINE',
+                 'weight': '100'}]),
+        }
+        opened = []
+
+        def opener(profile):
+            opened.append(profile['id'])
+            return conns[profile['id']]
+
+        # Populate the real cache through the same synthetic client probes as
+        # topology discovery, then start the ClusterSet pass with fresh counts.
+        warm, notes = topology_links.probe_saved_profiles(
+            [current, rs, px, stale], opener, skip_profile_id='p-cur', current=current)
+        self.assertEqual(notes, [])
+        self.assertEqual({item['profile_id'] for item in warm}, {'p-rs', 'p-px', 'p-stale'})
+        self.assertEqual(opened, ['p-rs', 'p-px', 'p-stale'])
+        opened[:] = []
+        changed_stale = dict(stale, updated_at='after')
+        conn = FakeProbeConn('database', hostname='mysql-primary', port=3306)
+        conn.host, conn.port = '127.0.0.1', 13306
+        report = self._report('mysql-primary')
+        report['clusterset'] = {'name': 'set', 'clusters': []}
+        m.attach_topology_tiers(conn, report, profiles=[current, rs, px, changed_stale, spare],
+                                open_profile=opener, current_profile_id='p-cur')
+        tiers = report['topology_tiers']
+        self.assertEqual(opened, [])
+        self.assertEqual([item['profile_id'] for item in tiers['readyset']], ['p-rs'])
+        self.assertEqual([item['profile_id'] for item in tiers['proxysql']], ['p-px'])
+        self.assertTrue(any('stale tier' in note.lower() for note in tiers['notes']), tiers['notes'])
 
     def test_ssh_connection_passes_ssh_host_and_blocks_local_loopback_tier_match(self):
         from test_topology_links import FakeProbeConn

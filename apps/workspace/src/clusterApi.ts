@@ -1,4 +1,4 @@
-// The Cluster place's wire types (cluster-1.0, docs/schemas/cluster-1.0.json,
+// The Cluster place's wire types (cluster-1.1, docs/schemas/cluster-1.0.json,
 // myflames/cluster.py) and its one read. Small on purpose: the shell imports
 // it to name the place's state in the sidebar without loading the place.
 import { api, type Connection, type ConnectionGroup } from "./api";
@@ -53,7 +53,7 @@ export type ClusterRouter = {
 export type ClusterFinding = { id: string; status: "watch" | "problem"; title: string; text: string; member?: string };
 
 export type ClusterReport = {
-  schema_version: "cluster-1.0";
+  schema_version: "cluster-1.0" | "cluster-1.1";
   engine: "mysql" | "mariadb";
   /** mysql, percona or mariadb; Percona XtraDB Cluster is engine "mysql", flavor "percona". */
   flavor?: "mysql" | "percona" | "mariadb" | "villagesql";
@@ -150,13 +150,69 @@ export type ClusterSetInstance = {
   source: boolean;
 };
 
+/** A group-consented saved connection, verified by server UUID during this read. */
+export type ClusterSetRoute = {
+  profile_id: string | null;
+  profile_name: string | null;
+  self: boolean;
+};
+
+export type ClusterSetMember = ClusterSetInstance & {
+  /** Null when this member is known only from metadata. */
+  state: string | null;
+  role: string | null;
+};
+
+export type ClusterSetChannel = {
+  receiver_state?: string;
+  applier_state?: string;
+  last_error_number?: number;
+  last_error_message?: string;
+  source?: string;
+  present: boolean | null;
+  read_error: string | null;
+  workers: { worker_id: number | null; state: string | null;
+    last_error_number: number | null; last_error_message: string | null }[];
+};
+
+export type ClusterSetStatus = "OK" | "NOT_REPLICATING" | "FENCED_WRITES" | "NOT_OK" | "INVALIDATED" | "NOT_READ";
+
+export type ClusterSetRouter = {
+  id: number | null;
+  name: string | null;
+  address: string | null;
+  version: string | null;
+  cluster_name: string | null;
+  options: Record<string, unknown> | null;
+  /** Stored metadata, not evidence that this Router refreshed or accepted traffic. */
+  stored_configuration: true;
+};
+
 export type ClusterSetCluster = {
   name: string | null;
   role: "PRIMARY" | "REPLICA" | string | null;
   invalidated: boolean;
   local: boolean;
+  /** The cluster's Group Replication group name (v2_gr_clusters.group_name),
+   * when the backend emits it: stored target_cluster routing values hold this
+   * UUID, and the routing form maps it back to the cluster name. */
+  uuid?: string | null;
   /** Empty for this cluster: its members are the report's members. */
   instances: ClusterSetInstance[];
+  /** Fields below are emitted by cluster-1.1; older saved reports omit them. */
+  route?: ClusterSetRoute | null;
+  read?: "this_connection" | "route" | "metadata_only" | "failed";
+  read_error?: string | null;
+  members?: ClusterSetMember[];
+  primary?: ClusterSetMember | null;
+  quorum?: boolean | null;
+  /** super_read_only on this cluster's primary; normally true on a replica cluster. */
+  fenced_writes?: boolean | null;
+  channel?: ClusterSetChannel | null;
+  status?: ClusterSetStatus;
+  status_reason?: string;
+  /** GTID consistency is not computed in this release. */
+  gtid_consistency?: null;
 };
 
 export type ClusterSet = {
@@ -171,6 +227,15 @@ export type ClusterSet = {
     last_error_message?: string; source?: string } | null;
   /** Read from a replica cluster's replicated copy of the metadata. */
   from_local_copy: boolean;
+  status?: "HEALTHY" | "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN";
+  status_reason?: string;
+  gtid_consistency?: null;
+  /** A decimal string preserves the metadata's 64-bit view counter. */
+  view_id?: string | null;
+  metadata_read_on?: ClusterSetRoute;
+  /** Null when unreadable; an empty array means no registrations were found. */
+  routers?: ClusterSetRouter[] | null;
+  routing_options?: { stored_configuration: true; options: Record<string, unknown> | null };
 };
 
 /** A read of the connection *key* that failed, and the report on screen
@@ -305,8 +370,10 @@ export type ClusterAction = {
   /** A fixed id, or set_primary_cluster[:<cluster>] / rejoin_cluster[:<cluster>]. */
   id: string;
   label: string;
-  /** overview: the Cluster overview band; member: that member's page. */
-  scope: "overview" | "member";
+  /** overview: the Cluster overview band; member: that member's page;
+   * clusterset: the ClusterSet map (the backend lane tags the ClusterSet
+   * families; older reports carry them as overview). */
+  scope: "overview" | "member" | "clusterset";
   /** dbops classification; the cluster changes are risky. */
   kind: "write" | "risky";
   /** sql on the target member, a Group Replication UDF, or MySQL Shell. */
@@ -328,6 +395,9 @@ export type ClusterAction = {
    * backend's saved route, or null when none is usable. confirm marks an
    * address suggestion whose identity Review must prove before issuing a token. */
   target: { self: boolean; member_name: string | null; profile_id?: string | null; confirm?: boolean; note?: string };
+  /** set_routing_option entries: the Router options the backend accepts, each
+   * with its Shell-version gate (cluster.py _clusterset_routing_options). */
+  options?: Record<string, { minimum_shell?: number[]; enabled: boolean; why_not: string | null; fix: string | null }> | null;
 };
 
 /** The member-scope actions that change only the server they run on
@@ -357,9 +427,11 @@ export function identityText(report: ClusterReport, groupName = ""): string {
   return text;
 }
 
-export const planClusterAction = (connection: Connection, action: string, memberKey: string | null, targetProfileId: string | null = null) =>
+export const planClusterAction = (connection: Connection, action: string, memberKey: string | null, targetProfileId: string | null = null,
+    parameters?: Record<string, unknown>) =>
   api<ReviewedPlan>("live/cluster/plan", { connection, action, member_key: memberKey,
-    ...(connection.group_name ? { target_profile_id: targetProfileId } : {}) });
+    ...(connection.group_name ? { target_profile_id: targetProfileId } : {}),
+    ...(parameters && Object.keys(parameters).length ? { parameters } : {}) });
 
 export const sendClusterAction = (connection: Connection, plan: ReviewedPlan, token: string, typed: string, progressId: string, targetProfileId: string | null = null) =>
   api<ReviewedResult>("live/cluster/action", { connection, plan, review_token: token, typed, confirmed: true, progress_id: progressId,

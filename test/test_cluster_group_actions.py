@@ -889,7 +889,7 @@ class GroupActionTests(unittest.TestCase):
         self.assertEqual(dict(plan['facts'])['Instance'], '%s (%s)' % (missing['name'], missing['address']))
         send.assert_called_once_with('\n'.join(plan['session_guard'] + plan['statements']), timeout=cluster.SHELL_TIMEOUT)
         self.assertIn(report['server']['server_uuid'], plan['session_guard'][0])
-        self.assertNotIn(missing['uuid'], plan['session_guard'][0])
+        self.assertIn(missing['uuid'], plan['session_guard'][0])
 
     def test_remote_galera_desync_and_resync_review_the_peers_own_state_in_both_directions(self):
         for active_desync, peer_desync, applicable, refused in [

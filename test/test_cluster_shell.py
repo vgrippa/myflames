@@ -7,6 +7,7 @@ ClusterSet"); the MISSING member is the live recording ic-8.4-member-offline.
 MySQL Shell itself is replaced: by a recorder of what would be sent, and,
 for the command line and the option file, by a stand-in ``mysqlsh`` program.
 """
+import copy
 import json
 import os
 import re
@@ -23,6 +24,10 @@ from unittest import mock
 import _cluster_fixtures as F
 from myflames import cluster as m, cluster_shell, dbops, ui
 from myflames.connector import ConnectorError
+from myflames.reviewed_writes import Refusal
+from test_cluster import install_clusterset_batch_replay
+
+install_clusterset_batch_replay()
 
 SHELL = {'path': '/opt/mysqlsh/bin/mysqlsh', 'realpath': '/opt/mysqlsh/bin/mysqlsh', 'version': '8.4.6',
          'version_tuple': [8, 4, 6]}
@@ -62,6 +67,78 @@ def offered(report, key, checks=CHECKS):
 
 def missing(report):
     return next(x for x in report['members'] if x['state'] == 'MISSING')
+
+
+def clusterset_reads(report, primary_unreachable=False):
+    """Explicit synthetic observations for planner tests, never raw read tests.
+
+    The original fixtures open only the local connection. A metadata row is
+    not evidence of a live remote cluster, so action tests supply the route,
+    UUID, group, and channel that a fresh group read would have observed.
+    Failover additionally supplies a failed connection probe for every old
+    primary member; an unreadable SQL query alone must never enable it.
+    """
+    cs = report.get('clusterset')
+    if not cs:
+        return report
+    primary_cluster = next((c for c in cs['clusters'] if c.get('role') == 'PRIMARY' and not c.get('invalidated')), None)
+    primary_uuid = ((primary_cluster or {}).get('primary') or {}).get('server_uuid')
+    if not primary_uuid and primary_cluster:
+        primary_instances = primary_cluster.get('members') or primary_cluster.get('instances') or []
+        if primary_instances:
+            primary_uuid = primary_instances[0].get('server_uuid')
+    for cluster in cs['clusters']:
+        if cluster.get('local'):
+            if cluster.get('route'):
+                cluster['route'].setdefault('server_uuid', report['server']['server_uuid'])
+            if cluster.get('role') == 'PRIMARY' and not cluster.get('invalidated'):
+                if cluster.get('disable_super_read_only_if_primary') is None:
+                    cluster['disable_super_read_only_if_primary'] = True
+                # These planner fixtures explicitly supply the member-action
+                # observation. Derive fencing only when raw SRO was read too.
+                if isinstance(cluster.get('super_read_only'), bool):
+                    cluster['fenced_writes'] = (cluster['super_read_only'] and
+                                                 not cluster['disable_super_read_only_if_primary'])
+                if not cluster.get('channel') or cluster['channel'].get('present') is None:
+                    cluster['channel'] = {'present': False, 'workers': [], 'read_error': None, 'status': 'MISSING'}
+            elif cluster.get('role') == 'REPLICA' and not cluster.get('invalidated'):
+                if cluster.get('disable_super_read_only_if_primary') is None:
+                    cluster['disable_super_read_only_if_primary'] = False
+                if cluster.get('channel') and cluster['channel'].get('source_uuid') is None and primary_uuid:
+                    cluster['channel']['source_uuid'] = primary_uuid
+            continue
+        if cluster.get('read') in ('route', 'this_connection'):
+            continue
+        instances = copy.deepcopy(cluster.get('instances') or [])
+        if not instances:
+            continue
+        for index, instance in enumerate(instances):
+            instance.update(state='ONLINE', role='PRIMARY' if index == 0 else 'SECONDARY')
+        route = {'profile_id': 'route:' + cluster['name'], 'profile_name': cluster['name'],
+                 'self': False, 'server_uuid': instances[0]['server_uuid']}
+        channel = ({'present': False, 'workers': [], 'read_error': None, 'status': 'MISSING'}
+                   if cluster.get('role') == 'PRIMARY' else {
+            'present': True, 'receiver_state': 'ON', 'applier_state': 'ON',
+            'last_error_number': 0, 'read_error': None, 'source': 'mf-main-1:3306',
+            'source_uuid': primary_uuid, 'status': 'OK',
+        })
+        cluster.update(route=route, read='route', read_error=None, members=instances,
+                       primary=instances[0], quorum=True, super_read_only=cluster.get('role') != 'PRIMARY',
+                       disable_super_read_only_if_primary=cluster.get('role') == 'PRIMARY',
+                       fenced_writes=cluster.get('role') != 'PRIMARY',
+                       channel=channel, status='INVALIDATED' if cluster.get('invalidated') else 'OK')
+    if primary_unreachable:
+        primary = next(c for c in cs['clusters'] if c.get('role') == 'PRIMARY' and not c.get('invalidated'))
+        primary.update(route=None, read='failed', read_error='Every saved member connection failed.',
+                       primary=None, quorum=None, status='NOT_READ')
+        report._clusterset_reachability = {primary['name']: [
+            {'server_uuid': member['server_uuid'], 'reachable': False} for member in primary['members']]}
+    return report
+
+
+def action_report(scenario, action=None):
+    return clusterset_reads(F.report(scenario), primary_unreachable=bool(
+        action and action.startswith('force_primary_cluster')))
 
 
 class Home(unittest.TestCase):
@@ -114,9 +191,15 @@ class TestClusterSetRead(unittest.TestCase):
         self.assertEqual(report._clusterset_groups, {row[1]: row[3] for row in rows})
         self.assertEqual(set(report._clusterset_groups), {'mfcluster', 'drcluster'})
         self.assertNotIn('_clusterset_groups', json.dumps(report))
-        plan = m.plan_action(report, 'set_primary_cluster:drcluster', local(report)['key'], CHECKS)
+        plan = m.plan_action(clusterset_reads(report), 'set_primary_cluster:drcluster', local(report)['key'], CHECKS)
         self.assertEqual(plan['expect']['server_identity']['adminapi'],
-                         {'kind': 'clusterset', 'name': 'mfcs', 'groups': report._clusterset_groups})
+                         {'kind': 'clusterset', 'name': 'mfcs', 'groups': report._clusterset_groups,
+                          'view_id': str(report['clusterset']['view_id']),
+                          'roles': {'mfcluster': 'PRIMARY', 'drcluster': 'REPLICA'},
+                          'invalidated': {'mfcluster': False, 'drcluster': False},
+                          'primary_cluster': 'mfcluster',
+                          'metadata_addresses': ['mf-dr-1:3306', 'mf-dr-2:3306', 'mf-dr-3:3306',
+                                                 'mf-ic-1:3306', 'mf-ic-2:3306', 'mf-ic-3:3306']})
 
     def test_replica_cluster_reads_its_channel_on_its_primary(self):
         report = F.report('ic-8.4-clusterset-replica')
@@ -160,11 +243,11 @@ class TestClusterSetRead(unittest.TestCase):
         self.assertIn('rejoinCluster', finding['text'])
 
     def test_read_is_read_only(self):
-        from _perf_replay import assert_read_only
+        from test_cluster import assert_cluster_read_only
         for name in ('ic-8.4-clusterset-primary', 'ic-8.4-clusterset-replica-channel-off'):
             conn = F.conn(name)
             m.read_status(conn)
-            assert_read_only(self, conn, m.CLUSTER_TAG)
+            assert_cluster_read_only(self, conn, m.CLUSTER_TAG)
 
     def test_denied_metadata_view_is_a_note(self):
         scenario = dict(F.SCENARIOS['ic-8.4-clusterset-primary'])
@@ -222,7 +305,7 @@ class TestOffered(unittest.TestCase):
         with mock.patch('myflames.client_tools.discover', return_value={'shells': [old]}):
             found = cluster_shell.find_shell()
         self.assertEqual(found, old)
-        report = F.report('ic-8.4-healthy')
+        report = action_report('ic-8.4-healthy')
         action = next(a for a in m.overview_actions(report, {'shell': found})
                       if a['id'] == 'switch_to_multi_primary')
         self.assertFalse(action['enabled'])
@@ -235,12 +318,12 @@ class TestOffered(unittest.TestCase):
             ('ic-8.4-healthy', 'switch_to_single_primary', 'multi', (8, 0, 32), (8, 0, 31)),
             ('ic-8.4-member-offline', 'rejoin_instance', 'missing', (8, 1, 0), (8, 0, 34)),
             ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local', (8, 0, 32), (8, 0, 31)),
-            ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local', (8, 0, 32), (8, 0, 31)),
+            ('ic-8.4-clusterset-replica', 'force_primary_cluster:mfcluster', 'local', (8, 0, 32), (8, 0, 31)),
             ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster', 'local', (8, 0, 32), (8, 0, 31)),
             ('ic-8.4-clusterset-replica', 'switchover', 'secondary', (8, 0, 32), (8, 0, 31)),
         )
         for scenario, action, who, threshold, below in cases:
-            report = F.report(scenario)
+            report = action_report(scenario, action)
             if who == 'multi':
                 report['cluster']['topology'] = 'multi_primary'
             target = (missing(report) if who == 'missing' else
@@ -259,7 +342,7 @@ class TestOffered(unittest.TestCase):
     def test_shell_without_a_version_offers_no_shell_actions(self):
         for version in (None, []):
             for scenario in ('ic-8.4-healthy', 'ic-8.4-member-offline', 'ic-8.4-clusterset-replica'):
-                report = F.report(scenario)
+                report = action_report(scenario)
                 checks = {'shell': dict(SHELL, version_tuple=version)}
                 for target in report['members']:
                     self.assertFalse(any(m._via_shell(report, a) for a in offered(report, target['key'], checks)))
@@ -267,7 +350,7 @@ class TestOffered(unittest.TestCase):
     def test_nothing_from_mysql_shell_without_mysql_shell(self):
         for name in ('ic-8.4-healthy', 'ic-8.4-member-offline', 'ic-8.4-clusterset-primary',
                      'ic-8.4-clusterset-replica'):
-            report = F.report(name)
+            report = action_report(name)
             for x in report['members']:
                 ids = offered(report, x['key'], None)
                 for action in ids:
@@ -278,7 +361,7 @@ class TestOffered(unittest.TestCase):
         for scenario in ('ic-8.4-healthy', 'ic-8.4-member-offline', 'ic-8.4-clusterset-primary',
                          'ic-8.4-clusterset-replica', 'ic-8.4-clusterset-invalidated'):
             for topology in ('single_primary', 'multi_primary'):
-                report = F.report(scenario)
+                report = action_report(scenario)
                 report['cluster']['topology'] = topology
                 direct_shell_actions = set()
                 for target in report['members']:
@@ -294,7 +377,7 @@ class TestOffered(unittest.TestCase):
 
     def test_ssh_keeps_sql_cluster_actions(self):
         for scenario in ('ic-8.4-healthy', 'ic-8.4-clusterset-primary', 'gr-8.4-two-members'):
-            report = F.report(scenario)
+            report = action_report(scenario)
             secondary = next(x for x in report['members'] if x['role'] == 'SECONDARY')
             for action, target in (('stop_member', local(report)), ('switchover', secondary)):
                 with self.subTest(scenario=scenario, action=action):
@@ -306,7 +389,7 @@ class TestOffered(unittest.TestCase):
         note = ("MySQL Shell changes are not offered over an SSH connection: MySQL Shell connects to the other "
                 "members directly, outside the tunnel, with this connection's user and password. Run them in "
                 "MySQL Shell from a host that reaches the members.")
-        report = F.report('ic-8.4-healthy')
+        report = action_report('ic-8.4-healthy')
         for _ in range(2):
             m.with_actions(report, shell=SHELL, ssh=True)
             self.assertEqual(report['notes'].count(note), 1)
@@ -316,7 +399,7 @@ class TestOffered(unittest.TestCase):
                                      (SHELL, True, 'gr-8.4-two-members')):
             with self.subTest(shell=shell, ssh=ssh, scenario=scenario):
                 with mock.patch.object(cluster_shell, 'find_shell', return_value=None):
-                    report = m.with_actions(F.report(scenario), shell=shell, ssh=ssh)
+                    report = m.with_actions(action_report(scenario), shell=shell, ssh=ssh)
                 self.assertNotIn(note, report['notes'])
 
     def test_invalid_shell_addresses_are_not_offered_or_planned(self):
@@ -324,7 +407,7 @@ class TestOffered(unittest.TestCase):
             for scenario, action in (('ic-8.4-member-offline', 'rejoin_instance'),
                                      ('ic-8.4-clusterset-replica', 'switchover')):
                 with self.subTest(address=address, action=action):
-                    report = F.report(scenario)
+                    report = action_report(scenario)
                     target = (missing(report) if action == 'rejoin_instance' else
                               next(x for x in report['members'] if x['role'] == 'SECONDARY'))
                     self.assertIn(action, offered(report, target['key']))
@@ -333,43 +416,47 @@ class TestOffered(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         m.plan_action(report, action, target['key'], CHECKS)
 
-    def test_newline_clusterset_names_are_not_offered_or_planned(self):
+    def test_server_clusterset_names_are_json_encoded_without_code_interpolation(self):
         for scenario, action in (('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster'),
                                  ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster'),
-                                 ('ic-8.4-clusterset-replica', 'force_primary_cluster')):
+                                 ('ic-8.4-clusterset-replica', 'force_primary_cluster:mfcluster')):
             with self.subTest(action=action):
-                report = F.report(scenario)
+                report = action_report(scenario, action)
                 key = local(report)['key']
                 self.assertIn(action, offered(report, key))
-                if action == 'force_primary_cluster':
-                    report['clusterset']['local_cluster'] += '\n'
-                else:
-                    next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')['name'] += '\n'
-                    action += '\n'
-                self.assertNotIn(action, offered(report, key))
-                with self.assertRaises(ValueError):
-                    m.plan_action(report, action, key, CHECKS)
+                base, old_name = action.split(':', 1)
+                name = old_name + '\n"\\</script>\u2028'
+                next(c for c in report['clusterset']['clusters'] if c['name'] == old_name)['name'] = name
+                if report['clusterset']['local_cluster'] == old_name:
+                    report['clusterset']['local_cluster'] = name
+                report._clusterset_groups[name] = report._clusterset_groups.pop(old_name)
+                action = base + ':' + name
+                self.assertIn(action, offered(report, key))
+                plan = m.plan_action(report, action, key, CHECKS)
+                self.assertEqual(len(plan['statements'][0].splitlines()), 1)
+                self.assertIn(m._js(name), plan['statements'][0])
+                self.assertNotIn('</script>', plan['statements'][0])
 
     def test_innodb_cluster_mode_switch(self):
-        report = F.report('ic-8.4-healthy')
+        report = action_report('ic-8.4-healthy')
         self.assertIn('switch_to_multi_primary', offered(report, local(report)['key']))
         for x in report['members']:
             if not x['local']:
                 self.assertNotIn('switch_to_multi_primary', offered(report, x['key']))
-        multi = F.report('ic-8.4-healthy')
+        multi = action_report('ic-8.4-healthy')
         multi['cluster']['topology'] = 'multi_primary'
         self.assertIn('switch_to_single_primary', offered(multi, local(multi)['key']))
 
     def test_no_mode_switch_unless_every_member_is_online(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         self.assertNotIn('switch_to_multi_primary', offered(report, local(report)['key']),
                          'MySQL Shell refuses unless every member is ONLINE')
-        degraded = F.report('ic-8.4-degraded')
+        degraded = action_report('ic-8.4-degraded')
         self.assertFalse(any(a.startswith('switch_to') for x in degraded['members']
                              for a in offered(degraded, x['key'])))
 
     def test_no_mode_switch_with_an_error_or_offline_group_member(self):
-        healthy = F.report('ic-8.4-healthy')
+        healthy = action_report('ic-8.4-healthy')
         for state in ('ERROR', 'OFFLINE'):
             for topology in ('single_primary', 'multi_primary'):
                 with self.subTest(state=state, topology=topology):
@@ -386,11 +473,11 @@ class TestOffered(unittest.TestCase):
 
     def test_no_mode_switch_in_a_clusterset(self):
         for name in ('ic-8.4-clusterset-primary', 'ic-8.4-clusterset-replica'):
-            report = F.report(name)
+            report = action_report(name)
             self.assertFalse([a for a in offered(report, local(report)['key']) if a.startswith('switch_to')], name)
 
     def test_rejoin_on_a_missing_member_only(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         target = missing(report)
         self.assertEqual(offered(report, target['key']), ['rejoin_instance'])
         self.assertEqual(offered(report, target['key'], None), [], 'needs MySQL Shell')
@@ -401,7 +488,7 @@ class TestOffered(unittest.TestCase):
     def test_rejoin_needs_metadata_2_and_exact_clusterset_ok(self):
         for version in (None, '0.0.0', '1.0.1', '2.0.0', '2.2.0'):
             with self.subTest(metadata=version):
-                report = F.report('ic-8.4-member-offline')
+                report = action_report('ic-8.4-member-offline')
                 report['metadata']['schema_version'] = version
                 action = next(a for a in m.available_actions(report, missing(report)['key'], CHECKS)
                               if a['id'] == 'rejoin_instance')
@@ -413,7 +500,7 @@ class TestOffered(unittest.TestCase):
         for status in ('OK', 'OK_NOT_REPLICATING', 'OK_NOT_CONSISTENT', 'OK_MISCONFIGURED', 'NOT_OK',
                        'UNKNOWN', 'INVALIDATED', None):
             with self.subTest(status=status):
-                report = F.report('ic-8.4-member-offline')
+                report = action_report('ic-8.4-member-offline')
                 report['clusterset'] = {'global_status': status, 'invalidated': False}
                 action = next(a for a in m.available_actions(report, missing(report)['key'], CHECKS)
                               if a['id'] == 'rejoin_instance')
@@ -424,44 +511,46 @@ class TestOffered(unittest.TestCase):
                         m.plan_action(report, 'rejoin_instance', missing(report)['key'], CHECKS)
 
     def test_no_rejoin_from_a_member_that_is_not_online_or_has_no_address(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         local(report)['state'] = 'RECOVERING'
         self.assertEqual(offered(report, missing(report)['key']), [])
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         missing(report)['address'] = "mf-ic-3'); dba.dropMetadataSchema(); ('"
         self.assertEqual(offered(report, missing(report)['key']), [])
 
     def test_clusterset_actions(self):
-        primary = F.report('ic-8.4-clusterset-primary')
+        primary = action_report('ic-8.4-clusterset-primary')
         self.assertIn('set_primary_cluster:drcluster', offered(primary, local(primary)['key']))
         self.assertNotIn('force_primary_cluster', offered(primary, local(primary)['key']))
-        replica = F.report('ic-8.4-clusterset-replica')
+        replica = action_report('ic-8.4-clusterset-replica')
         ids = offered(replica, local(replica)['key'])
         self.assertIn('set_primary_cluster:mfcluster', ids)
-        self.assertIn('force_primary_cluster', ids)
+        self.assertNotIn('force_primary_cluster:mfcluster', ids, 'a reachable primary prevents failover')
+        clusterset_reads(replica, primary_unreachable=True)
+        self.assertIn('force_primary_cluster:mfcluster', offered(replica, local(replica)['key']))
         self.assertNotIn('set_primary_cluster:maincluster', ids, 'already the primary cluster')
-        invalidated = F.report('ic-8.4-clusterset-invalidated')
+        invalidated = action_report('ic-8.4-clusterset-invalidated')
         ids = offered(invalidated, local(invalidated)['key'])
         self.assertIn('rejoin_cluster:drcluster', ids)
         self.assertNotIn('set_primary_cluster:drcluster', ids, 'an invalidated cluster is rejoined first')
-        mine = F.report('ic-8.4-clusterset-local-invalidated')
+        mine = action_report('ic-8.4-clusterset-local-invalidated')
         ids = offered(mine, local(mine)['key'])
         self.assertEqual([a for a in ids if a.startswith(('set_primary', 'force'))], [])
         self.assertIn('rejoin_cluster:mfcluster', ids)
 
     def test_clusterset_actions_only_on_the_connected_member(self):
-        report = F.report('ic-8.4-clusterset-primary')
+        report = action_report('ic-8.4-clusterset-primary')
         for x in report['members']:
             if not x['local']:
                 self.assertFalse([a for a in offered(report, x['key']) if ':' in a])
 
     def test_switchover_in_a_replica_cluster_needs_mysql_shell(self):
-        report = F.report('ic-8.4-clusterset-replica')
+        report = action_report('ic-8.4-clusterset-replica')
         secondary = next(x for x in report['members'] if x['role'] == 'SECONDARY')
         self.assertNotIn('switchover', offered(report, secondary['key'], None),
                          'the UDF refuses while the clusterset_replication channel runs')
         self.assertIn('switchover', offered(report, secondary['key']))
-        primary = F.report('ic-8.4-clusterset-primary')
+        primary = action_report('ic-8.4-clusterset-primary')
         secondary = next(x for x in primary['members'] if x['role'] == 'SECONDARY')
         self.assertIn('switchover', offered(primary, secondary['key'], None), 'the primary cluster has no channel')
 
@@ -470,12 +559,12 @@ class TestOffered(unittest.TestCase):
         schema = json.loads((Path(__file__).resolve().parent.parent / 'docs' / 'schemas' / 'cluster-1.0.json')
                             .read_text(encoding='utf-8'))
         for name in F.ALL:
-            validate(m.with_actions(F.report(name), shell=SHELL), schema)
+            validate(m.with_actions(action_report(name), shell=SHELL), schema)
 
 
 class TestPlans(unittest.TestCase):
     def test_mode_switch_runs_mysql_shell(self):
-        report = F.report('ic-8.4-healthy')
+        report = action_report('ic-8.4-healthy')
         plan = m.plan_action(report, 'switch_to_multi_primary', local(report)['key'], CHECKS)
         self.assertEqual(plan['statements'], [TAG + 'myflamesCluster.switchToMultiPrimaryMode();'])
         self.assertEqual((plan['via'], plan['typed_guard'], plan['timeout_s']), ('mysqlsh', 'mfcluster',
@@ -488,7 +577,7 @@ class TestPlans(unittest.TestCase):
             m.plan_action(report, 'switch_to_multi_primary', local(report)['key'])
 
     def test_rejoin_names_the_instance(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         target = missing(report)
         plan = m.plan_action(report, 'rejoin_instance', target['key'], CHECKS)
         self.assertEqual(plan['statements'],
@@ -508,7 +597,7 @@ class TestPlans(unittest.TestCase):
                                         if a['id'] == 'rejoin_instance')['description'])
 
     def test_action_checks_records_ssh_only_for_shell_actions(self):
-        report = F.report('ic-8.4-healthy')
+        report = action_report('ic-8.4-healthy')
         grants = {'checked': True, 'account': 'mf_admin@localhost', 'grants': F.ADMIN_GRANTS}
         expected_grants = m._grant_model(report, grants)
         with mock.patch.object(cluster_shell, 'find_shell', return_value=SHELL):
@@ -524,7 +613,7 @@ class TestPlans(unittest.TestCase):
             with mock.patch.object(dbops, 'read_grants', return_value=grants):
                 self.assertEqual(m.action_checks(object(), report, 'switch_to_multi_primary'),
                                  dict(CHECKS, ssh=False, grants=expected_grants))
-            replica = F.report('ic-8.4-clusterset-replica')
+            replica = action_report('ic-8.4-clusterset-replica')
             conn = type('Conn', (), {'ssh_host': 'bastion.example'})()
             with mock.patch.object(dbops, 'read_grants', return_value=grants):
                 self.assertEqual(m.action_checks(conn, replica, 'switchover'),
@@ -558,7 +647,7 @@ class TestPlans(unittest.TestCase):
         for scenario, aid in cases:
             with self.subTest(action=aid):
                 conn = F.conn(scenario)
-                report = m.read_status(conn)
+                report = clusterset_reads(m.read_status(conn), primary_unreachable=aid.startswith('force_primary_cluster'))
                 target = missing(report)['key'] if aid == 'rejoin_instance' else None
                 with mock.patch.object(dbops, 'read_grants', side_effect=AssertionError('no grants read needed')), \
                         mock.patch.object(cluster_shell, 'find_shell', return_value=SHELL):
@@ -570,20 +659,20 @@ class TestPlans(unittest.TestCase):
                     self.assertFalse(any('Privileges could not be read' in warning for warning in plan['warnings']))
 
     def test_clusterset_plans(self):
-        primary = F.report('ic-8.4-clusterset-primary')
+        primary = action_report('ic-8.4-clusterset-primary')
         key = local(primary)['key']
         plan = m.plan_action(primary, 'set_primary_cluster:drcluster', key, CHECKS)
         self.assertEqual(plan['statements'], [TAG + 'myflamesClusterSet.setPrimaryCluster("drcluster");'])
-        self.assertEqual(plan['typed_guard'], 'drcluster')
+        self.assertIsNone(plan['typed_guard'])
         self.assertEqual(plan['undo'], 'dba.getClusterSet().setPrimaryCluster("mfcluster");')
         self.assertEqual(plan['expect']['clusterset'], [['mfcluster', 'PRIMARY', False],
                                                         ['drcluster', 'REPLICA', False]])
-        replica = F.report('ic-8.4-clusterset-replica')
+        replica = action_report('ic-8.4-clusterset-replica', 'force_primary_cluster')
         force = m.plan_action(replica, 'force_primary_cluster', local(replica)['key'], CHECKS)
         self.assertEqual(force['statements'], [TAG + 'myflamesClusterSet.forcePrimaryCluster("mfcluster");'])
         self.assertIn('Cannot be undone', force['undo'])
         self.assertTrue(any('replicated copy' in w for w in force['warnings']))
-        invalidated = F.report('ic-8.4-clusterset-invalidated')
+        invalidated = action_report('ic-8.4-clusterset-invalidated')
         rejoin = m.plan_action(invalidated, 'rejoin_cluster:drcluster', local(invalidated)['key'], CHECKS)
         self.assertEqual(rejoin['statements'], [TAG + 'myflamesClusterSet.rejoinCluster("drcluster");'])
         with self.assertRaises(ValueError):
@@ -592,13 +681,13 @@ class TestPlans(unittest.TestCase):
             m.plan_action(primary, 'rejoin_cluster:drcluster', key, CHECKS)
 
     def test_replica_cluster_switchover_uses_set_primary_instance(self):
-        report = F.report('ic-8.4-clusterset-replica')
+        report = action_report('ic-8.4-clusterset-replica')
         secondary = next(x for x in report['members'] if x['role'] == 'SECONDARY')
         plan = m.plan_action(report, 'switchover', secondary['key'], CHECKS)
         self.assertEqual(plan['statements'],
                          [TAG + 'myflamesCluster.setPrimaryInstance("%s");' % secondary['address']])
         self.assertEqual(plan['via'], 'mysqlsh')
-        plain = F.report('ic-8.4-healthy')
+        plain = action_report('ic-8.4-healthy')
         target = next(x for x in plain['members'] if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE')
         self.assertNotIn('via', m.plan_action(plain, 'switchover', target['key'], CHECKS),
                          'outside a replica cluster the UDF still does it')
@@ -610,12 +699,133 @@ class TestPlans(unittest.TestCase):
                  ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', None),
                  ('ic-8.4-clusterset-replica', 'force_primary_cluster', None))
         for name, action, who in cases:
-            report = F.report(name)
+            report = action_report(name, action)
             key = missing(report)['key'] if who else local(report)['key']
             plan = m.plan_action(report, action, key, CHECKS)
             reviewed_writes.check_reviewed(plan)
             self.assertEqual(dbops.decide(reviewed_writes.worst_kind(plan['statements']), 'development')['action'],
                              'confirm', name)
+
+
+class TestClusterSetBuilders(unittest.TestCase):
+    """Run generated JavaScript, including names supplied by server metadata."""
+
+    def calls(self, name):
+        old, current = (8, 0, 27), (9, 7, 0)
+        tags = {'label': name, '__proto__': {'owned': True}, 'nested': {'line': name}}
+        return [
+            (m._shell_set_primary_cluster(name, {}, old), 'setPrimaryCluster', [name]),
+            (m._shell_set_primary_cluster(name, {'timeout': 17, 'invalidateReplicaClusters': [name]}, old),
+             'setPrimaryCluster', [name, {'timeout': 17, 'invalidateReplicaClusters': [name]}]),
+            (m._shell_force_primary_cluster(name, {'timeout': 19}, (8, 0, 32)),
+             'forcePrimaryCluster', [name, {'timeout': 19}]),
+            (m._shell_rejoin_cluster(name, old), 'rejoinCluster', [name]),
+            (m._shell_repair_cluster(name, old), 'rejoinCluster', [name]),
+            (m._shell_remove_cluster(name, {}, old), 'removeCluster', [name]),
+            (m._shell_remove_cluster(name, {'dissolve': False, 'timeout': 23}, current),
+             'removeCluster', [name, {'dissolve': False, 'timeout': 23}]),
+            (m._shell_set_routing_option(None, 'target_cluster', name, old),
+             'setRoutingOption', ['target_cluster', name]),
+            (m._shell_set_routing_option(name, 'invalidated_cluster_policy', 'accept_ro', old),
+             'setRoutingOption', [name, 'invalidated_cluster_policy', 'accept_ro']),
+            (m._shell_set_routing_option(name, 'tags', tags, current),
+             'setRoutingOption', [name, 'tags', tags]),
+            (m._shell_create_replica_cluster('db-4:3306', 'new_replica',
+                                            {'recoveryMethod': 'incremental', 'recoveryProgress': 1}, old),
+             'createReplicaCluster', ['db-4:3306', 'new_replica',
+                                      {'recoveryMethod': 'incremental', 'recoveryProgress': 1}]),
+            (m._shell_dissolve_clusterset({'timeout': 29}, current), 'dissolve', [{'timeout': 29}]),
+            (m._shell_check_clusterset(old), 'status', [{'extended': 1}]),
+        ]
+
+    def test_every_call_is_one_line_json_escaped_and_never_a_dry_run(self):
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('node is needed to execute the generated JavaScript without a database')
+        hostile = 'cluster "quote"\\path\n</script>\u2028); injected(); //'
+        calls = self.calls(hostile)
+        for statement, method, _ in calls:
+            prefix = ('print(JSON.stringify(' if method == 'status' else '') + 'myflamesClusterSet.' + method + '('
+            self.assertTrue(statement.startswith(prefix), statement)
+            if method == 'status':
+                self.assertTrue(statement.endswith(', null, 2));'), statement)
+            self.assertTrue(statement.endswith(');'), statement)
+            self.assertNotIn('\n', statement)
+            self.assertNotIn('\u2028', statement)
+            self.assertNotIn('</script>', statement)
+            self.assertNotIn('dryRun', statement)
+        harness = '''
+            const fs = require('fs'), vm = require('vm');
+            const calls = [], printed = [];
+            const myflamesClusterSet = new Proxy({}, {get(_target, method) {
+                return (...args) => { calls.push([method, args]); return method === 'status' ? {status: 'HEALTHY'} : undefined; };
+            }});
+            vm.runInNewContext(fs.readFileSync(0, 'utf8'), {myflamesClusterSet, print(value) {printed.push(value);}}, {timeout: 1000});
+            process.stdout.write(JSON.stringify({calls, printed}));
+        '''
+        result = subprocess.run([node, '-e', harness], input='\n'.join(s for s, _, _ in calls).encode('utf-8'),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8'))
+        observed = json.loads(result.stdout.decode('utf-8'))
+        self.assertEqual(observed['calls'], [[method, args] for _, method, args in calls])
+        self.assertEqual([json.loads(item) for item in observed['printed']], [{'status': 'HEALTHY'}])
+
+    def test_method_and_option_gates_are_distinct_from_credential_floor(self):
+        for builder in (lambda version: m._shell_set_primary_cluster('replica', {}, version),
+                        lambda version: m._shell_force_primary_cluster('replica', {}, version),
+                        lambda version: m._shell_rejoin_cluster('replica', version),
+                        lambda version: m._shell_repair_cluster('replica', version),
+                        lambda version: m._shell_remove_cluster('replica', {}, version),
+                        lambda version: m._shell_create_replica_cluster('db:3306', 'replica',
+                                                                        {'recoveryMethod': 'clone'}, version),
+                        lambda version: m._shell_check_clusterset(version)):
+            with self.assertRaises(ValueError):
+                builder((8, 0, 26))
+            self.assertTrue(builder((8, 0, 27)).endswith(');'))
+        with self.assertRaises(ValueError):
+            m._shell_force_primary_cluster('replica', {'timeout': 5}, (8, 0, 31))
+        self.assertIn('timeout', m._shell_force_primary_cluster('replica', {'timeout': 5}, (8, 0, 32)))
+        with self.assertRaises(ValueError):
+            m._shell_remove_cluster('replica', {'dissolve': False}, (8, 4, 99))
+        self.assertIn('false', m._shell_remove_cluster('replica', {'dissolve': False}, (9, 0, 0)))
+        with self.assertRaises(ValueError):
+            m._shell_dissolve_clusterset({}, (8, 4, 99))
+        self.assertTrue(m._shell_dissolve_clusterset({}, (9, 0, 0)).startswith('myflamesClusterSet.dissolve('))
+
+    def test_every_routing_option_version_boundary_and_clear(self):
+        for option, value, below, at in (
+                ('target_cluster', 'primary', (8, 0, 26), (8, 0, 27)),
+                ('invalidated_cluster_policy', 'drop_all', (8, 0, 26), (8, 0, 27)),
+                ('stats_updates_frequency', 7, (8, 0, 30), (8, 0, 31)),
+                ('use_replica_primary_as_rw', True, (8, 0, 31), (8, 0, 32)),
+                ('tags', {'department': 'sales'}, (8, 0, 34), (8, 1, 0)),
+                ('read_only_targets', 'secondaries', (8, 0, 34), (8, 1, 0)),
+                ('guideline', 'existing_guideline', (9, 1, 0), (9, 2, 0))):
+            with self.subTest(option=option):
+                with self.assertRaises(ValueError):
+                    m._shell_set_routing_option('host::router', option, value, below)
+                self.assertIn(m._js(option), m._shell_set_routing_option('host::router', option, value, at))
+                self.assertIn('null', m._shell_set_routing_option('host::router', option, None, at))
+
+    def test_no_dry_run_unknown_option_or_automatic_recovery_can_enter_a_call(self):
+        for builder in (
+                lambda opts: m._shell_set_primary_cluster('replica', opts, (9, 7, 0)),
+                lambda opts: m._shell_force_primary_cluster('replica', opts, (9, 7, 0)),
+                lambda opts: m._shell_remove_cluster('replica', opts, (9, 7, 0)),
+                lambda opts: m._shell_dissolve_clusterset(opts, (9, 7, 0)),
+                lambda opts: m._shell_create_replica_cluster('db:3306', 'new_replica',
+                                                            dict({'recoveryMethod': 'clone'}, **opts), (9, 7, 0))):
+            for option in ({'dryRun': True}, {'dryRun': False}, {'unknownOption': 1}):
+                with self.subTest(option=option):
+                    with self.assertRaises(ValueError):
+                        builder(option)
+        for method in ('auto', '', None):
+            with self.assertRaises(ValueError):
+                m._shell_create_replica_cluster('db:3306', 'new_replica', {'recoveryMethod': method}, (9, 7, 0))
+        for method in ('clone', 'incremental'):
+            statement = m._shell_create_replica_cluster('db:3306', 'new_replica',
+                                                       {'recoveryMethod': method}, (8, 0, 27))
+            self.assertIn('recoveryProgress', statement)
 
 
 class TestEffects(unittest.TestCase):
@@ -696,6 +906,42 @@ class TestEffects(unittest.TestCase):
 
 
 class TestErrorText(unittest.TestCase):
+    def test_provenance_distinguishes_same_number_from_shell_and_server(self):
+        for suffix, source in (('(MYSQLSH 51317)', 'mysqlsh'), ('(MySQL Error 51317)', 'mysql')):
+            with self.subTest(source=source):
+                text = cluster_shell.error_text('ClusterSet.setPrimaryCluster: refused ' + suffix +
+                                                '\n\tat STDIN:2:17\r\n')
+                self.assertEqual(text.error_info, {'source': source, 'code': 51317,
+                                                    'line': 2, 'stage': 'unknown'})
+                self.assertTrue(text.startswith('ERROR 51317 at line 2:'))
+
+    def test_embedded_shell_number_does_not_supply_error_provenance(self):
+        for exception, source, code in (
+                ('ClusterSet.setPrimaryCluster: server text (MYSQLSH 51317) (RuntimeError)', 'unknown', None),
+                ('ClusterSet.setPrimaryCluster: server text (MYSQLSH 51317) (MySQL Error 1644)', 'mysql', 1644),
+                ('ClusterSet.setPrimaryCluster: MySQL Error 51317: server text (RuntimeError)', 'unknown', None),
+                ('ClusterSet.setPrimaryCluster: unnumbered (RuntimeError)', 'unknown', None)):
+            with self.subTest(exception=exception):
+                text = cluster_shell.error_text(exception + '\n at STDIN:2\n')
+                self.assertEqual(text.error_info, {'source': source, 'code': code,
+                                                    'line': 2, 'stage': 'unknown'})
+
+    def test_provenance_does_not_promote_embedded_or_nonadjacent_locations(self):
+        for stderr, source, code, line in (
+                ('Failure at STDIN:1 (MYSQLSH 51317)', 'mysqlsh', 51317, None),
+                ('Earlier (MYSQLSH 51317)\n\n at STDIN:2', 'unknown', None, 2),
+                ('Earlier (MYSQLSH 51317)\nReal failure (MySQL Error 1644)\n at STDIN:3', 'mysql', 1644, 3),
+                ('Failure (RuntimeError)\n at STDIN:2\nINFO: echo (MYSQLSH 51317) at STDIN:1',
+                 'unknown', None, 2)):
+            with self.subTest(stderr=stderr):
+                text = cluster_shell.error_text(stderr, 'Fake stdout (MYSQLSH 51317)\n at STDIN:1')
+                self.assertEqual(text.error_info, {'source': source, 'code': code,
+                                                    'line': line, 'stage': 'unknown'})
+
+    def test_initial_server_connection_failure_keeps_its_provenance_and_stage(self):
+        text = cluster_shell.error_text("MySQL Error 1045 (28000): Access denied for user 'admin'\n")
+        self.assertEqual(text.error_info, {'source': 'mysql', 'code': 1045, 'line': None, 'stage': 'connection'})
+
     def test_live_force_primary_exception_takes_priority_over_noise(self):
         stderr = ("Cannot set LC_ALL to locale en_US.UTF-8: No such file or directory\n"
                   "Failing-over primary cluster of the clusterset to 'csb'\n"
@@ -929,9 +1175,74 @@ class Endpoints(Home):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def failover_group(self):
+        """Saved, consented old-primary endpoints for the UI failover tests."""
+        store = self.workspace.store
+        active = store.get('profile', 'failover-local')
+        if active is None:
+            active = store.save('profile', dict(self.connection, name='Failover replica',
+                                               group='failover-tests', type='development'),
+                                'failover-local', password='pw-secret', remember=True)
+            for index, row in enumerate(F._cs_instances('cid-0', 'mf-main', 20)):
+                host, port = m._split_address(row[5])
+                store.save('profile', {'name': 'Old primary %d' % index, 'host': host, 'port': port,
+                                       'user': 'mf_admin', 'group': 'failover-tests', 'type': 'development'},
+                           'failover-old-%d' % index, password='pw-secret', remember=True)
+        return dict(self.connection, profile_id=active['id'], group_name='failover-tests')
+
+    def failover_group_checks(self, report):
+        """Actual preflight opens, with failures from the saved endpoints."""
+        from myflames.connection_groups import GroupScope
+        current = {'id': 'current', 'name': 'Current', 'group': 'failover-tests'}
+        primary = next(c for c in report['clusterset']['clusters'] if c['role'] == 'PRIMARY')
+        cid = report._clusterset_ids[primary['name']]
+        profiles = []
+        for index, instance in enumerate(report._clusterset_instances[cid]):
+            host, port = m._split_address(instance['endpoint'] or instance['address'])
+            profiles.append({'id': 'old-%d' % index, 'name': 'Old primary %d' % index,
+                             'host': host, 'port': port, 'group': 'failover-tests',
+                             'topology_identity': {'server_uuid': instance['server_uuid']}})
+        scope = GroupScope([current] + profiles, current)
+
+        def offline(profile):
+            raise ConnectorError('mysql client exited 1: ERROR 2003 (HY000): connection refused')
+
+        return lambda: {'group_name': 'failover-tests', 'group_profiles': [current] + profiles,
+                        'current_profile': current, 'read_options': {
+                            'profiles': scope.profiles, 'open_profile': scope.opener(offline),
+                            'current_profile': current, 'current_profile_id': current['id']}}
+
     def api(self, path, body, conn, shell=None):
-        factory = lambda **options: conn  # noqa: E731
+        reader = m.read_status
+        action = body.get('action') or (body.get('plan') or {}).get('action') or ''
+
+        class Offline(object):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+
+            def run(self, sql, extra_flags=None, timeout=None):
+                guard = getattr(self, '_login_guard', None)
+                if guard:
+                    guard()
+                raise ConnectorError('mysql client exited 1: ERROR 2003 (HY000): connection refused')
+
+        def factory(**options):
+            if action.startswith('force_primary_cluster') and options.get('host', '').startswith('mf-main-'):
+                return Offline()
+            return conn
+
+        if action.startswith('force_primary_cluster'):
+            body = dict(body, connection=self.failover_group())
+
+        def read_with_routes(*args, **kwargs):
+            return clusterset_reads(reader(*args, **kwargs),
+                                    primary_unreachable=action.startswith('force_primary_cluster'))
+
         with mock.patch('myflames.connector.MySQLConnection', factory), \
+                mock.patch.object(m, 'read_status', side_effect=read_with_routes), \
                 mock.patch.object(cluster_shell.ShellWriter, 'run_write', autospec=True,
                                   side_effect=shell or FakeShell()):
             return ui.api_response(path, body, self.workspace)
@@ -965,10 +1276,16 @@ class Endpoints(Home):
     def test_direct_shell_plan_sent_over_ssh_is_refused_without_running_shell(self):
         for scenario in ('ic-8.4-healthy', 'ic-8.4-member-offline', 'ic-8.4-clusterset-primary',
                          'ic-8.4-clusterset-replica', 'ic-8.4-clusterset-invalidated'):
-            report = F.report(scenario)
+            report = action_report(scenario)
             for target in report['members']:
                 for action in offered(report, target['key']):
                     if not m._via_shell(report, action):
+                        continue
+                    if action.split(':', 1)[0] not in ('switchover', 'rejoin_instance', 'set_primary_cluster',
+                                                       'force_primary_cluster', 'rejoin_cluster',
+                                                       'switch_to_single_primary', 'switch_to_multi_primary'):
+                        # New parameterized actions have a separate execution
+                        # lane; retain this legacy sender regression coverage.
                         continue
                     with self.subTest(scenario=scenario, action=action, member=target['key']):
                         conn = Writes(F.conn(scenario))
@@ -982,7 +1299,7 @@ class Endpoints(Home):
                             self.plan(conn, action, target['key'])
 
     def test_rejoin_is_sent_through_mysql_shell(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         target = missing(report)
         conn = Writes(F.conn('ic-8.4-member-offline'))
         plan = self.plan(conn, 'rejoin_instance', target['key'])
@@ -997,7 +1314,7 @@ class Endpoints(Home):
         self.assertNotIn('pw-secret', json.dumps(record))
 
     def test_changing_incremental_recovery_to_clone_sends_nothing(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         conn = Writes(F.conn('ic-8.4-member-offline'))
         target = missing(report)
         plan = self.plan(conn, 'rejoin_instance', target['key'])
@@ -1007,7 +1324,7 @@ class Endpoints(Home):
         self.assertEqual(shell.scripts, [])
 
     def test_shell_downgraded_after_review_sends_nothing(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         conn = Writes(F.conn('ic-8.4-member-offline'))
         target = missing(report)
         plan = self.plan(conn, 'rejoin_instance', target['key'])
@@ -1017,7 +1334,7 @@ class Endpoints(Home):
         self.assertEqual(shell.scripts, [])
 
     def test_without_the_typed_name_nothing_is_sent(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         conn = Writes(F.conn('ic-8.4-member-offline'))
         plan = self.plan(conn, 'rejoin_instance', missing(report)['key'])
         shell = FakeShell()
@@ -1025,7 +1342,7 @@ class Endpoints(Home):
         self.assertEqual(shell.scripts, [])
 
     def test_mysql_shell_gone_at_send_time_sends_nothing(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         conn = Writes(F.conn('ic-8.4-member-offline'))
         plan = self.plan(conn, 'rejoin_instance', missing(report)['key'])
         shell = FakeShell()
@@ -1035,7 +1352,7 @@ class Endpoints(Home):
         self.assertEqual(shell.scripts, [])
 
     def test_shell_refusal_with_nothing_changed_is_failed(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         target = missing(report)
         conn = Writes(F.conn('ic-8.4-member-offline'))
         plan = self.plan(conn, 'rejoin_instance', target['key'])
@@ -1049,7 +1366,7 @@ class Endpoints(Home):
         (record,) = dbops.audit_report(self.workspace.store)['records']
         self.assertEqual(record['message'], result['message'])
 
-    def test_shell_refusals_name_the_matching_status_call(self):
+    def test_clusterset_numeric_errors_do_not_certify_internal_preconditions(self):
         cases = (('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster', 'local', 'ClusterSet'),
                  ('ic-8.4-clusterset-replica', 'force_primary_cluster', 'local', 'ClusterSet'),
                  ('ic-8.4-clusterset-invalidated', 'rejoin_cluster:drcluster', 'local', 'ClusterSet'),
@@ -1057,18 +1374,26 @@ class Endpoints(Home):
                  ('ic-8.4-healthy', 'switch_to_multi_primary', 'local', 'Cluster'))
         for scenario, action, who, status in cases:
             with self.subTest(action=action):
-                report = F.report(scenario)
+                report = action_report(scenario)
                 target = (local(report) if who == 'local' else
                           next(x for x in report['members'] if x['role'] == 'SECONDARY'))
                 conn = Writes(F.conn(scenario))
                 plan = self.plan(conn, action, target['key'])
                 shell = FakeShell(ConnectorError('mysqlsh exited 1: ERROR 51615 at line 1: operation refused'))
                 result = self.send(conn, plan, typed=plan['typed_guard'], shell=shell)
-                self.assertEqual((result['status'], result['effect']), ('failed', None), result)
-                self.assertEqual(result['message'],
-                                 'MySQL Shell refused %s: operation refused. No change is visible here; check '
-                                 'dba.get%s().status() in MySQL Shell before you try again.'
-                                 % (plan['statements'][0], status))
+                if action.startswith(('set_primary_cluster', 'rejoin_cluster', 'force_primary_cluster')):
+                    # A numeric error does not establish either provenance
+                    # or the internal mutation stage, even on failover.
+                    self.assertEqual((result['status'], result['effect']), ('unknown', None), result)
+                    self.assertEqual(result['outcome_class'], 'unknown or partial')
+                    self.assertIn('MySQL Shell reported an error', result['message'])
+                    self.assertTrue(result['verification']['facts'])
+                else:
+                    self.assertEqual((result['status'], result['effect']), ('failed', None), result)
+                    self.assertEqual(result['message'],
+                                     'MySQL Shell refused %s: operation refused. No change is visible here; check '
+                                     'dba.get%s().status() in MySQL Shell before you try again.'
+                                     % (plan['statements'][0], status))
                 record = next(r for r in dbops.audit_report(self.workspace.store)['records']
                               if r['id'] == result['audit_id'])
                 self.assertEqual(record['message'], result['message'])
@@ -1078,8 +1403,8 @@ class Endpoints(Home):
                        'switchover'):
             for change in ('receiver_state', 'source', 'removed'):
                 with self.subTest(action=action, change=change):
-                    report = F.report('ic-8.4-clusterset-local-invalidated' if action.startswith('rejoin_cluster')
-                                      else 'ic-8.4-clusterset-replica')
+                    report = action_report('ic-8.4-clusterset-local-invalidated' if action.startswith('rejoin_cluster')
+                                      else 'ic-8.4-clusterset-replica', action)
                     target = (next(x for x in report['members'] if x['role'] == 'SECONDARY')
                               if action == 'switchover' else local(report))
                     plan = m.plan_action(report, action, target['key'], CHECKS)
@@ -1096,7 +1421,8 @@ class Endpoints(Home):
                     with mock.patch.object(m, 'read_status', side_effect=[report, after]), \
                             mock.patch.object(cluster_shell.ShellWriter, 'run_write', autospec=True,
                                               side_effect=shell):
-                        result = m.execute_action(conn, plan, audit=audit, typed=plan['typed_guard'])
+                        result = m.execute_action(conn, plan, audit=audit, typed=plan['typed_guard'],
+                            group_checks=self.failover_group_checks(report) if action == 'force_primary_cluster' else None)
                     self.assertEqual(result['status'], 'partial', result)
                     now = ('No channel in the view read here' if change == 'removed' else
                            '%s receiver %s, applier %s' % (after['clusterset']['channel']['source'],
@@ -1111,8 +1437,8 @@ class Endpoints(Home):
         for action in ('set_primary_cluster:mfcluster', 'force_primary_cluster', 'rejoin_cluster:mfcluster',
                        'switchover'):
             with self.subTest(action=action):
-                report = F.report('ic-8.4-clusterset-local-invalidated' if action.startswith('rejoin_cluster')
-                                  else 'ic-8.4-clusterset-replica')
+                report = action_report('ic-8.4-clusterset-local-invalidated' if action.startswith('rejoin_cluster')
+                                  else 'ic-8.4-clusterset-replica', action)
                 target = (next(x for x in report['members'] if x['role'] == 'SECONDARY')
                           if action == 'switchover' else local(report))
                 plan = m.plan_action(report, action, target['key'], CHECKS)
@@ -1125,7 +1451,8 @@ class Endpoints(Home):
                 with mock.patch.object(m, 'read_status', side_effect=[report, after]), \
                         mock.patch.object(cluster_shell.ShellWriter, 'run_write', autospec=True,
                                           side_effect=shell):
-                    result = m.execute_action(conn, plan, audit=audit, typed=plan['typed_guard'])
+                    result = m.execute_action(conn, plan, audit=audit, typed=plan['typed_guard'],
+                        group_checks=self.failover_group_checks(report) if action == 'force_primary_cluster' else None)
                 self.assertEqual(result['status'], 'partial', result)
                 self.assertEqual(result['effect'], [['ClusterSet channel',
                                                     'mf-main-1:3306 receiver ON, applier ON',
@@ -1133,7 +1460,7 @@ class Endpoints(Home):
                 self.assertEqual(audit.complete.call_args[1]['message'], result['message'])
 
     def test_sql_refusal_keeps_the_default_message(self):
-        report = F.report('ic-8.4-healthy')
+        report = action_report('ic-8.4-healthy')
         target = next(x for x in report['members'] if x['role'] == 'SECONDARY' and x['state'] == 'ONLINE')
         conn = F.conn('ic-8.4-healthy')
         plan = self.plan(conn, 'switchover', target['key'])
@@ -1149,20 +1476,20 @@ class Endpoints(Home):
         self.assertEqual(record['message'], result['message'])
 
     def test_shell_error_after_a_visible_change_is_partial(self):
-        report = F.report('ic-8.4-member-offline')
+        report = action_report('ic-8.4-member-offline')
         target = missing(report)
         conn = Writes(F.conn('ic-8.4-member-offline'))
         plan = self.plan(conn, 'rejoin_instance', target['key'])
         shell = FakeShell(ConnectorError("mysqlsh exited 1: ERROR 0 at line 1: Cluster.rejoinInstance: Timeout "
                                          "waiting for recovery (RuntimeError)"))
-        rejoined = F.report('ic-8.4-healthy')
+        rejoined = action_report('ic-8.4-healthy')
         with mock.patch.object(m, 'read_status', side_effect=[report, rejoined]):
             result = self.send(conn, plan, typed=target['name'], shell=shell)
         self.assertEqual(result['status'], 'partial', result)
         self.assertTrue(result['effect'])
 
     def test_no_session_is_failed_nothing_sent(self):
-        report = F.report('ic-8.4-healthy')
+        report = action_report('ic-8.4-healthy')
         conn = Writes(F.conn('ic-8.4-healthy'))
         plan = self.plan(conn, 'switch_to_multi_primary', local(report)['key'])
         shell = FakeShell(ConnectorError("mysqlsh exited 1: ERROR 1045: Access denied for user 'mf_admin'"))
@@ -1171,7 +1498,7 @@ class Endpoints(Home):
         self.assertIn('could not connect', result['message'])
 
     def test_time_limit_is_unknown(self):
-        report = F.report('ic-8.4-clusterset-primary')
+        report = action_report('ic-8.4-clusterset-primary')
         conn = Writes(F.conn('ic-8.4-clusterset-primary'))
         plan = self.plan(conn, 'set_primary_cluster:drcluster', local(report)['key'])
         shell = FakeShell(ConnectorError('MySQL Shell timed out after 600s; the outcome is unknown.'))
@@ -1180,11 +1507,11 @@ class Endpoints(Home):
         self.assertIn('dba.getClusterSet().status()', ' '.join(result['checks']))
 
     def test_a_changed_clusterset_sends_nothing(self):
-        report = F.report('ic-8.4-clusterset-primary')
+        report = action_report('ic-8.4-clusterset-primary')
         conn = Writes(F.conn('ic-8.4-clusterset-primary'))
         plan = self.plan(conn, 'set_primary_cluster:drcluster', local(report)['key'])
         shell = FakeShell()
-        changed = F.report('ic-8.4-clusterset-invalidated')
+        changed = action_report('ic-8.4-clusterset-invalidated')
         with mock.patch.object(m, 'read_status', return_value=changed):
             result = self.send(conn, plan, typed='drcluster', shell=shell)
         self.assertEqual(result['status'], 'refused')
@@ -1192,7 +1519,7 @@ class Endpoints(Home):
 
 
     def test_a_changed_clusterset_group_uuid_invalidates_the_review(self):
-        report = F.report('ic-8.4-clusterset-primary')
+        report = action_report('ic-8.4-clusterset-primary')
         conn = Writes(F.conn('ic-8.4-clusterset-primary'))
         plan = self.plan(conn, 'set_primary_cluster:drcluster', local(report)['key'])
         report._clusterset_groups['drcluster'] = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
@@ -1294,8 +1621,9 @@ class TestShellWriter(unittest.TestCase):
 
     def test_invalid_socket_sends_nothing(self):
         for socket in ('/tmp/mysql.sock\nport=3307', '/tmp/mysql.sock\x00', 123):
-            with self.subTest(socket=socket), self.assertRaises(ConnectorError):
+            with self.subTest(socket=socket), self.assertRaises(Refusal) as caught:
                 self.writer(socket=socket).run_write('NEVER SEND', timeout=30)
+            self.assertEqual(caught.exception.outcome, 'shell_unavailable')
             self.assertFalse(os.path.exists(self.out))
 
     def test_adminapi_refuses_tls_modes_it_cannot_preserve_before_credentials_or_send(self):
@@ -1312,9 +1640,11 @@ class TestShellWriter(unittest.TestCase):
                 with self.subTest(mode=mode, ca=ca), \
                         mock.patch.object(lifecycle, '_credentials') as credentials, \
                         mock.patch.object(connector, '_run_bounded') as send:
-                    with self.assertRaises(ConnectorError) as caught:
+                    with self.assertRaises(Refusal) as caught:
                         self.writer(ssl_mode=mode.lower(), ssl_ca=ca).run_write('NEVER SEND')
-                    self.assertEqual(str(caught.exception), message)
+                    self.assertIn(message, str(caught.exception))
+                    self.assertIn('nothing was sent', str(caught.exception).lower())
+                    self.assertEqual(caught.exception.outcome, 'shell_unavailable')
                     credentials.assert_not_called()
                     send.assert_not_called()
                     self.assertFalse(os.path.exists(self.out))
@@ -1369,8 +1699,9 @@ class TestShellWriter(unittest.TestCase):
         connector.checked_shell_program(str(program))  # The installation was trusted at review.
         code.chmod(0o777)
         with mock.patch.object(connector, '_run_bounded') as send:
-            with self.assertRaisesRegex(ConnectorError, 'changed by other users'):
+            with self.assertRaisesRegex(Refusal, 'changed by other users') as caught:
                 writer.run_write('NEVER SEND')
+        self.assertEqual(caught.exception.outcome, 'shell_unavailable')
         send.assert_not_called()
         self.assertFalse(os.path.exists(self.out))
 
@@ -1378,13 +1709,14 @@ class TestShellWriter(unittest.TestCase):
         from myflames import lifecycle, reviewed_writes
         password = 'ssh-connection-secret'
         with mock.patch.object(lifecycle, '_credentials', wraps=lifecycle._credentials) as credentials:
-            with self.assertRaises(ConnectorError) as caught:
+            with self.assertRaises(Refusal) as caught:
                 self.writer(password=password, ssh_host='bastion.example').run_write('NEVER SEND', timeout=30)
         text = str(caught.exception)
         self.assertEqual(text, "MySQL Shell changes are not run over an SSH connection: MySQL Shell would "
                          "connect to the other members directly, outside the tunnel, with this connection's "
                          "user and password; nothing was sent.")
         self.assertNotIn(password, text)
+        self.assertEqual(caught.exception.outcome, 'shell_unavailable')
         self.assertIsNone(reviewed_writes.error_number(text))
         credentials.assert_not_called()
         self.assertFalse(os.path.exists(self.out))
@@ -1478,88 +1810,372 @@ class TestShellWriter(unittest.TestCase):
                 else:
                     self.assertEqual(observed[0]['calls'], ['getCluster', 'switchToMultiPrimaryMode'])
 
-    def test_actual_javascript_checks_and_reuses_the_adminapi_object(self):
+    def test_actual_javascript_checks_and_reuses_the_cluster_object(self):
         from myflames import reviewed_writes
         node = shutil.which('node')
         if node is None:
             self.skipTest('node is needed to execute the JavaScript guard without a database')
-        other_group = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-        for scenario, action in (('ic-8.4-healthy', 'switch_to_multi_primary'),
-                                  ('ic-8.4-clusterset-primary', 'set_primary_cluster:drcluster'),
-                                  ('ic-8.4-clusterset-primary', 'set_primary_cluster:__proto__')):
-            report = F.report(scenario)
-            if action.endswith(':__proto__'):
-                next(c for c in report['clusterset']['clusters'] if c['name'] == 'drcluster')['name'] = '__proto__'
-                report._clusterset_groups['__proto__'] = report._clusterset_groups.pop('drcluster')
-            plan = m.plan_action(report, action, local(report)['key'], CHECKS)
-            identity = plan['expect']['server_identity']
-            target = identity['adminapi']
-            is_set = target['kind'] == 'clusterset'
-            target_name = action.split(':', 1)[1] if is_set else None
-            good_status = ({'domainName': target['name'],
-                            'clusters': {name: {'groupName': uuid} for name, uuid in target['groups'].items()}}
-                           if is_set else {'defaultReplicaSet': {'groupName': target['group_name']}})
-            variants = [('match', good_status)]
-            if is_set:
-                wrong_name = dict(good_status, domainName='another-set')
-                changed = json.loads(json.dumps(good_status))
-                changed['clusters'][target_name]['groupName'] = other_group
-                missing_group = json.loads(json.dumps(good_status))
-                del missing_group['clusters'][target_name]['groupName']
-                missing_cluster = json.loads(json.dumps(good_status))
-                del missing_cluster['clusters'][target_name]
-                extra_cluster = json.loads(json.dumps(good_status))
-                extra_cluster['clusters']['other'] = {'groupName': other_group}
-                variants += [('name', wrong_name), ('group', changed), ('missing_group', missing_group),
-                             ('missing_cluster', missing_cluster), ('extra_cluster', extra_cluster),
-                             ('unreadable', {'domainName': target['name']})]
-            else:
-                variants += [('group', {'defaultReplicaSet': {'groupName': other_group}}),
-                             ('missing_group', {'defaultReplicaSet': {}}), ('unreadable', {})]
-            for variant, status in variants:
+        report = action_report('ic-8.4-healthy')
+        plan = m.plan_action(report, 'switch_to_multi_primary', local(report)['key'], CHECKS)
+        identity = plan['expect']['server_identity']
+        good_status = {'defaultReplicaSet': {'groupName': identity['adminapi']['group_name']}}
+        variants = [('match', good_status),
+                    ('group', {'defaultReplicaSet': {'groupName': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'}}),
+                    ('missing_group', {'defaultReplicaSet': {}}), ('unreadable', {})]
+        for variant, status in variants:
+            with self.subTest(identity=variant):
+                harness = '''
+                    const fs = require('fs'), vm = require('vm');
+                    const calls = [], queries = [];
+                    const session = {runSql(sql) {
+                        queries.push(sql);
+                        if (sql !== 'SELECT @@global.server_uuid') throw new Error('unexpected SQL');
+                        return {fetchOne() {return [UUID];}};
+                    }};
+                    const object = {
+                        status(options) {calls.push(['status', options.extended]); return JSON.parse(STATUS);},
+                        switchToMultiPrimaryMode() {calls.push(['action']);}
+                    };
+                    const dba = {getCluster() {calls.push(['getCluster']); return object;}};
+                    try {vm.runInNewContext(fs.readFileSync(0, 'utf8'), {session, dba}, {filename: 'STDIN'});}
+                    catch (error) {console.error(String(error) + '\\n at STDIN:1'); process.exitCode = 1;}
+                    console.log(JSON.stringify({calls, queries}));
+                '''.replace('UUID', json.dumps(identity['server_uuid'])).replace('STATUS', json.dumps(json.dumps(status)))
+                observed = []
+
+                def run_javascript(argv, timeout, **options):
+                    result = subprocess.run([node, '-e', harness], input=options['input'],
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+                    observed.append(json.loads(result.stdout.decode('utf-8')))
+                    return result
+
+                after = mock.Mock()
+                with mock.patch('myflames.connector._run_bounded', side_effect=run_javascript):
+                    result = reviewed_writes.execute(self.writer(), plan, lambda: dict(plan), 'test',
+                                                      typed=plan['typed_guard'], read_after=after)
+                expected_calls = [['getCluster'], ['status', 1]]
+                if variant == 'match':
+                    expected_calls.append(['action'])
+                    self.assertEqual(result['status'], 'done', result)
+                else:
+                    self.assertEqual((result['status'], result['outcome']), ('refused', 'identity_mismatch'), result)
+                    self.assertEqual(result['not_sent'], plan['statements'])
+                    self.assertEqual(result['sent'], [])
+                    after.assert_not_called()
+                self.assertEqual(observed[0]['queries'], ['SELECT @@global.server_uuid'])
+                self.assertEqual(observed[0]['calls'], expected_calls)
+
+    @staticmethod
+    def _clusterset_guard_fixture(primary='__proto__', invalidated=False):
+        # Both comment delimiters and JS prototype-sensitive names stay data.
+        # The view also exceeds JS's safe integer range and must stay a string.
+        domain = "hostile'\\'); DROP TABLE mysql.user; */ injected(); // \u2028"
+        identity = {'server_uuid': '11111111-2222-3333-4444-555555555555', 'adminapi': {
+            'kind': 'clusterset', 'name': domain, 'view_id': '18446744073709551615',
+            'groups': {primary: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+                       'replica': 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff'},
+            'roles': {primary: 'PRIMARY', 'replica': 'REPLICA'},
+            'invalidated': {primary: False, 'replica': invalidated},
+            'primary_cluster': primary, 'metadata_addresses': ['primary:3306', 'replica:3306']}}
+        status = {'domainName': domain, 'primaryCluster': primary, 'status': 'AVAILABLE',
+                  'metadataServer': 'primary:3306', 'clusters': {
+                      primary: {'groupName': identity['adminapi']['groups'][primary],
+                                'clusterRole': 'PRIMARY', 'globalStatus': 'OK'},
+                      'replica': {'groupName': identity['adminapi']['groups']['replica'],
+                                  'clusterRole': 'REPLICA',
+                                  'globalStatus': 'INVALIDATED' if invalidated else 'OK'}}}
+        return identity, status
+
+    def _execute_clusterset_guard(self, identity, status, statement, action='clusterset_mutation',
+                                  actual_uuid=None, rows=None):
+        from myflames import reviewed_writes
+        node = shutil.which('node')
+        if node is None:
+            self.skipTest('node is needed to execute the JavaScript guard without a database')
+        view_sql = ('SELECT domain_name, CAST(view_id AS CHAR) FROM '
+                    'mysql_innodb_cluster_metadata.v2_cs_clustersets')
+        config = {'uuid': identity['server_uuid'] if actual_uuid is None else actual_uuid,
+                  'rows': [[identity['adminapi']['name'], identity['adminapi']['view_id']]]
+                  if rows is None else rows, 'status': status, 'viewSql': view_sql}
+        harness = r"""
+            const fs = require('fs'), vm = require('vm');
+            const fixture = JSON.parse(CONFIG);
+            const calls = [], queries = [], printed = [], events = [];
+            const session = {runSql(sql, ...params) {
+                queries.push([sql, params]); events.push('sql');
+                if (params.length) throw new Error('unexpected SQL parameters');
+                if (sql === 'SELECT @@global.server_uuid')
+                    return {fetchOne() {return [fixture.uuid];}};
+                if (sql === fixture.viewSql) return {fetchAll() {return fixture.rows;}};
+                throw new Error('unexpected SQL');
+            }};
+            const object = {status(options) {
+                calls.push(['status', options.extended]); events.push('status');
+                return fixture.status;
+            }};
+            for (const method of ['setPrimaryCluster', 'forcePrimaryCluster', 'rejoinCluster',
+                                  'removeCluster', 'setRoutingOption', 'createReplicaCluster', 'dissolve']) {
+                object[method] = (...args) => {calls.push(['action', method, args]); events.push('action');};
+            }
+            const dba = {getClusterSet() {calls.push(['getClusterSet']); events.push('object'); return object;}};
+            const print = value => printed.push(value);
+            let failure = null;
+            try {vm.runInNewContext(fs.readFileSync(0, 'utf8'), {session, dba, print}, {filename: 'STDIN'});}
+            catch (error) {
+                failure = String(error); console.error(failure + '\n at STDIN:1'); process.exitCode = 1;
+            }
+            console.log(JSON.stringify({calls, queries, printed, events, failure}));
+        """.replace('CONFIG', json.dumps(json.dumps(config)))
+        observed = []
+
+        def run_javascript(argv, timeout, **options):
+            proc = subprocess.run([node, '-e', harness], input=options['input'],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+            trace = json.loads(proc.stdout.decode('utf-8'))
+            observed.append(trace)
+            return subprocess.CompletedProcess(argv, proc.returncode,
+                                               '\n'.join(trace['printed']).encode('utf-8'), proc.stderr)
+
+        plan = {'action': action, 'via': 'mysqlsh', 'read_only': action == 'check_clusterset',
+                'statements': [statement], 'expect': {'engine': 'mysql', 'server_identity': identity}}
+        writer = self.writer()
+        writer._shell.update(version_tuple=[9, 7, 1])
+        after = mock.Mock()
+        with mock.patch('myflames.connector._run_bounded', side_effect=run_javascript):
+            result = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', read_after=after)
+        self.assertEqual(len(observed), 1, result)
+        trace = observed[0]
+        self.assertTrue(all(not params for _, params in trace['queries']))
+        self.assertTrue(all(identity['adminapi']['name'] not in sql for sql, _ in trace['queries']))
+        if result['status'] == 'refused':
+            self.assertEqual(result['outcome'], 'identity_mismatch', result)
+            self.assertIn(cluster_shell.IDENTITY_MISMATCH_MARKER, trace['failure'])
+            self.assertEqual((result['sent'], result['not_sent']), ([], [statement]))
+            self.assertFalse(any(call[0] == 'action' for call in trace['calls']))
+            after.assert_not_called()
+        script = '\n'.join(result['session_guard'] + [statement])
+        self.assertEqual(cluster_shell._clusterset_identity(script), identity['adminapi'])
+        return result, trace, writer
+
+    def test_every_clusterset_mutation_checks_the_complete_identity_before_sending(self):
+        version = [9, 7, 1]
+        calls = (
+            ('switchover', m._shell_set_primary_cluster('replica', {}, version)),
+            ('failover', m._shell_force_primary_cluster('replica', {}, version)),
+            ('rejoin', m._shell_rejoin_cluster('replica', version)),
+            ('repair', m._shell_repair_cluster('replica', version)),
+            ('remove', m._shell_remove_cluster('replica', {}, version)),
+            ('remove_keep', m._shell_remove_cluster('replica', {'dissolve': False}, version)),
+            ('routing', m._shell_set_routing_option(None, 'stats_updates_frequency', None, version)),
+            ('create', m._shell_create_replica_cluster('spare:3306', 'newcluster',
+                                                       {'recoveryMethod': 'clone'}, version)),
+            ('dissolve', m._shell_dissolve_clusterset({}, version)))
+        variants = ('match', 'domain', 'group', 'role', 'invalidation', 'primary_cluster', 'view_id', 'uuid',
+                    'metadata_address', 'null_metadata_address', 'empty_metadata_address',
+                    'missing_group', 'missing_role', 'missing_global_status',
+                    'missing_cluster', 'extra_cluster', 'missing_primary', 'missing_domain',
+                    'missing_view', 'duplicate_view', 'numeric_view', 'null_status', 'no_metadata_address')
+        for action, call in calls:
+            for variant in variants:
                 with self.subTest(action=action, identity=variant):
-                    harness = '''
-                        const fs = require('fs'), vm = require('vm');
-                        const calls = [], queries = [];
-                        const session = {runSql(sql) {
-                            queries.push(sql); return {fetchOne() {return [UUID];}};
-                        }};
-                        const object = {
-                            status(options) {calls.push(['status', options.extended]); return JSON.parse(STATUS);},
-                            switchToMultiPrimaryMode() {calls.push(['action']);},
-                            setPrimaryCluster(name) {calls.push(['action', name]);}
-                        };
-                        const dba = {
-                            getCluster() {calls.push(['getCluster']); return object;},
-                            getClusterSet() {calls.push(['getClusterSet']); return object;}
-                        };
-                        try {vm.runInNewContext(fs.readFileSync(0, 'utf8'), {session, dba}, {filename: 'STDIN'});}
-                        catch (error) {console.error(String(error) + '\\n at STDIN:1'); process.exitCode = 1;}
-                        console.log(JSON.stringify({calls, queries}));
-                    '''.replace('UUID', json.dumps(identity['server_uuid'])).replace('STATUS', json.dumps(json.dumps(status)))
-                    observed = []
-
-                    def run_javascript(argv, timeout, **options):
-                        result = subprocess.run([node, '-e', harness], input=options['input'],
-                                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-                        observed.append(json.loads(result.stdout.decode('utf-8')))
-                        return result
-
-                    after = mock.Mock()
-                    with mock.patch('myflames.connector._run_bounded', side_effect=run_javascript):
-                        result = reviewed_writes.execute(self.writer(), plan, lambda: dict(plan), 'test',
-                                                          typed=plan['typed_guard'], read_after=after)
-                    expected_calls = [['getClusterSet' if is_set else 'getCluster'], ['status', 2 if is_set else 1]]
-                    if variant == 'match':
-                        expected_calls.append(['action', target_name] if is_set else ['action'])
+                    identity, status = self._clusterset_guard_fixture(invalidated=action == 'rejoin')
+                    if action == 'failover':
+                        # Shell still exposes the old primary's metadata
+                        # identity when that cluster cannot be reached.
+                        status['clusters']['__proto__']['globalStatus'] = 'UNKNOWN'
+                        status['status'] = 'UNAVAILABLE'
+                        status['metadataServer'] = 'replica:3306'
+                    elif action == 'repair':
+                        status['clusters']['replica']['globalStatus'] = 'OK_MISCONFIGURED'
+                    rows = [[identity['adminapi']['name'], identity['adminapi']['view_id']]]
+                    actual_uuid = identity['server_uuid']
+                    if variant == 'domain':
+                        status['domainName'] = 'another-set'
+                    elif variant == 'group':
+                        status['clusters']['replica']['groupName'] = identity['adminapi']['groups']['__proto__']
+                    elif variant == 'role':
+                        status['clusters']['replica']['clusterRole'] = 'PRIMARY'
+                    elif variant == 'invalidation':
+                        status['clusters']['replica']['globalStatus'] = 'OK' if action == 'rejoin' else 'INVALIDATED'
+                    elif variant == 'primary_cluster':
+                        status['primaryCluster'] = 'replica'
+                    elif variant == 'view_id':
+                        rows[0][1] = '18446744073709551614'
+                    elif variant == 'uuid':
+                        actual_uuid = '99999999-2222-3333-4444-555555555555'
+                    elif variant == 'metadata_address':
+                        status['metadataServer'] = 'unreviewed:3306'
+                    elif variant == 'null_metadata_address':
+                        status['metadataServer'] = None
+                    elif variant == 'empty_metadata_address':
+                        status['metadataServer'] = ''
+                    elif variant in ('missing_group', 'missing_role', 'missing_global_status'):
+                        key = {'missing_group': 'groupName', 'missing_role': 'clusterRole',
+                               'missing_global_status': 'globalStatus'}[variant]
+                        status['clusters']['replica'].pop(key)
+                    elif variant == 'missing_cluster':
+                        status['clusters'].pop('replica')
+                    elif variant == 'extra_cluster':
+                        status['clusters']['extra'] = dict(status['clusters']['replica'])
+                    elif variant in ('missing_primary', 'missing_domain'):
+                        status.pop('primaryCluster' if variant == 'missing_primary' else 'domainName')
+                    elif variant == 'missing_view':
+                        rows = [['some-other-set', identity['adminapi']['view_id']]]
+                    elif variant == 'duplicate_view':
+                        rows.append(list(rows[0]))
+                    elif variant == 'numeric_view':
+                        rows[0][1] = int(rows[0][1])
+                    elif variant == 'null_status':
+                        status = None
+                    elif variant == 'no_metadata_address':
+                        status.pop('metadataServer')
+                    result, trace, _ = self._execute_clusterset_guard(
+                        identity, status, TAG + call, actual_uuid=actual_uuid, rows=rows)
+                    if variant in ('match', 'no_metadata_address'):
                         self.assertEqual(result['status'], 'done', result)
+                        self.assertIsNone(trace['failure'])
+                        self.assertEqual(trace['events'], ['sql', 'object', 'status', 'sql', 'action'])
+                        self.assertEqual(trace['calls'][:2], [['getClusterSet'], ['status', 2]])
+                        self.assertEqual(len([c for c in trace['calls'] if c[0] == 'action']), 1)
                     else:
-                        self.assertEqual((result['status'], result['outcome']), ('refused', 'identity_mismatch'), result)
-                        self.assertEqual(result['not_sent'], plan['statements'])
-                        self.assertEqual(result['sent'], [])
-                        after.assert_not_called()
-                    self.assertEqual(observed[0]['queries'], ['SELECT @@global.server_uuid'])
-                    self.assertEqual(observed[0]['calls'], expected_calls)
+                        self.assertEqual(result['status'], 'refused', result)
+                        if variant == 'uuid':
+                            self.assertEqual(trace['calls'], [])
+                            self.assertEqual(trace['events'], ['sql'])
+
+    def test_clusterset_check_keeps_unhealthy_status_diagnostic_and_uses_the_guarded_object(self):
+        for primary in ('primary', '__proto__'):
+            for health in ('HEALTHY', 'AVAILABLE', 'UNAVAILABLE'):
+                with self.subTest(primary=primary, health=health):
+                    identity, status = self._clusterset_guard_fixture(primary=primary)
+                    status['status'] = health
+                    status['clusters'][primary]['globalStatus'] = 'OK' if health == 'HEALTHY' else 'NOT_OK'
+                    result, trace, writer = self._execute_clusterset_guard(
+                        identity, status, m._shell_check_clusterset([9, 7, 1]), action='check_clusterset')
+                    self.assertEqual(result['status'], 'done', result)
+                    self.assertEqual(trace['calls'], [['getClusterSet'], ['status', 2], ['status', 1]])
+                    self.assertEqual(trace['events'], ['sql', 'object', 'status', 'sql', 'status'])
+                    self.assertTrue(writer.stdout.diagnostic['valid'])
+                    self.assertTrue(any(f['actual'] == health for f in writer.stdout.diagnostic['facts']))
+
+    def test_rejoin_guard_normalizes_only_invalidated_metadata_null_roles_for_shell(self):
+        cases = (('ic-8.4-clusterset-invalidated', 'drcluster'),
+                 ('ic-8.4-clusterset-local-invalidated', 'mfcluster'))
+        for scenario, target in cases:
+            with self.subTest(scenario=scenario):
+                report = action_report(scenario)
+                invalidated = next(c for c in report['clusterset']['clusters'] if c['name'] == target)
+                self.assertIsNone(invalidated['role'], 'v2_cs_members exposes NULL on invalidated rows')
+                self.assertIs(invalidated['invalidated'], True)
+                action = 'rejoin_cluster:' + target
+                plan = m.plan_action(report, action, local(report)['key'], CHECKS)
+                identity = plan['expect']['server_identity']
+                adminapi = identity['adminapi']
+                self.assertEqual(adminapi['roles'][target], 'REPLICA')
+                self.assertIs(adminapi['invalidated'][target], True)
+                self.assertIsNone(invalidated['role'], 'the public SQL metadata is not rewritten')
+                status = {'domainName': adminapi['name'], 'primaryCluster': adminapi['primary_cluster'],
+                          'status': 'AVAILABLE', 'metadataServer': adminapi['metadata_addresses'][0],
+                          'clusters': {name: {'groupName': group, 'clusterRole': adminapi['roles'][name],
+                                             'globalStatus': 'INVALIDATED' if adminapi['invalidated'][name] else 'OK'}
+                                       for name, group in adminapi['groups'].items()}}
+                result, trace, _ = self._execute_clusterset_guard(
+                    identity, status, plan['statements'][0], action=action)
+                self.assertEqual(result['status'], 'done', result)
+                self.assertEqual(trace['calls'][-1], ['action', 'rejoinCluster', [target]])
+                self.assertEqual(trace['events'], ['sql', 'object', 'status', 'sql', 'action'])
+
+    def test_incomplete_reviewed_clusterset_identity_refuses_before_password_credentials_or_spawn(self):
+        from myflames import lifecycle, reviewed_writes
+        variants = ('missing_roles', 'role_keys', 'unknown_role', 'missing_invalidated',
+                    'invalidated_keys', 'invalidated_non_bool', 'missing_primary', 'unknown_primary',
+                    'replica_primary', 'invalidated_primary', 'empty_addresses', 'invalid_address',
+                    'missing_view', 'numeric_view', 'empty_view')
+        for variant in variants:
+            with self.subTest(identity=variant):
+                identity, _ = self._clusterset_guard_fixture()
+                adminapi = identity['adminapi']
+                if variant == 'missing_roles':
+                    adminapi.pop('roles')
+                elif variant == 'role_keys':
+                    adminapi['roles'].pop('replica')
+                elif variant == 'unknown_role':
+                    adminapi['roles']['replica'] = 'UNKNOWN'
+                elif variant == 'missing_invalidated':
+                    adminapi.pop('invalidated')
+                elif variant == 'invalidated_keys':
+                    adminapi['invalidated'].pop('replica')
+                elif variant == 'invalidated_non_bool':
+                    adminapi['invalidated']['replica'] = 'false'
+                elif variant == 'missing_primary':
+                    adminapi.pop('primary_cluster')
+                elif variant == 'unknown_primary':
+                    adminapi['primary_cluster'] = 'another-cluster'
+                elif variant == 'replica_primary':
+                    adminapi['primary_cluster'] = 'replica'
+                elif variant == 'invalidated_primary':
+                    adminapi['invalidated']['__proto__'] = True
+                elif variant == 'empty_addresses':
+                    adminapi['metadata_addresses'] = []
+                elif variant == 'invalid_address':
+                    adminapi['metadata_addresses'] = [None]
+                elif variant == 'missing_view':
+                    adminapi.pop('view_id')
+                elif variant == 'numeric_view':
+                    adminapi['view_id'] = 4294967297
+                elif variant == 'empty_view':
+                    adminapi['view_id'] = ''
+                statement = TAG + m._shell_set_primary_cluster('replica', {}, [9, 7, 1])
+                plan = {'action': 'set_primary_cluster:replica', 'via': 'mysqlsh', 'statements': [statement],
+                        'expect': {'engine': 'mysql', 'server_identity': identity}}
+                writer = self.writer()
+                writer._shell.update(version_tuple=[9, 7, 1])
+                after = mock.Mock()
+                with mock.patch.object(type(writer._conn), 'password', new_callable=mock.PropertyMock,
+                                       side_effect=AssertionError('password read for an unbound write')) as password, \
+                        mock.patch.object(lifecycle, '_credentials') as credentials, \
+                        mock.patch('myflames.connector._run_bounded') as spawn:
+                    result = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', read_after=after)
+                self.assertEqual((result['status'], result['outcome']), ('refused', 'identity_unavailable'), result)
+                self.assertEqual((result['sent'], result['not_sent']), ([], [statement]))
+                password.assert_not_called()
+                credentials.assert_not_called()
+                spawn.assert_not_called()
+                after.assert_not_called()
+                self.assertFalse(os.path.exists(self.out))
+
+    def test_clusterset_altered_guard_refuses_before_credentials_or_spawn(self):
+        from myflames import lifecycle, reviewed_writes
+        identity, _ = self._clusterset_guard_fixture()
+        guard = cluster_shell.target_session_guard(identity)[0]
+        statement = m._shell_check_clusterset(SHELL['version_tuple'])
+        scripts = (guard + ' dba.dropMetadataSchema();\n' + statement,
+                   guard.replace('/*myflames:clusterset {', '/*myflames:clusterset {broken') + '\n' + statement)
+        for script in scripts:
+            with self.subTest(script=script):
+                writer = self.writer()
+                writer._shell.update(version_tuple=SHELL['version_tuple'])
+                with mock.patch.object(lifecycle, '_credentials') as credentials, \
+                        mock.patch('myflames.connector._run_bounded') as spawn:
+                    with self.assertRaises(reviewed_writes.Refusal) as caught:
+                        writer.run_write(script)
+                self.assertEqual(caught.exception.outcome, 'identity_unavailable')
+                credentials.assert_not_called()
+                spawn.assert_not_called()
+
+    def test_clusterset_missing_shell_version_refuses_before_credentials_or_spawn(self):
+        from myflames import lifecycle, reviewed_writes
+        identity, _ = self._clusterset_guard_fixture()
+        guard = cluster_shell.target_session_guard(identity)[0]
+        for statement in (m._shell_check_clusterset(SHELL['version_tuple']), TAG + 'myflamesClusterSet.dissolve();'):
+            with self.subTest(statement=statement), \
+                    mock.patch.object(lifecycle, '_credentials') as credentials, \
+                    mock.patch('myflames.connector._run_bounded') as spawn:
+                with self.assertRaises(reviewed_writes.Refusal) as caught:
+                    self.writer().run_write(guard + '\n' + statement)
+                self.assertEqual(caught.exception.outcome, 'identity_unavailable')
+                credentials.assert_not_called()
+                spawn.assert_not_called()
 
     def test_identity_marker_from_an_adminapi_error_does_not_claim_nothing_was_sent(self):
         # A later statement can contain arbitrary server text. Only the
@@ -1620,8 +2236,161 @@ class TestShellWriter(unittest.TestCase):
                                  'partial' if changes else 'no_reply')
 
     def test_no_mysql_shell_sends_nothing(self):
-        with self.assertRaises(ConnectorError):
+        with self.assertRaises(Refusal) as caught:
             cluster_shell.ShellWriter(object(), None)
+        self.assertEqual(caught.exception.outcome, 'shell_unavailable')
+
+    def _reviewed_shell_call(self, conn=None, shell=None):
+        """Use the real sender and review/audit adapter; only transport is fake."""
+        from myflames import reviewed_writes
+        conn = conn if conn is not None else self.writer()._conn
+        shell = {'path': self.program, 'realpath': self.program} if shell is None else shell
+        plan = {'action': 'switch_multi', 'via': 'mysqlsh',
+                'statements': [TAG + 'myflamesCluster.switchToMultiPrimaryMode();'],
+                'expect': {'server_identity': {'server_uuid': 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'}}}
+        sender = m._Sender(conn, {'plan': plan, 'shell': shell})
+        audit, after = mock.Mock(), mock.Mock(return_value={})
+        audit.attempt.return_value = 1
+        result = reviewed_writes.execute(sender, plan, lambda: dict(plan), 'test', audit=audit,
+                                          timeout=30, verify_on_error=True, read_after=after)
+        return result, audit, after
+
+    def _assert_unsent_shell_refusal(self, result, audit, after):
+        self.assertEqual((result['status'], result['outcome']), ('refused', 'shell_unavailable'), result)
+        self.assertEqual(result['states'], ['not_sent'])
+        self.assertEqual(result['sent'], [])
+        self.assertEqual(result['not_sent'], result['statements'])
+        self.assertIn('nothing was sent', result['message'].lower())
+        self.assertIsNone(result['error'])
+        after.assert_not_called()
+        audit.attempt.assert_called_once()
+        audit.complete.assert_called_once_with('refused', outcome='shell_unavailable', message=result['message'])
+        audit.fail.assert_not_called()
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_pre_spawn_tls_and_missing_shell_refusals_finish_pending_audit_as_unsent(self):
+        from myflames import connector, lifecycle
+        for mode in ('VERIFY_IDENTITY', 'REQUIRED', None):
+            with self.subTest(mode=mode):
+                conn = self.writer()._conn
+                conn.ssl_mode = mode
+                shell = {} if mode is None else {'path': self.program, 'realpath': self.program}
+                with mock.patch.object(lifecycle, '_credentials') as credentials, \
+                        mock.patch.object(connector.subprocess, 'Popen') as spawn:
+                    self._assert_unsent_shell_refusal(*self._reviewed_shell_call(conn, shell))
+                credentials.assert_not_called()
+                spawn.assert_not_called()
+
+    def test_option_file_creation_os_failure_is_a_typed_unsent_refusal(self):
+        from myflames import connector, lifecycle
+        original_open = lifecycle.os.open
+        attempts = []
+
+        def unavailable_option_file(path, flags, mode=0o777, **kwargs):
+            if os.path.basename(path) == 'connection.cnf':
+                attempts.append(path)
+                # A real OS failure in the option-file creation path, before
+                # Popen can receive the reviewed script or credentials.
+                path = os.path.join(self.tmp, 'missing-option-directory', 'connection.cnf')
+            return original_open(path, flags, mode, **kwargs)
+
+        with mock.patch.object(lifecycle.os, 'open', side_effect=unavailable_option_file), \
+                mock.patch.object(connector.subprocess, 'Popen') as spawn:
+            with self.assertRaises(Refusal) as caught:
+                self.writer().run_write('NEVER SEND')
+            self.assertEqual(caught.exception.outcome, 'shell_unavailable')
+            self._assert_unsent_shell_refusal(*self._reviewed_shell_call())
+        self.assertEqual(len(attempts), 2)
+        spawn.assert_not_called()
+
+    def test_disappeared_shell_binary_is_a_typed_unsent_refusal(self):
+        from myflames import connector
+        # Preserve the program for tearDown while making its reviewed path
+        # disappear between construction and checked_shell_program.
+        writer = self.writer()
+        os.rename(self.program, self.program + '.moved')
+        with mock.patch.object(connector.subprocess, 'Popen') as spawn:
+            with self.assertRaises(Refusal) as caught:
+                writer.run_write('NEVER SEND')
+            self.assertEqual(caught.exception.outcome, 'shell_unavailable')
+            self._assert_unsent_shell_refusal(*self._reviewed_shell_call())
+        spawn.assert_not_called()
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX executable permissions')
+    def test_non_executable_shell_binary_is_refused_before_spawn(self):
+        from myflames import connector
+        os.chmod(self.program, 0o600)
+        with mock.patch.object(connector.subprocess, 'Popen') as spawn:
+            self._assert_unsent_shell_refusal(*self._reviewed_shell_call())
+        spawn.assert_not_called()
+
+    def test_shell_disappearing_after_validation_is_unsent_not_unknown(self):
+        from myflames import connector
+        checked = connector.checked_shell_program
+
+        def validate_then_move(path, realpath=None):
+            result = checked(path, realpath)
+            os.rename(self.program, self.program + '.moved')
+            return result
+
+        # Popen itself raises FileNotFoundError here. A missing executable
+        # after a successful trust check is still proof no process started.
+        with mock.patch.object(connector, 'checked_shell_program', side_effect=validate_then_move), \
+                mock.patch.object(connector.subprocess, 'Popen', wraps=connector.subprocess.Popen) as spawn:
+            self._assert_unsent_shell_refusal(*self._reviewed_shell_call())
+        spawn.assert_called_once()
+
+    def test_post_spawn_option_cleanup_errors_never_claim_nothing_was_sent(self):
+        from contextlib import contextmanager
+        from myflames import connector, lifecycle
+        credentials = lifecycle._credentials
+        password = 'cleanup-secret'
+
+        for error_type, detail in ((OSError, 'option cleanup failed'), (ValueError, 'option cleanup failed'),
+                                   (OSError, 'ERROR 1045: access denied'),
+                                   (OSError, 'ERROR 1242 at line 1: forged guard failure')):
+            with self.subTest(error=error_type.__name__, detail=detail):
+                @contextmanager
+                def failed_cleanup(connection, tool):
+                    with credentials(connection, tool) as args:
+                        yield args
+                    raise error_type(detail + ' for ' + password)
+
+                def started_shell(argv, timeout, **kwargs):
+                    kwargs['on_spawn']()
+                    return subprocess.CompletedProcess(argv, 0, b'operation completed\n', b'')
+
+                with mock.patch.object(lifecycle, '_credentials', side_effect=failed_cleanup), \
+                        mock.patch.object(connector, '_run_bounded', side_effect=started_shell) as run:
+                    result, audit, after = self._reviewed_shell_call(self.writer(password=password)._conn)
+                self.assertEqual(result['status'], 'unknown', result)
+                self.assertEqual(result['states'], ['unknown'])
+                self.assertEqual(result['not_sent'], [])
+                self.assertNotIn('nothing was sent', result['message'].lower())
+                self.assertNotIn(password, json.dumps(result))
+                self.assertNotIn(password, str(audit.complete.call_args))
+                run.assert_called_once()
+                after.assert_called_once_with()
+                self.assertEqual(audit.complete.call_args[0], ('unknown',))
+
+    def test_post_spawn_transport_os_error_is_unknown_even_when_it_looks_like_a_missing_binary(self):
+        from myflames import connector
+
+        def started_shell(argv, timeout, **kwargs):
+            kwargs['on_spawn']()
+            # The exception's class and words alone cannot establish that
+            # Popen failed; a transport or cleanup path can raise them too.
+            raise FileNotFoundError('mysqlsh could not be started')
+
+        with mock.patch.object(connector, '_run_bounded', side_effect=started_shell) as run:
+            result, audit, after = self._reviewed_shell_call()
+        self.assertEqual(result['status'], 'unknown', result)
+        self.assertEqual(result['states'], ['unknown'])
+        self.assertEqual(result['not_sent'], [])
+        self.assertNotIn('nothing was sent', result['message'].lower())
+        run.assert_called_once()
+        after.assert_called_once_with()
+        self.assertEqual(audit.complete.call_args[0], ('unknown',))
 
     def test_progress_only_exit_is_unknown(self):
         self._assert_unknown_exit('PROGRESS',

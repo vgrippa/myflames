@@ -85,7 +85,8 @@ def _version(data):
 #: metadata-model-2.1.0.sql:606-631), so its answer there is no rows. Supplied
 #: here, never written into a recording.
 CLUSTERSET_SQL = ("/*myflames:cluster*/ SELECT m.clusterset_id, m.cluster_id, m.cluster_name, m.member_role, "
-                  "m.invalidated, s.domain_name FROM mysql_innodb_cluster_metadata.v2_cs_members m JOIN "
+                  "m.invalidated, s.domain_name, s.view_id, s.router_options FROM "
+                  "mysql_innodb_cluster_metadata.v2_cs_members m JOIN "
                   "mysql_innodb_cluster_metadata.v2_cs_clustersets s ON s.clusterset_id = m.clusterset_id")
 
 # Synthetic catalog inputs, not part of the historical live captures. Keep
@@ -143,7 +144,90 @@ def recorded(name, edit=None):
         if edit is None or "myflames_grants_begin" in sql:
             return text
         return edit(sql, text, n)
-    return ReplayConn(calls, edit=replay_edit, version=_version(data)), data
+    conn = ReplayConn(calls, edit=replay_edit, version=_version(data))
+    recorded_run = conn.run
+
+    def run(sql, extra_flags=None, timeout=None):
+        """Replay one guarded metadata snapshot using the recorded projections.
+
+        These captures predate ClusterSet; the fixture already supplements an
+        empty membership result. Do not invent a live ClusterSet or split a
+        snapshot into separately recorded calls.
+        """
+        from myflames import cluster
+        groups = cluster._CLUSTERSET_SNAPSHOT_QUERIES[3][1]
+        if sql == cluster.CLUSTER_TAG + groups:
+            # Standalone cluster reads use the same lossless name projection
+            # as ClusterSet snapshots. These old captures retain raw names.
+            text = recorded_run(cluster.CLUSTER_TAG + cluster._MD_CLUSTERS_SQL,
+                                extra_flags=extra_flags, timeout=timeout)
+            conn.calls[-1] = (sql, list(extra_flags or []))
+            rows = parse(text)
+            for row in rows:
+                if row[1] is not None:
+                    row[1] = '=' + row[1]
+            return batch(rows)
+        prefix = cluster.CLUSTER_TAG + 'SELECT @@GLOBAL.server_uuid; '
+        statements = [part.strip() for part in sql[len(prefix):].split(';')] if sql.startswith(prefix) else []
+        if statements[:2] != ['SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
+                              'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY']:
+            return recorded_run(sql, extra_flags=extra_flags, timeout=timeout)
+        conn.calls.append((sql, list(extra_flags or [])))
+        if conn.error is not None:
+            raise conn.error
+        if conn.clock is not None:
+            conn.clock.now += conn.clock.query_s
+
+        def answer(query, advance=True):
+            answers = conn.answers.get(query)
+            if not answers:
+                raise AssertionError('missing recorded snapshot projection: ' + query)
+            n = conn.seen.get(query, 0)
+            if advance:
+                conn.seen[query] = n + 1
+            else:
+                n = max(0, n - 1)
+            text = answers[min(n, len(answers) - 1)]
+            if conn.edit is not None:
+                text = conn.edit(query, text, n)
+            if isinstance(text, _Refused):
+                raise ConnectorError(str(text))
+            return text
+
+        variables = dict((row[0], row[1]) for row in parse(answer(cluster_preflight_sql, advance=False))
+                         if len(row) >= 2)
+        result = [batch([[variables.get('server_uuid')]])]
+        if not statements or statements[-1] != 'COMMIT':
+            raise AssertionError('snapshot was not committed: ' + sql)
+        projections = {item[1] for item in cluster._CLUSTERSET_SNAPSHOT_QUERIES}
+        markers = {"SELECT '__myflames_clusterset_%s__'" % item[0] for item in cluster._CLUSTERSET_SNAPSHOT_QUERIES}
+        for statement in statements[2:-1]:
+            if statement in markers:
+                result.append(batch([[statement[len("SELECT '"):-1]]]))
+            elif statement == cluster._CS_ROUTERS_SQL:
+                # No captured server belonged to a ClusterSet.
+                result.append('')
+            elif statement in projections:
+                membership = cluster._CLUSTERSET_SNAPSHOT_QUERIES[1][1]
+                groups = cluster._CLUSTERSET_SNAPSHOT_QUERIES[3][1]
+                original = (cluster._MD_CLUSTERSET_SQL if statement == membership else
+                            cluster._MD_CLUSTERS_SQL if statement == groups else statement)
+                output = answer(cluster.CLUSTER_TAG + original)
+                if statement in (membership, groups):
+                    rows = parse(output)
+                    columns = (2, 5) if statement == membership else (1,)
+                    for row in rows:
+                        for column in columns:
+                            if row[column] is not None:
+                                row[column] = '=' + row[column]
+                    output = batch(rows)
+                result.append(output)
+            else:
+                raise AssertionError('unexpected snapshot statement: ' + statement)
+        return ''.join(result)
+
+    conn.run = run
+    return conn, data
 
 
 # ---- editing recorded answers --------------------------------------------------
@@ -586,10 +670,12 @@ SCENARIOS = {
 # _MD_CLUSTERSET_SQL): clusterset_id, cluster_id, cluster_name, member_role
 # (PRIMARY or REPLICA, Sh/modules/adminapi/common/metadata/
 # metadata-model-2.1.0.sql:606-631), invalidated (0 or 1: csm.view_id IS
-# NULL), domain_name. This member is mf-ic-1, the PRIMARY of its group.
+# NULL), domain_name, view_id, router_options. Invalidated rows have a NULL member_role.
+# This member is mf-ic-1, the PRIMARY of its group.
 
 def _cs(*clusters):
-    return [["cs-1", cid, name, role, "1" if invalid else "0", "mfcs"] for cid, name, role, invalid in clusters]
+    return [["cs-1", cid, name, None if invalid else role, "1" if invalid else "0", "mfcs", "4294967297", '{}']
+            for cid, name, role, invalid in clusters]
 
 
 def _cs_instances(cid, prefix, start):
@@ -603,6 +689,9 @@ def _clusterset(rows, extra=None):
     scenario = _ic([_gr_member(i) for i in range(3)], [_gr_stats(i) for i in range(3)], version=(2, 2, 0),
                    instances=instances)
     scenario["tables"]["mysql_innodb_cluster_metadata.v2_cs_members"] = rows
+    scenario["variables"]["super_read_only"] = "OFF" if any(
+        r[1] == "cid-1" and r[3] == "PRIMARY" for r in rows) else "ON"
+    scenario["tables"]["performance_schema.replication_applier_status_by_worker"] = [[1, "ON", 0, ""]]
     # ClusterSet metadata contains every cluster's group identity, even
     # though this connection can observe live GR state only in its group.
     cluster_rows = scenario["tables"]["mysql_innodb_cluster_metadata.v2_gr_clusters"]
@@ -640,6 +729,9 @@ SCENARIOS.update({
                                                  ("cid-2", "drcluster", "REPLICA", False))),
     "ic-8.4-clusterset-replica": _clusterset(_cs(("cid-0", "maincluster", "PRIMARY", False),
                                                  ("cid-1", "mfcluster", "REPLICA", False)), _CS_CHANNEL_ON),
+    "ic-8.4-clusterset-three": _clusterset(_cs(("cid-0", "maincluster", "PRIMARY", False),
+                                                ("cid-1", "mfcluster", "REPLICA", False),
+                                                ("cid-2", "drcluster", "REPLICA", False)), _CS_CHANNEL_ON),
     "ic-8.4-clusterset-replica-channel-off": _clusterset(
         _cs(("cid-0", "maincluster", "PRIMARY", False), ("cid-1", "mfcluster", "REPLICA", False)),
         {"performance_schema.replication_connection_status":
@@ -667,10 +759,26 @@ class ScenarioConn(object):
     def __init__(self, scenario, version=None):
         self.scenario = copy.deepcopy(scenario)
         self.calls = []
+        self.timeouts = []
+        self.closed = False
         self.version = version or self.scenario["variables"].get("version", "")
 
     def _answer(self, body):
         sc = self.scenario
+        for fragment, error in sc.get("query_errors", {}).items():
+            if fragment in body:
+                raise error
+        if (body == "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE "
+                    "SCHEMA_NAME = 'mysql_innodb_cluster_metadata'" and
+                'information_schema.SCHEMATA' not in sc.get('tables', {})):
+            # A standalone server has information_schema even if a synthetic
+            # scenario omits its empty metadata-schema result.
+            return ''
+        if body.startswith("SELECT r.router_id, r.clusterset_id"):
+            routers = sc.get("clusterset_routers", [])
+            if isinstance(routers, Exception):
+                raise routers
+            return batch(routers)
         if body.startswith("SELECT 'myflames_grants_begin'"):
             from _grants_fixtures import grants_batch
             return grants_batch(ADMIN_GRANTS, version=self.version)
@@ -703,6 +811,7 @@ class ScenarioConn(object):
 
     def run(self, sql, extra_flags=None, timeout=None):
         self.calls.append((sql, list(extra_flags or [])))
+        self.timeouts.append(timeout)
         body = sql.split("*/ ", 1)[1] if sql.startswith("/*") else sql
         return self._answer(body)
 
@@ -713,13 +822,109 @@ class ScenarioConn(object):
         return "mariadb" in self.version.lower()
 
     def close(self):
-        pass
+        self.closed = True
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         self.close()
+
+
+def install_clusterset_batch_replay():
+    """Replay multiple result sets from a single synthetic mysql login.
+
+    Share the guarded discovery, snapshot and fencing replay between Python
+    tests and the browser-fixture generator. Keep archived recordings unchanged;
+    synthetic batches answer each statement in order and propagate failures.
+    """
+    from myflames import cluster as m
+
+    original = ScenarioConn._answer
+    if getattr(original, '_clusterset_batch_replay', False):
+        return
+
+    def answer(conn, body):
+        markers = ('__myflames_clusterset_version__', '__myflames_clusterset_membership__',
+                   '__myflames_clusterset_instances__', '__myflames_clusterset_groups__',
+                   '__myflames_clusterset_routers__')
+        for marker in markers:
+            if body.strip() == "SELECT '%s'" % marker:
+                return batch([[marker]])
+        if body.strip().lower() == 'select @@server_uuid':
+            return batch([[conn.scenario['variables'].get('server_uuid')]])
+        membership = m._CLUSTERSET_SNAPSHOT_QUERIES[1][1]
+        groups = m._CLUSTERSET_SNAPSHOT_QUERIES[3][1]
+        if body in (membership, groups):
+            # Preserve SQL NULL separately from the literal string "NULL".
+            for fragment, error in conn.scenario.get('query_errors', {}).items():
+                if fragment in body:
+                    raise error
+            original(conn, m._MD_CLUSTERSET_SQL if body == membership else m._MD_CLUSTERS_SQL)
+            table = ('mysql_innodb_cluster_metadata.v2_cs_members' if body == membership else
+                     'mysql_innodb_cluster_metadata.v2_gr_clusters')
+            answers = dict(conn.scenario.get('tables', {}))
+            answers.update(conn.scenario.get('extra', {}))
+            rows = [list(row) for row in answers[table]]
+            for row in rows:
+                for column in ((2, 5) if body == membership else (1,)):
+                    if row[column] is not None:
+                        row[column] = '=' + str(row[column])
+            return batch(rows)
+        identity, sep, rest = body.partition(';')
+        if sep and identity.strip().lower() == 'select @@global.server_uuid':
+            uuid = conn.scenario['variables'].get('server_uuid')
+            return batch([[uuid]]) + answer(conn, rest.strip())
+        statements = [statement.strip() for statement in body.split(';')]
+        if (statements[0].upper() == 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'
+                and statements[1].upper() == 'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY'
+                and statements[-1].upper() == 'COMMIT'):
+            # START and COMMIT produce no result rows. Each SELECT still uses
+            # the individual fixture answer, in statement order.
+            output = []
+            for index, statement in enumerate(statements[2:-1], start=2):
+                try:
+                    output.append(answer(conn, statement))
+                except ConnectorError as exc:
+                    if statement == m._CS_ROUTERS_SQL and 'ERROR 1142' in str(exc) and 'at line' not in str(exc):
+                        raise ConnectorError('%s at line %d' % (exc, index + 1))
+                    raise
+            return ''.join(output)
+        if statements == [m._MD_VERSION_SQL, m._MD_CLUSTERSET_SQL, m._MD_INSTANCES_SQL, m._MD_CLUSTERS_SQL]:
+            return ''.join(original(conn, statement) for statement in statements)
+        group, sep, variables = body.partition(';')
+        if (sep and group.strip().startswith('SELECT ' + ', '.join(m._GR_MEMBERS_COLUMNS) +
+                                               ' FROM performance_schema.replication_group_members') and
+                variables.strip() == "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('super_read_only')"):
+            return original(conn, group.strip()) + original(conn, variables.strip())
+        variables, sep, action = body.partition(';')
+        if (sep and variables.strip() == "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('super_read_only')"
+                and action.strip() == "SELECT enabled FROM performance_schema.replication_group_member_actions "
+                                      "WHERE name = 'mysql_disable_super_read_only_if_primary'"):
+            return original(conn, variables.strip()) + original(conn, action.strip())
+        return original(conn, body)
+
+    answer._clusterset_batch_replay = True
+    ScenarioConn._answer = answer
+
+
+install_clusterset_batch_replay()
+
+
+def clusterset_peer(cid="cid-2", prefix="mf-dr", start=30, scenario_name="ic-8.4-clusterset-primary", member_index=0):
+    """A selected member of another cluster, sharing the synthetic metadata."""
+    scenario = copy.deepcopy(SCENARIOS[scenario_name])
+    instances = _cs_instances(cid, prefix, start)
+    scenario["variables"]["server_uuid"] = instances[member_index][3]
+    scenario["variables"]["super_read_only"] = "OFF" if member_index == 0 and any(
+        row[1] == cid and row[3] == "PRIMARY"
+        for row in scenario["tables"]["mysql_innodb_cluster_metadata.v2_cs_members"]) else "ON"
+    scenario["extra"] = copy.deepcopy(_CS_CHANNEL_ON)
+    scenario["extra"]["performance_schema.replication_connection_configuration"] = [["mf-ic-1", "3306"]]
+    members = scenario["tables"]["performance_schema.replication_group_members"]
+    for index, row in enumerate(members):
+        row[1], row[2] = instances[index][3], "%s-%d" % (prefix, index + 1)
+    return ScenarioConn(scenario)
 
 
 def conn(name):

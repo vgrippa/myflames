@@ -222,7 +222,7 @@ def _discover_response(path, payload, workspace=None):
                 identity = begin_read(getattr(workspace, "store", None), current)
                 if path == "/api/live/cluster":
                     from .cluster import attach_topology_tiers, read_status, with_actions
-                    report = read_status(conn, _identity=identity)
+                    report = read_status(conn, _identity=identity, **t_args)
                     attach_topology_tiers(conn, report, **t_args)
                 elif path == "/api/live/proxysql":
                     from .proxysql import read_status
@@ -1842,8 +1842,9 @@ _FILES_PATHS = ("/api/files/remote/list", "/api/files/remote/mkdir", "/api/files
                 "/api/files/local/rename", "/api/files/local/reveal", "/api/files/upload", "/api/files/download",
                 "/api/files/jobs", "/api/files/cancel", "/api/files/retry", "/api/files/clear")
 #: The progress of a send the review sheet is waiting for
-#: (reviewed_writes.Progress by the action request's progress_id). No
-#: connection, no SQL, no credentials: phases and statement states only.
+#: (reviewed_writes.Progress by the action request's progress_id). Polling
+#: opens no connection. Phases and statement states may include bounded,
+#: redacted MySQL Shell output, including server text and echoed SQL.
 _ACTION_PROGRESS_PATH = "/api/live/action/progress"
 
 # A positive allowlist: live/start, job controls and all reviewed writes keep
@@ -2544,12 +2545,10 @@ def _action_module(kind):
 def _action_plan(kind, module, conn, payload, target=None, group_checks=None):
     """A plan from a fresh read of *conn* for the request's inputs."""
     if kind == "cluster":
-        report = module.read_status(conn)
         action = payload.get("action")
-        checks = module.action_checks(conn, report, action)
-        if group_checks is not None:
-            checks.update(group_checks())
-        return module.plan_action(report, action, payload.get("member_key"), checks, target=target)
+        report, checks = module.prepare_action(conn, action, group_checks=group_checks)
+        return module.plan_action(report, action, payload.get("member_key"), checks, target=target,
+                                  parameters=payload.get("parameters"))
     if kind == "readyset":
         report = module.read_status(conn, schema=payload.get("schema") or "readyset")
         return module.plan_action(report, payload.get("action"), payload.get("target"), payload.get("value"), conn=conn)
@@ -2642,8 +2641,31 @@ def _action_response(path, payload, workspace):
     if reviewed is not None and not isinstance(expect, dict):
         raise ValueError("The reviewed plan is not valid. Review the action again; nothing was sent.")
     statements = list(reviewed["statements"]) if reviewed is not None else []
-    progress = (_action_progress(workspace).start(payload.get("progress_id"), len(statements), module.ACTION_TIMEOUT)
-                if reviewed is not None else None)
+    progress = None
+    if reviewed is not None:
+        timeout, idle_timeout = module.ACTION_TIMEOUT, None
+        if kind == "cluster" and reviewed.get("via") == "mysqlsh":
+            # Clone reviews carry longer limits than ordinary Shell actions.
+            # Progress starts before token validation, so accept only integer
+            # durations here; execution still uses the fresh, bound plan.
+            timeout = reviewed.get("timeout_s", module.SHELL_TIMEOUT)
+            if type(timeout) is not int or timeout <= 0:
+                timeout = module.SHELL_TIMEOUT
+            proposed_idle = reviewed.get("idle_timeout_s")
+            if type(proposed_idle) is int and 0 < proposed_idle <= timeout:
+                idle_timeout = proposed_idle
+        progress = _action_progress(workspace).start(payload.get("progress_id"), len(statements),
+                                                     timeout, idle_timeout=idle_timeout)
+
+    def action_verdict(plan):
+        # This one fixed AdminAPI expression is read-only. Arbitrary JS and
+        # all other actions retain the risky policy floor. The complete plan
+        # and its derived guard still need a valid token and fresh match.
+        calls = plan.get("statements") or []
+        if (kind == "cluster" and plan.get("action") == "check_clusterset" and
+                calls == [module._shell_check_clusterset(module.SHELL_MIN_VERSION)]):
+            return {"kind": "read", "category": "read", "reasons": [], "statements": calls}
+        return reviewed_writes.worst_kind(calls)
 
     try:
         def make_audit(route, safety, decision):
@@ -2664,7 +2686,7 @@ def _action_response(path, payload, workspace):
             target = workspace.store.get("profile", target_id) if isinstance(target_id, str) and len(target_id) <= 200 else None
             route = dict(target, group_name=plain.get("group_name")) if isinstance(target, dict) else plain
             safety = dbops.connection_safety(target, route, store=workspace.store)
-            decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
+            decision = dbops.decide(action_verdict(reviewed), safety["type"], safety["read_only"],
                                     safety.get("profile_name"))
             audit = make_audit(route, safety, decision)
             out = reviewed_writes.result(module.ACTION_SCHEMA_VERSION, reviewed)
@@ -2682,10 +2704,48 @@ def _action_response(path, payload, workspace):
         identity = dbops.connection_identity(plain, safety)
 
         def group_checks():
-            return {"group_name": route["group_name"], "group_profiles": workspace.store.list("profile"),
-                    "current_profile": workspace.store.get("profile", target_profile["id"])}
+            from .connection_groups import GroupScope
+            from .replication import profile_opener
+            current = workspace.store.get("profile", target_profile["id"])
+            profiles = workspace.store.list("profile")
+            scope = GroupScope(profiles, current)
+            opener = profile_opener(workspace.store, current["id"], current,
+                                    group_name=route["group_name"], connection=route)
+            return {"group_name": route["group_name"], "group_profiles": profiles,
+                    "current_profile": current, "read_options": {
+                        "profiles": scope.profiles, "open_profile": scope.opener(opener),
+                        "current_profile_id": current["id"], "current_profile": current}}
+
+        candidate_expected = (expect or {}).get("replica_candidate")
+        candidate_action = payload.get("action") if planning else reviewed["action"]
+
+        def current_candidate():
+            # Creation writes to a second saved endpoint. Its consent and
+            # Read-only flag are independent of the primary route's policy.
+            # This check also runs in the primary's final Shell login guard.
+            if (kind != "cluster" or not isinstance(candidate_action, str) or
+                    not candidate_action.startswith("create_replica_cluster:")):
+                return
+            from .clusterset_execution import candidate_binding
+            pid = candidate_action.split(":", 1)[1]
+            candidate = workspace.store.get("profile", pid)
+            current = workspace.store.get("profile", target_profile["id"]) if routed else None
+            if (not routed or not candidate or not current or not route.get("group_name") or
+                    candidate.get("group") != route["group_name"] or current.get("group") != route["group_name"]):
+                raise reviewed_writes.Refusal("The standalone saved connection is no longer in the active group. "
+                                              "Nothing was sent. Refresh and review again.", "changed")
+            bound = candidate_binding(candidate)
+            if bound["read_only"]:
+                raise reviewed_writes.Refusal("The standalone saved connection is Read-only in myflames. Nothing "
+                                              "was sent. Turn off Read-only or choose another server, then review "
+                                              "creation again.", "policy_changed")
+            if candidate_expected is not None and any(candidate_expected.get(key) != value
+                                                       for key, value in bound.items()):
+                raise reviewed_writes.Refusal("The standalone saved connection changed after its preflight. Nothing "
+                                              "was sent. Read the target and review creation again.", "changed")
 
         def current_target():
+            current_candidate()
             if not routed:
                 return None
             try:
@@ -2740,6 +2800,7 @@ def _action_response(path, payload, workspace):
                 with guarded_connection(options) as conn:
                     plan = _action_plan(kind, module, conn, payload, target=binding,
                                         group_checks=group_checks if routed else None)
+                candidate_expected = (plan.get("expect") or {}).get("replica_candidate")
                 if routed:
                     current_target()
                     live_identity = plan["expect"]["target"]["server_identity"]
@@ -2756,14 +2817,14 @@ def _action_response(path, payload, workspace):
                     current_target()
             except (ValueError, ConnectorError) as exc:
                 _reraise_redacted(exc, options.get("password"))
-            decision = dbops.decide(reviewed_writes.worst_kind(plan["statements"]), safety["type"], safety["read_only"],
+            decision = dbops.decide(action_verdict(plan), safety["type"], safety["read_only"],
                                     safety.get("profile_name"))
             plan["policy"] = {k: decision.get(k) for k in ("action", "tone", "title", "text", "connection_type",
                                                            "read_only")}
             plan["review_token"] = _review_tokens(workspace).issue(_ACTION_OPERATION[kind], identity,
                                                                    reviewed_writes.review_details(plan))
             return plan
-        decision = dbops.decide(reviewed_writes.worst_kind(statements), safety["type"], safety["read_only"],
+        decision = dbops.decide(action_verdict(reviewed), safety["type"], safety["read_only"],
                                 safety.get("profile_name"))
         audit = make_audit(route, safety, decision)
         out = reviewed_writes.result(module.ACTION_SCHEMA_VERSION, reviewed)
@@ -2790,7 +2851,7 @@ def _action_response(path, payload, workspace):
             now = dbops.connection_safety(_action_target(payload, plain, kind, workspace.store) if routed else
                                           _request_profile(connection, workspace.store), route, store=workspace.store)
             if dbops.connection_identity(plain, now) != identity or dbops.gate(dbops.decide(
-                    reviewed_writes.worst_kind(statements), now["type"], now["read_only"], now.get("profile_name")),
+                    action_verdict(reviewed), now["type"], now["read_only"], now.get("profile_name")),
                     confirmed=True):
                 raise reviewed_writes.Refusal("The connection's write policy changed after the review, so nothing was "
                                               "sent. Review the change again.", "policy_changed")
@@ -2802,8 +2863,12 @@ def _action_response(path, payload, workspace):
             audit.connection = {k: options.get(k) for k in ("host", "port", "user", "ssh_host", "ssh_user", "ssh_port")}
             with guarded_connection(options) as conn:
                 extra = {"target": current_target, "group_checks": group_checks} if routed else {}
-                result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send,
-                                               progress=progress, **extra)
+                from .clusterset_execution import supervise_shell
+                supervisor = (getattr(workspace, "lifecycle", None)
+                              if kind == "cluster" and reviewed.get("via") == "mysqlsh" else None)
+                with supervise_shell(conn, supervisor, audit):
+                    result = module.execute_action(conn, reviewed, audit=audit, typed=typed, before_send=before_send,
+                                                   progress=progress, **extra)
             result["policy"] = out["policy"]
             return result
         except KeyboardInterrupt as exc:

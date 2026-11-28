@@ -15,6 +15,9 @@
 # matrix servers that are already running, in its own lane with its own
 # throwaway home (the profiles ga-matrix.sh profiles saves there). In all,
 # the ga lane is included only when the GA matrix is up.
+# For the standalone InnoDB ClusterSet lab (domain mfcs, clusters csa and
+# csb, spare instance mf-cs-c1, Router on 34606/34607), use
+# scripts/clusterset-matrix.sh (up | status | shell '<js>' | down | reset).
 # Different clusters run in parallel lanes; the scenarios on one cluster run
 # in order. Every run writes an evidence record to
 # local/live-evidence/<commit>.json (full commit SHA, a -dirty suffix when the

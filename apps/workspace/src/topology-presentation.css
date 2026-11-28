@@ -444,24 +444,24 @@
 }
 
 /* ClusterSet replication arrows: lit rail when intact, dashed and flat when broken. */
-:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion] .clusterset-link:not(.is-broken) .clusterset-arrow {
+:root :is(.cluster-topology, .replication-topology-container, .readyset-topology, .clusterset-map)[data-motion] .clusterset-link:not(.is-broken) .clusterset-arrow {
   box-shadow: 0 0 6px 1px color-mix(in srgb, var(--line-strong) 34%, transparent);
 }
 
-:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion] .clusterset-link.is-ok:not(.is-broken) .clusterset-arrow {
+:root :is(.cluster-topology, .replication-topology-container, .readyset-topology, .clusterset-map)[data-motion] .clusterset-link.is-ok:not(.is-broken) .clusterset-arrow {
   border-top-color: color-mix(in srgb, var(--ok) 84%, var(--accent-ink) 16%);
   box-shadow: 0 0 7px 1px color-mix(in srgb, var(--ok) 38%, transparent);
 }
 
-:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion] .clusterset-link.is-watch:not(.is-broken) .clusterset-arrow {
+:root :is(.cluster-topology, .replication-topology-container, .readyset-topology, .clusterset-map)[data-motion] .clusterset-link.is-watch:not(.is-broken) .clusterset-arrow {
   box-shadow: 0 0 7px 1px color-mix(in srgb, var(--warn) 36%, transparent);
 }
 
-:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion] .clusterset-link.is-problem:not(.is-broken) .clusterset-arrow {
+:root :is(.cluster-topology, .replication-topology-container, .readyset-topology, .clusterset-map)[data-motion] .clusterset-link.is-problem:not(.is-broken) .clusterset-arrow {
   box-shadow: 0 0 7px 1px color-mix(in srgb, var(--danger) 36%, transparent);
 }
 
-:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion] .clusterset-link.is-broken .clusterset-arrow {
+:root :is(.cluster-topology, .replication-topology-container, .readyset-topology, .clusterset-map)[data-motion] .clusterset-link.is-broken .clusterset-arrow {
   border-top-style: dashed;
   box-shadow: none;
 }
@@ -471,7 +471,7 @@
 /* This liveness gate must override even the all-healthy rail's :has() rule.
    A failed refresh can disable motion without adding a stale ancestor.
    The narrow group frame stands in for that rail and must lose its halo too. */
-:root :is(.cluster-topology, .replication-topology-container, .readyset-topology)[data-motion]:is([data-motion="off"], .is-stale *, .is-other-connection *) :is(.cluster-stem, .cluster-bus-line, .cluster-group, .topology-line, .clusterset-arrow) {
+:root :is(.cluster-topology, .replication-topology-container, .readyset-topology, .clusterset-map)[data-motion]:is([data-motion="off"], .is-stale *, .is-other-connection *) :is(.cluster-stem, .cluster-bus-line, .cluster-group, .topology-line, .clusterset-arrow) {
   box-shadow: none !important;
 }
 

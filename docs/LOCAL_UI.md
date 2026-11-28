@@ -735,16 +735,45 @@ once per connection; **Refresh** reads again, and the Server place's
 **Refresh all** reads it too. A member's inspector offers the changes that do
 what they say on that server (see [Cluster changes](#cluster-changes)).
 
-For an InnoDB ClusterSet (metadata 2.1.0 or later), **Topology** draws a band
-above the group, with an arrow from the primary cluster to each replica
-cluster. The link is broken when the channel stops or the cluster is
-invalidated. It lists the other clusters' instances from shared metadata,
-with **Use** for a saved connection to one of them. On a replica cluster's
-primary, the view shows the `clusterset_replication` channel's receiver and
-applier state, last error and source. Findings flag invalidated clusters, a
-missing primary cluster, or a stopped, reconnecting or errored channel. A
-replica cluster's view is its replicated metadata copy and may be behind;
-the view says so.
+For an InnoDB ClusterSet (metadata 2.1.0 or later), **Cluster** opens on the
+zoomable **ClusterSet map** (including when connected to an InnoDB Cluster read
+replica through its replicated metadata copy) and leads with the ClusterSet
+rather than one cluster's summary. Above the map sit the connection group bar
+and **Changes · the ClusterSet**. The map shows the set status line (**Healthy**
+when every cluster is **OK**, **Available** when the primary cluster is **OK**
+or **Misconfigured**, **Unavailable** when the primary cluster is **Writes
+fenced**, **Not OK** or missing, otherwise **Unknown**, with **Details**, where
+the metadata was read, and a replicated-copy warning whenever metadata was not
+read on the primary cluster's `ONLINE` primary with quorum), one card per
+cluster, arrows from the primary cluster to each replica showing
+`clusterset_replication` receiver and applier states, `missing`, or
+`misconfigured` (never green when broken or misconfigured), and plain lists of
+stored Routers and ClusterSet routing defaults (resolving stored Group
+Replication UUIDs to cluster names when uniquely matched). Each cluster card
+shows its role (**Primary cluster**, **Replica cluster** or **Invalidated**),
+its plain-words status alongside the MySQL Shell status word whenever SQL
+evidence establishes that term (**OK**, **Misconfigured**, **Connecting**, **Not
+replicating**, **Writes fenced** when `super_read_only` is on and
+`mysql_disable_super_read_only_if_primary` is disabled on the primary, **Not
+OK**, **Invalidated**, or **Not read**, with a **Details** toggle for the
+reason), member count and primary when read, and how it was read (**This
+connection**, **Read through `<member>`**, **Metadata only**, or the read
+error). SQL reads do not check GTID consistency; run **Check with MySQL Shell
+(connects to every member)** for MySQL Shell's consistency view. Clicking a
+cluster card's **Open** button, double-clicking, or pressing Enter or Space
+zooms into that cluster's **Topology**, **Members**, **Routers** and
+**Changes · the whole cluster** (for another cluster with a verified saved
+member in the active **Group connection**, routing **Cluster** to that member
+and showing `Using <server> from group <group>.` in the top bar; without a saved
+route, showing **Metadata only** with actions disabled and **Use
+`<connection>`** or **Edit group…**). **Zoom out** (`⌘↑` on macOS, `Ctrl+↑`
+elsewhere) returns to the map on **Topology** with your scroll position and card
+selection preserved, and a fresh read after dissolution or removal leaves the
+zoom automatically. In a Group connection, ClusterSet reads follow a secondary
+to its primary through saved member connections (retaining the secondary's group
+state with missing facts explained if the primary cannot be read). Findings flag
+invalidated clusters, a missing primary cluster, or a stopped, reconnecting or
+errored channel.
 
 One scale for every kind: **OK** with quorum and every expected member present
 and healthy; **Watch** while quorum holds but a member is missing (a Galera
@@ -822,7 +851,7 @@ A member's inspector shows the changes it offers as buttons, and only these:
   the member's UUID. The current primary becomes a read-only secondary once its
   running transactions finish. In an InnoDB ClusterSet replica cluster the
   change uses MySQL Shell's `Cluster.setPrimaryInstance()` when MySQL Shell
-  8.0.27 or later is installed: the server's Group Replication switchover
+  8.0.32 or later is installed: the server's Group Replication switchover
   function refuses while the replica channel runs on the primary.
 - **Stop Group Replication…** on the member you are connected to: it leaves the
   group and becomes read-only. You type its name when it is the primary (the
@@ -834,25 +863,79 @@ A member's inspector shows the changes it offers as buttons, and only these:
   offered Stop first: fix the cause in the error log, then start it.
 - **Switch the group to multi-primary…** or **single-primary…** for Group
   Replication without InnoDB Cluster metadata, with the member's name typed.
-- **Switch the cluster to multi-primary…** or **Switch the cluster to
-  single-primary…** for MySQL InnoDB Cluster, with MySQL Shell (`mysqlsh`)
-  8.0 or later installed on this computer, only outside a ClusterSet and with
-  every member ONLINE. MySQL Shell also sets `auto_increment_increment` and
-  `auto_increment_offset` on every member and the mode in the metadata. You
-  type the cluster name.
-- **Rejoin to the cluster…** for a MISSING member in the metadata, with MySQL
-  Shell 8.1 or later installed, through the connected ONLINE member with
-  quorum. Recovery is incremental only: if the transactions it needs are
-  gone from every member's binary logs, MySQL Shell refuses and nothing
-  changes. Run `cluster.rejoinInstance()` with `recoveryMethod: "clone"` in
-  MySQL Shell for clone recovery. The same account must exist on the missing
-  member too. You type the member name.
-- With MySQL Shell 8.0.27 or later installed, make a replica cluster the
-  ClusterSet's primary cluster (a controlled switchover), **Fail over to this
-  cluster…** when the primary cluster is lost, or rejoin an invalidated
-  cluster. You type the target cluster name. Failover is refused while the
-  primary cluster is reachable and healthy; transactions it committed that
-  this cluster did not receive are lost.
+- **Switch to multi-primary…** or **Switch to single-primary…** for MySQL
+  InnoDB Cluster, with MySQL Shell (`mysqlsh`) 8.0.32 or later installed on
+  this computer, only outside a ClusterSet and with every member ONLINE. MySQL
+  Shell also sets `auto_increment_increment` and `auto_increment_offset` on
+  every member and the mode in the metadata. You type the cluster name.
+- **Rejoin to the cluster…** for a MISSING, OFFLINE or ERROR member in the
+  metadata, with MySQL Shell 8.1.0 or later and cluster metadata 2.0.0 or later
+  installed, through the connected ONLINE member with quorum. Recovery is
+  incremental only: if the transactions it needs are gone from every member's
+  binary logs, MySQL Shell refuses and nothing changes. Run
+  `cluster.rejoinInstance()` with `recoveryMethod: "clone"` in MySQL Shell for
+  clone recovery. Inside a ClusterSet, the cluster's global status must be
+  `OK`: complete SQL reads from a healthy ClusterSet primary establish `OK`,
+  while replica clusters require additional status checks in MySQL Shell. The
+  same account must exist on the missing member too. You type the member name.
+- Under **Changes · the ClusterSet** (MySQL Shell 8.0.32 or later and metadata
+  2.1.0 or later, with MySQL Shell 8.1.0 or later for `read_only_targets` and
+  9.0.0 or later for keeping a removed cluster running and dissolving a
+  ClusterSet):
+  - **Make `<cluster>` the primary cluster…** (standard review): controlled
+    switchover to an **OK** replica cluster while the primary cluster is
+    available and confirmed unfenced and routing configuration is readable
+    (opens a pre-review sheet to invalidate other unreachable replicas if any).
+  - **Fail over to `<cluster>`…** (typed target cluster name): emergency
+    failover to a reachable non-invalidated replica cluster (with readable
+    routing configuration) after every primary-cluster member is confirmed
+    unreachable through direct connection or host-resolution failures (`2002`,
+    `2003` or `2005`; timeouts, lost connections and authentication errors stay
+    unknown and block failover). Opens a pre-review sheet to invalidate other
+    unreachable replicas if any. Transactions the old primary committed that
+    this cluster did not receive are lost, and an isolated old primary and
+    Routers that only see it can keep taking writes until fenced.
+  - **Rejoin `<cluster>` to the ClusterSet…** and **Repair replication on
+    `<cluster>`…** (standard review): rejoin an invalidated cluster, or refresh
+    a non-invalidated replica's channel when trouble is observed, while the
+    primary cluster is available and confirmed unfenced.
+  - **Remove `<cluster>` from the ClusterSet…** (typed target cluster name,
+    primary available and confirmed unfenced): opens a choice sheet between
+    **Remove and dissolve the cluster** (Shell 8.0.32+, with a **Force**
+    checkbox only when the target is unreachable) and **Remove, keep the cluster
+    running** (Shell 9.0.0+, reachable target with quorum, an `ONLINE` primary
+    and healthy replication only; force is not supported; warns about divergent
+    transactions). Reviews list affected Router targets first.
+  - **Change ClusterSet routing defaults…** and **Change routing for
+    `<router>`…** (standard review, primary available and confirmed unfenced):
+    sets `target_cluster` (`primary` or a cluster name, resolving stored Group
+    Replication UUIDs back to names when uniquely matched),
+    `invalidated_cluster_policy` (`drop_all` or `accept_ro`),
+    `stats_updates_frequency` (seconds `0` to `2147483647`),
+    `use_replica_primary_as_rw`, or `read_only_targets` (`all`, `read_replicas`
+    or `secondaries`, Shell 8.1.0+). `tags` and `guideline` stay in MySQL Shell.
+  - **Create replica cluster on `<connection>`…** (typed new cluster name,
+    primary available and confirmed unfenced): picks a direct, non-**Read-only**
+    saved connection in the active group outside cluster metadata whose reported
+    address (`report_host`/`report_port`) matches its saved endpoint, a new
+    cluster name, and **Clone** or **Incremental** recovery. Review checks the
+    direct spare (MySQL 8.0.27+, stopped GR, no metadata, GTID subset,
+    `super_read_only` and `dba.checkInstanceConfiguration()`), and the Shell
+    script verifies its UUID immediately before `createReplicaCluster`.
+  - **Dissolve ClusterSet…** (Shell 9.0.0+, typed ClusterSet name): dissolves
+    the ClusterSet while keeping user data (opens a **Force** sheet first only
+    when a cluster is unreachable). Notes that `--no-wizard` skips Shell's own
+    prompt, that Shell skips its primary-last cleanup step, and that MySQL Shell
+    9.7.1 can leave `clusterset_replication` managed failover rows on former
+    replica members, so inspect every reachable instance afterwards.
+  - **Check with MySQL Shell (connects to every member)** (Shell 8.0.32+,
+    read-only, permitted on **Read-only** connections): runs
+    `status({extended: 1})` across members without changing state and displays a
+    structured status summary above the raw output.
+  Mutating ClusterSet actions other than **Dissolve ClusterSet…** and confirmed
+  **Fail over to `<cluster>`…** stay disabled whenever primary write fencing is
+  on or cannot be confirmed (`Cannot confirm whether the primary cluster's
+  writes are fenced.`).
 - On MariaDB Galera, on the node you are connected to: **Desync this node…**
   (`wsrep_desync = ON`: out of flow control, for example for a backup; it keeps
   applying writes and its reads can be stale) and **Resync this node…**
@@ -866,16 +949,45 @@ A member's inspector shows the changes it offers as buttons, and only these:
 Percona XtraDB Cluster and Galera Cluster for MySQL offer no change yet, and
 `SET GLOBAL wsrep_on` is never offered. Every change works like ProxySQL's
 (below): the review, the policy, the typed name, the check right before
-sending, the result panel and the Audit log.
+sending, the result panel and the Audit log (with **Check with MySQL Shell**
+permitted on **Read-only** connections).
 
-The review shows the exact MySQL Shell call. Before sending, myflames checks
-it again against a fresh read; a mismatch sends nothing. The account passes
-through a private option file, and MySQL Shell runs with an empty temporary home. A
-socket connection uses that socket. MySQL Shell changes are not offered over an
-SSH connection, because MySQL Shell connects to the other members directly with
-this connection's user and password; the place says so in its notes. An operation
-has a 600-second time limit. After an error, myflames reads the cluster again and
-reports a partial change if anything it can see changed.
+The review shows the exact MySQL Shell call and the derived **Identity check**
+script (open by default; **Copy** copies the complete script as sent). For
+ClusterSet actions, the guard checks the route UUID, the AdminAPI object's
+`status({extended: 2})` facts, the metadata server address and `view_id` (plus
+an in-script target UUID probe for replica creation), and switchover, failover,
+removal and routing reviews also bind stored routing configuration. Before
+sending, myflames checks everything again against a fresh read; a mismatch sends
+nothing. The account passes through a private option file, and MySQL Shell runs
+with an empty temporary home. A socket connection uses that socket. MySQL Shell
+actions are not offered over an SSH connection or when TLS mode is
+`VERIFY_IDENTITY` or `REQUIRED` (use `VERIFY_CA` or run in MySQL Shell), because
+MySQL Shell connects to the other members directly with this connection's user
+and password and does not preserve those TLS modes on member sessions. Ordinary
+Shell operations have a 600-second time limit; **Clone** replica creation cannot
+be stopped once cloning starts, enforces a 60-minute limit without output and a
+24-hour overall ceiling (even a healthy silent stage can reach that limit, and
+stopping the client does not undo a server clone), and is supervised if the
+workspace quits (recording **Outcome unknown** with recovery checks). While any
+MySQL Shell action runs, the sheet streams live **MySQL Shell progress** lines
+(with **Jump to latest** when scrolled up); results retain redacted **MySQL
+Shell output** (up to the last 1 MiB per stream across all MySQL Shell actions,
+switching to **MySQL Shell output (retained tail)** and **Copy retained tail**
+when truncated, and omitting the Check summary table when stdout is truncated)
+and, for ClusterSet actions, a collapsible **SQL verification** table
+(**Verified**, **Not read**, **Mismatch** per server) with outcome **Verified**,
+**Done, not fully verified** (watch pill), **Failed, nothing changed** (only
+when refused or nothing was sent), or **Unknown or partial** (including any
+post-start Shell error, because Shell can acquire locks that install persistent
+locking-service UDFs without binary logging before failing). Connect ClusterSet
+members directly by host and port (no load balancer or statement-routing proxy
+such as ProxySQL or Readyset), because AdminAPI opens internal member sessions,
+SQL reads check the UUID and facts in separate packets, and Shell opens its own
+target connection after the replica-creation or member-rejoin UUID probe; note
+also that replicated metadata copies can lag, the in-session Shell guard does
+not recheck routing options after the fresh read, and a Routing Guideline's
+document content can change without its stored guideline ID changing.
 
 **ProxySQL** (a place of its own, right after Cluster) reads the ProxySQL
 Admin interface the connection in use reaches (port 6032 by default; save a
@@ -993,10 +1105,12 @@ Every change shows its review first: the statement verb, a question naming the
 target, the connection with its address and type, what changes, the undo (or
 that it cannot be undone), warnings, and the statements exactly as they will be
 sent. Production and Development connections both ask (these are risky
-changes); a Read-only connection refuses and opens no review. A destructive
+changes); a Read-only connection refuses and opens no review (except ClusterSet's
+read-only **Check with MySQL Shell (connects to every member)**). A destructive
 change also needs the target's name typed (OFFLINE_HARD, the last ONLINE server
 of a hostgroup, stopping the primary or the last member, a mode switch,
-bootstrapping a Primary component). Right before sending, myflames reads the
+bootstrapping a Primary component, and ClusterSet failover, removal, replica
+creation and dissolve). Right before sending, myflames reads the
 target again and sends nothing if it changed. After you confirm, the same sheet
 follows the send: the button reads **Sending…** and cannot be pressed twice,
 Cancel and Escape wait for ten seconds; then Close or Escape hides the sheet

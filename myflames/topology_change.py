@@ -69,7 +69,7 @@ class _ProgressRegistry(reviewed_writes.ProgressRegistry):
                 break
             del self._items[old]
 
-    def _start(self, progress_id, count, timeout, factory):
+    def _start(self, progress_id, count, timeout, factory, idle_timeout=None):
         if not isinstance(progress_id, str) or not reviewed_writes._PROGRESS_ID.fullmatch(progress_id):
             return None
         with self._lock:
@@ -78,17 +78,19 @@ class _ProgressRegistry(reviewed_writes.ProgressRegistry):
                 return None
             if len(self._items) >= self.LIMIT:
                 return None
-            value = self._items[progress_id] = factory(count, timeout)
+            value = (factory(count, timeout, idle_timeout=idle_timeout) if idle_timeout is not None
+                     else factory(count, timeout))
+            self._items[progress_id] = value
             return value
 
-    def start(self, progress_id, count, timeout=None):
+    def start(self, progress_id, count, timeout=None, idle_timeout=None):
         owner = getattr(self, '_topology_owner', None)
         if owner is not None:
             with owner.lock:
                 if isinstance(progress_id, str) and progress_id in owner.runs:
                     return None
-                return self._start(progress_id, count, timeout, reviewed_writes.Progress)
-        return self._start(progress_id, count, timeout, reviewed_writes.Progress)
+                return self._start(progress_id, count, timeout, reviewed_writes.Progress, idle_timeout)
+        return self._start(progress_id, count, timeout, reviewed_writes.Progress, idle_timeout)
 
     def start_member(self, progress_id, count, timeout=None):
         return self._start(progress_id, count, timeout, _MemberProgress)

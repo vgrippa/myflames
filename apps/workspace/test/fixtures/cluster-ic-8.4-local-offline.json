@@ -1,5 +1,5 @@
 {
- "schema_version": "cluster-1.0",
+ "schema_version": "cluster-1.1",
  "engine": "mysql",
  "flavor": "mysql",
  "server_product": "MySQL",
@@ -545,21 +545,23 @@
    "schema_version": "cluster-action-1.1",
    "id": "set_primary_cluster",
    "label": "Make primary cluster…",
-   "scope": "overview",
+   "scope": "clusterset",
    "kind": "risky",
    "via": "mysqlsh",
    "danger": true,
-   "description": "MySQL Shell switches the ClusterSet primary to the selected replica cluster (setPrimaryCluster).",
+   "description": "Switches the primary cluster after synchronizing the selected replica.",
    "member_key": null,
    "member_name": null,
    "member_uuid": null,
    "cluster_name": null,
    "enabled": false,
-   "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs.",
-   "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
    "target": {
-    "self": true,
-    "member_name": "mf-ic-3:3306"
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
    },
    "missing_privileges": [],
    "grant_sql": null,
@@ -568,22 +570,24 @@
   {
    "schema_version": "cluster-action-1.1",
    "id": "force_primary_cluster",
-   "label": "Fail over to this cluster…",
-   "scope": "overview",
+   "label": "Fail over to a replica cluster…",
+   "scope": "clusterset",
    "kind": "risky",
    "via": "mysqlsh",
    "danger": true,
-   "description": "MySQL Shell makes this replica cluster the primary and invalidates the old primary cluster (forcePrimaryCluster). Only when no instance of the old primary cluster is reachable.",
+   "description": "Promotes a surviving replica only when every old-primary member is unreachable.",
    "member_key": null,
    "member_name": null,
    "member_uuid": null,
    "cluster_name": null,
    "enabled": false,
-   "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs.",
-   "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
    "target": {
-    "self": true,
-    "member_name": "mf-ic-3:3306"
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
    },
    "missing_privileges": [],
    "grant_sql": null,
@@ -593,21 +597,277 @@
    "schema_version": "cluster-action-1.1",
    "id": "rejoin_cluster",
    "label": "Rejoin cluster to the ClusterSet…",
-   "scope": "overview",
+   "scope": "clusterset",
    "kind": "risky",
    "via": "mysqlsh",
    "danger": true,
-   "description": "MySQL Shell rejoins the selected invalidated cluster as a replica cluster (rejoinCluster).",
+   "description": "Rejoins an invalidated cluster after MySQL Shell checks its transactions.",
    "member_key": null,
    "member_name": null,
    "member_uuid": null,
    "cluster_name": null,
    "enabled": false,
-   "why_not": "This cluster is not part of an InnoDB ClusterSet. MySQL Shell checks the privileges it needs when it runs.",
-   "fix": "Create or join a ClusterSet in MySQL Shell, then Refresh.",
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
    "target": {
-    "self": true,
-    "member_name": "mf-ic-3:3306"
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "repair_cluster",
+   "label": "Repair cluster replication…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Refreshes a replica's replication account and settings with rejoinCluster.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
+   "target": {
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "remove_cluster",
+   "label": "Remove and dissolve the cluster…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Removes the replica cluster and dissolves it into standalone instances.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
+   "target": {
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "remove_cluster_keep",
+   "label": "Remove, keep the cluster running…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Removes the replica from this set and keeps a standalone InnoDB Cluster.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 9.0.0 or later, then Refresh.",
+   "target": {
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "set_routing_option",
+   "label": "Change ClusterSet routing defaults…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": false,
+   "description": "Stores routing configuration that Routers apply on their next refresh.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
+   "target": {
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false,
+   "options": {
+    "target_cluster": {
+     "minimum_shell": [
+      8,
+      0,
+      27
+     ],
+     "enabled": false,
+     "why_not": "target_cluster needs MySQL Shell 8.0.32 or later.",
+     "fix": "Install MySQL Shell 8.0.32 or later, then Refresh."
+    },
+    "invalidated_cluster_policy": {
+     "minimum_shell": [
+      8,
+      0,
+      27
+     ],
+     "enabled": false,
+     "why_not": "invalidated_cluster_policy needs MySQL Shell 8.0.32 or later.",
+     "fix": "Install MySQL Shell 8.0.32 or later, then Refresh."
+    },
+    "stats_updates_frequency": {
+     "minimum_shell": [
+      8,
+      0,
+      31
+     ],
+     "enabled": false,
+     "why_not": "stats_updates_frequency needs MySQL Shell 8.0.32 or later.",
+     "fix": "Install MySQL Shell 8.0.32 or later, then Refresh."
+    },
+    "use_replica_primary_as_rw": {
+     "minimum_shell": [
+      8,
+      0,
+      32
+     ],
+     "enabled": false,
+     "why_not": "use_replica_primary_as_rw needs MySQL Shell 8.0.32 or later.",
+     "fix": "Install MySQL Shell 8.0.32 or later, then Refresh."
+    },
+    "tags": {
+     "minimum_shell": [
+      8,
+      1,
+      0
+     ],
+     "enabled": false,
+     "why_not": "tags needs MySQL Shell 8.1.0 or later.",
+     "fix": "Install MySQL Shell 8.1.0 or later, then Refresh."
+    },
+    "read_only_targets": {
+     "minimum_shell": [
+      8,
+      1,
+      0
+     ],
+     "enabled": false,
+     "why_not": "read_only_targets needs MySQL Shell 8.1.0 or later.",
+     "fix": "Install MySQL Shell 8.1.0 or later, then Refresh."
+    },
+    "guideline": {
+     "minimum_shell": [
+      9,
+      2,
+      0
+     ],
+     "enabled": false,
+     "why_not": "guideline needs MySQL Shell 9.2.0 or later.",
+     "fix": "Install MySQL Shell 9.2.0 or later, then Refresh."
+    }
+   }
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "create_replica_cluster",
+   "label": "Create replica cluster…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Creates a replica on a standalone server read in this Group connection.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
+   "target": {
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "dissolve_clusterset",
+   "label": "Dissolve ClusterSet…",
+   "scope": "clusterset",
+   "kind": "risky",
+   "via": "mysqlsh",
+   "danger": true,
+   "description": "Removes ClusterSet metadata and dissolves its clusters, keeping user data.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 9.0.0 or later, then Refresh.",
+   "target": {
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
+   },
+   "missing_privileges": [],
+   "grant_sql": null,
+   "privileges_unreadable": false
+  },
+  {
+   "schema_version": "cluster-action-1.1",
+   "id": "check_clusterset",
+   "label": "Check with MySQL Shell (connects to every member)",
+   "scope": "clusterset",
+   "kind": "read",
+   "via": "mysqlsh",
+   "danger": false,
+   "description": "Reads the authoritative MySQL Shell status, including GTID consistency.",
+   "member_key": null,
+   "member_name": null,
+   "member_uuid": null,
+   "cluster_name": null,
+   "enabled": false,
+   "why_not": "MySQL Shell was not found on this computer.",
+   "fix": "Install MySQL Shell 8.0.32 or later, then Refresh.",
+   "target": {
+    "self": false,
+    "member_name": null,
+    "profile_id": null,
+    "server_uuid": null
    },
    "missing_privileges": [],
    "grant_sql": null,

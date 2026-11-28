@@ -528,7 +528,7 @@ class TestServerReadTools(unittest.TestCase):
         schemas = {"server_report": "report-1.0", "top_statements": "top-1.0", "sessions": "sessions-1.0",
                    "locks_report": "locks-1.1", "health_sample": "health-1.0", "innodb_status": "innodb-1.0",
                    "my_privileges": "privileges-1.0", "replication_status": "replication-1.0",
-                   "cluster_status": "cluster-1.0", "readyset_status": "readyset-1.0"}
+                   "cluster_status": "cluster-1.1", "readyset_status": "readyset-1.0"}
         for tool in NEW_TOOLS:
             for maria in (False, True):
                 with self.subTest(tool=tool, maria=maria):
