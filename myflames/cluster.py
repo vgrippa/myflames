@@ -4969,16 +4969,21 @@ def action_checks(conn, report, action, check_grants=True):
     return out
 
 
-def prepare_action(conn, action, group_checks=None, check_grants=True):
+def prepare_action(conn, action, group_checks=None, check_grants=True, verify_report=None):
     """Fresh action evidence, including consent-scoped ClusterSet routes.
 
     Standalone preflight is deliberately a plan/apply operation, never part
-    of an ordinary report or catalog read.
+    of an ordinary report or catalog read. *verify_report*, when given, sees
+    the fresh report before any action check reads: execution passes the
+    reviewed server identity check there, so a changed server is refused
+    before more evidence is read from it.
     """
     group = group_checks() if group_checks is not None else {}
     base = _action_name(action)[0] if isinstance(action, str) else None
     read_options = group.get("read_options") or {}
     report = read_status(conn, **read_options) if base in CLUSTERSET_ACTIONS else read_status(conn)
+    if verify_report is not None:
+        verify_report(report)
     checks = action_checks(conn, report, action, check_grants=check_grants)
     checks.update(group)
     if base == "force_primary_cluster":
@@ -6052,13 +6057,15 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
         from .clusterset_execution import DeferredAudit
         audit = DeferredAudit(audit)
 
-    def fresh():
-        report, checks = prepare_action(conn, reviewed["action"], group_checks=group_checks,
-                                        check_grants=False)
+    def same_server(report):
         if not reviewed_writes.same_reviewed_value(
                 _server_identity(report),
                 {k: expect.get(k) for k in ("engine", "server_version", "server", "kind")}):
             raise ValueError("This connection now reaches another server or cluster.")
+
+    def fresh():
+        report, checks = prepare_action(conn, reviewed["action"], group_checks=group_checks,
+                                        check_grants=False, verify_report=same_server)
         if "routing_configuration" in expect:
             current = _clusterset_routing_configuration(report.get("clusterset") or {})
             if current is None:
