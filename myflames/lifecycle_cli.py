@@ -436,8 +436,8 @@ def cmd_dump(argv):
     from . import lifecycle as lc
     parser = _parser(
         'dump',
-        'Dump a server into DIRECTORY (absent or empty) with MySQL Shell util.dumpSchemas/dumpTables/'
-        'dumpInstance when installed, else mysqldump (MySQL) or mariadb-dump (MariaDB). Writes '
+        'Dump a server into DIRECTORY (absent or empty) with MySQL Shell util.dump_schemas/dump_tables/'
+        'dump_instance when installed, else mysqldump (MySQL) or mariadb-dump (MariaDB). Writes '
         'myflames-manifest.json with every file\'s SHA-256 and exact row counts of small tables, which '
         'restore verifies.',
         'Shows the plan and asks before starting. The connection\'s write policy applies: a read-only '
@@ -477,7 +477,7 @@ def cmd_restore(argv):
     parser = _parser(
         'restore',
         'Restore DIRECTORY, a dump made by myflames dump, into the server. The manifest and every file\'s '
-        'SHA-256 are checked first; MySQL Shell dumps load with util.loadDump (needs local_infile=ON on the '
+        'SHA-256 are checked first; MySQL Shell dumps load with util.load_dump (needs local_infile=ON on the '
         'target), SQL dumps through the mysql or mariadb client on stdin. After it, myflames compares the '
         'objects and the exact row counts recorded at dump time.',
         'Restore runs DDL and DML and cannot be undone: you type the target to confirm. It refuses when the '

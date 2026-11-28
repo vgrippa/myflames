@@ -148,22 +148,46 @@ def strip_ansi(text):
     return _ANSI.sub('', text or '')
 
 
-def tool_error_line(stderr):
+def tool_error_line(stderr, passwords=()):
     """The one meaningful line of a failed tool's stderr.
 
     Colour codes are removed, NOTE and WARNING lines and Shell's trailing
-    "at STDIN:2" position are dropped, and the first line that reads like an
-    error wins (else the first remaining line). Empty output stays empty.
+    "at STDIN:2" position are dropped. Python tracebacks use their exception
+    summary, never a source frame that happens to contain an error word.
+    Otherwise the first error line wins (else the first remaining line).
+    Redact before collapsing whitespace, which may be part of a password.
     """
+    def clean(line):
+        return ' '.join(_safe(line, passwords).split())
+
+    raw_lines = strip_ansi(stderr).splitlines()
+    tracebacks = [index for index, line in enumerate(raw_lines)
+                  if line.startswith('Traceback (most recent call last):')]
+    if tracebacks:
+        # Chained exceptions end in another traceback. Its first unindented
+        # summary wins; subsequent message lines such as "Details:" are data.
+        for raw in raw_lines[tracebacks[-1] + 1:]:
+            if (re.match(r'^[A-Za-z_][\w.]*:', raw) and
+                    not re.match(r'(?:NOTE|WARNING|INFO):', raw, re.I)):
+                return clean(raw)
     lines = []
-    for raw in strip_ansi(stderr).splitlines():
-        line = re.sub(r'\s+at STDIN:\d+\s*$', '', ' '.join(raw.split()))
+    for raw in raw_lines:
+        line = re.sub(r'\s+at STDIN:\d+\s*$', '', raw).strip()
         if line and not re.match(r'(?:NOTE|WARNING|INFO):', line, re.I):
             lines.append(line)
     for line in lines:
-        if _ERROR_WORDS.search(line):
-            return line
-    return lines[0] if lines else ''
+        if _ERROR_WORDS.search(' '.join(line.split())):
+            return clean(line)
+    return clean(lines[0]) if lines else ''
+
+
+def _tool_error_code(stderr):
+    """Read Shell's Python error code before redacting the displayed message."""
+    # mysqlsh.DBError / mysqlsh.Error use parenthesized codes in Python;
+    # connection setup and classic clients still use the ERROR n form.
+    match = re.match(r'^(?:mysqlsh\.(?:DBError|Error):\s*)?(?:MySQL|Shell) Error \((\d+)\):',
+                     tool_error_line(stderr))
+    return int(match.group(1)) if match else dbops.error_code(stderr)
 
 
 def shell_version_gap(tool, server_version):
@@ -205,9 +229,10 @@ def _clean_env(home, shell=False):
 def _safe(value, passwords=()):
     value = dbops.redact_value(value)
     # Remove longer secrets first when one password contains the other. Tools
-    # may echo a JSON/option-file escaped value instead of the raw password.
+    # may echo a JSON, Python or option-file escaped value instead of the raw
+    # password. Python uses \U escapes for non-BMP characters in our scripts.
     variants = {variant for password in passwords if isinstance(password, str) and password
-                for variant in (password, json.dumps(password)[1:-1])}
+                for variant in (password, json.dumps(password)[1:-1], _shell_literal(password)[1:-1])}
     for password in sorted(variants, key=len, reverse=True):
         value = dbops.redact_value(value, password)
     return value
@@ -1283,8 +1308,9 @@ class LifecycleJob(object):
         if overflow.is_set():
             raise LifecycleError('Tool output exceeded the 16 MiB capture limit.')
         if proc.returncode:
-            error = LifecycleError('Tool exited %d: %s' % (proc.returncode, _safe(tool_error_line(stderr) or strip_ansi(stderr)[-4000:], self.passwords)))
-            error.server_error_code = dbops.error_code(stderr)
+            detail = tool_error_line(stderr, self.passwords) or strip_ansi(_safe(stderr, self.passwords))[-4000:]
+            error = LifecycleError('Tool exited %d: %s' % (proc.returncode, detail))
+            error.server_error_code = _tool_error_code(stderr)
             raise error
         return stdout, stderr
 
@@ -1306,10 +1332,28 @@ def _invoke(job, tool, connection, args, script=None, **kwargs):
         return job.process_tool(argv + args, env, input_data=script, **kwargs)
 
 
+def _shell_literal(value):
+    """Encode script arguments as Python data, including Windows paths."""
+    if isinstance(value, str):
+        # JSON quotes controls and backslashes. Escape Unicode as Python
+        # source afterwards: JSON's ASCII surrogate pairs would split an
+        # astral character into two code points in a Python string literal.
+        return json.dumps(value, ensure_ascii=False).encode('ascii', 'backslashreplace').decode('ascii')
+    if isinstance(value, dict):
+        return '{' + ', '.join('%s: %s' % (_shell_literal(key), _shell_literal(item))
+                               for key, item in value.items()) + '}'
+    if isinstance(value, (list, tuple)):
+        return '[' + ', '.join(_shell_literal(item) for item in value) + ']'
+    if value is None or isinstance(value, (bool, int)):
+        return repr(value)
+    raise TypeError('Unsupported MySQL Shell script value: ' + type(value).__name__)
+
+
 def _shell_script(job, expression):
-    # mysqlsh's JavaScript print() adds no line break: without one the marker
-    # runs into the tool's next output and the session id is never read.
-    return 'print(%s + session.getConnectionId() + "\\n");\n%s;\n' % (json.dumps(job.marker), expression)
+    # Python print ends and flushes the marker line before the utility runs,
+    # so cancellation can identify this session while the operation is busy.
+    return 'print(%s + str(session.get_connection_id()), flush=True)\n%s\n' % (
+        _shell_literal(job.marker), expression)
 
 
 def parse_upgrade_json(text):
@@ -1532,7 +1576,7 @@ def upgrade_check(conn, target_version, connection=None, tools=None, config_path
                                                   shell_version[1]))
         if connection is None:
             raise ValueError('Connection options are required to invoke MySQL Shell.')
-        args = ['--js', '--', 'util', 'check-for-server-upgrade',
+        args = ['--py', '--', 'util', 'check-for-server-upgrade',
                 '--target-version=' + report['target_version'], '--output-format=JSON']
         if config_path:
             args.append('--config-path=' + os.path.abspath(config_path))
@@ -1775,14 +1819,15 @@ def _samples(conn, catalog, limit=3, max_bytes=1024 * 1024, seconds=5, job=None)
 def _shell_dump_expression(request, dry_run=False):
     opts = {'threads': request['threads'], 'consistent': True, 'showProgress': True, 'dryRun': dry_run}
     opts.update(dump_options.shell_options(request.get('options', {})))
-    directory = json.dumps(request['directory'])
+    directory = _shell_literal(request['directory'])
     schemas, tables = request['schemas'], request['tables']
     if tables:
-        return 'util.dumpTables(%s,%s,%s,%s)' % (json.dumps(schemas[0]), json.dumps(tables), directory, json.dumps(opts))
+        return 'util.dump_tables(%s,%s,%s,%s)' % (
+            _shell_literal(schemas[0]), _shell_literal(tables), directory, _shell_literal(opts))
     if schemas:
-        return 'util.dumpSchemas(%s,%s,%s)' % (json.dumps(schemas), directory, json.dumps(opts))
+        return 'util.dump_schemas(%s,%s,%s)' % (_shell_literal(schemas), directory, _shell_literal(opts))
     opts['users'] = False  # account dumps can include credential hashes; explicit scope in manifest
-    return 'util.dumpInstance(%s,%s)' % (directory, json.dumps(opts))
+    return 'util.dump_instance(%s,%s)' % (directory, _shell_literal(opts))
 
 
 def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads=4, tools=None, prefer_shell=True,
@@ -1855,7 +1900,7 @@ def prepare_dump(conn, connection, directory, schemas=None, tables=None, threads
         # Never give an unconfirmed tool the user's requested destination.
         with tempfile.TemporaryDirectory(prefix='myflames-dry-run-') as scratch:
             dry_request = dict(request, directory=os.path.join(scratch, 'dump'))
-            _invoke(runner, tool, connection, ['--js'],
+            _invoke(runner, tool, connection, ['--py'],
                     _shell_script(runner, _shell_dump_expression(dry_request, True)), timeout=120)
         checks.append(_verification('dry_run', 'passed', 'MySQL Shell dryRun completed.'))
         commands = [_shell_dump_expression(request)]
@@ -2323,7 +2368,7 @@ def _perform_dump(job, conn, plan, connection):
             samples = _samples(conn, catalog, job=job)
         if tool['name'] == 'mysqlsh':
             job.step('Dumping with MySQL Shell.')
-            _invoke(job, tool, connection, ['--js'], _shell_script(job, _shell_dump_expression(request)))
+            _invoke(job, tool, connection, ['--py'], _shell_script(job, _shell_dump_expression(request)))
         else:
             estimate = None if structure_only else _dump_size_estimate(
                 conn, plan['server'], catalog, request['schemas'], request['tables'], include_system)
@@ -2793,7 +2838,7 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         if server['engine'] != 'mysql' or version_tuple(server['version']) < (5, 7, 0):
             checks.append(_verification('load_target', 'failed', 'Shell loads are offered only for MySQL >=5.7; MariaDB is untested.'))
         checks.append(_verification('local_infile', 'passed' if server['variables'].get('local_infile', '').upper() in ('ON', '1') else 'failed',
-                                    'loadDump requires local_infile=ON. No SET GLOBAL is sent automatically.'))
+                                    'load_dump requires local_infile=ON. No SET GLOBAL is sent automatically.'))
     else:
         tool = _load_tool(tools, server['engine'])
         if existing_objects == 'ignore':
@@ -2862,9 +2907,9 @@ def prepare_restore(conn, connection, directory, schema=None, tools=None, allow_
         runner = job or LifecycleJob('restore_dry_run', lambda job: None, connection)
         with tempfile.TemporaryDirectory(prefix='myflames-dry-run-') as scratch:
             dry_request = dict(request, progress_file=os.path.join(scratch, 'progress.json'))
-            _invoke(runner, tool, connection, ['--js'],
+            _invoke(runner, tool, connection, ['--py'],
                     _shell_script(runner, _load_expression(dry_request, True)), timeout=120)
-        checks.append(_verification('dry_run', 'passed', 'MySQL Shell loadDump dryRun completed.'))
+        checks.append(_verification('dry_run', 'passed', 'MySQL Shell load_dump dryRun completed.'))
     plan = _plan('restore', server, connection, request, tool, target, commands, checks, warnings,
                  binding_extra={'manifest': _hash(manifest), 'create_database': create_database, 'sql_scan': sql_scan})
     plan.update(manifest=manifest, manifest_hash=_hash(manifest),
@@ -2882,7 +2927,7 @@ def _load_expression(request, dry_run=False):
         options['ignoreExistingObjects' if request['existing_objects'] == 'ignore' else 'dropExistingObjects'] = True
     if request.get('schema'):
         options['schema'] = request['schema']
-    return 'util.loadDump(%s,%s)' % (json.dumps(request['directory']), json.dumps(options))
+    return 'util.load_dump(%s,%s)' % (_shell_literal(request['directory']), _shell_literal(options))
 
 
 def _sql_load_args(request):
@@ -2926,7 +2971,7 @@ def restore_job(connection, plan, confirmed=False, typed_target=None, audit=None
                 _check_reviewed_manifest(request['directory'], fresh['manifest_hash'], job)
                 staged_request = dict(request, directory=staged)
                 job.step('Loading with MySQL Shell.')
-                _invoke(job, tool, connection, ['--js'], _shell_script(job, _load_expression(staged_request)))
+                _invoke(job, tool, connection, ['--py'], _shell_script(job, _load_expression(staged_request)))
         else:
             args = _sql_load_args(request)
             # An stdin prefix prints the actual executing session id before

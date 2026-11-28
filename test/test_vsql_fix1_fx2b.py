@@ -276,7 +276,7 @@ class LifecycleFixTests(unittest.TestCase):
                 plan = lc.prepare_dump(conn, harness.CONNECTION, str(self.root / product), tools=self.tools)
                 self.assertEqual(plan['tool']['name'], 'mariadb-dump' if engine == 'mariadb' else 'mysqlsh')
                 if engine == 'mysql':
-                    self.assertTrue(plan['commands'][0].startswith('util.dumpInstance('))
+                    self.assertTrue(plan['commands'][0].startswith('util.dump_instance('))
                     self.assertNotIn('excludeSchemas', plan['commands'][0])
 
 

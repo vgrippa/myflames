@@ -241,7 +241,7 @@ class StrictReplay(object):
 
 
 FAKE_TOOL = r'''
-import hashlib, json, os, re, signal, stat, sys
+import ast, hashlib, json, os, re, signal, stat, sys
 from pathlib import Path
 root = Path(__file__).parent
 name = Path(sys.argv[0]).name
@@ -257,6 +257,9 @@ assert sys.argv[1].startswith('--defaults-file=')
 cnf = sys.argv[1].split('=',1)[1]
 config = Path(cnf).read_text(encoding="utf-8")
 stdin = sys.stdin.read()
+if name == 'mysqlsh':
+    assert '--py' in sys.argv and '--js' not in sys.argv, sys.argv
+    compile(ast.parse(stdin), '<lifecycle-shell>', 'exec')
 record = {'name':name, 'argv':sys.argv, 'env':dict(os.environ), 'cnf':cnf,
           'cnf_mode':stat.S_IMODE(os.stat(cnf).st_mode), 'password_seen':'password=' in config,
           'stdin_hash':hashlib.sha256(stdin.encode()).hexdigest(),
@@ -298,28 +301,44 @@ if name.endswith('dump') or name == 'mysqldump':
     print('CREATE TABLE t(id INT);\nINSERT INTO t VALUES (1),(2);')
     print('100% dumped',file=sys.stderr,flush=True)
 elif name == 'mysqlsh':
-    # JavaScript print() adds no line break; only an explicit "\\n" ends the line.
-    marker = re.search(r'print\("(myflames_job_[^"]+:)" \+ session.getConnectionId\(\)( \+ "\\n")?\)', stdin)
-    if marker: print(marker.group(1)+'41', end='\n' if marker.group(2) else '', flush=True)
-    if mode == 'fail_after_marker':
-        print('failure after marker',file=sys.stderr); sys.exit(3)
-    print('Initializing - done', flush=True)
-    print('\x1b[36mNOTE: \x1b[0mProgress information uses estimated values', file=sys.stderr, flush=True)
-    call = re.search(r'util\.(dumpInstance|dumpSchemas|dumpTables|loadDump)\((.*)\);?',stdin)
-    if call:
-        args, rest, decoder = [], call.group(2).rstrip(' ;\n'), json.JSONDecoder()
-        while rest:
-            arg, end = decoder.raw_decode(rest); args.append(arg); rest = rest[end:].lstrip(', ')
-        options = args[-1]
-        if not options['dryRun']:
-            if call.group(1) == 'loadDump':
-                (root/'restored').touch()
-                if options.get('progressFile'): Path(options['progressFile']).write_text('{}')
-            else:
-                folder = Path(args[-2]); folder.mkdir(exist_ok=True)
-                (folder/'@.done.json').write_text('{}')
-                (folder/'app@t.tsv').write_text('1\n2\n')
-    print('100% done',file=sys.stderr,flush=True)
+    class Session:
+        def get_connection_id(self):
+            return 41
+
+    class Util:
+        def _run(self, method, args):
+            # Execute the generated Python so a broken literal or method cannot
+            # pass by matching source text in a permissive fake interpreter.
+            if mode == 'fail_after_marker':
+                print('failure after marker',file=sys.stderr); sys.exit(3)
+            print('Initializing - done', flush=True)
+            print('\x1b[36mNOTE: \x1b[0mProgress information uses estimated values', file=sys.stderr, flush=True)
+            options = args[-1]
+            with (root/'shell-calls.jsonl').open('a') as log:
+                log.write(json.dumps({'method': method, 'dryRun': options['dryRun']})+'\n')
+            if not options['dryRun']:
+                if method == 'load_dump':
+                    (root/'restored').touch()
+                    if options.get('progressFile'): Path(options['progressFile']).write_text('{}')
+                else:
+                    folder = Path(args[-2]); folder.mkdir(exist_ok=True)
+                    (folder/'@.done.json').write_text('{}')
+                    (folder/'app@t.tsv').write_text('1\n2\n')
+            print('100% done',file=sys.stderr,flush=True)
+
+        def dump_instance(self, *args):
+            self._run('dump_instance', args)
+
+        def dump_schemas(self, *args):
+            self._run('dump_schemas', args)
+
+        def dump_tables(self, *args):
+            self._run('dump_tables', args)
+
+        def load_dump(self, *args):
+            self._run('load_dump', args)
+
+    exec(compile(stdin, '<lifecycle-shell>', 'exec'), {'session': Session(), 'util': Util()})
 elif name == 'mariadb-backup':
     target = Path(next(arg.split('=',1)[1] for arg in sys.argv if arg.startswith('--target-dir=')))
     target.mkdir(exist_ok=True)
@@ -532,6 +551,123 @@ class DefaultDumpParentTests(unittest.TestCase):
                 expected = r'C:\Users\DBA\Documents\myflames dumps' if documents_exist else r'C:\Users\DBA\myflames dumps'
                 self.assertEqual(lc.default_dump_parent(), expected)
                 self.assertEqual(isdir.call_args[0], (r'C:\Users\DBA\Documents',))
+
+
+class ShellPythonScriptTests(unittest.TestCase):
+    """Generated scripts accept data literally, on Windows and POSIX alike."""
+    HOSTILE = ('single\' double" backslash\\ line\nseparator\u2028 nul\x00 '
+               '${not_an_expansion} %s triple\'\'\' triple""" '
+               'astral\U0001f525 "); unexpected_code(); #')
+    WINDOWS_PATH = r'C:\Users\DBA\Documents\myflames dumps\new\tables'
+
+    def execute(self, expression, method):
+        job = lc.LifecycleJob('test', lambda job: None)
+        job.marker = self.HOSTILE + ':'
+        output = io.StringIO()
+        observed, flushed = [], []
+        original_flush = output.flush
+        def flush():
+            flushed.append(output.getvalue())
+            original_flush()
+        def capture(*args):
+            # Cancellation can consume the session marker before work starts.
+            self.assertEqual(output.getvalue(), job.marker + '41\n')
+            self.assertIn(job.marker + '41\n', flushed)
+            observed.append(args)
+        script = lc._shell_script(job, expression)
+        parsed = ast.parse(script, filename='<lifecycle-shell>')
+        compiled = compile(parsed, '<lifecycle-shell>', 'exec')
+        session = types.SimpleNamespace(get_connection_id=lambda: 41)
+        util = types.SimpleNamespace(**{method: capture})
+        with mock.patch('sys.stdout', output), mock.patch.object(output, 'flush', side_effect=flush):
+            exec(compiled, {'session': session, 'util': util})
+        self.assertEqual(len(observed), 1)
+        return observed[0]
+
+    def assert_data_exact(self, actual, expected):
+        self.assertEqual(actual, expected)
+        # A non-BMP value must survive as its original UTF-8 bytes, rather
+        # than the two surrogate characters of a JSON escape pasted in Python.
+        self.assertEqual(json.dumps(actual, ensure_ascii=False, sort_keys=True).encode('utf-8'),
+                         json.dumps(expected, ensure_ascii=False, sort_keys=True).encode('utf-8'))
+
+    def test_dump_scripts_compile_and_preserve_hostile_values_and_options(self):
+        for schemas, tables, method in (([], [], 'dump_instance'),
+                                        ([self.HOSTILE], [], 'dump_schemas'),
+                                        ([self.HOSTILE], [self.HOSTILE, self.WINDOWS_PATH], 'dump_tables')):
+            for dry_run in (False, True):
+                with self.subTest(method=method, dry_run=dry_run):
+                    directory = self.WINDOWS_PATH + self.HOSTILE
+                    request = {'schemas': schemas, 'tables': tables, 'directory': directory, 'threads': 3,
+                               'options': {'structure_only': True, 'triggers': False,
+                                           'max_rate': self.HOSTILE, 'bytes_per_chunk': self.WINDOWS_PATH}}
+                    options = {'threads': 3, 'consistent': True, 'showProgress': True, 'dryRun': dry_run,
+                               'ddlOnly': True, 'triggers': False, 'maxRate': self.HOSTILE,
+                               'bytesPerChunk': self.WINDOWS_PATH}
+                    if tables:
+                        expected = (schemas[0], tables, directory, options)
+                    elif schemas:
+                        expected = (schemas, directory, options)
+                    else:
+                        options['users'] = False
+                        expected = (directory, options)
+                    actual = self.execute(lc._shell_dump_expression(request, dry_run), method)
+                    self.assert_data_exact(actual, expected)
+                    self.assertIs(actual[-1]['dryRun'], dry_run)
+                    self.assertIs(actual[-1]['ddlOnly'], True)
+
+    def test_load_scripts_compile_and_preserve_hostile_values_and_options(self):
+        for existing_objects in ('refuse', 'ignore', 'drop'):
+            for dry_run in (False, True):
+                with self.subTest(existing_objects=existing_objects, dry_run=dry_run):
+                    request = {'directory': self.WINDOWS_PATH + self.HOSTILE, 'threads': 7,
+                               'existing_objects': existing_objects, 'schema': self.HOSTILE,
+                               'progress_file': self.WINDOWS_PATH + self.HOSTILE + '.json'}
+                    options = {'threads': 7, 'dryRun': dry_run, 'showProgress': True, 'loadUsers': False,
+                               'progressFile': request['progress_file']}
+                    if existing_objects != 'refuse':
+                        options['ignoreExistingObjects' if existing_objects == 'ignore' else
+                                'dropExistingObjects'] = True
+                    options['schema'] = self.HOSTILE
+                    actual = self.execute(lc._load_expression(request, dry_run), 'load_dump')
+                    self.assert_data_exact(actual, (request['directory'], options))
+                    self.assertIs(actual[-1]['dryRun'], dry_run)
+                    self.assertIs(actual[-1]['loadUsers'], False)
+
+    def test_tracebacks_report_final_exception_instead_of_source_frames(self):
+        cases = (
+            'mysqlsh.DBError: MySQL Error (1045): Access denied for user sample',
+            'mysqlsh.Error: Shell Error (53000): sample shell error',
+            'mysqlsh.Error: Shell Error: sample shell error',
+            'RuntimeError: An open session is required to perform this operation.',
+            'ValueError: Argument #3: Invalid options: unexpectedOption',
+            'TypeError: Argument #1 is expected to be a string',
+        )
+        for summary in cases:
+            with self.subTest(summary=summary):
+                stderr = ('\x1b[36mNOTE: \x1b[0mdryRun enabled\n'
+                          'Traceback (most recent call last):\n'
+                          '  File "error-handler.py", line 2, in <module>\n'
+                          '    raise RuntimeError("source error text must not win")\n'
+                          'RuntimeError: earlier exception\n\n'
+                          'During handling of the above exception, another exception occurred:\n\n'
+                          'Traceback (most recent call last):\n'
+                          '  File "<string>", line 4, in <module>\n' + summary + '\n'
+                          'Details: additional text belongs to the same exception\n'
+                          'RuntimeError: quoted text within the message must not replace its summary\n\n')
+                self.assertEqual(lc.tool_error_line(stderr), summary)
+
+    def test_redaction_covers_python_unicode_and_json_surrogate_escapes(self):
+        password = 'private-\U0001f525-"-\\-\n'
+        python_text = r'private-\U0001f525-\"-\\-\n'
+        json_text = r'private-\ud83d\udd25-\"-\\-\n'
+        for echoed in (password, python_text, json_text):
+            with self.subTest(echoed=echoed):
+                job = lc.LifecycleJob('test', lambda job: None, {'password': password})
+                job.emit('ValueError: ' + echoed, 'stderr')
+                event = job.snapshot()['events'][-1]['text']
+                self.assertNotIn('private-', event)
+                self.assertIn('[redacted]', event)
 
 
 @unittest.skipIf(os.name == 'nt', 'POSIX executable fixtures; Windows trust tested separately')
@@ -1109,6 +1245,74 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(str(caught.exception),
                          'Tool exited 1: Following schemas were not found: nosuch (ArgumentError)')
 
+    def test_python_shell_errors_keep_codes_categories_and_redaction(self):
+        # The formats are from an offline MySQL Shell 9.6.0 run. The private
+        # executable emits those bytes without importing or connecting a Shell.
+        cases = (
+            ('mysqlsh.DBError: MySQL Error (1045): Access denied', 1045, 'connection', None),
+            ('mysqlsh.DBError: MySQL Error (2003): Cannot connect', 2003, 'connection', None),
+            ('mysqlsh.DBError: MySQL Error (1227): Access denied', 1227, 'operation', 'denied'),
+            ('mysqlsh.DBError: MySQL Error (1317): Query was interrupted', 1317, 'operation', 'interrupted'),
+            ('mysqlsh.Error: Shell Error (53000): Could not dump table', 53000, 'operation', None),
+            ('mysqlsh.Error: Shell Error: Could not dump table', None, 'operation', None),
+            ('RuntimeError: An open session is required to perform this operation.', None, 'operation', None),
+            ('ValueError: Argument #3: Invalid options: unexpectedOption', None, 'operation', None),
+        )
+        for summary, error_code, category, status in cases:
+            with self.subTest(summary=summary):
+                stderr = ('Traceback (most recent call last):\n'
+                          '  File "<string>", line 2, in <module>\n' + summary + '\n')
+                program = self.tool_script('import sys\nsys.stderr.write(%r)\nsys.exit(1)\n' % stderr)
+                codes = []
+                def work(job):
+                    try:
+                        return job.process_tool([program], dict(os.environ))
+                    except lc.LifecycleError as exc:
+                        codes.append(exc.server_error_code)
+                        raise
+                password = str(error_code) if error_code is not None else PASSWORD
+                job = lc.LifecycleJob('dump', work, dict(CONNECTION, password=password))
+                result = job.run()
+                self.assertEqual(codes, [error_code])
+                self.assertEqual(result['state'], 'failed', result)
+                self.assertEqual(result['result']['failure_category'], category)
+                if status is not None:
+                    self.assertEqual(result['result']['status'], status)
+                self.assertNotIn('Traceback', result['error'])
+                self.assertNotIn('File "<string>"', result['error'])
+                if error_code is not None:
+                    self.assertNotIn(password, result['error'])
+                    self.assertIn('[redacted]', result['error'])
+                else:
+                    self.assertEqual(result['error'], 'Tool exited 1: ' + summary)
+
+    def test_python_shell_error_redacts_before_normalizing_whitespace(self):
+        for password in ('two  spaces', 'two\tspaces', 'Error', 'E', 'Traceback'):
+            with self.subTest(password=password):
+                summary = 'mysqlsh.DBError: MySQL Error (2003): Connection failed for value ' + password + '.'
+                stderr = ('Traceback (most recent call last):\n'
+                          '  File "error-handler.py", line 2, in <module>\n' + summary + '\n')
+                program = self.tool_script('import sys\nsys.stderr.write(%r)\nsys.exit(1)\n' % stderr)
+                codes = []
+                def work(job):
+                    try:
+                        return job.process_tool([program], dict(os.environ))
+                    except lc.LifecycleError as exc:
+                        codes.append(exc.server_error_code)
+                        raise
+                job = lc.LifecycleJob('dump', work, dict(CONNECTION, password=password))
+                result = job.run()
+                self.assertEqual(codes, [2003])
+                self.assertEqual(result['state'], 'failed', result)
+                self.assertEqual(result['result']['failure_category'], 'connection')
+                error = result['error']
+                self.assertIn('(2003):', error)
+                self.assertTrue(error.endswith('Connection failed for value [redacted].'), error)
+                self.assertNotIn('error-handler.py', error)
+                self.assertNotIn('most recent call last', error)
+                self.assertNotIn(password, error)
+                self.assertNotIn('two spaces', error)
+
     def test_mariadb_upgrade_target_must_be_a_mariadb_version_not_older(self):
         conn = ReplayConnection(server_variables('mariadb', version='13.0.2-MariaDB-ubu2604-log'))
         for target, words in (('12.3.0', 'is older'), ('8.4.0', 'not an upgrade path'),
@@ -1211,7 +1415,7 @@ class LifecycleTests(unittest.TestCase):
                         self.assertIn('not Command Prompt', joined, op)
                     else:
                         self.assertNotIn('WSL or Git Bash', joined, op)
-        # MySQL Shell expressions are JavaScript calls, not POSIX shell commands.
+        # MySQL Shell expressions are Python calls, not POSIX shell commands.
         shell_out = self.root / 'posix-label-shell'
         shell_out.mkdir()
         shell_dump = lc.prepare_dump(self.conn, CONNECTION, str(shell_out), schemas=['app'],
@@ -1511,14 +1715,42 @@ class LifecycleTests(unittest.TestCase):
 
     def test_shell_dump_dry_run_and_dump_scope_methods(self):
         plan, result = self.make_dump(shell=True)
-        self.assertIn('util.dumpSchemas', plan['commands'][0])
+        self.assertIn('util.dump_schemas', plan['commands'][0])
         self.assertGreaterEqual(len(self.calls()), 3)  # prepare dryRun, recheck dryRun, real dump
         self.assertTrue(Path(self.output, '@.done.json').exists())
         self.assertEqual(result['result']['manifest']['tool']['name'], 'mysqlsh')
-        for schemas, tables, method in (([], [], 'dumpInstance'), (['app'], [], 'dumpSchemas'), (['app'], ['t'], 'dumpTables')):
+        for schemas, tables, method in (([], [], 'dump_instance'), (['app'], [], 'dump_schemas'), (['app'], ['t'], 'dump_tables')):
             req = {'directory': self.output, 'schemas': schemas, 'tables': tables, 'threads': 4}
             self.assertIn('util.' + method, lc._shell_dump_expression(req))
-            self.assertIn('"dryRun": true', lc._shell_dump_expression(req, True))
+            self.assertIn('"dryRun": True', lc._shell_dump_expression(req, True))
+
+    def test_every_lifecycle_shell_invocation_uses_python_mode(self):
+        report = lc.upgrade_check(ReplayConnection(server_variables(version='8.0.36')),
+                                  '8.4.0', CONNECTION, self.tools)
+        self.assertEqual(report['method'], 'mysqlsh')
+        self.make_dump(shell=True)
+        target = self.target()
+        plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.tools)
+        result = lc.restore_job(CONNECTION, plan, True, plan['target'], self.audit(),
+                                factory=lambda **kw: target, start=False).run()
+        self.assertEqual(result['state'], 'done', result)
+        calls = [call for call in self.calls() if call['name'] == 'mysqlsh']
+        scripts = [json.loads(line) for line in (self.bin / 'shell-calls.jsonl').read_text().splitlines()]
+        self.assertEqual(len(calls), len(scripts) + 1, 'upgrade uses command-line integration')
+        self.assertGreaterEqual(scripts.count({'method': 'dump_schemas', 'dryRun': True}), 2)
+        self.assertEqual(scripts.count({'method': 'dump_schemas', 'dryRun': False}), 1)
+        self.assertGreaterEqual(scripts.count({'method': 'load_dump', 'dryRun': True}), 2)
+        self.assertEqual(scripts.count({'method': 'load_dump', 'dryRun': False}), 1)
+        for call in calls:
+            with self.subTest(argv=call['argv']):
+                self.assertEqual(call['argv'].count('--py'), 1)
+                self.assertNotIn('--js', call['argv'])
+                self.assert_secret_transport(call)
+                if '--' in call['argv']:
+                    self.assertLess(call['argv'].index('--py'), call['argv'].index('--'))
+                    self.assertEqual(call['argv'][call['argv'].index('--') + 1:],
+                                     ['util', 'check-for-server-upgrade', '--target-version=8.4.0',
+                                      '--output-format=JSON'])
 
     def test_refuses_overwrite_symlink_and_bad_scope(self):
         Path(self.output).mkdir()
@@ -2610,9 +2842,9 @@ class LifecycleTests(unittest.TestCase):
     def test_dump_dry_run_cannot_create_requested_destination(self):
         destinations = []
         def invoke(job, tool, connection, args, script, **kwargs):
-            expression = next(line for line in script.splitlines() if 'util.dumpSchemas(' in line)
-            args_json = expression.split('util.dumpSchemas(', 1)[1].split(');', 1)[0]
-            unused, destination, options = json.loads('[' + args_json + ']')
+            expression = next(line for line in script.splitlines() if 'util.dump_schemas(' in line)
+            call = ast.parse(expression, mode='eval').body
+            unused, destination, options = [ast.literal_eval(arg) for arg in call.args]
             self.assertTrue(options['dryRun'])
             self.assertNotEqual(destination, self.output)
             os.makedirs(destination)
@@ -2919,8 +3151,9 @@ class LifecycleTests(unittest.TestCase):
         plan = lc.prepare_restore(target, CONNECTION, self.output, tools=self.tools)
         invoke, staged_paths = lc._invoke, []
         def swapped(job, tool, connection, args, script=None, **kwargs):
-            if script and 'util.loadDump' in script and '"dryRun": false' in script:
-                path = json.JSONDecoder().raw_decode(script.split('util.loadDump(', 1)[1])[0]
+            if script and 'util.load_dump' in script and '"dryRun": False' in script:
+                expression = next(line for line in script.splitlines() if 'util.load_dump(' in line)
+                path = ast.literal_eval(ast.parse(expression, mode='eval').body.args[0])
                 staged_paths.append(path)
                 self.assertNotEqual(os.path.realpath(path), os.path.realpath(self.output))
                 Path(self.output, 'app@t.tsv').write_text('replacement')
@@ -3683,9 +3916,7 @@ class LifecycleTests(unittest.TestCase):
                 proc.stdout.close()
 
     def test_shell_marker_ends_its_line_and_colors_are_stripped(self):
-        """mysqlsh print() adds no line break: the marker ran into the next output, the session id was never
-        read (so cancel could not KILL QUERY) and the marker leaked into the log."""
-        seen = []
+        """The Python marker stays on its own line for cancellation and never reaches the log."""
         plan, result = self.make_dump(shell=True)
         texts = [event['text'] for event in result['events']]
         self.assertFalse(any('myflames_job_' in text for text in texts), texts)
@@ -3695,7 +3926,11 @@ class LifecycleTests(unittest.TestCase):
         job = lc.LifecycleJob('test', lambda j: None, CONNECTION)
         job.emit(job.marker + '73')
         self.assertEqual(job.connection_id, 73)
-        self.assertIn('+ "\\n")', lc._shell_script(job, 'util.dumpInstance("/x", {})'))
+        output = io.StringIO()
+        with mock.patch('sys.stdout', output):
+            exec(compile(lc._shell_script(job, 'print("after marker")'), '<marker>', 'exec'),
+                 {'session': types.SimpleNamespace(get_connection_id=lambda: 41)})
+        self.assertEqual(output.getvalue(), job.marker + '41\nafter marker\n')
 
     def test_tools_never_fetch_untrusted_server_public_keys(self):
         for name in ('mysqldump', 'mysqlsh', 'mariadb-dump'):
@@ -4022,10 +4257,10 @@ class ClientToolTrustTests(unittest.TestCase):
                         mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(root / 'etc-mysql')):
                     tool = dict(name='mysqlsh', path=str(binary), version_tuple=version, engine='mysql')
                     job = lc.LifecycleJob('test', lambda j: None, {'host': 'h'})
-                    stdout, stderr = lc._invoke(job, tool, {'host': 'h'}, ['--js', '--', 'util', 'check'])
+                    stdout, stderr = lc._invoke(job, tool, {'host': 'h'}, ['--py', '--', 'util', 'check'])
                     argv = json.loads(stdout)
                     self.assertTrue(argv[0].startswith('--defaults-file='))
-                    self.assertEqual(argv[1:], flags + ['--js', '--', 'util', 'check'])
+                    self.assertEqual(argv[1:], flags + ['--py', '--', 'util', 'check'])
                     self.assertEqual(stderr, '')
             self.assertEqual(lc._shell_plugin_flags({'version': 'mysqlsh Ver 9.6.0'}),
                              ['--disable-plugins', '--disable-builtin-plugins'])
@@ -4049,7 +4284,7 @@ class ClientToolTrustTests(unittest.TestCase):
             binary.chmod(0o700)
             job = lc.LifecycleJob('upgrade_check', lambda j: None, {'host': 'h'})
             tool = dict(name='mysqlsh', path=str(binary), version_tuple=[9, 7, 0], engine='mysql')
-            args = ['--js', '--', 'util', 'check-for-server-upgrade', '--target-version=9.7.0']
+            args = ['--py', '--', 'util', 'check-for-server-upgrade', '--target-version=9.7.0']
             with mock.patch.object(connector, 'MYSQLSH_SYSTEM_CONFIG_DIR', str(root / 'etc-mysql')):
                 stdout, stderr = lc._invoke(job, tool, {'host': 'h'}, args)
             argv = json.loads(stdout)

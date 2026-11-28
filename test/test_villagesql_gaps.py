@@ -693,7 +693,7 @@ class TestLifecycleVillageSchema(unittest.TestCase):
         plan, _catalog, _prepared, argv = self.full_instance_dump("8.4.11", False)
         self.assertEqual(argv[0][-1], "--all-databases")
         plan, _catalog, _prepared, _argv = self.full_instance_dump("8.4.11", True)
-        self.assertIn("util.dumpInstance(", plan["commands"][0])
+        self.assertIn("util.dump_instance(", plan["commands"][0])
         self.assertNotIn("excludeSchemas", plan["commands"][0])
 
     def test_full_instance_dump_keeps_all_databases_and_uses_mysqldump(self):

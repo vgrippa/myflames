@@ -1,4 +1,5 @@
 """Dump option validation and native-tool mapping, without servers or user data."""
+import ast
 import copy
 import json
 import os
@@ -37,7 +38,7 @@ class DumpOptionsTests(unittest.TestCase):
                   'routines': False, 'events': True}
         self.request['options'] = options.normalize(values, self.shell)
         expression = lifecycle._shell_dump_expression(self.request)
-        args = json.loads('[' + expression[len('util.dumpSchemas('):-1] + ']')
+        args = [ast.literal_eval(arg) for arg in ast.parse(expression, mode="eval").body.args]
         self.assertEqual(args[-1]['compression'], 'zstd;level=8')
         self.assertEqual(args[-1]['bytesPerChunk'], '128k')
         self.assertEqual(args[-1]['maxRate'], '20M')
@@ -72,16 +73,16 @@ class DumpOptionsTests(unittest.TestCase):
             options.normalize({'structure_only': 1}, self.sql)
         plain = {'schemas': ['app'], 'tables': [], 'directory': '/tmp/d', 'threads': 4}
         expression = lifecycle._shell_dump_expression(plain)
-        args = json.loads('[' + expression[len('util.dumpSchemas('):-1] + ']')
+        args = [ast.literal_eval(arg) for arg in ast.parse(expression, mode="eval").body.args]
         self.assertNotIn('ddlOnly', args[-1])
         plain['options'] = options.normalize({'structure_only': True}, self.shell)
         expression = lifecycle._shell_dump_expression(plain)
-        args = json.loads('[' + expression[len('util.dumpSchemas('):-1] + ']')
+        args = [ast.literal_eval(arg) for arg in ast.parse(expression, mode="eval").body.args]
         self.assertIs(args[-1].get('ddlOnly'), True)
-        # ddlOnly is valid for every Shell scope, including dumpInstance.
+        # ddlOnly is valid for every Shell scope, including dump_instance.
         instance = {'schemas': [], 'tables': [], 'directory': '/tmp/d', 'threads': 4,
                     'options': {'structure_only': True}}
-        self.assertIn('"ddlOnly": true', lifecycle._shell_dump_expression(instance))
+        self.assertIn('"ddlOnly": True', lifecycle._shell_dump_expression(instance))
 
     def test_unknown_keys_and_wrong_types_refuse(self):
         for values in ({'raw_flags': '--exec evil'}, {'threads': 3}, {'triggers': 1},
