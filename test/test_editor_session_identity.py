@@ -130,7 +130,9 @@ class EditorIdentityTests(unittest.TestCase):
             '"11.4.13-MariaDB-fake" if ENGINE == "mariadb" else "8.4.11-fake"',
             '"13.0.2-MariaDB"' if engine == 'mariadb' else '"8.4.7-7"'))
         variables = [['wsrep_on', 'OFF'], ['wsrep_provider', '/usr/lib/galera/libgalera_smm.so']]
-        if engine != 'mariadb':
+        if engine == 'mariadb':
+            variables.append(['server_uid', 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='])
+        else:
             variables.append(['server_uuid', '11111111-2222-3333-4444-555555555555'])
         if engine == 'pxc':
             self.rewrite_client(lambda text: text.replace(
@@ -1338,3 +1340,34 @@ def one_shot(sql):
                 reader.join(5)
                 self.assertFalse(reader.is_alive(), 'the closed client reader did not exit')
         self.assertFalse((self.state / 'kills.log').exists())
+
+    def _run_mariadb_server_uid_case(self, observed_uid):
+        self.maria_client(wsrep=False)
+        self.inject_answers('''        if upper.startswith("SHOW GLOBAL VARIABLES WHERE "):
+            self.result(statement, ["Variable_name", "Value"], [["wsrep_on", "OFF"], ["wsrep_provider", "none"], ["server_uid", %r]])
+            return
+''' % observed_uid)
+        self.assertEqual(self.run_sql('SELECT 7')['status'], 'complete')
+        session = self.registry.get('tab1')
+        packets = [p[2] for p in self.packets() if 'SHOW GLOBAL VARIABLES' in p[2]]
+        self.assertEqual(len(packets), 1)
+        self.assertIn("'server_uid'", packets[0])
+        write_guard = session._write_session_guard()[0]
+        kill_guard = session._kill_statement_guard(
+            dbops.target_session_guard(session.engine, session._kill_identity), session.connection_id)[0]
+        self.assertIn("@@global.version <=>", write_guard)
+        self.assertIn("@@global.version <=>", kill_guard)
+        return session, write_guard, kill_guard
+
+    def test_mariadb_server_uid_bound_in_startup_and_enforced_in_guards(self):
+        uid = 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='
+        session, write_guard, kill_guard = self._run_mariadb_server_uid_case(uid)
+        self.assertEqual(session._kill_identity.get('server_uid'), uid)
+        self.assertIn("BINARY @@global.server_uid <=> BINARY '%s'" % uid, write_guard)
+        self.assertIn("BINARY @@global.server_uid <=> BINARY '%s'" % uid, kill_guard)
+
+    def test_mariadb_unknown_server_uid_omitted_from_identity_and_guards(self):
+        session, write_guard, kill_guard = self._run_mariadb_server_uid_case('unknown')
+        self.assertNotIn('server_uid', session._kill_identity)
+        self.assertNotIn('server_uid', write_guard)
+        self.assertNotIn('server_uid', kill_guard)

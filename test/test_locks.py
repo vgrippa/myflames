@@ -82,7 +82,7 @@ class FakeConn(object):
             if callable(raw):
                 raw = raw(sql)
             keys = (('server_id', 'hostname', 'version', 'port', 'wsrep_on', 'wsrep_gcomm_uuid', 'wsrep_node_name',
-                     'wsrep_provider', 'wsrep_connected', 'wsrep_cluster_size')
+                     'wsrep_provider', 'wsrep_connected', 'wsrep_cluster_size', 'server_uid')
                     if maria else ('server_uuid', 'wsrep_on', 'wsrep_gcomm_uuid'))
             values = dict(zip(keys, raw.strip().split('\t')))
             values.update(getattr(self, 'evidence_values', {}))
@@ -186,7 +186,8 @@ def fake(version, ps_on=True, **answers):
     responses = [(VERSION_SQL, batch([[version, 1 if ps_on else 0]])),
                  ('SELECT @@server_uuid', batch([['11111111-2222-3333-4444-555555555555', 'OFF', None]])),
                  ('SELECT @@global.server_id, @@hostname, @@version, @@port',
-                  batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None, 'none', 'OFF', '0']]))]
+                  batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None, 'none', 'OFF', '0',
+                          'AQEBAQEBAQEBAQEBAQEBAQEBAQE=']]))]
     for key, pattern in PATTERNS:
         if key in answers:
             value = answers.pop(key)
@@ -534,7 +535,8 @@ class TestVersions(LockCase):
     def test_report_captures_server_identity_once_for_both_engines(self):
         for conn, expected in (
                 (empty_mysql(), {'server_uuid': '11111111-2222-3333-4444-555555555555'}),
-                (empty_mariadb(), {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})):
+                (empty_mariadb(), {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB',
+                                   'port': '3306', 'server_uid': 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='})):
             with self.subTest(expected=expected):
                 self.assertEqual(self.report(conn, identity=True)['server_identity'], expected)
                 self.assertEqual(sum('SELECT @@server_' in sql or 'SELECT @@global.server_id' in sql
@@ -1654,7 +1656,14 @@ class TestLocksAPI(LockCase):
                     with self.assertRaises((ValueError, ConnectorError)) as caught:
                         ui.api_response('/api/live/locks', {'connection': self.connection()}, workspace=object())
                 self.assertNotIn(PASSWORD, str(caught.exception))
-                self.assertIn('[redacted]', str(caught.exception))
+                if isinstance(error, ConnectorError) and 'ERROR ' in str(error):
+                    self.assertIn('[redacted]', str(caught.exception))
+                else:
+                    # Evidence binding hides malformed/code-free diagnostics
+                    # entirely instead of including a redacted exception.
+                    self.assertEqual(str(caught.exception),
+                                     'The identity check could not run: Review evidence did not come from one '
+                                     'identified server. Nothing was sent. Refresh and review again.')
 
     def test_route_is_allowlisted_and_takes_saved_profiles(self):
         self.assertIn('"/api/live/locks"', inspect.getsource(ui.WorkspaceHandler.do_POST))
@@ -2225,7 +2234,8 @@ def bound_kill_expect(conn, expect=None, connection=None, safety=None):
     if connection is None:
         connection = {key: getattr(conn, key, None) for key in ('host', 'port', 'user', 'ssl_mode', 'ssl_ca')}
     version = conn.responses[0][1]
-    identity = ({'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'}
+    identity = ({'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306',
+                 'server_uid': 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='}
                 if 'MariaDB' in version else {'server_uuid': '11111111-2222-3333-4444-555555555555'})
     return dict(K_EXPECT if expect is None else expect,
                 connection_identity=dbops.connection_identity(connection, safety), server_identity=identity)
@@ -2295,10 +2305,11 @@ def mariadb_provider_scenario(**overrides):
     values = {'server_id': '1', 'hostname': 'server-one', 'version': '13.0.2-MariaDB',
               'port': '3306', 'wsrep_on': 'OFF', 'wsrep_gcomm_uuid': None,
               'wsrep_node_name': None, 'wsrep_provider': '/usr/lib/galera/libgalera_smm.so',
-              'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}
+              'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0',
+              'server_uid': 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='}
     values.update(overrides)
     keys = ('server_id', 'hostname', 'version', 'port', 'wsrep_on', 'wsrep_gcomm_uuid',
-            'wsrep_node_name', 'wsrep_provider', 'wsrep_connected', 'wsrep_cluster_size')
+            'wsrep_node_name', 'wsrep_provider', 'wsrep_connected', 'wsrep_cluster_size', 'server_uid')
     scenario = KillScenario()
     scenario.conn.version = values['version']
     scenario.conn.responses[0] = (VERSION_SQL, batch([[values['version'], 1]]))
@@ -2311,7 +2322,8 @@ def mariadb_provider_scenario(**overrides):
 
 def disconnected_provider_identity():
     return {'server_id': '1', 'hostname': 'server-one', 'version': '13.0.2-MariaDB',
-            'port': '3306', 'wsrep_on': 'OFF', 'wsrep_disconnected_provider': True}
+            'port': '3306', 'server_uid': 'AQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+            'wsrep_on': 'OFF', 'wsrep_disconnected_provider': True}
 
 
 class TestKillGaleraIdentity(LockCase):
@@ -2323,6 +2335,57 @@ class TestKillGaleraIdentity(LockCase):
         self.assertIn("WHERE VARIABLE_NAME = 'wsrep_connected') <=> 'OFF')", guard)
         self.assertIn("WHERE VARIABLE_NAME = 'wsrep_cluster_size') <=> '0')", guard)
         self.assertNotIn("VARIABLE_NAME = 'wsrep_gcomm_uuid'", guard)
+
+    def test_json_numeric_disconnected_marker_refuses_before_kill(self):
+        for marker in (1, 1.0):
+            with self.subTest(marker=marker, kind=type(marker).__name__):
+                scenario = mariadb_provider_scenario()
+                expect = self.expect(scenario)
+                expect['server_identity']['wsrep_disconnected_provider'] = marker
+                expect = json.loads(json.dumps(expect))
+                result = locks.kill_session(scenario.conn, 41, expect=expect,
+                                            confirmed=True, settle_s=0)
+                self.assertEqual((result['status'], result.get('outcome'), result.get('sent')),
+                                 ('refused', 'identity_unavailable', []))
+                self.assertEqual(scenario.kills(), [])
+                self.assertFalse(scenario.killed)
+
+    def test_changed_disconnected_identity_audits_no_unverified_guard(self):
+        from myflames import dbops
+        from myflames.workspace_store import WorkspaceStore
+        scenario = mariadb_provider_scenario()
+        expect = self.expect(scenario)
+        expect['server_identity']['hostname'] = 'different-server'
+        store = WorkspaceStore()
+        audit = dbops.AuditTrail(store, 'kill', 'ui')
+        result = locks.kill_session(scenario.conn, 41, expect=expect,
+                                    confirmed=True, audit=audit, settle_s=0)
+        self.assertEqual((result['status'], scenario.kills()), ('refused', []))
+        self.assertIn('server identity', result['message'])
+        [record] = store.audit_records()
+        self.assertEqual((record['id'], record['status'], record['outcome']),
+                         (result['audit_id'], 'refused', 'identity'))
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+
+    def test_reviewed_identity_types_are_checked_before_target_reads(self):
+        # Synthetic typed metadata exercises the comparison independently of
+        # the SQL guard's field validation. The fresh batch context is trusted;
+        # the JSON review must preserve every field's type, even unused ones.
+        for current, reviewed in ((True, 1), (1, '1'), (1, 1.0)):
+            with self.subTest(current=current, reviewed=reviewed, kind=type(reviewed).__name__):
+                scenario = KillScenario()
+                context, identity = locks._kill_context(scenario.conn)
+                identity['version'] = current
+                expect = bound_kill_expect(scenario.conn)
+                expect['server_identity'] = dict(identity, version=reviewed)
+                expect = json.loads(json.dumps(expect))
+                result = locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True,
+                                            settle_s=0, _batch_context=(context, identity))
+                self.assertEqual(result['status'], 'refused')
+                self.assertIn('server identity', result['message'])
+                self.assertEqual(scenario.conn.sql('PROCESSLIST_ID = 41'), [],
+                                 'a type-changed review must fail the initial identity comparison')
+                self.assertEqual(scenario.kills(), [])
 
     def test_mariadb_disconnected_provider_binds_target_and_kill_in_same_packet(self):
         from myflames import dbops
@@ -2412,6 +2475,242 @@ class TestKillGaleraIdentity(LockCase):
                 identity = locks._identity_row(keys, ['11111111-2222-3333-4444-555555555555', 'ON',
                                                      'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'])
                 self.assertNotIn('wsrep_disconnected_provider', identity)
+
+    def test_unsent_refusals_after_guard_build_audit_only_proposed_kill_statement(self):
+        from myflames import dbops
+        from myflames.workspace_store import WorkspaceStore
+
+        def run_case(setup_fn):
+            with tempfile.TemporaryDirectory() as home:
+                store = WorkspaceStore(os.path.join(home, 'workspace.db'))
+                audit = dbops.AuditTrail(store, 'kill', 'ui')
+                scenario = KillScenario()
+                expect = bound_kill_expect(scenario.conn)
+                extra = setup_fn(scenario, expect)
+                result = locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True,
+                                            audit=audit, settle_s=0, **extra)
+                return result, store.audit_records()[0], scenario
+
+        # 1. Packet framing error after guard is built.
+        with mock.patch.object(dbops, 'target_guarded_script', side_effect=ValueError('bad frame')):
+            result, record, scenario = run_case(lambda s, e: {})
+        self.assertEqual((result['status'], result['outcome'], scenario.kills()), ('refused', 'identity_unavailable', []))
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+
+        # 2. Target evidence failure (plain ConnectorError).
+        def raise_denied(sql):
+            raise ConnectorError('ERROR 1142 (42000): denied')
+        result, record, scenario = run_case(lambda s, e: (
+            setattr(s.conn, 'responses', [(k, raise_denied if k == ', CONNECTION_ID()' else v)
+                                          for k, v in s.conn.responses]) or {}))
+        self.assertEqual((result['status'], result['outcome'], scenario.kills()), ('refused', 'identity_unavailable', []))
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+
+        # 3. Target row missing server identity (target['server_identity'] == {}).
+        def missing_target_id(s, e):
+            s.conn.responses = [(k, (lambda sql: batch([K_TARGET + [None, 'OFF', None]]))
+                                 if k == ', CONNECTION_ID()' else v) for k, v in s.conn.responses]
+            return {}
+        result, record, scenario = run_case(missing_target_id)
+        self.assertEqual((result['status'], result['outcome'], scenario.kills()), ('refused', 'identity_unavailable', []))
+        self.assertIn('no complete server identity', result['message'])
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+
+        # 4. Target row server identity from another server.
+        def other_target_id(s, e):
+            def swap(sql):
+                s.conn.evidence_values = {'server_uuid': '11111111-2222-3333-4444-555555555555', 'version': '8.4.6'}
+                s.conn.responses = [(k, batch([['aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'OFF', None]])
+                                     if k == 'SELECT @@server_uuid' else v) for k, v in s.conn.responses]
+                return s.read_target(sql)
+            s.conn.responses = [(k, swap if k == ', CONNECTION_ID()' else v) for k, v in s.conn.responses]
+            return {}
+        result, record, scenario = run_case(other_target_id)
+        self.assertEqual((result['status'], record['outcome'], scenario.kills()), ('refused', 'identity', []))
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+
+        # 5. before_send policy refusal.
+        result, record, scenario = run_case(lambda s, e: {'before_send': lambda: 'Policy refused.'})
+        self.assertEqual((result['status'], record['outcome'], scenario.kills()), ('refused', 'policy', []))
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+
+        # 6. Only audit.attempt before sending records the guarded script.
+        result, record, scenario = run_case(lambda s, e: {})
+        self.assertEqual(result['status'], 'killed')
+        self.assertEqual(len(record['statements']), 2)
+        self.assertTrue(record['statements'][0].startswith('SET @myflames_target = '))
+        self.assertEqual(record['statements'][1], KILL_TAG + 'KILL CONNECTION 41')
+
+    def test_valid_mariadb_waiver_routed_to_mysql_refuses_as_changed_identity(self):
+        from myflames import dbops
+        from myflames.workspace_store import WorkspaceStore
+        scenario = KillScenario()  # MySQL 8.4
+        expect = dict(bound_kill_expect(scenario.conn), server_identity=disconnected_provider_identity())
+        with tempfile.TemporaryDirectory() as home:
+            store = WorkspaceStore(os.path.join(home, 'workspace.db'))
+            audit = dbops.AuditTrail(store, 'kill', 'ui')
+            result = locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True, audit=audit, settle_s=0)
+            [record] = store.audit_records()
+        self.assertEqual((result['status'], scenario.kills()), ('refused', []))
+        self.assertNotEqual(result.get('outcome'), 'identity_unavailable')
+        self.assertNotIn('UUID', result['message'])
+        self.assertIn('missing or changed after confirmation', result['message'])
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'identity'))
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+
+    def test_invalid_waiver_markers_still_refuse_as_identity_unavailable(self):
+        from myflames import dbops
+        from myflames.workspace_store import WorkspaceStore
+        for marker in (1, 1.0, 'true', False, None):
+            with self.subTest(marker=marker, kind=type(marker).__name__), tempfile.TemporaryDirectory() as home:
+                scenario = mariadb_provider_scenario()
+                expect = self.expect(scenario)
+                expect['server_identity']['wsrep_disconnected_provider'] = marker
+                store = WorkspaceStore(os.path.join(home, 'workspace.db'))
+                audit = dbops.AuditTrail(store, 'kill', 'ui')
+                result = locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True,
+                                            audit=audit, settle_s=0)
+                self.assertEqual((result['status'], result.get('outcome'), scenario.kills()),
+                                 ('refused', 'identity_unavailable', []))
+                self.assertIn('disconnected-provider waiver marker is invalid', result['message'])
+                [record] = store.audit_records()
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_unavailable'))
+                self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+
+    def test_target_evidence_unavailable_passes_reason_through_without_double_wrapping(self):
+        from myflames import dbops
+        from myflames.workspace_store import WorkspaceStore
+        from _reviewed_replay import evidence_body, evidence_output
+        scenario = KillScenario()
+        scenario.conn.password = PASSWORD
+        expect = bound_kill_expect(scenario.conn)
+        original = scenario.conn.run
+
+        def route_trx(sql, extra_flags=None, **kwargs):
+            body, marker = evidence_body(sql)
+            if marker is None:
+                return original(sql, extra_flags=extra_flags, **kwargs)
+            node = {'server_uuid': '11111111-2222-3333-4444-555555555555', 'version': '8.4.6'}
+            if 'INNODB_TRX' in body:
+                node['server_uuid'] = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+            return evidence_output(original(body, extra_flags=extra_flags, **kwargs), marker, node)
+
+        scenario.conn.run = route_trx
+        with tempfile.TemporaryDirectory() as home:
+            store = WorkspaceStore(os.path.join(home, 'workspace.db'))
+            audit = dbops.AuditTrail(store, 'kill', 'ui')
+            audit.password = 'audit-secret'
+            result = locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True, audit=audit, settle_s=0)
+            [record] = store.audit_records()
+        self.assertEqual((result['status'], result['outcome'], scenario.kills()),
+                         ('refused', 'identity_unavailable', []))
+        self.assertEqual(result['message'].count('The identity check could not run:'), 1, result['message'])
+        self.assertEqual(result['message'].count('Nothing was sent.'), 1, result['message'])
+        self.assertEqual(record['message'], result['message'])
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+        # Plain ConnectorError without identity_outcome keeps its wrapper.
+        def raise_secret_denied(sql):
+            raise ConnectorError('ERROR 1142 (42000): denied for ' + PASSWORD)
+        scenario2 = KillScenario()
+        scenario2.conn.password = PASSWORD
+        scenario2.conn.responses = [(k, raise_secret_denied if k == ', CONNECTION_ID()' else v)
+                                    for k, v in scenario2.conn.responses]
+        res2 = locks.kill_session(scenario2.conn, 41, expect=bound_kill_expect(scenario2.conn),
+                                  confirmed=True, settle_s=0)
+        self.assertEqual(res2['outcome'], 'identity_unavailable')
+        self.assertEqual(res2['message'],
+                         'The identity check could not run: ERROR 1142 (42000) at line 2: denied for [redacted]. '
+                         'Nothing was sent. Refresh and review again.')
+
+    def test_kill_context_evidence_unavailable_passes_reason_through_without_double_wrapping(self):
+        from myflames import dbops
+        from myflames.workspace_store import WorkspaceStore
+        from _reviewed_replay import evidence_body, evidence_output
+        scenario = KillScenario()
+        scenario.conn.password = PASSWORD
+        expect = bound_kill_expect(scenario.conn)
+        original = scenario.conn.run
+
+        def route_identity(sql, extra_flags=None, **kwargs):
+            body, marker = evidence_body(sql)
+            if marker is None:
+                return original(sql, extra_flags=extra_flags, **kwargs)
+            node = {'server_uuid': '11111111-2222-3333-4444-555555555555', 'version': '8.4.6'}
+            if 'SELECT @@server_uuid' in body:
+                node['server_uuid'] = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+            return evidence_output(original(body, extra_flags=extra_flags, **kwargs), marker, node)
+
+        scenario.conn.run = route_identity
+        evidence_conn = dbops.TargetEvidenceConnection(scenario.conn)
+        with tempfile.TemporaryDirectory() as home:
+            store = WorkspaceStore(os.path.join(home, 'workspace.db'))
+            audit = dbops.AuditTrail(store, 'kill', 'ui')
+            result = locks.kill_session(evidence_conn, 41, expect=expect, confirmed=True, audit=audit, settle_s=0)
+            [record] = store.audit_records()
+        self.assertEqual((result['status'], result['outcome'], result['sent'], scenario.kills()),
+                         ('refused', 'identity_unavailable', [], []))
+        self.assertEqual(result['message'].count('The identity check could not run:'), 1, result['message'])
+        self.assertEqual(result['message'].count('Nothing was sent.'), 1, result['message'])
+        self.assertEqual(record['message'], result['message'])
+        self.assertEqual(record['outcome'], 'identity_unavailable')
+        self.assertEqual(record['statements'], [KILL_TAG + 'KILL CONNECTION 41'])
+        # Plain ConnectorError from _kill_context without identity_outcome keeps its wrapper.
+        def raise_secret_denied(sql):
+            raise ConnectorError('ERROR 1142 (42000): denied for ' + PASSWORD)
+        scenario2 = KillScenario()
+        scenario2.conn.password = PASSWORD
+        scenario2.conn.responses = [(k, raise_secret_denied if k == 'SELECT @@server_uuid' else v)
+                                    for k, v in scenario2.conn.responses]
+        res2 = locks.kill_session(scenario2.conn, 41, expect=bound_kill_expect(scenario2.conn),
+                                  confirmed=True, settle_s=0)
+        self.assertEqual(res2['outcome'], 'identity_unavailable')
+        self.assertEqual(res2['message'],
+                         'The identity check could not run: ERROR 1142 (42000): denied for [redacted]. '
+                         'Nothing was sent. Refresh and review again.')
+
+    def test_mariadb_projection_carries_valid_server_uid_and_refuses_mismatch(self):
+        from myflames import dbops
+        uid_a = 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='
+        uid_b = 'AgICAgICAgICAgICAgICAgICAgI='
+        keys_ma, proj_ma = locks._identity_projection('mariadb')
+        keys_my, proj_my = locks._identity_projection('mysql')
+        self.assertIn('server_uid', keys_ma)
+        self.assertIn("'server_uid'", proj_ma)
+        self.assertNotIn('server_uid', keys_my)
+        self.assertNotIn('server_uid', proj_my)
+
+        base_values = {'server_id': '1', 'hostname': 'server-one', 'version': '11.8.9-MariaDB', 'port': '3306',
+                       'wsrep_on': 'OFF', 'wsrep_gcomm_uuid': None, 'wsrep_node_name': None,
+                       'wsrep_provider': 'none', 'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}
+        row_uid = locks._identity_row(keys_ma, [dict(base_values, server_uid=uid_a).get(k) for k in keys_ma])
+        self.assertEqual(row_uid.get('server_uid'), uid_a)
+        for missing_uid in ('unknown', None, ''):
+            with self.subTest(missing_uid=missing_uid):
+                row_no_uid = locks._identity_row(keys_ma, [dict(base_values, server_uid=missing_uid).get(k) for k in keys_ma])
+                self.assertNotIn('server_uid', row_no_uid)
+
+        for reviewed_uid, live_uid in ((uid_a, uid_b), (uid_a, 'unknown'), ('unknown', uid_a)):
+            with self.subTest(reviewed_uid=reviewed_uid, live_uid=live_uid), tempfile.TemporaryDirectory() as home:
+                from myflames.workspace_store import WorkspaceStore
+                scenario = mariadb_provider_scenario(wsrep_on='OFF', provider='none', connected='OFF', size='0',
+                                                     node_uuid=None)
+                scenario.conn.responses = [
+                    (VERSION_SQL if k == VERSION_SQL else k,
+                     batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None, 'none', 'OFF', '0', live_uid]])
+                     if '@@global.server_id' in k else v)
+                    for k, v in scenario.conn.responses]
+                expect = bound_kill_expect(scenario.conn)
+                if reviewed_uid == 'unknown':
+                    expect['server_identity'].pop('server_uid', None)
+                else:
+                    expect['server_identity']['server_uid'] = reviewed_uid
+                store = WorkspaceStore(os.path.join(home, 'workspace.db'))
+                audit = dbops.AuditTrail(store, 'kill', 'ui')
+                result = locks.kill_session(scenario.conn, 41, expect=expect, confirmed=True, audit=audit, settle_s=0)
+                self.assertEqual((result['status'], scenario.kills()), ('refused', []))
+                self.assertIn('missing or changed after confirmation', result['message'])
+                [record] = store.audit_records()
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'identity'))
 
 
 class TestKillSession(LockCase):
@@ -3218,7 +3517,8 @@ class TestKillAudit(LockCase):
                                     confirmed=True, audit=self.trail(), settle_s=0)
         self.assertEqual((result['status'], scenario.kills()), ('killed', [KILL_TAG + 'KILL CONNECTION 41']))
         self.assertEqual(self.records()[0]['target']['server_identity'],
-                         {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})
+                         {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306',
+                          'server_uid': 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='})
 
     def test_identity_read_failure_refuses_and_audits_without_sending(self):
         for engine in ('mysql', 'mariadb'):

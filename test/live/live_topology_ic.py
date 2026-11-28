@@ -22,6 +22,7 @@ Run: scripts/live-tests.sh topology   (or scripts/live-tests.sh ic)
 """
 import os
 import sys
+import time
 import unittest
 import uuid
 
@@ -256,7 +257,18 @@ class TopologyICTest(unittest.TestCase):
                          % (sorted(missing), sorted(targets)))
 
     def test_04_members(self):
-        report = self.read_section("members")
+        # live_writes writes to this cluster in a parallel lane, so a
+        # secondary can be a transaction behind at the moment of one read.
+        # Read again (at most 30 s) until every direct member reports 0
+        # behind; the assertions below check the last read either way.
+        deadline = time.monotonic() + 30
+        while True:
+            report = self.read_section("members")
+            by_id = {m["profile_id"]: m for m in report.get("members") or ()}
+            values = [((by_id.get(pid) or {}).get("behind") or {}).get("value") for pid in self.direct_ids()]
+            if all(v == 0 and not isinstance(v, bool) for v in values) or time.monotonic() >= deadline:
+                break
+            time.sleep(1)
         summary = report.get("summary") or {}
         self.assertEqual(summary.get("failed"), 0, redact(summary))
         self.assertEqual(summary.get("not_reached"), 0, redact(summary))

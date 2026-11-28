@@ -42,12 +42,13 @@ class ReplayConn(object):
         if 'mariadb' not in version.lower():
             self.evidence_values['server_uuid'] = UUID
         else:
-            self.evidence_values.update(wsrep_connected='OFF', wsrep_cluster_size='0')
+            self.evidence_values.update(wsrep_connected='OFF', wsrep_cluster_size='0',
+                                        server_uid='AQEBAQEBAQEBAQEBAQEBAQEBAQE=')
         for call in self.answers.values():
             for line in call.get('output', '').splitlines():
                 if '\t' in line:
                     key, value = line.split('\t', 1)
-                    if key in ('server_id', 'hostname', 'port', 'server_uuid'):
+                    if key in ('server_id', 'hostname', 'port', 'server_uuid', 'server_uid'):
                         self.evidence_values[key] = value
         self.sent = []
         self.wire = []

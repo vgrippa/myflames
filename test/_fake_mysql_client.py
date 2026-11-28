@@ -193,9 +193,14 @@ class Client(object):
                                             "Lost connection to MySQL server during query'" % line)
             return
         upper = text.upper()
-        if upper == "SHOW GLOBAL VARIABLES WHERE VARIABLE_NAME IN ('SERVER_UUID', 'WSREP_ON', 'WSREP_PROVIDER')":
-            rows = ([["server_uuid", getattr(self, "route_uuid", "11111111-2222-3333-4444-555555555555")]] if ENGINE == "mysql" else
-                    [["wsrep_on", "OFF"]])
+        if upper == "SHOW GLOBAL VARIABLES WHERE VARIABLE_NAME IN ('SERVER_UUID', 'SERVER_UID', 'WSREP_ON', 'WSREP_PROVIDER')":
+            if ENGINE == "mysql":
+                rows = [["server_uuid", getattr(self, "route_uuid", "11111111-2222-3333-4444-555555555555")]]
+            else:
+                rows = [["wsrep_on", "OFF"]]
+                uid = getattr(self, "route_uid", "AQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+                if uid is not None:
+                    rows.append(["server_uid", uid])
             self.result(statement, ["Variable_name", "Value"], rows)
             return
         if upper == "SHOW GLOBAL STATUS WHERE VARIABLE_NAME = 'WSREP_GCOMM_UUID'":

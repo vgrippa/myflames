@@ -265,7 +265,7 @@ class EvidenceTests(unittest.TestCase):
                     scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
                     scenario.conn.responses[2] = (scenario.conn.responses[2][0],
                         batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'ON', UUID, None,
-                                PROVIDER, 'ON', '3']]))
+                                PROVIDER, 'ON', '3', 'AQEBAQEBAQEBAQEBAQEBAQEBAQE=']]))
                 expected = bound_kill_expect(scenario.conn)
                 key = 'wsrep_gcomm_uuid' if galera else 'server_uuid'
                 expected['server_identity'][key] = OTHER_UUID

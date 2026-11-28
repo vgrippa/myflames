@@ -2185,6 +2185,7 @@ READ_ONLY_SESSION_GUARD = ("SET SESSION TRANSACTION READ ONLY",)
 # The same UUID grammar used for reviewed Cluster and replication actions.
 _TARGET_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _TARGET_NAME = re.compile(r"[A-Za-z0-9_.:-]{1,255}")
+_TARGET_UID = re.compile(r"[A-Za-z0-9+/=_-]{1,64}")
 _TARGET_ERROR = re.compile(r"^(?:(?:mysql client|mysqlsh) exited \d+:\s*)?ERROR\s+(\d+)"
                            r"(?:\s+\([^\r\n)]*\))?\s+at line (\d+):", re.M)
 TARGET_IDENTITY_MISMATCH = ("The server answering this connection is not the one you reviewed. Nothing was sent. "
@@ -2213,18 +2214,40 @@ def strip_target_guard_markers(text, markers=()):
     return "\n".join(row for row in text.split("\n") if row not in private)
 
 
+_ECHO_SEPARATOR = re.compile(r"^(?:(?:mysql client|mysqlsh) exited -?\d+:[ \t]*)?(--------------)$", re.M)
+
+
+def _normalize_error_text(text):
+    return (text or "").replace("\r\n", "\n")
+
+
+def _without_echo(text):
+    """Normalize CRLF to LF and drop any echoed query through its last closing separator.
+
+    Unbalanced separators indicate an unclosed (or ambiguous) echo: drop
+    everything from the first opening separator on so no partial SQL or
+    embedded diagnostic-looking line survives.
+    """
+    text = _normalize_error_text(text)
+    matches = list(_ECHO_SEPARATOR.finditer(text))
+    if not matches:
+        return text
+    if len(matches) % 2:
+        return text[:matches[0].start(1)].rstrip()
+    return text[matches[-1].end():].lstrip("\n")
+
+
 def _target_error_match(text):
     # MariaDB can echo the entire query before its diagnostic. A newline in
     # a quoted value may itself look like ERROR ... at line ...; only search
     # after the client's closing echo separator in that case.
-    boundary = text.rfind("\n--------------\n")
-    return _TARGET_ERROR.search(text, boundary + len("\n--------------\n") if boundary >= 0 else 0)
+    return _TARGET_ERROR.search(_without_echo(text))
 
 
 def target_error_text(exc):
     """The diagnostic without echoed SQL or private acknowledgement names."""
-    text = str(exc)
-    match = _target_error_match(text)
+    text = _without_echo(str(exc))
+    match = _TARGET_ERROR.search(text)
     if match:
         text = text[match.start():]
     text = re.sub(r"myflames_guard_ok_[0-9a-f]{32}_[0-9]+", "[identity acknowledgement]", text)
@@ -2232,12 +2255,26 @@ def target_error_text(exc):
 
 
 def _evidence_error_text(exc, password=None):
-    """Keep one real diagnostic line, without the client's SQL echo."""
-    match = re.search(r"^(?:(?:mysql client|mysqlsh) exited \d+:\s*)?(ERROR\s+\d+\b[^\r\n]*)",
-                      target_error_text(exc), re.M)
-    if match is None:
-        return ""
-    detail = re.split(r"\bnear\s+['\"`]", match.group(1), maxsplit=1, flags=re.I)[0].rstrip()
+    """Keep app-built transport details or one server diagnostic, never SQL."""
+    from .ssh_tunnel import TunnelError
+    if isinstance(exc, TunnelError):
+        # SSH explanations never need evidence SQL. The generic SSH failure
+        # can include a stderr line, so discard any echoed private packet.
+        detail = str(exc)
+        if re.search(r"myflames_(?:evidence|guard_ok)_|(?:^|\r?\n)--------------(?:\r?\n|$)", detail):
+            detail = ""
+    else:
+        # The connector appends the query after the timeout duration. Keep
+        # only its anchored numeric clause, not SQL or arbitrary stderr.
+        timeout = re.match(r"Query timed out after [0-9]+(?:\.[0-9]+)?s\b", str(exc))
+        if timeout:
+            detail = timeout.group()
+        else:
+            match = re.search(r"^(?:(?:mysql client|mysqlsh) exited \d+:\s*)?(ERROR\s+\d+\b[^\r\n]*)",
+                              target_error_text(exc), re.M)
+            if match is None:
+                return ""
+            detail = re.split(r"\bnear\s+['\"`]", match.group(1), maxsplit=1, flags=re.I)[0].rstrip()
     return redact(detail, password if isinstance(password, str) else None)
 
 
@@ -2263,7 +2300,7 @@ def target_has_galera(variables, engine=None):
             str(variables.get("wsrep_on", "")).upper() in ("ON", "1"))
 
 
-_EVIDENCE_VARIABLES = ("server_uuid", "server_id", "hostname", "port", "version", "version_comment",
+_EVIDENCE_VARIABLES = ("server_uuid", "server_uid", "server_id", "hostname", "port", "version", "version_comment",
                        "wsrep_on", "wsrep_provider", "wsrep_node_name")
 _GALERA_CONNECTION_STATUS = ("wsrep_connected", "wsrep_cluster_size")
 _EVIDENCE_STATUS = ("wsrep_gcomm_uuid",) + _GALERA_CONNECTION_STATUS
@@ -2512,6 +2549,18 @@ def target_galera_identity(conn, engine, identity, variables, tag=""):
         if all(out.get(key) for key in keys) and any(str(out[key]) != str(evidence.get(key, "")) for key in keys):
             conn.problem = "The identity check could not run: the reviewed state and server identity disagree. Nothing was sent. Refresh and review again."
             conn.check()
+        if engine == "mariadb":
+            for source in (out, variables or {}):
+                if "server_uid" in source and str(source.get("server_uid") or "") != str(evidence.get("server_uid") or ""):
+                    conn.problem = "The identity check could not run: the reviewed state and server identity disagree. Nothing was sent. Refresh and review again."
+                    conn.check()
+    if engine == "mariadb":
+        out.pop("server_uid", None)
+        uid = evidence.get("server_uid")
+        if isinstance(uid, str):
+            uid = uid.strip()
+        if isinstance(uid, str) and uid and uid.lower() != "unknown":
+            out["server_uid"] = uid
     if not target_has_galera(evidence, engine):
         if (engine == "mariadb" and
                 str(evidence.get("wsrep_provider") or "").strip().lower() not in ("", "none")):
@@ -2573,6 +2622,23 @@ def target_session_guard(engine, identity):
         different = " OR ".join("@@global.%s <> %s" % (key, str(values[key]) if key in ("server_id", "port")
                                                       else _sql_string(values[key]))
                                 for key in ["server_id", "hostname", "port"] + names[1:])
+        if "version" in identity:
+            version = identity.get("version")
+            if (not isinstance(version, str) or not version or
+                    "\x00" in version or "\r" in version or "\n" in version):
+                raise ValueError("The reviewed server version is missing or invalid. Nothing was sent. Refresh and review again.")
+            try:
+                version_bytes = version.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError("The reviewed server version is missing or invalid. Nothing was sent. Refresh and review again.") from None
+            if len(version_bytes) > 64:
+                raise ValueError("The reviewed server version is missing or invalid. Nothing was sent. Refresh and review again.")
+            different += " OR NOT (BINARY @@global.version <=> BINARY X'%s')" % version_bytes.hex()
+        if "server_uid" in identity:
+            uid = identity.get("server_uid")
+            if not isinstance(uid, str) or not _TARGET_UID.fullmatch(uid) or uid.lower() == "unknown":
+                raise ValueError("The reviewed server UID is missing or invalid. Nothing was sent. Refresh and review again.")
+            different += " OR NOT (BINARY @@global.server_uid <=> BINARY %s)" % _sql_string(uid)
     else:
         raise ValueError("This server has no supported reviewed identity guard. Nothing was sent.")
     if "wsrep_gcomm_uuid" in identity or target_has_galera(identity, engine):
@@ -2807,7 +2873,7 @@ def target_guard_failed(exc, packet_lines=None):
             return None
         index = getattr(packet_lines, "indices", range(len(packet_lines)))[packet]
         if int(match.group(1)) != 1242:
-            reason = redact(target_error_text(str(exc)[match.end():]).strip()).rstrip(".")
+            reason = redact(target_error_text(match.string[match.end():]).strip()).rstrip(".")
             return {"outcome": "identity_unavailable", "statement_index": index,
                     "message": "The identity check could not run: %s. %s Refresh and review again." %
                     (reason, "Nothing was sent." if not index else "Earlier statements ran; this statement and the remaining statements were not sent.")}
@@ -2822,7 +2888,7 @@ def target_guard_failed(exc, packet_lines=None):
         return {"outcome": "identity_mismatch", "message": TARGET_IDENTITY_MISMATCH}
     # Discard any MariaDB SQL echo before the actual ERROR line. Callers
     # additionally redact their connection password before display/audit.
-    message = redact(target_error_text(str(exc)[match.end():]).strip())
+    message = redact(target_error_text(match.string[match.end():]).strip())
     return {"outcome": "identity_unavailable",
             "message": "The identity check could not run: %s. Nothing was sent. Refresh and review again."
                        % message.rstrip(".")}
@@ -2844,9 +2910,9 @@ def shift_guard_error(exc, packet_lines=None):
             if packet_lines is not None else max(1, line - 1)
         return match.group(0)[:match.start(2) - match.start()] + str(mapped) + ":"
 
-    text = str(exc)
+    text = _without_echo(str(exc))
     if packet_lines is not None:
-        match = _target_error_match(text)
+        match = _TARGET_ERROR.search(text)
         if match:
             # MariaDB echoes the whole packet before the error. That echo
             # can contain passwords, or misleading statement/line text.
@@ -5561,9 +5627,13 @@ def redact(text, password=None, quoted=True):
         return None
     text = str(text)
     if password:
-        for variant in sorted({password, password.replace("'", "''"),
-                               password.replace("\\", "\\\\").replace("'", "\\'"),
-                               password.replace('"', '""')}, key=len, reverse=True):
+        normalized = password.replace("\r\n", "\n")
+        variants = set()
+        for form in (password, normalized, normalized.replace("\n", "\r\n")):
+            variants.update((form, form.replace("'", "''"),
+                             form.replace("\\", "\\\\").replace("'", "\\'"),
+                             form.replace('"', '""')))
+        for variant in sorted(variants, key=len, reverse=True):
             if variant:
                 text = text.replace(variant, REDACTED)
     # These are candidate checks, not SQL parsing. The substitutions insert

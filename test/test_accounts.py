@@ -19,7 +19,7 @@ import _accounts_replay as replay  # noqa: E402
 from myflames import accounts as a, dbops, privileges as p  # noqa: E402
 from myflames.connector import ConnectorError, MySQLConnection  # noqa: E402
 from myflames.workspace_store import WorkspaceStore  # noqa: E402
-from _reviewed_replay import acknowledged_error
+from _reviewed_replay import acknowledged_error, guarded_packets, SERVER_UID
 from _reviewed_replay import evidence_options, answer_evidence
 
 MYSQL_VERSION = '8.4.11'
@@ -1088,6 +1088,112 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(self.conn.stdin, [])
         self.assertEqual({r['status'] for r in self.store.audit_records()}, {'declined', 'refused'})
 
+    def test_mariadb_actor_server_binds_the_validated_version(self):
+        self.conn = FakeConn('mariadb')
+        self.conn.evidence_values = {'server_uid': SERVER_UID}
+        supplied = actor('mariadb')
+        supplied['variables']['version'] = 'unvalidated-actor-version'
+        plan = self.plan('lock', actor=supplied)
+        self.assertEqual(plan['status'], 'ready', plan)
+        self.assertEqual(plan['actor_server'].get('version'), MARIADB_VERSION)
+        guard = plan['session_guard'][0]
+        self.assertEqual(guard.count('@@global.version'), 1)
+        self.assertEqual(guard.count('@@global.server_uid'), 1)
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'applied', result)
+        self.assertEqual(guarded_packets(self.conn.stdin[0])[0][0], guard)
+        (record,) = self.store.audit_records()
+        self.assertEqual(record['statements'], plan['session_guard'] + plan['statements'])
+
+    def test_mariadb_account_write_refuses_a_route_with_only_version_changed(self):
+        self.conn = FakeConn('mariadb')
+        plan = self.plan('lock')
+        target = FakeConn('mariadb')
+        target.version = '11.4.14-MariaDB'
+        evidence = dbops.TargetEvidenceConnection(target)
+        a._server(evidence)
+        target_identity = a._actor_server(evidence, 'mariadb', actor('mariadb'))
+        expected_guard = dbops.target_session_guard('mariadb', target_identity)[0]
+        writes = []
+
+        def routed_send(sql, extra_flags=None, timeout=None):
+            # A synthetic routed backend accepts only the guard matching its
+            # own identity; the review and all rechecks still use self.conn.
+            writes.append(sql)
+            for guard, statement, line in guarded_packets(sql):
+                if guard != expected_guard:
+                    raise ConnectorError('ERROR 1242 (21000) at line %d: Subquery returns more than 1 row' % line)
+                target.locked = True
+            return ''
+
+        self.conn.run_stdin = routed_send
+        result = self.apply(plan)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(result['outcome'], 'identity_mismatch')
+        self.assertEqual(result['sent'], [])
+        self.assertFalse(target.locked)
+        self.assertEqual(len(writes), 1)
+        (record,) = self.store.audit_records()
+        self.assertEqual(record['statements'], plan['session_guard'] + plan['statements'])
+
+    def test_unsent_refusals_audit_only_the_reviewed_account_statements(self):
+        cases = ('confirmation', 'read_only', 'expect', 'connection', 'sql_connection',
+                 'version', 'actor', 'unchecked_actor', 'identity', 'role', 'account',
+                 'rename', 'blocked', 'typed_name', 'denied', 'evidence', 'before_send')
+        for case in cases:
+            with self.subTest(case=case):
+                self.conn = FakeConn(name='root' if case == 'typed_name' else
+                                     'mysql.sys' if case == 'blocked' else 'app',
+                                     host='localhost' if case in ('typed_name', 'blocked') else '%')
+                operation = 'roles' if case == 'role' else 'rename' if case == 'rename' else 'lock'
+                options = {'roles': [{'name': 'r', 'host': '%'}]} if case == 'role' else \
+                    {'new_name': 'other'} if case == 'rename' else {}
+                plan = self.plan(operation, **options)
+                kwargs = {'confirmed': case != 'confirmation'}
+                expect = 'changed' if case == 'expect' else plan['expect']
+                fresh_actor = actor()
+                if case == 'read_only':
+                    kwargs['connection'] = {'read_only': True}
+                if case == 'connection':
+                    kwargs['connection'] = dict(a._connection(self.conn), host='another-route')
+                if case == 'sql_connection':
+                    kwargs['connection'] = a._connection(self.conn)
+                    self.conn.host = 'another-route'
+                if case == 'version':
+                    self.conn.version = '8.4.12'
+                if case == 'actor':
+                    fresh_actor['account'] = 'other@localhost'
+                if case == 'unchecked_actor':
+                    fresh_actor['checked'] = False
+                if case == 'identity':
+                    other_uuid = '99999999-2222-3333-4444-555555555555'
+                    self.conn.evidence_values = {'server_uuid': other_uuid}
+                    fresh_actor['variables']['server_uuid'] = other_uuid
+                if case == 'role':
+                    self.conn.role_grants['`r`@`%`'].append('GRANT PROCESS ON *.* TO `r`@`%`')
+                if case == 'account':
+                    self.conn.grants.append('GRANT PROCESS ON *.* TO `app`@`%`')
+                if case == 'rename':
+                    self.conn.destination_exists = True
+                if case == 'denied':
+                    fresh_actor['variables']['super_read_only'] = 'ON'
+                if case == 'evidence':
+                    self.conn.evidence_values = {'server_uuid': ''}
+                if case == 'before_send':
+                    kwargs['before_send'] = lambda: 'The connection group changed; nothing was sent.'
+                with mock.patch.object(p, 'read_privileges', return_value=fresh_actor):
+                    result = a.apply(self.conn, plan, expect, store=self.store, **kwargs)
+                expected_status = {'confirmation': 'needs_confirmation', 'read_only': 'refused',
+                                   'blocked': 'refused', 'typed_name': 'needs_typed_name',
+                                   'denied': 'denied', 'evidence': 'refused', 'before_send': 'refused'}
+                self.assertEqual(result['status'], expected_status.get(case, 'stale'), result)
+                self.assertEqual(self.conn.stdin, [])
+                self.assertEqual(result['sent'], [])
+                records = [row for row in self.store.audit_records() if row['id'] in result['audit_ids']]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]['statements'], plan['statements'])
+                self.assertTrue(all(row['status'] == 'not_sent' for row in result['statements']))
+
     def test_apply_refuses_stale_state_and_tampering(self):
         for mutation in ('grants', 'attributes', 'expect', 'server', 'connection', 'tamper'):
             with self.subTest(mutation=mutation):
@@ -1176,6 +1282,9 @@ class AccountsTest(unittest.TestCase):
         self.conn.broken = False
 
         def refuse(sql, extra_flags=None, timeout=None):
+            (pending,) = self.store.audit_records()
+            self.assertEqual(pending['status'], 'pending')
+            self.assertEqual(pending['statements'], plan['session_guard'] + plan['statements'])
             self.conn.broken = True
             raise ProfileReadError('This saved connection is outside the current connection group.')
         self.conn.run_stdin = refuse
@@ -1192,6 +1301,10 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(result['sent'], [])
         self.assertIn('outside the current connection group', result['message'])
         self.assertNotIn('The statements were sent', result['message'])
+        (record,) = self.store.audit_records()
+        self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+        self.assertEqual(record['statements'], plan['statements'])
+        self.assertEqual(result['audit_ids'], [record['id']])
 
     def test_consent_loss_mid_apply_stops_at_the_next_statement(self):
         from myflames.connection_groups import ProfileReadError
@@ -1211,8 +1324,15 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(result['status'], 'partial')
         self.assertEqual(result['outcome'], 'changed')
         self.assertEqual([s['status'] for s in result['statements']], ['ok', 'not_sent', 'not_sent'])
-        outcomes = [r['outcome'] for r in self.store.audit_records()]
+        records = self.store.audit_records()
+        outcomes = [r['outcome'] for r in records]
         self.assertEqual(sorted(outcomes), ['changed', 'sent'])
+        accepted = next(row for row in records if row['outcome'] == 'sent')
+        refused = next(row for row in records if row['outcome'] == 'changed')
+        self.assertEqual(accepted['statements'], plan['session_guard'] + [plan['statements'][0]])
+        self.assertEqual(refused['statements'], [plan['statements'][1]])
+        self.assertEqual(len(records), len(result['audit_ids']))
+        self.assertNotIn('s3cret', json.dumps(records))
 
     def test_apply_success_diff_audit_single_use(self):
         plan = self.plan('grant', privileges=['PROCESS'])

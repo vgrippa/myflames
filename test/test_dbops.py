@@ -269,6 +269,240 @@ class TargetGaleraIdentityTests(unittest.TestCase):
         self.assertIn(node_uuid, dbops.target_session_guard('mariadb', identity)[0])
         self.assertEqual(len(raw.calls), 1)
 
+    def test_mariadb_server_uid_captured_validated_and_guarded(self):
+        from myflames.connector import ConnectorError
+        uid_a = 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='
+        uid_b = 'AgICAgICAgICAgICAgICAgICAgI='
+        self.assertIn('server_uid', dbops._EVIDENCE_VARIABLES)
+
+        # Standalone rotating MariaDB backends identical except for server_uid
+        # must fail closed inside TargetEvidenceConnection.
+        for second_uid in (uid_b, 'unknown'):
+            with self.subTest(second_uid=second_uid):
+                class RotatingStandalone(self.Connection):
+                    def __init__(self):
+                        super(RotatingStandalone, self).__init__()
+                        self.variables = dict(server_id='1', hostname='maria-rot', port='3306',
+                                              version='11.8.9-MariaDB', version_comment='MariaDB Server',
+                                              wsrep_on='OFF', wsrep_provider='none', server_uid=uid_a)
+
+                    def run(self, sql, **kwargs):
+                        self.variables['server_uid'] = uid_a if len(self.calls) == 0 else second_uid
+                        return super(RotatingStandalone, self).run(sql, **kwargs)
+
+                conn = dbops.TargetEvidenceConnection(RotatingStandalone())
+                self.assertEqual(conn.run('SELECT 1'), '1\n')
+                with self.assertRaisesRegex(ConnectorError, 'identity check'):
+                    conn.run('SELECT 2')
+
+        # target_galera_identity carries valid MariaDB server_uid, drops 'unknown',
+        # and strips any stale prior server_uid.
+        base = {'server_id': '1', 'hostname': 'maria-host', 'port': '3306', 'version': '11.4.13-MariaDB'}
+        carried = dbops.target_galera_identity(None, 'mariadb', base,
+            dict(base, wsrep_on='OFF', wsrep_provider='none', server_uid=uid_a))
+        self.assertEqual(carried['server_uid'], uid_a)
+        for omitted in ('unknown', 'UNKNOWN', '', None):
+            with self.subTest(omitted=omitted):
+                ev = dict(base, wsrep_on='OFF', wsrep_provider='none')
+                if omitted is not None:
+                    ev['server_uid'] = omitted
+                cleaned = dbops.target_galera_identity(None, 'mariadb', dict(base, server_uid=uid_a), ev)
+                self.assertNotIn('server_uid', cleaned)
+        mysql_out = dbops.target_galera_identity(None, 'mysql',
+            {'server_uuid': '11111111-2222-3333-4444-555555555555'}, {'wsrep_on': 'OFF'})
+        self.assertNotIn('server_uid', mysql_out)
+
+        # TargetEvidenceConnection refuses if reviewed identity server_uid disagrees.
+        raw = self.Connection()
+        raw.variables = dict(base, version_comment='MariaDB Server', wsrep_on='OFF', wsrep_provider='none', server_uid=uid_a)
+        conn = dbops.TargetEvidenceConnection(raw)
+        conn.run('SELECT 1')
+        with self.assertRaisesRegex(ConnectorError, 'identity check'):
+            dbops.target_galera_identity(conn, 'mariadb', dict(base, server_uid=uid_b), {})
+        with self.assertRaisesRegex(ConnectorError, 'identity check'):
+            dbops.target_galera_identity(conn, 'mariadb', dict(base), {'server_uid': uid_b})
+
+        # target_session_guard adds BINARY @@global.server_uid when carried, omits when absent, rejects invalid.
+        guard_with = dbops.target_session_guard('mariadb', carried)[0]
+        self.assertIn("OR NOT (BINARY @@global.server_uid <=> BINARY '%s')" % uid_a, guard_with)
+        guard_without = dbops.target_session_guard('mariadb', base)[0]
+        self.assertNotIn('server_uid', guard_without)
+        for bad_uid in (None, '', 'unknown', 'UNKNOWN', 123, True, "bad'uid", 'bad\\uid', 'a' * 65):
+            with self.subTest(bad_uid=bad_uid):
+                with self.assertRaisesRegex(ValueError, 'server UID is missing or invalid'):
+                    dbops.target_session_guard('mariadb', dict(base, server_uid=bad_uid))
+
+    def test_mariadb_version_clause_uses_binary_hex_and_rejects_invalid_values(self):
+        base = {'server_id': '1', 'hostname': 'maria-host', 'port': '3306'}
+        for version in ('11.4.13-MariaDB', "11.4.13-'custom\\v'", 'é' * 32):
+            with self.subTest(version=version):
+                guard = dbops.target_session_guard('mariadb', dict(base, version=version))
+                expected = "OR NOT (BINARY @@global.version <=> BINARY X'%s')" % version.encode('utf-8').hex()
+                self.assertIn(expected, guard[0])
+                self.assertNotIn("\\", guard[0])
+                for backslash_escapes in (True, False):
+                    script, lines = dbops.target_guarded_script(
+                        guard, ['SET GLOBAL max_connections = 200'],
+                        backslash_escapes=backslash_escapes, engine='mariadb')
+                    self.assertIn(expected, script)
+                    self.assertEqual(len(lines), 1)
+        for bad_version in (None, 123, True, False, '', '11.4\x00', '11.4\r', '11.4\n',
+                            'a' * 65, 'é' * 32 + 'a', '\ud800'):
+            with self.subTest(bad_version=repr(bad_version)):
+                with self.assertRaisesRegex(ValueError, 'server version is missing or invalid'):
+                    dbops.target_session_guard('mariadb', dict(base, version=bad_version))
+
+
+class EvidenceTransportErrorTests(unittest.TestCase):
+    def test_timeout_clause_drops_sql_and_preserves_sticky_refusal(self):
+        from myflames.connector import ConnectorError
+        for duration in ('15', '0.5'):
+            with self.subTest(duration=duration):
+                raw = mock.Mock(password='private-password')
+                raw.run.side_effect = ConnectorError(
+                    "Query timed out after %ss: SELECT 'myflames_evidence_%s'; SELECT private_column" %
+                    (duration, 'a' * 32))
+                conn = dbops.TargetEvidenceConnection(raw)
+                with self.assertRaisesRegex(ConnectorError, 'Query timed out after %ss' % duration) as caught:
+                    conn.run('SELECT 1')
+                for private in ('myflames_evidence_', 'SELECT', 'private_column'):
+                    self.assertNotIn(private, str(caught.exception))
+                with self.assertRaises(ConnectorError) as sticky:
+                    conn.run('SELECT 2')
+                self.assertEqual(str(sticky.exception), str(caught.exception))
+                raw.run.assert_called_once()
+                self.assertIsNone(conn.variables)
+
+    def test_tunnel_diagnostic_redacts_password(self):
+        from myflames.ssh_tunnel import Spec, TunnelError, failure_message
+        spec = Spec('bastion.example', 'app', 22, 'database.example', 3306)
+        error = TunnelError(failure_message('REMOTE HOST IDENTIFICATION HAS CHANGED', spec))
+        detail = dbops._evidence_error_text(error, password='bastion.example')
+        self.assertIn('has changed since it was saved in known_hosts', detail)
+        self.assertIn('[redacted]', detail)
+        self.assertNotIn('bastion.example', detail)
+
+    def test_untrusted_client_text_is_not_an_app_timeout(self):
+        from myflames.connector import ConnectorError
+        for text in ('mysql client exited 1: Query timed out after 15s: SELECT private_column',
+                     'client stopped\nQuery timed out after 15s: SELECT private_column',
+                     'Query timed out after unknown seconds: SELECT private_column'):
+            with self.subTest(text=text):
+                self.assertEqual(dbops._evidence_error_text(ConnectorError(text)), '')
+
+    def test_tunnel_diagnostics_cannot_echo_a_private_packet(self):
+        from myflames.ssh_tunnel import TunnelError
+        for echo in ("SELECT 'myflames_evidence_%s'; SELECT private_column" % ('a' * 32),
+                     "SELECT 'myflames_guard_ok_%s_0'; SELECT private_column" % ('a' * 32),
+                     '\n--------------\nSELECT private_column\n--------------\n',
+                     '\r\n--------------\r\nSELECT private_column\r\n--------------\r\n',
+                     '--------------\r\nSELECT private_column\r\n--------------\r\n'):
+            with self.subTest(echo=echo):
+                self.assertEqual(dbops._evidence_error_text(TunnelError(
+                    'The SSH tunnel did not open: ' + echo)), '')
+
+    def test_echo_stripping_handles_line_free_errors_code_free_exits_and_crlf(self):
+        from myflames.connector import ConnectorError
+        # Line-free ERROR 2013 after LF and CRLF echoes.
+        for nl in ('\n', '\r\n'):
+            with self.subTest(kind='2013', nl=repr(nl)):
+                raw = ('mysql client exited 1: --------------' + nl +
+                       "SELECT 'secret';" + nl +
+                       '--------------' + nl + nl +
+                       'ERROR 2013 (HY000): Lost connection to MySQL server during query')
+                exc = ConnectorError(raw)
+                expected = 'ERROR 2013 (HY000): Lost connection to MySQL server during query'
+                self.assertEqual(dbops.target_error_text(exc), expected)
+                self.assertEqual(dbops._evidence_error_text(exc), expected)
+        # Code-free exit after LF and CRLF echoes, even with a fake ERROR line inside the SQL echo.
+        for nl in ('\n', '\r\n'):
+            with self.subTest(kind='code-free', nl=repr(nl)):
+                raw = ('mysql client exited 1:' + nl + '--------------' + nl +
+                       "SELECT 'secret" + nl + "ERROR 2013 (HY000): fake';" + nl +
+                       '--------------' + nl + 'client stopped')
+                exc = ConnectorError(raw)
+                cleaned = dbops.target_error_text(exc)
+                self.assertEqual(cleaned, 'client stopped')
+                self.assertNotIn('SELECT', cleaned)
+                self.assertNotIn('secret', cleaned)
+                self.assertEqual(dbops._evidence_error_text(exc), '')
+        # CRLF echo with a line-located diagnostic, including fake ERROR inside the echo.
+        crlf_diag = ('mysql client exited 1:\r\n--------------\r\n'
+                     "SELECT 'secret\r\nERROR 1242 (21000) at line 1: fake';\r\n"
+                     '--------------\r\n\r\n'
+                     'ERROR 1142 (42000) at line 2: SELECT command denied')
+        exc = ConnectorError(crlf_diag)
+        self.assertEqual(dbops.target_error_text(exc), 'ERROR 1142 (42000) at line 2: SELECT command denied')
+        self.assertEqual(dbops._evidence_error_text(exc), 'ERROR 1142 (42000) at line 2: SELECT command denied')
+        self.assertIsNone(dbops.target_guard_failed(exc, (2,)))
+        shifted = dbops.shift_guard_error(exc, (2,))
+        self.assertEqual(str(shifted), 'ERROR 1142 (42000) at line 1: SELECT command denied')
+        crlf_mismatch = ('--------------\r\nSET @myflames_target = (...)\r\n--------------\r\n'
+                         'ERROR 1242 (21000) at line 2: Subquery returns more than 1 row')
+        failed = dbops.target_guard_failed(ConnectorError(crlf_mismatch), (2,))
+        self.assertEqual(failed['outcome'], 'identity_mismatch')
+        # Existing LF diagnostics without/with echo keep today's exact output.
+        plain_lf = 'mysql client exited 1: ERROR 1142 (42000) at line 2: denied'
+        self.assertEqual(dbops.target_error_text(ConnectorError(plain_lf)), plain_lf)
+        echo_lf = ('mysql client exited 1: --------------\nSELECT 1;\n--------------\n'
+                   'ERROR 1142 (42000) at line 2: denied')
+        self.assertEqual(dbops.target_error_text(ConnectorError(echo_lf)),
+                         'ERROR 1142 (42000) at line 2: denied')
+
+    def test_truncated_echo_drops_partial_sql_and_fake_guard_error(self):
+        from myflames.connector import ConnectorError
+        for nl in ('\n', '\r\n'):
+            for prefix in ('', 'mysql client exited 1: ', 'mysql client exited -9: ', 'mysql client exited 1:' + nl):
+                with self.subTest(nl=repr(nl), prefix=repr(prefix)):
+                    raw = (prefix + '--------------' + nl +
+                           "ALTER USER 'app'@'%' IDENTIFIED BY 'trunc-secret-pw'" + nl +
+                           'ERROR 1242 (21000) at line 2: Subquery returns more than 1 row')
+                    stripped = dbops._without_echo(raw)
+                    cleaned = dbops.target_error_text(ConnectorError(raw))
+                    for forbidden in ('trunc-secret-pw', 'ALTER USER', 'IDENTIFIED BY', 'ERROR 1242', '--------------'):
+                        self.assertNotIn(forbidden, stripped)
+                        self.assertNotIn(forbidden, cleaned)
+                    self.assertEqual(dbops._evidence_error_text(ConnectorError(raw)), '')
+                    self.assertIsNone(dbops.target_guard_failed(ConnectorError(raw), (2,)))
+                    self.assertIsNone(dbops.target_guard_failed(ConnectorError(raw)))
+        # An unbalanced separator inside an echoed literal fails closed too.
+        unbalanced = ('--------------\n'
+                      "ALTER USER 'app'@'%' IDENTIFIED BY 'inner-secret'\n"
+                      '--------------\n'
+                      'ERROR 1242 (21000) at line 2: fake\n'
+                      '--------------\n'
+                      'ERROR 1064 (42000) at line 2: syntax')
+        self.assertEqual(dbops._without_echo(unbalanced), '')
+        self.assertIsNone(dbops.target_guard_failed(ConnectorError(unbalanced), (2,)))
+
+    def test_redact_handles_crlf_and_lf_password_forms_including_run_write_guard_error(self):
+        from myflames.connector import ConnectorError, MySQLConnection
+        pw_crlf = "p'w\\1\r\nline2"
+        pw_lf = "p'w\\1\nline2"
+        self.assertEqual(dbops.redact('failed: ' + pw_lf, pw_crlf), 'failed: [redacted]')
+        self.assertEqual(dbops.redact('failed: ' + pw_crlf, pw_lf), 'failed: [redacted]')
+        self.assertEqual(dbops.redact("failed: p''w\\1\nline2", pw_crlf), 'failed: [redacted]')
+        self.assertEqual(dbops.redact("failed: p\\'w\\\\1\nline2", pw_crlf), 'failed: [redacted]')
+        guard = dbops.target_session_guard('mysql', {'server_uuid': '11111111-2222-3333-4444-555555555555'})
+        script, lines = dbops.target_guarded_script(guard, ['SET GLOBAL max_connections = 200'])
+        conn_pw = 'secret-part-one\r\nsecret-part-two'
+        stderr = ('--------------\r\nSET @myflames_target = (...);\r\n--------------\r\n'
+                  'ERROR 1142 (42000) at line 2: Access denied for ' + conn_pw).encode('utf-8')
+        reply = subprocess.CompletedProcess([], 1, stdout=b'', stderr=stderr)
+        with MySQLConnection('fixture-db', password=conn_pw, binary='mysql') as conn, \
+                mock.patch.object(conn, '_run_client', return_value=reply):
+            with self.assertRaises(ConnectorError) as caught:
+                conn.run_write(script)
+        text = str(caught.exception)
+        self.assertNotIn('secret-part-one', text)
+        self.assertNotIn('secret-part-two', text)
+        self.assertIn('[redacted]', text)
+        failed = dbops.target_guard_failed(caught.exception, lines)
+        self.assertEqual(failed['outcome'], 'identity_unavailable')
+        self.assertNotIn('secret-part-one', failed['message'])
+        self.assertNotIn('secret-part-two', failed['message'])
+        self.assertIn('[redacted]', failed['message'])
+
 
 class TempHome(unittest.TestCase):
     def setUp(self):

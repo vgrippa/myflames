@@ -335,6 +335,13 @@ def _galera_joiner(data):
                                 wsrep_local_state="1", wsrep_local_state_comment="Joining: receiving State Transfer")))
 
 
+def _galera_non_primary_unsigned_conf_id(data):
+    """A non-Primary node on MariaDB 10.11/11.4 (and PXC), where
+    wsrep_cluster_conf_id is SHOW_LONGLONG and prints -1 unsigned as
+    18446744073709551615 (mariadb-10.11.19/11.4.13 sql/mysqld.cc, sql/sql_show.cc)."""
+    return editor((WSREP, pairs(wsrep_cluster_conf_id="18446744073709551615")))
+
+
 #: name -> (recording it starts from, edit factory(data) -> edit).
 DERIVED = {
     "pxc-8.4-member-donor": ("pxc-8.4-healthy", _pxc_member_donor),
@@ -360,6 +367,7 @@ DERIVED = {
     "galera-11.8-two-nodes": ("galera-11.8-two-of-three", _galera_address("gcomm://mf-galera-1,mf-galera-3")),
     "galera-11.8-wsrep-off": ("galera-11.8-healthy", _galera_wsrep_off),
     "galera-11.8-joiner": ("galera-11.8-healthy", _galera_joiner),
+    "galera-11.8-non-primary-unsigned": ("galera-11.8-non-primary", _galera_non_primary_unsigned_conf_id),
     "ic-8.4-degraded": ("ic-8.4-healthy", _ic_degraded),
     "ic-8.4-no-quorum": ("ic-8.4-healthy", _ic_no_quorum),
 }

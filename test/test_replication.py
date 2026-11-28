@@ -65,7 +65,9 @@ def fixture(view, name):
     # Explicit synthetic receiver identity: the original capture predates it.
     report = data.get('report')
     if isinstance(report, dict):
-        report['server_identity'] = ({'server_id': '1', 'hostname': 'fixture-db', 'port': '3306'}
+        report['server_identity'] = ({'server_id': '1', 'hostname': 'fixture-db', 'port': '3306',
+                                      'server_uid': 'AQEBAQEBAQEBAQEBAQEBAQEBAQE=',
+                                      'version': report.get('server_version') or '11.4.13-MariaDB'}
                                      if report.get('engine') == 'mariadb' else
                                      {'server_uuid': '11111111-2222-3333-4444-555555555555'})
     calls, block = [], []
@@ -969,6 +971,43 @@ class TestSkipOne(ReplicationCase):
                 rp.skip_one(conn, '', plan['identity'], audit=audit, confirmed=True, settle_s=0)
         self.assertEqual(sent_scripts(conn), [])
 
+    def test_presend_refusal_removes_guard_from_the_pending_audit(self):
+        for failure in ('stop', 'exception', 'exception_without_reviewed_sql', 'redacted_stop'):
+            with self.subTest(failure=failure):
+                plan = self.confirmed('mysql-8.4-gtid-error', '')
+                self.fresh_store()
+                audit = self.audit()
+                if failure == 'redacted_stop':
+                    audit.password = plan['skip']['gtid']
+                safe_statements = [dbops.redact(statement, audit.password) for statement in rp._tagged(plan['statements'])]
+                conn, _ = replay('replication', 'mysql-8.4-gtid-skip')
+
+                def before_send():
+                    (pending,) = self.records()
+                    self.assertEqual(pending['status'], 'pending')
+                    self.assertEqual(pending['statements'], plan['session_guard'] + safe_statements)
+                    if failure.startswith('exception'):
+                        raise ValueError('The connection group consent changed before sending.')
+                    return 'user_stop'
+
+                options = {'audit': audit, 'confirmed': True, 'statements': plan['statements'],
+                           'settle_s': 0, 'before_send': before_send}
+                if failure == 'exception_without_reviewed_sql':
+                    options.pop('statements')
+                if failure.startswith('exception'):
+                    with self.assertRaisesRegex(ValueError, 'consent changed'):
+                        rp.skip_one(conn, '', plan['identity'], **options)
+                else:
+                    result = rp.skip_one(conn, '', plan['identity'], **options)
+                    self.assertEqual(result['status'], 'refused', result)
+                    self.assertFalse(result['sent'])
+                self.assertEqual(sent_scripts(conn), [])
+                (record,) = self.records()
+                self.assertEqual((record['id'], record['status'], record['outcome']),
+                                 (audit.id, 'refused', 'unsent'))
+                self.assertEqual(record['statements'], safe_statements)
+                self.assertNotIn(audit.password, json.dumps(record))
+
     def test_not_passed_when_the_same_transaction_fails_again(self):
         report, _ = status('mysql-8.4-filepos-error')
         plan = channel(report)['skip_plan']
@@ -1811,6 +1850,25 @@ class TestLoopReviewBinding(ReplicationCase):
         self.assertTrue(records[0]['finished_at'])
         self.assertNotIn('hunter2-not-real', json.dumps(records))
 
+    def test_loop_target_identity_does_not_coerce_reviewed_json_types(self):
+        identity = {'server_id': '1', 'hostname': 'replica', 'port': '3306',
+                    'wsrep_on': 'OFF', 'wsrep_disconnected_provider': True}
+        for field, reviewed, current in (('wsrep_disconnected_provider', True, 1),
+                                         ('wsrep_disconnected_provider', True, 1.0),
+                                         ('evidence', [{'value': 1}], [{'value': 1.0}])):
+            for fallback in (False, True):
+                with self.subTest(field=field, kind=type(current).__name__, fallback=fallback):
+                    expect = rp.check_loop_expect({'engine': 'mariadb',
+                                                   'server_identity': dict(identity, **{field: reviewed})})
+                    report = {'available': True, 'engine': 'mariadb', 'settings': {}}
+                    target = report['settings'] if fallback else report
+                    target['server_identity'] = json.loads(json.dumps(expect['server_identity']))
+                    self.assertIsNone(rp.loop_target_problem(report, expect))
+                    target['server_identity'][field] = current
+                    problem = rp.loop_target_problem(report, expect)
+                    self.assertIsNotNone(problem)
+                    self.assertIn('Nothing was sent', problem)
+
     def test_invalid_review_refuses_before_password_lookup_or_login(self):
         for changed in ('missing_token', 'forged_token', 'skip_token', 'connection', 'channel',
                         'identity', 'engine', 'receiver_guard', 'missing_expect', 'empty_identity'):
@@ -1949,6 +2007,17 @@ class TestReviewGateRegressions(ReplicationCase):
         options.update(kwargs)
         return rp.SkipLoop(conn, '', [1062], **options)
 
+    def test_changed_plan_refusal_audits_reviewed_sql_instead_of_fresh_sql(self):
+        reviewed = rp.plan_skip(fake_report(1062, gtid=U + ':1'), '')
+        current = fake_report(1062, gtid=U + ':2')
+        conn = self.connection()
+        result = rp.skip_one(conn, '', reviewed['identity'], audit=self.audit(), confirmed=True,
+                             statements=reviewed['statements'], settle_s=0, status_reader=lambda _conn: current)
+        self.assertEqual(result['status'], 'refused', result)
+        conn.run_write.assert_not_called()
+        (record,) = self.records()
+        self.assertEqual(record['statements'], rp._tagged(reviewed['statements']))
+
     def test_counter_requires_complete_relay_evidence_on_both_engines(self):
         for fixture_name, name in (('mysql-8.4-filepos-error', ''), ('mariadb-11.4-error', 'src1')):
             report, _ = status(fixture_name)
@@ -2017,6 +2086,23 @@ class TestReviewGateRegressions(ReplicationCase):
                 self.assertEqual(result['status'], 'refused')
                 self.assertIn('changed', result['message'])
                 conn.run.assert_not_called()
+
+    def test_verify_identity_preserves_json_field_types(self):
+        for group, key in (('server_identity', 'version'), (None, 'last_sql_errno'),
+                           ('position', 'exec_pos'), ('source', 'server_id'), ('worker_error', 'errno')):
+            for current, reviewed in ((True, 1), (1, '1'), (1, 1.0)):
+                with self.subTest(group=group, key=key, kind=type(reviewed).__name__, current=current):
+                    report = fake_report(1062)
+                    plan = rp.plan_skip(report, '')
+                    parent = plan['identity'].setdefault(group, {}) if group else plan['identity']
+                    parent[key] = current
+                    expect = self.copy(plan['identity'])
+                    (expect[group] if group else expect)[key] = reviewed
+                    _verified, problem = rp.verify_identity(channel(report), plan, expect)
+                    self.assertIsNotNone(problem)
+                    self.assertIn('Nothing was sent', problem)
+                    _verified, problem = rp.verify_identity(channel(report), plan, self.copy(plan['identity']))
+                    self.assertIsNone(problem, 'an unchanged JSON copy still matches')
 
     def test_unreadable_after_state_is_unverified_in_result_and_audit(self):
         report = fake_report(1062)

@@ -180,7 +180,7 @@ class EditorProcessTests(unittest.TestCase):
     def test_start_reads_the_engine_identity_in_the_tabs_session(self):
         session = self.open_session()
         log = (self.state / ("session-%d.log" % session.connection_id)).read_text(encoding="utf-8")
-        self.assertIn("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'wsrep_on', 'wsrep_provider')", log)
+        self.assertIn("SHOW GLOBAL VARIABLES WHERE Variable_name IN ('server_uuid', 'server_uid', 'wsrep_on', 'wsrep_provider')", log)
         self.assertIn("SELECT CONNECTION_ID() AS connection_id", log)
         if self.engine == "mysql":
             self.assertEqual(session.server_identity["server_uuid"], "11111111-2222-3333-4444-555555555555")
