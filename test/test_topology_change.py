@@ -829,10 +829,14 @@ class TopologyChangeTests(GroupCase):
         self.assertEqual(identity['version'], self.client(0).variables['version'])
         self.assertEqual(self.apply(plan)['status'], 'applied')
         guard = guarded_packets(self.client(0).writes[0])[0][0]
-        self.assertIn('@@global.server_uid', guard.lower())
-        self.assertIn(identity['server_uid'].encode('utf-8').hex(), guard)
-        self.assertIn('version', guard.lower())
-        self.assertIn(identity['version'].encode('utf-8').hex(), guard)
+        self.assertEqual(guard.count('@@global.server_uid'), 1)
+        self.assertEqual(guard.count('@@global.version'), 1)
+        records = self.records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['status'], 'ok')
+        self.assertEqual(records[0]['statements'][0], guard)
+        self.assertEqual(records[0]['statements'][0].count('@@global.server_uid'), 1)
+        self.assertEqual(records[0]['statements'][0].count('@@global.version'), 1)
 
     def test_mariadb_uid_or_version_change_after_review_refuses(self):
         for field, changed in (('server_uid', base64.b64encode(b'z' * 20).decode('ascii')),
@@ -887,7 +891,36 @@ class TopologyChangeTests(GroupCase):
                 plan = self.plan(member_ids=['member-1'])
                 self.assertEqual(plan['members'][0]['status'], 'refused', plan)
                 self.assertIsNone(plan['members'][0]['statement'])
+                self.assertIn('MariaDB server_uid and version are required', plan['members'][0]['reason'])
+                self.assertIn('Use MariaDB 10.11.9 or 11.4.3 or later', plan['members'][0]['reason'])
                 self.assertEqual(self.written_ids(), [])
+
+    def test_mariadb_uid_unavailable_on_apply_retains_identity_outcome(self):
+        for uid in ('unknown', ''):
+            with self.subTest(uid=uid):
+                self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+                plan = self.plan(member_ids=['member-1'])
+                self.assertEqual(plan['members'][0]['status'], 'planned', plan)
+                self.client(0).variables['server_uid'] = uid
+                result = self.apply(plan)
+                self.assertEqual(result['status'], 'refused', result)
+                self.assertEqual(result['members'][0]['status'], 'refused')
+                record = next(row for row in self.records() if row['id'] == result['audit_ids'][0])
+                self.assertEqual((record['status'], record['outcome']), ('refused', 'identity_unavailable'))
+                self.assertIn('Nothing was sent to this member', result['members'][0]['message'])
+                self.assertEqual(self.written_ids(), [])
+
+    def test_mariadb_invalid_version_has_actionable_identity_refusal(self):
+        identity = MemberClient(0, 'mariadb').rolling_identity()
+        invalid_versions = (None, '', True, 11.4, 'v' * 65, '\u00e9' * 33,
+                            '11.4.9-MariaDB\x00', '11.4.9-MariaDB\r', '11.4.9-MariaDB\n', '\ud800')
+        for version in invalid_versions:
+            with self.subTest(version=version):
+                identity['version'] = version
+                with self.assertRaises(topology_change.reviewed_writes.Refusal) as raised:
+                    topology_change._session_guard('mariadb', identity)
+                self.assertEqual(raised.exception.outcome, 'identity_unavailable')
+                self.assertIn('MariaDB server_uid and version are required', str(raised.exception))
 
     def test_mixed_gr_and_chained_async_constraints_share_one_order(self):
         for index, role in ((0, 'primary'), (1, 'secondary')):
@@ -1875,6 +1908,213 @@ class TopologyChangeTests(GroupCase):
         for value, schema in ((plan, 'topology-change-plan-1.0.json'), (result, 'topology-change-1.0.json')):
             with self.subTest(schema=schema):
                 validate(value, json.loads((ROOT / 'docs' / 'schemas' / schema).read_text(encoding='utf-8')))
+
+    def test_reviewed_comparisons_reject_bool_int_float_coercion(self):
+        plan = self.plan(member_ids=['member-1'])
+        # _guard: active_endpoint (int vs float, 0 vs False), effective_safety (False vs 0), member endpoint.
+        for field, value, outcome in (
+                ('active_endpoint', dict(plan['expect']['active_endpoint'], port=3306.0), 'changed_target'),
+                ('active_endpoint', dict(plan['expect']['active_endpoint'], ssh_port=False), 'changed_target'),
+                ('effective_safety', dict(plan['effective_safety'], read_only=0), 'policy_changed')):
+            with self.subTest(guard_field=field, value=value):
+                tampered = copy.deepcopy(plan)
+                if field == 'effective_safety':
+                    tampered['effective_safety'] = value
+                else:
+                    tampered['expect'][field] = value
+                with self.assertRaises(topology_change.reviewed_writes.Refusal) as exc:
+                    topology_change._guard(self.store, tampered)
+                self.assertEqual(exc.exception.outcome, outcome)
+
+        tampered_member = copy.deepcopy(plan['expect']['members'][0])
+        tampered_member['endpoint']['port'] = 3306.0
+        with self.assertRaises(topology_change.reviewed_writes.Refusal) as exc:
+            topology_change._guard(self.store, plan, tampered_member)
+        self.assertEqual(exc.exception.outcome, 'changed_target')
+
+        # plan(): active_endpoint / group_generation coercion rejected before reading any member.
+        with self.assertRaises(topology_change.reviewed_writes.Refusal) as exc:
+            topology_change.plan(self.store, 'G', 'member-1', 'max_connections', '300', 'global', ['member-1'],
+                                 active_endpoint=dict(plan['expect']['active_endpoint'], port=3306.0))
+        self.assertEqual(exc.exception.outcome, 'changed_target')
+
+        # apply(): connection endpoint coercion rejected before token/login.
+        audit = dbops.AuditTrail(self.store, topology_change.OPERATION, 'ui')
+        coerced_conn = dict(self.connection, port=3306.0)
+        opened_before = len(self.opened)
+        res = topology_change.apply(self.store, audit, plan['plan_id'], copy.deepcopy(plan['expect']),
+                                    True, 'G', 'coerced-connection-progress-01', connection=coerced_conn)
+        self.assertEqual(res['status'], 'refused', res)
+        self.assertEqual(len(self.opened), opened_before)
+        self.assertEqual(self.records()[-1]['outcome'], 'changed_target')
+
+        # check_target(): coerced dependency endpoint / order_facts, target order_facts, target identity, variable_expect.
+        self.make_async()
+        registry = topology_change._registry(self.store)
+
+        def run_with_retained_mutation(member_ids, mutator, expected_outcome, apply_patch=None, value='300'):
+            p = self.plan(member_ids=member_ids, value=value)
+            entry = registry.plans[p['plan_id']]
+            mutator(entry['details']['reviewed'])
+            token = registry.tokens.issue(topology_change.OPERATION, entry['details']['reviewed']['expect'],
+                                          entry['details'])
+            registry.plans[token] = entry
+            p_expect = copy.deepcopy(entry['details']['reviewed']['expect'])
+            pid = 'coerced-check-%s-%04d' % (expected_outcome[:8], self.progress_number + 1)
+            self.progress_number += 1
+            if apply_patch is not None:
+                with apply_patch:
+                    res = topology_change.apply(self.store, dbops.AuditTrail(self.store, topology_change.OPERATION, 'ui'),
+                                                token, p_expect, True, 'G', pid)
+            else:
+                res = topology_change.apply(self.store, dbops.AuditTrail(self.store, topology_change.OPERATION, 'ui'),
+                                            token, p_expect, True, 'G', pid)
+            self.assertEqual(res['status'], 'refused', res)
+            self.assertEqual(self.written_ids(), [])
+            record = next(row for row in self.records() if row['id'] == res['audit_ids'][0])
+            self.assertEqual(record['outcome'], expected_outcome)
+
+        # Dependency endpoint (ssh_port 0 -> False) and dependency order_facts (source_server_id 1 -> True).
+        run_with_retained_mutation(
+            ['member-3'],
+            lambda rev: next(d for d in rev['expect']['order_dependencies'] if d['profile_id'] == 'member-2')[
+                'endpoint'].update(ssh_port=False),
+            'dependency_changed')
+        run_with_retained_mutation(
+            ['member-3'],
+            lambda rev: next(d for d in rev['expect']['order_dependencies'] if d['profile_id'] == 'member-2')[
+                'order_facts']['channels'][0].update(source_server_id=True),
+            'dependency_changed')
+        # Dependency peer_identity (line 859): 1 vs True must refuse with dependency_changed.
+        real_facts = topology_change._facts
+
+        def facts_with_int_identity(target_profile_id):
+            def wrapper(conn, profile, name=None, value=None, mode=None):
+                ident, facts, pl = real_facts(conn, profile, name, value, mode)
+                if profile['id'] == target_profile_id:
+                    ident = dict(ident, coerced=1)
+                return ident, facts, pl
+            return wrapper
+
+        run_with_retained_mutation(
+            ['member-3'],
+            lambda rev: next(d for d in rev['expect']['order_dependencies'] if d['profile_id'] == 'member-2')[
+                'identity'].update(coerced=True),
+            'dependency_changed',
+            apply_patch=mock.patch.object(topology_change, '_facts', side_effect=facts_with_int_identity('member-2')))
+        # Target order_facts (source_server_id 1 -> True on member-2).
+        run_with_retained_mutation(
+            ['member-2'],
+            lambda rev: rev['expect']['members'][0]['order_facts']['channels'][0].update(source_server_id=True),
+            'role_changed')
+        # Target identity (line 865): 1 vs True must refuse with identity_mismatch.
+        run_with_retained_mutation(
+            ['member-1'],
+            lambda rev: rev['expect']['members'][0]['identity'].update(coerced=True),
+            'identity_mismatch',
+            apply_patch=mock.patch.object(topology_change, '_facts', side_effect=facts_with_int_identity('member-1')))
+
+        # variable_expect identity (line 876) and full expect (line 880) via unchanged member
+        # (reaches check_target(variable=True) directly without variables.apply_change): 1 vs True / 1.0 must refuse.
+        real_read_var = topology_change.variables.read_variable
+        real_build_plan = topology_change.variables.build_plan
+
+        def read_with_int_identity(conn, name):
+            info = copy.deepcopy(real_read_var(conn, name))
+            info['server_identity']['flag'] = 1
+            return info
+
+        run_with_retained_mutation(
+            ['member-1'],
+            lambda rev: rev['expect']['members'][0]['variable_expect']['server_identity'].update(flag=True),
+            'identity_mismatch',
+            apply_patch=mock.patch.object(topology_change.variables, 'read_variable', side_effect=read_with_int_identity),
+            value='151')
+
+        def build_with_int_expect(v, requested, mode, grants=None):
+            built = copy.deepcopy(real_build_plan(v, requested, mode, grants))
+            built['expect']['global_value'] = 151
+            return built
+
+        run_with_retained_mutation(
+            ['member-1'],
+            lambda rev: rev['expect']['members'][0]['variable_expect'].update(global_value=151.0),
+            'changed_variable',
+            apply_patch=mock.patch.object(topology_change.variables, 'build_plan', side_effect=build_with_int_expect),
+            value='151')
+
+    def test_mariadb_variable_server_identity_requires_matching_server_uid(self):
+        self.clients[self.profiles[0]['host']] = MemberClient(0, 'mariadb')
+        uid = self.client(0).variables['server_uid']
+        other_uid = base64.b64encode(b'z' * 20).decode('ascii')
+        real_read = topology_change.variables._read
+
+        # The real Variables read carries the server's server_uid (a MariaDB
+        # member without a valid server_uid never gets this far: _session_guard
+        # refuses it), and the whole identity, server_uid included, binds the
+        # plan and the apply.
+        plan_real = self.plan(member_ids=['member-1'])
+        self.assertEqual(plan_real['members'][0]['status'], 'planned', plan_real)
+        self.assertEqual(plan_real['expect']['members'][0]['variable_expect']['server_identity'].get('server_uid'), uid)
+        applied_real = self.apply(plan_real)
+        self.assertEqual(applied_real['status'], 'applied', applied_real)
+
+        # Reset variable for next checks.
+        self.client(0).variables['max_connections'] = '151'
+
+        # Coercion check: an int/str mismatch in server_identity still refuses.
+        def read_coerced_identity(conn, name):
+            info = copy.deepcopy(real_read(conn, name))
+            info['server_identity']['port'] = 3306
+            return info
+
+        with mock.patch.object(topology_change.variables, '_read', side_effect=read_coerced_identity):
+            refused = self.plan(member_ids=['member-1'])
+        self.assertEqual(refused['members'][0]['status'], 'refused', refused)
+        self.assertIn('identity changed', refused['members'][0]['reason'])
+
+        # A variable snapshot that omits the member UID cannot authorize a plan.
+        def read_without_uid(conn, name):
+            info = copy.deepcopy(real_read(conn, name))
+            info['server_identity'].pop('server_uid')
+            return info
+
+        with mock.patch.object(topology_change.variables, '_read', side_effect=read_without_uid):
+            refused = self.plan(member_ids=['member-1'])
+        self.assertEqual(refused['members'][0]['status'], 'refused', refused)
+        self.assertIn('identity changed', refused['members'][0]['reason'])
+        self.assertIsNone(refused['members'][0]['statement'])
+
+        # A matching UID keeps the complete identity available through apply.
+        def read_with_uid(injected_uid):
+            def wrapper(conn, name):
+                info = copy.deepcopy(real_read(conn, name))
+                info['server_identity']['server_uid'] = injected_uid
+                return info
+            return wrapper
+
+        with mock.patch.object(topology_change.variables, '_read', side_effect=read_with_uid(uid)):
+            plan_with = self.plan(member_ids=['member-1'])
+            self.assertEqual(plan_with['members'][0]['status'], 'planned', plan_with)
+            self.assertEqual(plan_with['expect']['members'][0]['variable_expect']['server_identity']['server_uid'], uid)
+            applied = self.apply(plan_with)
+            self.assertEqual(applied['status'], 'applied', applied)
+
+        # Wrong, unknown and absent UID values all invalidate the variable snapshot.
+        self.client(0).variables['max_connections'] = '151'
+        for bad_uid in (other_uid, 'unknown', '', None):
+            with self.subTest(bad_uid=bad_uid), \
+                    mock.patch.object(topology_change.variables, '_read', side_effect=read_with_uid(bad_uid)):
+                refused = self.plan(member_ids=['member-1'])
+                self.assertEqual(refused['members'][0]['status'], 'refused', refused)
+                self.assertIn('identity changed', refused['members'][0]['reason'])
+                self.assertIsNone(refused['members'][0]['statement'])
+
+        # MySQL member: Variables server_identity carrying an unexpected server_uid must refuse.
+        with mock.patch.object(topology_change.variables, '_read', side_effect=read_with_uid(uid)):
+            refused_mysql = self.plan(member_ids=['member-2'])
+        self.assertEqual(refused_mysql['members'][0]['status'], 'refused', refused_mysql)
+        self.assertIn('identity changed', refused_mysql['members'][0]['reason'])
 
 
 if __name__ == '__main__':

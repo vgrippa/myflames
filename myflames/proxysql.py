@@ -1716,7 +1716,9 @@ class _IdentityAudit(object):
         return self.audit.attempt(self.guard + list(statements), **kwargs)
 
     def outcome(self, statements, *args, **kwargs):
-        return self.audit.outcome(self.guard + list(statements), *args, **kwargs)
+        # Pre-send refusals did not execute the Admin guard. Only attempt()
+        # records the prefix that the sender is about to use.
+        return self.audit.outcome(statements, *args, **kwargs)
 
     def complete(self, *args, **kwargs):
         return self.audit.complete(*args, **kwargs)
@@ -1772,7 +1774,8 @@ def execute_action(conn, reviewed, audit=None, typed=None, before_send=None, pro
                 problem = "did not come from one identified ProxySQL instance"
             elif _identity_block(report):
                 problem = "could not verify a valid ProxySQL instance UUID"
-            elif report.get("server_identity") != reviewed["expect"]["server_identity"]:
+            elif not reviewed_writes.same_reviewed_value(report.get("server_identity"),
+                                                        reviewed["expect"]["server_identity"]):
                 problem = "reached a different ProxySQL instance"
             else:
                 after = _after(report, reviewed)

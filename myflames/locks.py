@@ -130,6 +130,7 @@ import time
 from . import dbops
 from .connector import ConnectorError, MySQLConnection, terminal_text, unescape_mysql
 from .perf_common import _denied, _reason, _server, conn_identity
+from .reviewed_writes import same_reviewed_value
 
 SCHEMA_VERSION = "locks-1.1"
 KILL_SCHEMA_VERSION = "kill-1.0"
@@ -2990,12 +2991,14 @@ def _identity_projection(engine):
                     if engine == "mariadb" else ["COALESCE(%s, 'OFF')" % enabled, node])
     keys += ("wsrep_on", "wsrep_gcomm_uuid")
     if engine == "mariadb":
-        keys += ("wsrep_node_name", "wsrep_provider", "wsrep_connected", "wsrep_cluster_size")
+        keys += ("wsrep_node_name", "wsrep_provider", "wsrep_connected", "wsrep_cluster_size", "server_uid")
         expressions.append("(SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_VARIABLES "
                            "WHERE VARIABLE_NAME = 'wsrep_node_name')")
         expressions.append(provider)
         expressions.extend("(SELECT VARIABLE_VALUE FROM %s WHERE VARIABLE_NAME = '%s')" % (status, key)
                            for key in ("wsrep_connected", "wsrep_cluster_size"))
+        expressions.append("(SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_VARIABLES "
+                           "WHERE VARIABLE_NAME = 'server_uid')")
     return keys, ", ".join(expressions)
 
 
@@ -3099,14 +3102,13 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     seen = _confirmed(expect, connection_id, mode)
     for key in ("connection_identity", "server_identity"):
         seen[key] = bound_expect.get(key)
-    session_guard = []
 
     def refuse(message, outcome="identity", status="refused", error=None):
         result = refused_result(connection_id, mode, message, status=status)
         if outcome == "identity_unavailable":
             result.update(outcome=outcome, sent=[])
         if audit is not None:
-            result["audit_id"] = audit.outcome(session_guard + [KILL_TAG + statement], "refused", outcome=outcome,
+            result["audit_id"] = audit.outcome([KILL_TAG + statement], "refused", outcome=outcome,
                                                message=message, error=error, target=seen)
         return result
 
@@ -3121,12 +3123,23 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     if isinstance(identity, ConnectorError):
         password = getattr(conn, "password", None) or getattr(audit, "password", None)
         reason = dbops.redact(dbops.target_error_text(identity), password)
+        if getattr(identity, "identity_outcome", None) == "identity_unavailable" and reason:
+            return refuse(reason, "identity_unavailable", error=reason)
         return refuse("The identity check could not run: %s. Nothing was sent. Refresh and review again."
                       % reason.rstrip("."), "identity_unavailable", error=reason)
-    if not identity or bound_expect.get("server_identity") != identity:
+    reviewed_identity = bound_expect.get("server_identity")
+    # Keep malformed waiver markers an identity_unavailable refusal. Validate
+    # only the marker's value before comparing identities so a valid MariaDB
+    # waiver review routed to MySQL refuses as a changed server, not a UUID error.
+    if (isinstance(reviewed_identity, dict) and
+            "wsrep_disconnected_provider" in reviewed_identity and
+            reviewed_identity["wsrep_disconnected_provider"] is not True):
+        return refuse("The reviewed disconnected-provider waiver marker is invalid. Nothing was sent. "
+                      "Refresh and review again.", "identity_unavailable")
+    if not identity or not same_reviewed_value(reviewed_identity, identity):
         return refuse("The server identity is missing or changed after confirmation; nothing was sent.")
     try:
-        session_guard = dbops.target_session_guard(engine, bound_expect.get("server_identity"))
+        session_guard = dbops.target_session_guard(engine, reviewed_identity)
         script, packet_lines = dbops.target_guarded_script(session_guard, [KILL_TAG + statement])
     except ValueError as exc:
         return refuse(str(exc), "identity_unavailable")
@@ -3143,6 +3156,8 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     except ConnectorError as exc:
         password = getattr(conn, "password", None) or getattr(audit, "password", None)
         reason = dbops.redact(dbops.target_error_text(exc), password)
+        if getattr(exc, "identity_outcome", None) == "identity_unavailable" and reason:
+            return refuse(reason, "identity_unavailable", error=reason)
         return refuse("The identity check could not run: %s. Nothing was sent. Refresh and review again."
                       % reason.rstrip("."), "identity_unavailable", error=reason)
     result["target"] = target
@@ -3152,7 +3167,7 @@ def kill_session(conn, connection_id, mode="connection", expect=None, settle_s=0
     if target is not None and not target.get("server_identity"):
         return refuse("The identity check could not run: the target row has no complete server identity. "
                       "Nothing was sent. Refresh and review again.", "identity_unavailable")
-    if target is not None and target.get("server_identity") != identity:
+    if target is not None and not same_reviewed_value(target.get("server_identity"), identity):
         return refuse("The server identity is missing or changed after confirmation; nothing was sent.")
     problem = _kill_problem(target, own, connection_id, mode, expect)
     if problem:

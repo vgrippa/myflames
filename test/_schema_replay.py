@@ -77,7 +77,7 @@ class ReplayConn(object):
                 for line in call.get('stdout', '').splitlines():
                     if '\t' in line:
                         key, value = line.split('\t', 1)
-                        if key in ('server_id', 'hostname', 'port', 'server_uuid', 'version', 'version_comment'):
+                        if key in ('server_id', 'hostname', 'port', 'server_uuid', 'server_uid', 'version', 'version_comment'):
                             self.evidence_values[key] = value
         # Limited captures may lack identity variables in their grants read.
         # These defaults are synthetic transport evidence, not recorded facts.
@@ -86,7 +86,8 @@ class ReplayConn(object):
         if 'mariadb' not in self.evidence_values.get('version', '').lower():
             self.evidence_values.setdefault('server_uuid', UUID)
         else:
-            self.evidence_values.update(wsrep_connected='OFF', wsrep_cluster_size='0')
+            self.evidence_values.update(wsrep_connected='OFF', wsrep_cluster_size='0',
+                                        server_uid='AQEBAQEBAQEBAQEBAQEBAQEBAQE=')
 
     def _answer(self, method, sql, flags, record=True):
         if record:

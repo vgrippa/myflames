@@ -13,6 +13,7 @@ from myflames.connector import ConnectorError, PartialReadError
 from myflames import dbops
 
 UUID = '11111111-2222-3333-4444-555555555555'
+SERVER_UID = 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='
 PREFIX = "SET @myflames_target = (SELECT 1 FROM (SELECT 1 UNION ALL SELECT 1) AS g WHERE "
 _RETAIN_PARTIAL_STDOUT = contextvars.ContextVar('reviewed_replay_partial_stdout', default=False)
 
@@ -213,7 +214,7 @@ def supplement(calls):
         if variable or replication:
             match = re.search(r'Variable_name IN \(([^)]*)\)', sql)
             names = set(re.findall(r"'([a-z_]+)'", match.group(1)))
-            names.update(('server_uuid', 'server_id', 'hostname', 'port', 'wsrep_node_name', 'wsrep_on'))
+            names.update(('server_uuid', 'server_id', 'hostname', 'port', 'server_uid', 'wsrep_node_name', 'wsrep_on'))
             call[0] = sql[:match.start(1)] + ', '.join("'%s'" % name for name in sorted(names)) + sql[match.end(1):]
             if text:
                 values = dict(line.split('\t', 1) for line in text.split('\n') if '\t' in line)
@@ -221,8 +222,9 @@ def supplement(calls):
                 if 'mariadb' not in text.lower():
                     additions['server_uuid'] = UUID
                 else:
-                    # The recorded statement now requests wsrep_on as well.
+                    # The recorded statement now requests server_uid and wsrep_on.
                     # Keep its response consistent with the packet evidence.
+                    additions['server_uid'] = SERVER_UID
                     additions['wsrep_on'] = mariadb_wsrep_defaults(values.get('version', ''))['wsrep_on']
                 call[1] = ''.join('%s\t%s\n' % (key, value) for key, value in additions.items()
                                   if key not in values) + text
@@ -244,6 +246,7 @@ class ReplayConn(RecordedReplayConn):
                             self.evidence_values[key] = value
                 if 'mariadb' in self.evidence_values['version'].lower():
                     self.evidence_values.pop('server_uuid', None)
+                    self.evidence_values.setdefault('server_uid', SERVER_UID)
                     for key, value in mariadb_wsrep_defaults(self.evidence_values['version']).items():
                         self.evidence_values.setdefault(key, value)
                 break

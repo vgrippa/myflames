@@ -141,6 +141,7 @@ from . import dbops, privileges, request_secrets
 from .connection_groups import ProfileReadError, grouped_read, probe_note, record_read
 from .connector import ConnectorError, terminal_text
 from .perf_common import Reader, _duration_text, _version_tuple, denied, now, preflight, reason
+from .reviewed_writes import same_reviewed_value
 from .server_info import identity_from_version, product_identity, product_name, server_label
 from .topology_links import _host_key, _norm_host, is_loopback as _is_loopback
 
@@ -208,7 +209,7 @@ EXTRA_VARIABLES = ("enforce_gtid_consistency", "gtid_current_pos", "gtid_domain_
                    "gtid_slave_pos", "gtid_strict_mode", "read_only", "replica_parallel_workers",
                    "replica_preserve_commit_order", "slave_parallel_threads", "slave_parallel_workers",
                    "slave_preserve_commit_order", "super_read_only", "sql_replica_skip_counter", "sql_slave_skip_counter",
-                   "server_uuid", "server_id", "hostname", "port", "wsrep_node_name", "wsrep_on")
+                   "server_uuid", "server_id", "hostname", "port", "server_uid", "wsrep_node_name", "wsrep_on")
 
 _PS_HEARTBEAT_SQL = ("SELECT CHANNEL_NAME, HEARTBEAT_INTERVAL FROM "
                      "performance_schema.replication_connection_configuration")
@@ -545,7 +546,7 @@ def _read_status(conn, source_versions=False, profiles=(), open_profile=None, re
     # Keep the report's established schema: settings already holds the
     # server's global variables, and the skip plan copies this review evidence.
     report["settings"]["server_identity"] = {key: server.variables.get(key) for key in
-        (("server_id", "hostname", "port") if server.engine == "mariadb" else ("server_uuid",))}
+        (("server_id", "hostname", "port", "version") if server.engine == "mariadb" else ("server_uuid",))}
     try:
         rows = reader.named(show_sql)
     except ConnectorError as exc:
@@ -2178,7 +2179,7 @@ def loop_target_problem(report, expect):
     if not report.get("available"):
         return report.get("message") or "Replication status could not be read. Nothing was sent."
     current = report.get("server_identity") or (report.get("settings") or {}).get("server_identity")
-    if report.get("engine") != expect["engine"] or current != expect["server_identity"]:
+    if report.get("engine") != expect["engine"] or not same_reviewed_value(current, expect["server_identity"]):
         return ("The server identity changed after you reviewed the skip loop. Nothing was sent; "
                 "refresh replication and review the loop again.")
     return None
@@ -2274,7 +2275,7 @@ def verify_identity(channel, plan, expect):
     current = plan["identity"]
 
     def compare(label, now_value, then_value):
-        if now_value != then_value:
+        if not same_reviewed_value(now_value, then_value):
             diffs.append("%s is now %s" % (label, now_value if now_value not in (None, "") else "empty"))
         else:
             verified.append(label)
@@ -2421,13 +2422,33 @@ def _decision_for(statements=None):
     return dbops.decide(dbops.classify(";\n".join(statements) if statements else "START REPLICA SQL_THREAD"))
 
 
+def _complete_unsent_audit(audit, statements, status, message):
+    """Finish the prepared record without claiming its guard reached the server."""
+    if not audit.pending:
+        return audit.id
+    audit.finished = True
+    duration = (time.monotonic() - audit.started) * 1000.0 if audit.started is not None else None
+    try:
+        # Use the shared serialization/redaction and finish the same pending
+        # row atomically. Sent/error paths retain attempt()'s guard and SQL.
+        fields = dbops._finish_fields(status, outcome="unsent", message=message,
+                                     duration_ms=duration, password=audit.password)
+        fields["statements"] = dbops._row(audit.operation, _tagged(statements), audit.surface,
+                                         "pending", password=audit.password)["statements"]
+        audit.store.audit_complete(audit.id, fields)
+    except Exception:
+        # Match AuditTrail.complete: a storage failure leaves a pending row
+        # and must not replace the refusal with an unrelated audit exception.
+        pass
+    return audit.id
+
+
 def _unsent(result, audit, status, outcome, message, target, verified=None):
     result["status"], result["message"] = status, message
     if audit is not None:
         audit_status = status if status in ("refused", "declined") else "refused"
         if audit.pending:
-            audit.complete(audit_status, outcome="unsent", message=message)
-            result["audit_id"] = audit.id
+            result["audit_id"] = _complete_unsent_audit(audit, result.get("statements") or [], audit_status, message)
         else:
             result["audit_id"] = audit.outcome(_tagged(result.get("statements") or []) or [SKIP_TAG + "(nothing planned)"],
                                                audit_status, outcome=outcome, message=message, target=target,
@@ -2485,7 +2506,7 @@ def skip_one(conn, channel, expect, audit=None, decision=None, confirmed=False, 
     A loop supplies a synchronized send boundary and a fresh-status guard.
     All paths complete the audit, including exceptions before any SQL is sent.
     """
-    send_state = {"sent": False, "script_succeeded": False}
+    send_state = {"sent": False, "script_succeeded": False, "statements": statements or []}
     try:
         with _serialize_skips():
             return _skip_one(conn, channel, expect, audit, decision, confirmed, statements, settle_s, sleep,
@@ -2496,9 +2517,9 @@ def skip_one(conn, channel, expect, audit=None, decision=None, confirmed=False, 
                 audit.complete("unknown", outcome="unverified" if send_state["script_succeeded"] else "error",
                                message="The script was sent; its effect is unknown: " + str(exc))
             elif audit.pending:
-                audit.complete("refused", outcome="unsent", message=str(exc))
+                _complete_unsent_audit(audit, send_state["statements"], "refused", str(exc))
             else:
-                audit.outcome(_tagged(statements or []), "refused", outcome="unsent", message=str(exc), target=expect)
+                audit.outcome(_tagged(send_state["statements"]), "refused", outcome="unsent", message=str(exc), target=expect)
         raise
 
 
@@ -2546,7 +2567,11 @@ def _skip_one(conn, channel, expect, audit, decision, confirmed, statements, set
     result["plan"], result["method"] = plan, plan["method"]
     if not plan["available"]:
         return _unsent(result, audit, "refused", "unavailable", plan["message"], expect)
-    result["statements"] = list(plan["statements"])
+    # A changed fresh plan must never replace the SQL the user reviewed in
+    # an unsent refusal. CLI callers without a statement review use this plan.
+    if statements is None:
+        result["statements"] = list(plan["statements"])
+    send_state["statements"] = result["statements"]
     verified, problem = verify_identity(found, plan, expect)
     if problem is None and statements is not None and list(statements) != plan["statements"]:
         problem = ("The statements myflames would send now differ from the ones you confirmed, so nothing was "

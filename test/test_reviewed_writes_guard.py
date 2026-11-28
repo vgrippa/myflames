@@ -4,6 +4,7 @@ No lab coverage is claimed here. The tests inspect the entire client input
 and simulate mysql/MariaDB batch diagnostics, including MariaDB's SQL echo.
 """
 import copy
+import json
 import os
 import re
 import subprocess
@@ -52,6 +53,38 @@ class Writer(object):
     run_stdin = run_write
 
 
+class ReviewedValueTests(unittest.TestCase):
+    def test_nonfinite_floats_are_not_json_review_evidence(self):
+        for value in (float('inf'), float('-inf'), float('nan')):
+            with self.subTest(value=value):
+                self.assertFalse(reviewed_writes.same_reviewed_value(value, value))
+                self.assertFalse(reviewed_writes.same_reviewed_value({'value': [value]}, {'value': [value]}))
+
+    def test_subclasses_are_not_json_review_evidence(self):
+        for base, value in ((dict, {'value': True}), (list, [1]), (str, 'value'), (int, 1), (float, 1.0)):
+            subclass = type('NonJson' + base.__name__, (base,), {})
+            with self.subTest(base=base.__name__):
+                current, reviewed = subclass(value), subclass(value)
+                self.assertFalse(reviewed_writes.same_reviewed_value(current, reviewed))
+                self.assertFalse(reviewed_writes.same_reviewed_value([current], [reviewed]))
+
+    def test_keys_in_both_objects_must_be_exact_strings(self):
+        class NonJsonString(str):
+            pass
+        plain, subclass = {'value': True}, {NonJsonString('value'): True}
+        for current, reviewed in ((plain, subclass), (subclass, plain), (subclass, subclass)):
+            self.assertFalse(reviewed_writes.same_reviewed_value(current, reviewed))
+
+    def test_nested_scalar_types_and_array_order_remain_significant(self):
+        for current, reviewed in ((True, 1), (False, 0), (1, 1.0), ([1, 2], [2, 1])):
+            with self.subTest(current=current, reviewed=reviewed):
+                self.assertFalse(reviewed_writes.same_reviewed_value(
+                    {'evidence': [{'value': current}]}, {'evidence': [{'value': reviewed}]}))
+        self.assertTrue(reviewed_writes.same_reviewed_value(
+            {'values': [None, True, False, 1, 1.0, '1'], 'empty': {}},
+            {'empty': {}, 'values': [None, True, False, 1, 1.0, '1']}))
+
+
 class GuardTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -90,6 +123,14 @@ class GuardTests(unittest.TestCase):
         node = dict(MARIA, wsrep_node_name='db-1.example')
         self.assertEqual(dbops.target_session_guard('mariadb', node),
                          [MARIA_GUARD[:-2] + " OR @@global.wsrep_node_name <> 'db-1.example');"])
+        with_version = dict(MARIA, version='11.4.13-MariaDB')
+        self.assertEqual(dbops.target_session_guard('mariadb', with_version),
+                         [MARIA_GUARD[:-2] + " OR NOT (BINARY @@global.version <=> BINARY X'%s'));" %
+                          '11.4.13-MariaDB'.encode('utf-8').hex()])
+        quoted = dbops.target_session_guard('mariadb', dict(MARIA, version="11.4.13-'custom\\v'"))[0]
+        self.assertIn("OR NOT (BINARY @@global.version <=> BINARY X'%s')" %
+                      "11.4.13-'custom\\v'".encode('utf-8').hex(), quoted)
+        self.assertTrue(dbops.target_session_guard('mariadb', dict(MARIA, version='é' * 32)))
 
     def test_galera_and_pxc_guard_the_node_with_the_engine_status_table(self):
         for engine, identity, table in [
@@ -124,6 +165,10 @@ class GuardTests(unittest.TestCase):
                 with self.subTest(key=key, value=value):
                     with self.assertRaises(ValueError):
                         dbops.target_session_guard('mariadb', dict(MARIA, **{key: value}))
+        for value in (None, '', 123, True, False, 'a' * 65, 'é' * 32 + 'a', '11.4\nDROP', '11.4\r', '11.4\x00', '\ud800'):
+            with self.subTest(key='version', value=value):
+                with self.assertRaises(ValueError):
+                    dbops.target_session_guard('mariadb', dict(MARIA, version=value))
 
     def test_review_metadata_is_derived_and_audit_keeps_guard(self):
         plan = self.plan()
@@ -137,6 +182,77 @@ class GuardTests(unittest.TestCase):
                          [(MYSQL_GUARD, stmt.rstrip(';')) for stmt in plan['statements']])
         self.assertEqual(out['sent'], plan['statements'])
         self.assertEqual(self.records()[0]['statements'], [MYSQL_GUARD] + plan['statements'])
+
+    def test_pre_send_refusals_audit_only_reviewed_statements(self):
+        for refusal, outcome in (('fresh_read', 'changed'), ('changed', 'changed'),
+                                 ('identity', 'identity_unavailable'), ('packet', 'review'),
+                                 ('typed_guard', 'typed_guard'), ('before_send', 'review')):
+            with self.subTest(refusal=refusal):
+                plan = self.plan()
+                if refusal == 'identity':
+                    plan['expect']['server_identity']['server_uuid'] = ''
+                elif refusal == 'packet':
+                    plan['statements'] = ['SET @one = 1; SET @two = 2;']
+                elif refusal == 'typed_guard':
+                    plan['typed_guard'] = 'CONFIRM'
+                fresh = copy.deepcopy(plan)
+                if refusal == 'changed':
+                    fresh['expect']['server_identity']['server_uuid'] = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+                read = mock.Mock(return_value=fresh)
+                consume, after = mock.Mock(), mock.Mock()
+                if refusal == 'fresh_read':
+                    read.side_effect = ValueError('Target unavailable.')
+                elif refusal == 'before_send':
+                    consume.side_effect = ValueError('The review expired. Nothing was sent.')
+                writer = Writer()
+                out = reviewed_writes.execute(writer, plan, read, 'test', audit=self.audit(),
+                                               before_send=consume, read_after=after)
+                self.assertEqual((out['status'], out['outcome'], out['sent']), ('refused', outcome, []))
+                self.assertEqual(out['not_sent'], plan['statements'])
+                self.assertEqual(writer.writes, [])
+                after.assert_not_called()
+                if refusal == 'before_send':
+                    consume.assert_called_once_with()
+                else:
+                    consume.assert_not_called()
+                record = next(row for row in self.records() if row['id'] == out['audit_id'])
+                self.assertEqual((record['status'], record['outcome']), ('refused', outcome))
+                self.assertEqual(record['statements'], plan['statements'])
+                self.assertEqual(record['target'], plan['expect'])
+
+    def test_reviewed_expect_preserves_nested_json_types_before_consumption(self):
+        for current, reviewed in ((True, 1), (1, '1'), (1, 1.0)):
+            for nested in (False, True):
+                with self.subTest(current=current, reviewed=reviewed, kind=type(reviewed).__name__, nested=nested):
+                    fresh = self.plan()
+                    if nested:
+                        fresh['expect']['evidence'] = [{'value': current}]
+                    else:
+                        fresh['expect']['server_identity']['version'] = current
+                    plan = json.loads(json.dumps(fresh))
+                    if nested:
+                        plan['expect']['evidence'][0]['value'] = reviewed
+                    else:
+                        plan['expect']['server_identity']['version'] = reviewed
+                    writer, consume, after = Writer(), mock.Mock(), mock.Mock()
+                    out = reviewed_writes.execute(writer, plan, lambda: fresh, 'test', audit=self.audit(),
+                                                   before_send=consume, read_after=after)
+                    self.assertEqual((out['status'], out.get('outcome'), out['sent']), ('refused', 'changed', []))
+                    self.assertEqual(writer.writes, [])
+                    consume.assert_not_called()
+                    after.assert_not_called()
+                    record = next(row for row in self.records() if row['id'] == out['audit_id'])
+                    self.assertEqual((record['status'], record['outcome']), ('refused', 'changed'))
+
+    def test_unchanged_json_review_allows_reordered_object_keys(self):
+        fresh = self.plan()
+        fresh['expect']['evidence'] = {'values': [True, 1, 1.0, '1', None], 'available': False}
+        plan = json.loads(json.dumps(fresh, sort_keys=True))
+        writer, consume = Writer(), mock.Mock()
+        out = reviewed_writes.execute(writer, plan, lambda: fresh, 'test', audit=self.audit(), before_send=consume)
+        self.assertEqual((out['status'], out['sent']), ('done', plan['statements']))
+        self.assertEqual(len(writer.writes), 1)
+        consume.assert_called_once_with()
 
     def test_guard_refusal_is_audited_and_never_reads_after(self):
         for echo in ('', 'mysql client exited 1: --------------\nSET @myflames_target = (...)\n--------------\n'):
@@ -387,7 +503,7 @@ class GuardTests(unittest.TestCase):
 
     def test_accounts_guard_each_engine_and_refuse_swapped_server(self):
         from test_accounts import FakeConn, actor
-        for engine, expected in (('mysql', MYSQL_GUARD), ('mariadb', MARIA_GUARD)):
+        for engine in ('mysql', 'mariadb'):
             with self.subTest(engine=engine):
                 conn = FakeConn(engine)
                 writer = Writer(MISMATCH)
@@ -396,7 +512,9 @@ class GuardTests(unittest.TestCase):
                     plan = accounts.plan_lock(conn, 'app')
                     out = accounts.apply(conn, plan, plan['expect'], confirmed=True, store=self.store)
                 self.assert_mismatch(out, writer)
-                self.assertEqual(guarded_packets(writer.writes[0])[0][0], expected)
+                guard = guarded_packets(writer.writes[0])[0][0]
+                self.assertEqual(guard, plan['session_guard'][0])
+                self.assertEqual(guard.count('@@global.version'), int(engine == 'mariadb'))
 
     def test_accounts_packet_refusal_keeps_the_actual_server_error_code(self):
         from test_accounts import FakeConn, actor
@@ -449,7 +567,10 @@ class GuardTests(unittest.TestCase):
                 self.assertEqual((out['status'], len(out['sent']), len(writes)), ('partial', 1, 2))
                 if outcome == 'identity_mismatch':
                     self.assertEqual(out['outcome'], outcome)
-                self.assertTrue(all(guarded_packets(sql)[0][0] == MARIA_GUARD for sql in writes))
+                for sql in writes:
+                    for guard, _, _ in guarded_packets(sql):
+                        self.assertEqual(guard, plan['session_guard'][0])
+                        self.assertEqual(guard.count('@@global.version'), 1)
                 self.assertEqual([row['status'] for row in out['statements']], ['ok', 'not_sent' if outcome == 'identity_mismatch' else 'denied', 'not_sent'])
                 records = [r for r in self.records() if r['id'] in out['audit_ids']]
                 self.assertEqual(sorted(row['status'] for row in records), ['ok', 'refused'] if outcome == 'identity_mismatch' else ['error', 'ok'])

@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 
 from _perf_replay import FakeFactory, PASSWORD, ReplayConn, batch, fixture, run_cli, run_main
+from _reviewed_replay import evidence_body, evidence_call, evidence_options
 from myflames import locks, sessions, ui
 from myflames.connector import ConnectorError
 from myflames import ddl_progress
@@ -24,13 +25,29 @@ from myflames.sessions import sessions_report, split_host, thread_kind
 SERVERS = ('mysql-8.4', 'mysql-9.7', 'mysql-26.7', 'mariadb-11.4', 'mariadb-13.0')
 
 
+def with_evidence(conn, values):
+    """Supply explicit synthetic node metadata for the HTTP Kill sheet reads."""
+    original = conn.run
+
+    @evidence_options
+    def run(sql, extra_flags=None, timeout=None):
+        body, marker = evidence_body(sql)
+        def read():
+            return original(body, extra_flags=extra_flags, timeout=timeout)
+        return evidence_call(read, marker, values) if marker else read()
+
+    conn.run = run
+    return conn
+
+
 def replay(server, edit=None):
     calls = list(fixture('sessions', server)['calls'])
     # Identity answers are synthetic additions to the older live recordings.
     engine = 'mariadb' if server.startswith('mariadb') else 'mysql'
-    _, projection = locks._identity_projection(engine)
+    keys, projection = locks._identity_projection(engine)
     identity_sql = 'SELECT ' + projection
-    identity = ([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None, 'none', 'OFF', '0']]
+    identity = ([['1', 'server-one', '11.4.13-MariaDB', '3306', 'OFF', None, None, 'none', 'OFF', '0',
+                  'AQEBAQEBAQEBAQEBAQEBAQEBAQE=']]
                 if engine == 'mariadb' else [['11111111-2222-3333-4444-555555555555', 'OFF', None]])
     calls.append([sessions.SESSIONS_TAG + identity_sql, batch(identity)])
     # Explicit synthetic supplement: old live recordings predate the DDL read.
@@ -52,7 +69,12 @@ def replay(server, edit=None):
                 self.calls.append((sql, list(extra_flags or [])))
                 return ''
             return super(LegacyReplay, self).run(sql, extra_flags=extra_flags, timeout=timeout)
-    return LegacyReplay(calls, edit=edit)
+    values = {key: value for key, value in zip(keys, identity[0]) if value is not None}
+    if 'version' not in values:
+        values['version'] = next(line.split('\t', 1)[1] for sql, text, *rest in calls
+                                 if 'SHOW GLOBAL VARIABLES' in sql for line in (text or '').splitlines()
+                                 if line.startswith('version\t'))
+    return with_evidence(LegacyReplay(calls, edit=edit), values)
 
 
 def report_for(server, **kwargs):
@@ -153,7 +175,8 @@ class TestLiveReplay(unittest.TestCase):
     def test_report_captures_server_identity_once_for_both_engines(self):
         for server, expected in (
                 ('mysql-8.4', {'server_uuid': '11111111-2222-3333-4444-555555555555'}),
-                ('mariadb-11.4', {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB', 'port': '3306'})):
+                ('mariadb-11.4', {'server_id': '1', 'hostname': 'server-one', 'version': '11.4.13-MariaDB',
+                                  'port': '3306', 'server_uid': 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='})):
             with self.subTest(server=server):
                 conn = replay(server)
                 report = sessions_report(conn, identity=True)
@@ -169,7 +192,8 @@ class TestLiveReplay(unittest.TestCase):
         for server in ('mysql-8.4', 'mariadb-11.4', 'mariadb-12.3', 'mariadb-13.0'):
             engine = 'mariadb' if server.startswith('mariadb') else 'mysql'
             version = server[len('mariadb-'):] + '.0-MariaDB' if engine == 'mariadb' else '8.4.11'
-            ordinary = ({'server_id': '1', 'hostname': 'server-one', 'version': version, 'port': '3306'}
+            ordinary = ({'server_id': '1', 'hostname': 'server-one', 'version': version, 'port': '3306',
+                         'server_uid': 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='}
                         if engine == 'mariadb' else {'server_uuid': uuid})
             cases = [('plain', {'wsrep_on': 'OFF', 'wsrep_provider': 'none'}, ordinary),
                      ('galera', {'wsrep_on': 'ON', 'wsrep_provider': provider,
@@ -218,7 +242,8 @@ class TestLiveReplay(unittest.TestCase):
                 with self.subTest(wsrep_on=wsrep_on, connected=connected, size=size):
                     keys, projection = locks._identity_projection('mariadb')
                     row = ['1', 'server-one', '13.0.2-MariaDB', '3306', wsrep_on, None,
-                           'node-one', '/usr/lib/galera/libgalera_smm.so', connected, size]
+                           'node-one', '/usr/lib/galera/libgalera_smm.so', connected, size,
+                           'AQEBAQEBAQEBAQEBAQEBAQEBAQE=']
                     conn = replay('mariadb-13.0')
                     conn.answers[sessions.SESSIONS_TAG + 'SELECT ' + projection] = [batch([row])]
                     report = sessions_report(conn, identity=True)
@@ -416,7 +441,14 @@ def synthetic(rows, trx=(), version='8.4.11', ps='ON', status=None, history='12'
                 if needle in sql:
                     return text
             raise AssertionError(sql)
-    return Conn()
+    values = {'version': version, 'wsrep_on': 'OFF', 'wsrep_provider': 'none',
+              'wsrep_connected': 'OFF', 'wsrep_cluster_size': '0'}
+    if 'mariadb' in version.lower():
+        values.update(server_id='1', hostname='server-one', port='3306',
+                      server_uid='AQEBAQEBAQEBAQEBAQEBAQEBAQE=')
+    else:
+        values['server_uuid'] = '11111111-2222-3333-4444-555555555555'
+    return with_evidence(Conn(), values)
 
 
 def trx_row(conn_id, age, state='RUNNING', wait=None, rows_locked=1):

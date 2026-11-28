@@ -17,7 +17,7 @@ from collections import OrderedDict
 
 from . import connection_groups, dbops, parameters, param_compare, reviewed_writes, topology_group, variables
 from .connector import ConnectorError
-from .perf_common import Reader, _version_tuple, literal
+from .perf_common import Reader, _version_tuple
 from .group_members import open_group_member
 from .param_compare import BoundedConnection
 from .review_tokens import ReviewTokens
@@ -217,29 +217,35 @@ def _guard(store, reviewed, member=None):
     blocked = dbops.gate(_decision(reviewed['name'], reviewed['mode'], safety, reviewed['group_name']), True)
     if blocked:
         raise reviewed_writes.Refusal('A member of this group is Read-only. Nothing more was sent.', 'read_only')
-    if generation != expect['group_generation'] or _endpoint(active) != expect['active_endpoint']:
+    if (not reviewed_writes.same_reviewed_value(generation, expect['group_generation']) or
+            not reviewed_writes.same_reviewed_value(_endpoint(active), expect['active_endpoint'])):
         raise reviewed_writes.Refusal('The connection group or active connection changed. Review again.', 'changed_target')
-    if safety != reviewed['effective_safety']:
+    if not reviewed_writes.same_reviewed_value(safety, reviewed['effective_safety']):
         raise reviewed_writes.Refusal('The group write policy changed. Review the change again.', 'policy_changed')
     if member is not None:
-        current = next((p for p in members if p['id'] == member['profile_id']), None)
-        if current is None or _endpoint(current) != member['endpoint']:
+        current = next((p for p in members if reviewed_writes.same_reviewed_value(p['id'], member['profile_id'])), None)
+        if current is None or not reviewed_writes.same_reviewed_value(_endpoint(current), member['endpoint']):
             raise reviewed_writes.Refusal('The saved member or its endpoint changed. Review the change again.', 'changed_target')
         return current
     return active
 
 
 def _session_guard(engine, identity):
-    guard = dbops.target_session_guard(engine, identity)
     if engine != 'mariadb':
-        return guard
+        return dbops.target_session_guard(engine, identity)
     uid = identity.get('server_uid')
     try:
         valid = isinstance(uid, str) and len(uid) == 28 and len(base64.b64decode(uid, validate=True)) == 20
     except (ValueError, binascii.Error):
         valid = False
     version = identity.get('version')
-    if not valid or not isinstance(version, str) or not version or len(version) > 256:
+    try:
+        valid_version = (isinstance(version, str) and 0 < len(version) <= 64 and
+                         len(version.encode('utf-8')) <= 64 and
+                         not any(char in version for char in ('\x00', '\r', '\n')))
+    except UnicodeEncodeError:
+        valid_version = False
+    if not valid or not valid_version:
         raise reviewed_writes.Refusal(
             'MariaDB server_uid and version are required to identify this member. '
             'Use MariaDB 10.11.9 or 11.4.3 or later with an available server_uid.', 'identity_unavailable')
@@ -247,9 +253,9 @@ def _session_guard(engine, identity):
     # server_uid (MDEV-34494). mysqld.cc:9967 / :10022 hashes MAC + port.
     # It is stable only while those inputs stay fixed, so keep the complete
     # identity tuple and reject missing/unknown values, never use UID alone.
-    extra = ''.join(' OR NOT (BINARY @@global.%s <=> BINARY %s)' % (key, literal(identity[key]))
-                    for key in ('server_uid', 'version'))
-    return [guard[0][:-2] + extra + ');']
+    # Validate the rolling-change requirements before the shared builder can
+    # raise a generic ValueError. It already emits both UID and version checks.
+    return dbops.target_session_guard(engine, identity)
 
 
 class _IdentityConnection(object):
@@ -343,7 +349,7 @@ def _facts(conn, profile, name=None, value=None, mode=None):
             plan = variables.plan_change(evidence, name, value, 'global')
             plan['config_line'] = alternative.get('config_line') or plan.get('config_line')
         variable = plan.get('variable', {})
-        if variable.get('server_identity') != {key: val for key, val in identity.items() if key != 'server_uid'}:
+        if not reviewed_writes.same_reviewed_value(variable.get('server_identity'), identity):
             raise reviewed_writes.Refusal('The member identity changed during the variable read.', 'identity_mismatch')
         values = [variable.get('global_value')]
         if plan['mode'] in ('persist', 'persist_only'):
@@ -469,8 +475,8 @@ def plan(store, group_name, active_member_profile_id, name, value, mode, member_
             or len(set(member_ids)) != len(member_ids)):
         raise ValueError('Choose 1 to 16 distinct saved member IDs.')
     members, active, generation, safety = _snapshot(store, group, active_member_profile_id)
-    if ((active_endpoint is not None and _endpoint(active) != active_endpoint) or
-            (group_generation is not None and generation != group_generation)):
+    if ((active_endpoint is not None and not reviewed_writes.same_reviewed_value(_endpoint(active), active_endpoint)) or
+            (group_generation is not None and not reviewed_writes.same_reviewed_value(generation, group_generation))):
         raise reviewed_writes.Refusal('The validated group or active endpoint changed. Review again.', 'changed_target')
     if set(member_ids) - {p['id'] for p in members}:
         raise ValueError('Every selected server must be a current member of this connection group.')
@@ -539,7 +545,7 @@ def plan(store, group_name, active_member_profile_id, name, value, mode, member_
         entries.append(entry)
     _guard(store, reviewed)
     ordered, reviewed['order_rule'] = _order(entries)
-    if reviewed['order_rule'] != 'Saved name order.':
+    if not reviewed_writes.same_reviewed_value(reviewed['order_rule'], 'Saved name order.'):
         # An unselected relay can change the relative depths of selected
         # replicas. Its own live identity and channels are review evidence,
         # even though no variable statement will ever be sent to it. Confirmed
@@ -636,11 +642,6 @@ class _MemberAudit(dbops.AuditTrail):
         self.final_status = self.final_outcome = None
 
     def attempt(self, statements, target=None, verified=None):
-        if self.variable_plan is not None:
-            engine = self.variable_plan['engine']
-            base = dbops.target_session_guard(engine, self.target['identity'])[0]
-            guard = _session_guard(engine, self.target['identity'])[0]
-            statements = [guard if statement == base else statement for statement in statements]
         return super(_MemberAudit, self).attempt(statements, target=self.target, verified=verified)
 
     def complete(self, status, outcome=None, error=None, message=None, **kwargs):
@@ -688,11 +689,9 @@ class _SendingConnection(object):
             # This read failed before the write transport was invoked. Do not
             # let variables.apply_change treat its error as the SET's reply.
             raise reviewed_writes.Refusal(_message('refused', 'recheck_failed'), 'recheck_failed') from exc
-        base = dbops.target_session_guard(self.engine, self.identity)[0]
-        guarded = _session_guard(self.engine, self.identity)[0]
-        if sql.count(base) != 1:
+        guard = _session_guard(self.engine, self.identity)[0]
+        if sql.count(guard) != 1:
             raise reviewed_writes.Refusal('The reviewed identity packet changed.', 'identity_mismatch')
-        sql = sql.replace(base, guarded, 1)
         self.states[self.index] = 'sent'
         self.progress.set('sending', self.states)
         self.sent = True
@@ -757,11 +756,13 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
         _, _, _, safety = _snapshot(store, reviewed['group_name'], reviewed['expect']['active_member_profile_id'])
         if connection is not None and connection.get('read_only') is True:
             safety = dict(safety, read_only=True)
-        if connection is not None and (connection.get('group_name') != reviewed['group_name'] or
-                connection.get('profile_id') != reviewed['expect']['active_member_profile_id'] or
-                _endpoint(connection) != reviewed['expect']['active_endpoint']):
+        if connection is not None and (
+                not reviewed_writes.same_reviewed_value(connection.get('group_name'), reviewed['group_name']) or
+                not reviewed_writes.same_reviewed_value(connection.get('profile_id'), reviewed['expect']['active_member_profile_id']) or
+                not reviewed_writes.same_reviewed_value(_endpoint(connection), reviewed['expect']['active_endpoint'])):
             return refuse_all('refused', 'changed_target')
-        if ReviewTokens.fingerprint(OPERATION, None, expect) != ReviewTokens.fingerprint(OPERATION, None, reviewed['expect']):
+        if (not reviewed_writes.same_reviewed_value(expect, reviewed['expect']) or
+                ReviewTokens.fingerprint(OPERATION, None, expect) != ReviewTokens.fingerprint(OPERATION, None, reviewed['expect'])):
             return refuse_all('stale', 'stale')
         if any(member['status'] == 'refused' for member in reviewed['members']):
             return refuse_all('refused', 'invalid_plan')
@@ -770,7 +771,8 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
             return refuse_all('refused', 'read_only' if blocked[0] == 'refused' else 'needs_confirmation')
         registry.tokens.check(plan_id, OPERATION, reviewed['expect'], details)
         _guard(store, reviewed)
-        if reviewed['confirmation']['typed_name'] is not None and typed_name != reviewed['group_name']:
+        if reviewed['confirmation']['typed_name'] is not None and not reviewed_writes.same_reviewed_value(
+                typed_name, reviewed['group_name']):
             return refuse_all('refused', 'needs_typed_name')
     except reviewed_writes.Refusal as exc:
         return refuse_all('refused', exc.outcome)
@@ -836,7 +838,7 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                             _guard(store, reviewed, binding)
                             dependencies = list(reviewed['expect'].get('order_dependencies', []))
                             later = []
-                            if reviewed['order_rule'] != 'Saved name order.':
+                            if not reviewed_writes.same_reviewed_value(reviewed['order_rule'], 'Saved name order.'):
                                 # Later relays and cluster members may change
                                 # the current member's reviewed precedence.
                                 later = reviewed['expect']['members'][index + 1:]
@@ -844,9 +846,9 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                             for dependency in dependencies:
                                 candidate = store.get('profile', dependency['profile_id'])
                                 if (not isinstance(candidate, dict) or
-                                        candidate.get('group') != reviewed['group_name'] or
-                                        candidate.get('group_generation') != reviewed['expect']['group_generation'] or
-                                        _endpoint(candidate) != dependency['endpoint'] or
+                                        not reviewed_writes.same_reviewed_value(candidate.get('group'), reviewed['group_name']) or
+                                        not reviewed_writes.same_reviewed_value(candidate.get('group_generation'), reviewed['expect']['group_generation']) or
+                                        not reviewed_writes.same_reviewed_value(_endpoint(candidate), dependency['endpoint']) or
                                         dependency['order_facts'] is None or dependency['identity'] is None):
                                     raise reviewed_writes.Refusal(_message('dependency_changed'), 'dependency_changed')
                                 try:
@@ -856,15 +858,15 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                                             {'query_timeout': 10, 'connect_timeout': 10}) as dependency_opened:
                                         peer_conn = BoundedConnection(dependency_opened[0], seconds=30)
                                         peer_identity, peer_facts, _ = _facts(peer_conn, peer)
-                                        if (peer_identity != dependency['identity'] or
-                                                peer_facts != dependency['order_facts']):
+                                        if (not reviewed_writes.same_reviewed_value(peer_identity, dependency['identity']) or
+                                                not reviewed_writes.same_reviewed_value(peer_facts, dependency['order_facts'])):
                                             raise reviewed_writes.Refusal(_message('dependency_changed'), 'dependency_changed')
                                 except (reviewed_writes.Refusal, connection_groups.ProfileReadError, ConnectorError) as exc:
                                     raise reviewed_writes.Refusal(_message('dependency_changed'), 'dependency_changed') from exc
                             identity, facts, _ = _facts(conn, current)
-                            if identity != binding['identity']:
+                            if not reviewed_writes.same_reviewed_value(identity, binding['identity']):
                                 raise reviewed_writes.Refusal(_message('identity_mismatch'), 'identity_mismatch')
-                            if facts != binding['order_facts']:
+                            if not reviewed_writes.same_reviewed_value(facts, binding['order_facts']):
                                 raise reviewed_writes.Refusal(_message('role_changed'), 'role_changed')
                             fresh = None
                             if variable:
@@ -873,11 +875,13 @@ def apply(store, audit, plan_id, expect, confirmed, typed_name, progress_id, con
                                 reader = (_IdentityConnection(conn, identity)
                                           if change['engine'] == 'mariadb' else conn)
                                 variable_now = variables.read_variable(reader, reviewed['name'])
-                                if any(variable_now.get(key) != binding['variable_expect'].get(key) for key in
+                                if any(not reviewed_writes.same_reviewed_value(
+                                        variable_now.get(key), binding['variable_expect'].get(key)) for key in
                                        ('engine', 'server_version', 'server_identity')):
                                     raise reviewed_writes.Refusal(_message('identity_mismatch'), 'identity_mismatch')
                                 fresh = variables.build_plan(variable_now, change['requested'], change['mode'])
-                                if fresh.get('status') != 'ready' or fresh.get('expect') != binding['variable_expect']:
+                                if fresh.get('status') != 'ready' or not reviewed_writes.same_reviewed_value(
+                                        fresh.get('expect'), binding['variable_expect']):
                                     raise reviewed_writes.Refusal(_message('changed_variable'), 'changed_variable')
                             _guard(store, reviewed, binding)
                             return fresh
@@ -956,11 +960,11 @@ def stop(store, progress_id, group_name=None, active_member_profile_id=None):
     registry.progress.get(progress_id)  # Validate the id before looking up a run.
     with registry.lock:
         run = registry.runs.get(progress_id)
-    if run is None or group_name is not None and (run.group != group_name):
+    if run is None or group_name is not None and not reviewed_writes.same_reviewed_value(run.group, group_name):
         raise ValueError('No such rolling change.')
     if group_name is not None:
         _, _, generation, _ = _snapshot(store, group_name, active_member_profile_id)
-        if generation != run.generation:
+        if not reviewed_writes.same_reviewed_value(generation, run.generation):
             raise ValueError('No such rolling change.')
     with run.lock:
         run.stopped = True

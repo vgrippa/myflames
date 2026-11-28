@@ -1112,6 +1112,58 @@ class BatchedCaptureParityTest(unittest.TestCase):
         self.assertEqual(len(transport.scripts), 1)
         self.assertIn('Accounts were read without the single-server check.', result['notes'])
 
+    def test_compare_capture_never_retries_a_failed_first_login(self):
+        for failure in (ConnectorError('ERROR 1045 (28000): Access denied for user'),
+                        ConnectorError('ERROR 2013 (HY000): Lost connection during query'),
+                        ConnectorError('Query timed out after 30s.'),
+                        PartialReadError('ERROR 2013 (HY000) at line 2: Lost connection during query', ''),
+                        PartialReadError('The client stopped without a server diagnostic.', '')):
+            with self.subTest(failure=str(failure)):
+                class RejectedLogin(object):
+                    query_timeout = 30
+
+                    def __init__(self):
+                        self.calls = []
+
+                    def run(self, sql, **kwargs):
+                        self.calls.append(sql)
+                        raise failure
+
+                conn = RejectedLogin()
+                with self.assertRaises(ConnectorError) as caught:
+                    A.capture(conn)
+                self.assertEqual(len(conn.calls), 1, 'a failed first login must not get an unchecked retry')
+                self.assertEqual(getattr(caught.exception, 'identity_outcome', None), 'identity_unavailable')
+                self.assertTrue(conn.calls[0].startswith('DELIMITER '))
+
+    def test_compare_capture_never_retries_line_located_login_and_host_refusals(self):
+        messages = (
+            "ERROR 1045 (28000) at line 2: ProxySQL Error: Access denied for user 'app'@'10.0.0.1'",
+            "ERROR 1698 (28000) at line 2: Access denied for user 'root'@'localhost'",
+            "ERROR 1129 (HY000) at line 2: Host '10.0.0.1' is blocked because of many connection errors",
+            "ERROR 1130 (HY000) at line 2: Host '10.0.0.1' is not allowed to connect to this MySQL server",
+            "ERROR 3118 (HY000) at line 2: Access denied for user 'app'@'%'. Account is locked.",
+            "ERROR 3955 (HY000) at line 2: Access denied for user 'app'@'%'. Account is blocked for 1 day(s).",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                class RejectedProxyLogin(object):
+                    query_timeout = 30
+
+                    def __init__(self):
+                        self.calls = []
+
+                    def run(self, sql, **kwargs):
+                        self.calls.append(sql)
+                        raise PartialReadError(message, '')
+
+                conn = RejectedProxyLogin()
+                with self.assertRaises(ConnectorError) as caught:
+                    A.capture(conn)
+                self.assertEqual(len(conn.calls), 1, 'a backend login refusal with a line must not retry')
+                self.assertEqual(getattr(caught.exception, 'identity_outcome', None), 'identity_unavailable')
+                self.assertTrue(conn.calls[0].startswith('DELIMITER '))
+
     def test_compare_capture_keeps_proxy_sides_without_account_catalogs_unavailable(self):
         class ProxySideConn(object):
             query_timeout = 30
@@ -1125,7 +1177,9 @@ class BatchedCaptureParityTest(unittest.TestCase):
                 if sql.startswith('DELIMITER '):
                     # Admin/cache endpoints cannot supply the database node
                     # identity prefix. Their ordinary reads remain usable.
-                    raise ConnectorError('ERROR 1064 (42000) at line 2: Unsupported statement')
+                    # The opted-in connector retains even an empty prefix
+                    # for a server statement error, unlike a failed login.
+                    raise PartialReadError('ERROR 1064 (42000) at line 2: Unsupported statement', '')
                 if sql == 'SELECT @@version':
                     return self.version + '\n'
                 if 'FROM mysql.user ORDER BY User, Host' in sql:

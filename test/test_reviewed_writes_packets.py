@@ -128,6 +128,12 @@ class RoutingTransport(object):
                     for key, quoted, integer in re.findall(
                             r"@@global\.([a-z_]+) <> (?:'([^']*)'|([0-9]+))", sql):
                         differences.append(str(backend.get(key)) != (quoted or integer))
+                    for binary, key, hex_lit, raw_lit in re.findall(
+                            r"NOT \((BINARY )?@@global\.([a-z_]+) <=> (?:BINARY )?(?:X'([0-9a-fA-F]+)'|'((?:''|\\\\|[^'\\])*)')\)", sql):
+                        expected_val = (bytes.fromhex(hex_lit).decode('utf-8') if hex_lit else
+                                        re.sub(r"''|\\\\", lambda m: "'" if m.group(0) == "''" else "\\", raw_lit))
+                        actual_val = backend.get(key)
+                        differences.append(actual_val is None or str(actual_val) != expected_val)
                     node = re.search(r"VARIABLE_NAME = 'wsrep_gcomm_uuid'\) <=> '([^']+)'", sql)
                     if node:
                         differences.append(backend.get('wsrep_gcomm_uuid') != node.group(1))
@@ -755,7 +761,7 @@ class PacketTests(unittest.TestCase):
                     scenario.conn.responses[0] = (VERSION_SQL, batch([['11.4.13-MariaDB', 1]]))
                     scenario.conn.responses[2] = (scenario.conn.responses[2][0],
                         batch([['1', 'server-one', '11.4.13-MariaDB', '3306', 'ON', UUID, 'same-name',
-                                '/usr/lib/galera/libgalera_smm.so', 'ON', '3']]))
+                                '/usr/lib/galera/libgalera_smm.so', 'ON', '3', 'AQEBAQEBAQEBAQEBAQEBAQEBAQE=']]))
                 else:
                     scenario.conn.responses[1] = ('SELECT @@server_uuid', batch([[UUID, 'ON', UUID]]))
                 _server, identity = locks._kill_context(scenario.conn)
@@ -887,6 +893,37 @@ class PacketTests(unittest.TestCase):
                 locks.kill_session(scenario.conn, 41, expect=bound_kill_expect(scenario.conn), confirmed=True,
                                    audit=self.audit(), settle_s=0)
             self.assertNotIn('not the one you reviewed', str(caught.exception))
+
+    def test_mariadb_routed_write_differs_only_in_version_refuses_before_sending(self):
+        reviewed = dict(MARIA, version='11.4.13-MariaDB')
+        plan = self.plan('mariadb', reviewed)
+        for other_version in ('11.4.14-MariaDB', '11.4.13-mariadb', None):
+            with self.subTest(other_version=other_version):
+                other = dict(MARIA)
+                if other_version is not None:
+                    other['version'] = other_version
+                writer = RoutingTransport([other])
+                out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
+                self.assertEqual((out['status'], out.get('outcome'), out['sent']), ('refused', 'identity_mismatch', []))
+                self.assertEqual(writer.executed, [])
+                self.assertEqual(len(writer.packets), 1)
+                self.assertEqual(self.records()[0]['outcome'], 'identity_mismatch')
+
+    def test_mariadb_routed_write_differs_only_in_server_uid_refuses_before_sending(self):
+        uid_a = 'AQEBAQEBAQEBAQEBAQEBAQEBAQE='
+        reviewed = dict(MARIA, version='11.4.13-MariaDB', server_uid=uid_a)
+        plan = self.plan('mariadb', reviewed)
+        for other_uid in ('AgICAgICAgICAgICAgICAgICAgI=', uid_a.lower(), 'unknown', None):
+            with self.subTest(other_uid=other_uid):
+                other = dict(MARIA, version='11.4.13-MariaDB')
+                if other_uid is not None:
+                    other['server_uid'] = other_uid
+                writer = RoutingTransport([other])
+                out = reviewed_writes.execute(writer, plan, lambda: copy.deepcopy(plan), 'test', audit=self.audit())
+                self.assertEqual((out['status'], out.get('outcome'), out['sent']), ('refused', 'identity_mismatch', []))
+                self.assertEqual(writer.executed, [])
+                self.assertEqual(len(writer.packets), 1)
+                self.assertEqual(self.records()[0]['outcome'], 'identity_mismatch')
 
 
 if __name__ == '__main__':

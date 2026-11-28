@@ -434,7 +434,7 @@ class TestAllSurfacesRedactJwtSecret(TempHomeTestCase):
         secret_hex = JWT_SECRET.encode('utf-8').hex().upper()
         read_names = ', '.join("'%s'" % n for n in sorted((
             'version', 'version_comment', 'persisted_globals_load', 'version_compile_os',
-            'server_uuid', 'server_id', 'hostname', 'port', 'wsrep_node_name', 'wsrep_on',
+            'server_uuid', 'server_uid', 'server_id', 'hostname', 'port', 'wsrep_node_name', 'wsrep_on',
             'vsql_rest.jwt_secret',
         )))
         read_script = '; '.join(tag + s for s in (

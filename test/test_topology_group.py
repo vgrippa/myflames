@@ -94,7 +94,7 @@ if evidence:
             not cfg.get('switch_on') or cfg['switch_on'] in sql):
         variables = dict(variables, **cfg.get('evidence_variables', {}))
     names = ('server_uuid', 'server_id', 'hostname', 'port', 'version', 'version_comment',
-             'wsrep_on', 'wsrep_provider', 'wsrep_node_name')
+             'server_uid', 'wsrep_on', 'wsrep_provider', 'wsrep_node_name')
     emit(['Variable_name', 'Value'], [[name, identity[name]] for name in names if name in identity])
     # Earlier synthetic Galera fixtures omit the node UUID. Supply a stable,
     # explicitly synthetic value for the new identity prefix only.
